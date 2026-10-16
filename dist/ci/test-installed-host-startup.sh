@@ -39,7 +39,9 @@ fail() {
 useradd --home-dir "$work/home" --create-home --shell /bin/bash "$smoke_user"
 smoke_uid=$(id -u "$smoke_user")
 smoke_gid=$(id -g "$smoke_user")
-chmod 0711 "$work"
+# The tree stands in for / and /var above a real /var/home: world-readable,
+# as identity storage opens every ancestor directory for reading.
+chmod 0755 "$work"
 install -d -m 0700 -o "$smoke_uid" -g "$smoke_gid" \
     "$work/runtime" "$work/config" "$work/data" "$work/state" "$work/cache"
 
@@ -92,12 +94,16 @@ host_home="$work/home-link/$smoke_user"
 install -d -m 0700 -o "$smoke_uid" -g "$smoke_gid" \
     "$host_home/.config" "$host_home/.local/share"
 
+# Every host-session invocation runs inside a login, which always has a
+# runtime directory; the session resolves its Files sockets there before it
+# touches the identity, and refuses to start without one.
 run_identity() {
     runuser -u "$smoke_user" -- env -i \
         HOME="$host_home" \
         USER="$smoke_user" \
         LOGNAME="$smoke_user" \
         PATH=/usr/local/bin:/usr/bin:/bin \
+        XDG_RUNTIME_DIR="$work/runtime" \
         XDG_CONFIG_HOME="$host_home/.config" \
         XDG_DATA_HOME="$host_home/.local/share" \
         TILO_IDENTITY_ROOT="$host_home/.local/share/tilo" \

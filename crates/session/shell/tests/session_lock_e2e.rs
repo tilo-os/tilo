@@ -21,9 +21,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -44,7 +42,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
     // this keeps every Wayland Unix socket safely below SUN_LEN.
     let runtime_dir = PathBuf::from(format!(
         "/run/user/{}/tilo-lock-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id()
     ));
     std::fs::create_dir_all(&runtime_dir).expect("create lock test runtime dir");

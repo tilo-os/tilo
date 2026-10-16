@@ -11,30 +11,26 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -192,12 +188,6 @@ impl PlotDatum {
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_radius(mut self, radius: f64) -> Self {
-        self.radius = radius.max(1.0);
         self
     }
 }
@@ -374,10 +364,6 @@ impl CartesianAnnotation {
 
     pub fn x_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
         Self::new(id, CartesianAnnotationKind::XBand { start, end }, color)
-    }
-
-    pub fn y_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
-        Self::new(id, CartesianAnnotationKind::YBand { start, end }, color)
     }
 
     pub fn point(id: impl Into<String>, x: f64, y: f64, color: Color) -> Self {
@@ -667,13 +653,6 @@ impl Domain {
             AxisRange::Auto | AxisRange::Fixed { .. } => None,
         }
     }
-
-    fn shifted(self, delta: f64) -> Self {
-        Self {
-            min: self.min + delta,
-            max: self.max + delta,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -698,9 +677,7 @@ pub struct CartesianPlot {
     x_view: Option<Domain>,
     y_view: Option<Domain>,
     view_changed: bool,
-    hidden_series: HashSet<String>,
-    legend_hits: Vec<(String, Rect)>,
-    visibility_changed: Option<(String, bool)>,
+    toggles: chart_legend::SeriesToggles,
     keyboard_inspection: bool,
     brush_start: Option<Point>,
     brush_current: Point,
@@ -711,6 +688,38 @@ pub struct CartesianPlot {
     reduce_motion: bool,
     domain_cache: RefCell<Option<DomainCache>>,
     touch: ChartTouchTracker,
+    /// The bands around the plot, measured from the theme and the labels
+    /// at the last draw.
+    bands: Bands,
+    /// Keyboard inspection only while the plot has focus.
+    focused: bool,
+}
+
+/// The space around a plot: tick labels, axis titles, the chart's title and
+/// its legend, each from the theme's type and spacing and measured text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bands {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    /// Where the legend's first row starts.
+    legend_top: f64,
+    gap: f64,
+    tick_line: f64,
+}
+
+impl Bands {
+    /// Before the first draw: the stock theme's caption metrics.
+    const STOCK: Self = Self {
+        left: 56.0,
+        top: 30.0,
+        right: 12.0,
+        bottom: 34.0,
+        legend_top: 12.0,
+        gap: 8.0,
+        tick_line: 16.0,
+    };
 }
 
 impl CartesianPlot {
@@ -754,9 +763,7 @@ impl CartesianPlot {
             x_view: None,
             y_view: None,
             view_changed: false,
-            hidden_series: HashSet::new(),
-            legend_hits: Vec::new(),
-            visibility_changed: None,
+            toggles: chart_legend::SeriesToggles::default(),
             keyboard_inspection: false,
             brush_start: None,
             brush_current: Point::ZERO,
@@ -767,17 +774,15 @@ impl CartesianPlot {
             reduce_motion: false,
             domain_cache: RefCell::new(None),
             touch: ChartTouchTracker::default(),
+            bands: Bands::STOCK,
+            focused: false,
         }
     }
 
     #[must_use]
-    pub fn styled(mut self, style: CartesianStyle) -> Self {
+    pub fn with_style(mut self, style: CartesianStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: CartesianStyle) -> Self {
-        self.styled(style)
     }
     #[must_use]
     pub fn with_annotations(
@@ -786,10 +791,6 @@ impl CartesianPlot {
     ) -> Self {
         self.annotations = annotations.into_iter().collect();
         self
-    }
-    pub fn set_annotations(&mut self, annotations: impl IntoIterator<Item = CartesianAnnotation>) {
-        self.annotations = annotations.into_iter().collect();
-        self.hovered_annotation = None;
     }
     pub fn annotations(&self) -> &[CartesianAnnotation] {
         &self.annotations
@@ -821,8 +822,8 @@ impl CartesianPlot {
         } else {
             self.transition_from = None;
         }
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
         self.invalidate_domains();
     }
@@ -831,8 +832,8 @@ impl CartesianPlot {
     pub fn set_series_immediate(&mut self, series: Vec<PlotSeries>) {
         self.series = series;
         self.transition_from = None;
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
         self.invalidate_domains();
     }
@@ -882,20 +883,15 @@ impl CartesianPlot {
         ))
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.hidden_series.contains(id)
+        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
-        let changed = if visible {
-            self.hidden_series.remove(id)
-        } else {
-            self.hidden_series.insert(id.to_owned())
-        };
+        let changed = self.toggles.set(id, visible);
         if changed {
             self.hovered = None;
-            self.visibility_changed = Some((id.to_owned(), visible));
             self.invalidate_domains();
         }
         changed
@@ -905,11 +901,11 @@ impl CartesianPlot {
         self.set_series_visible(id, visible)
     }
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.visibility_changed.take()
+        self.toggles.take_changed()
     }
     pub fn inspect(&mut self, series_id: &str, datum_id: &str) -> bool {
         let target = self.series.iter().enumerate().find_map(|(series, values)| {
-            if self.hidden_series.contains(&values.id) || values.id != series_id {
+            if self.toggles.is_hidden(&values.id) || values.id != series_id {
                 return None;
             }
             values
@@ -950,9 +946,6 @@ impl CartesianPlot {
             self.keyboard_inspection = true;
         }
         self.hovered_annotation.is_some()
-    }
-    pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
-        self.brushed.take()
     }
     /// Restore automatic/fixed axis domains after interactive zooming.
     pub fn reset_view(&mut self) {
@@ -1001,31 +994,6 @@ impl CartesianPlot {
         self.view_changed = true;
         self.update_hover();
         true
-    }
-    /// Pan the current viewport by data-coordinate deltas. An axis without an
-    /// explicit viewport starts from its automatic/fixed configured domain.
-    pub fn pan_view_by(&mut self, x_delta: f64, y_delta: f64) -> bool {
-        if !x_delta.is_finite() || !y_delta.is_finite() {
-            return false;
-        }
-        let x = self
-            .x_view
-            .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true))
-            .shifted(x_delta);
-        let y = self
-            .y_view
-            .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false))
-            .shifted(y_delta);
-        self.set_viewport(
-            Some(AxisRange::Fixed {
-                min: x.min,
-                max: x.max,
-            }),
-            Some(AxisRange::Fixed {
-                min: y.min,
-                max: y.max,
-            }),
-        )
     }
     /// Pan by fractions of the visible width and height. This is convenient
     /// for responsive buttons, trackpads, and synchronized overview charts.
@@ -1114,66 +1082,100 @@ impl CartesianPlot {
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
-    /// Reports and clears the viewport-change flag.
-    pub fn take_view_changed(&mut self) -> bool {
-        std::mem::take(&mut self.view_changed)
-    }
-    pub fn style_mut(&mut self) -> &mut CartesianStyle {
-        self.invalidate_domains();
-        &mut self.style
-    }
-    pub fn style(&self) -> &CartesianStyle {
-        &self.style
-    }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }
-    pub fn take_annotation_activated(&mut self) -> Option<String> {
-        self.annotation_activated.take()
-    }
 
     fn plot_rect(&self) -> Rect {
+        let b = self.bands;
+        Rect::new(
+            self.rect.x0 + b.left,
+            self.rect.y0 + b.top,
+            (self.rect.x1 - b.right).max(self.rect.x0 + b.left + 1.0),
+            (self.rect.y1 - b.bottom).max(self.rect.y0 + b.top + 1.0),
+        )
+    }
+
+    /// Measure the bands around the plot in `theme`: the widest y tick
+    /// label and the tick, title and legend lines, each a spacing step from
+    /// its neighbour.
+    fn measure_bands(&self, tr: &mut TextRenderer, theme: &Theme) -> Bands {
+        let spacing = &theme.tokens.spacing;
+        let gap = f64::from(spacing.s2);
+        let tight = f64::from(spacing.s1);
+        let caption = theme.text(TextRole::Caption);
+        let tick_line = f64::from(tr.measure_style("0", None, &caption).1);
+        let title_line = f64::from(
+            tr.measure_style("Ag", None, &theme.text(TextRole::Heading))
+                .1,
+        );
+        let yd = self.domain(&self.style.y_axis, false);
+        let widest_tick = Self::ticks(&self.style.y_axis, yd, self.rect.height().max(1.0))
+            .iter()
+            .map(|tick| f64::from(tr.measure_style(&tick.label, None, &caption).0))
+            .fold(0.0, f64::max);
+        let y_title = if self.style.y_axis.title.is_empty() {
+            0.0
+        } else {
+            tick_line + tight
+        };
+        let x_title = if self.style.x_axis.title.is_empty() {
+            0.0
+        } else {
+            tick_line + tight
+        };
+        // The y labels start on the plot's leading edge, the content edge
+        // the text around it stands on.
+        let left = (y_title + widest_tick + gap).ceil();
+        let right = self.style.plot_padding.max(gap);
         let legend_rows = if self.style.legend == LegendPosition::Hidden {
             0
         } else {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 56.0,
-                self.rect.x1 - 12.0,
+                self.rect.x0,
+                self.rect.x1 - right,
             )
         };
-        let legend = crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + 6.0;
-        let top = 30.0
-            + if self.title.is_empty() { 0.0 } else { 24.0 }
+        let legend = if legend_rows == 0 {
+            0.0
+        } else {
+            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + gap
+        };
+        let title = if self.title.is_empty() {
+            0.0
+        } else {
+            title_line + gap
+        };
+        let legend_top = gap + title;
+        // The top tick label is centred on the top gridline: half a line of
+        // it sits above the plot, clear of the legend by a step.
+        let top = legend_top
             + if self.style.legend == LegendPosition::Top {
                 legend
             } else {
                 0.0
-            };
-        let bottom = 34.0
+            }
+            + tick_line / 2.0
+            + gap;
+        let bottom = gap
+            + tick_line
+            + x_title
+            + gap
             + if self.style.legend == LegendPosition::Bottom {
                 legend
             } else {
                 0.0
             };
-        Rect::new(
-            self.rect.x0
-                + 56.0
-                + if self.style.y_axis.title.is_empty() {
-                    0.0
-                } else {
-                    22.0
-                },
-            self.rect.y0 + top,
-            self.rect.x1 - self.style.plot_padding,
-            self.rect.y1
-                - bottom
-                - if self.style.x_axis.title.is_empty() {
-                    0.0
-                } else {
-                    22.0
-                },
-        )
+        Bands {
+            left,
+            top: top.ceil(),
+            right,
+            bottom: bottom.ceil(),
+            legend_top,
+            gap,
+            tick_line,
+        }
     }
 
     fn domain(&self, axis: &PlotAxis, x_axis: bool) -> Domain {
@@ -1240,7 +1242,7 @@ impl CartesianPlot {
         let values = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| series.data.iter())
             .map(|datum| if x_axis { datum.x } else { datum.y })
             .filter(|value| Self::transform(*value, axis.scale).is_some());
@@ -1534,6 +1536,17 @@ impl CartesianPlot {
                     .collect();
             }
         }
+        if axis.scale == AxisScale::Linear {
+            // Round numbers inside the domain, not the domain cut in equal
+            // parts: an axis reads 0, 10, 20, never 0, 11.5, 23.
+            let values = crate::charts::nice_ticks(domain.min, domain.max, usize::from(count));
+            if values.len() >= 2 {
+                return values
+                    .into_iter()
+                    .map(|value| AxisTick::new(value, format_axis_value(value, axis.label_format)))
+                    .collect();
+            }
+        }
         (0..count)
             .map(|index| {
                 let fraction = f64::from(index) / f64::from(count - 1);
@@ -1561,7 +1574,7 @@ impl CartesianPlot {
         let now = crate::time::now();
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for datum_index in self.hover_range(series, plot, xd) {
@@ -1735,8 +1748,8 @@ impl CartesianPlot {
         xd: Domain,
         yd: Domain,
     ) {
-        let grid = alpha(theme.tokens.colors.border_standard, 100);
-        let size = theme.tokens.typography.scale.xs;
+        let grid = with_alpha(theme.tokens.colors.border_standard, 100);
+        let size = theme.text(TextRole::Caption);
         for tick in Self::ticks(&self.style.y_axis, yd, plot.height()) {
             let Some(y) = Self::project(
                 tick.value,
@@ -1756,14 +1769,18 @@ impl CartesianPlot {
                     &Line::new((plot.x0, y), (plot.x1, y)),
                 );
             }
-            let (width, _) = tr.measure(&tick.label, size, None);
-            tr.draw_text(
+            let (width, height) = tr.measure_style(&tick.label, None, &size);
+            tr.draw_style(
                 scene,
                 &tick.label,
-                size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.x0 - f64::from(width) - 10.0, y - 6.0)),
+                transform
+                    * Affine::translate((
+                        plot.x0 - f64::from(width) - self.bands.gap,
+                        y - f64::from(height) / 2.0,
+                    )),
                 None,
+                &size,
             );
         }
         for tick in Self::ticks(&self.style.x_axis, xd, plot.width()) {
@@ -1785,47 +1802,46 @@ impl CartesianPlot {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
-            let (width, _) = tr.measure(&tick.label, size, None);
-            tr.draw_text(
+            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            tr.draw_style(
                 scene,
                 &tick.label,
-                size,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
-                None,
-            );
-        }
-        let title_size = theme.tokens.typography.scale.xs;
-        if !self.style.x_axis.title.is_empty() {
-            let title = Self::fitted_axis_title(&self.style.x_axis.title, plot.width());
-            let (width, _) = tr.measure(&title, title_size, None);
-            tr.draw_text_weighted(
-                scene,
-                &title,
-                title_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((plot.center().x - f64::from(width) / 2.0, plot.y1 + 30.0)),
+                    * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + self.bands.gap)),
                 None,
-                TextWeight::Semibold,
+                &size,
+            );
+        }
+        let title_style = theme.text(TextRole::Caption);
+        if !self.style.x_axis.title.is_empty() {
+            let title = Self::fitted_axis_title(&self.style.x_axis.title, plot.width());
+            let (width, _) = tr.measure_style(&title, None, &title_style);
+            tr.draw_style(
+                scene,
+                &title,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        plot.center().x - f64::from(width) / 2.0,
+                        plot.y1 + self.bands.gap + self.bands.tick_line + self.bands.gap / 2.0,
+                    )),
+                None,
+                &title_style.clone().with_weight(TextWeight::Semibold),
             );
         }
         if !self.style.y_axis.title.is_empty() {
             let title = Self::fitted_axis_title(&self.style.y_axis.title, plot.height());
-            let (width, _) = tr.measure(&title, title_size, None);
-            tr.draw_text_weighted(
+            let (width, _) = tr.measure_style(&title, None, &title_style);
+            tr.draw_style(
                 scene,
                 &title,
-                title_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((
-                        self.rect.x0 + 10.0,
-                        plot.center().y + f64::from(width) / 2.0,
-                    ))
+                    * Affine::translate((self.rect.x0, plot.center().y + f64::from(width) / 2.0))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
-                TextWeight::Semibold,
+                &title_style.clone().with_weight(TextWeight::Semibold),
             );
         }
     }
@@ -1965,7 +1981,7 @@ impl CartesianPlot {
         now: Instant,
     ) {
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             let projected = self
@@ -2018,7 +2034,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, series.fill_alpha),
+                            with_alpha(series.color, series.fill_alpha),
                             None,
                             &area,
                         );
@@ -2055,7 +2071,7 @@ impl CartesianPlot {
                         scene.stroke(
                             &Stroke::new(series.stroke_width),
                             transform,
-                            alpha(series.color, 180),
+                            with_alpha(series.color, 180),
                             None,
                             &Line::new((point.x, zero), *point),
                         );
@@ -2092,7 +2108,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, 55),
+                            with_alpha(series.color, 55),
                             None,
                             &Circle::new(point, radius + 6.0),
                         );
@@ -2324,7 +2340,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, fill_alpha),
+            with_alpha(annotation.color, fill_alpha),
             None,
             &rect,
         );
@@ -2364,7 +2380,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, 55),
+            with_alpha(annotation.color, 55),
             None,
             &Circle::new((x, y), if hovered { 12.0 } else { 9.0 }),
         );
@@ -2386,8 +2402,8 @@ impl CartesianPlot {
         let Some(anchor) = anchor.filter(|_| !annotation.label.is_empty()) else {
             return;
         };
-        let size = context.theme.tokens.typography.scale.xs;
-        let (width, height) = context.text.measure(&annotation.label, size, None);
+        let style = context.theme.text(TextRole::Caption);
+        let (width, height) = context.text.measure_style(&annotation.label, None, &style);
         let width = f64::from(width) + 16.0;
         let height = f64::from(height) + 10.0;
         let plot = context.plot;
@@ -2408,17 +2424,17 @@ impl CartesianPlot {
         context.scene.stroke(
             &Stroke::new(1.0),
             context.transform,
-            alpha(annotation.color, 160),
+            with_alpha(annotation.color, 160),
             None,
             &rect,
         );
-        context.text.draw_text(
+        context.text.draw_style(
             context.scene,
             &annotation.label,
-            size,
             context.theme.tokens.colors.text_primary,
             context.transform * Affine::translate((x + 8.0, y + 5.0)),
             None,
+            &style,
         );
     }
 
@@ -2429,57 +2445,33 @@ impl CartesianPlot {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.legend_hits.clear();
+        self.toggles.clear_hits();
         if self.style.legend == LegendPosition::Hidden {
             return;
         }
+        // The key stands on the content edge, like the labels beside it.
+        let left = self.rect.x0;
+        let right = self.rect.x1 - self.bands.right;
         let y = if self.style.legend == LegendPosition::Top {
-            self.rect.y0 + if self.title.is_empty() { 12.0 } else { 38.0 }
+            self.rect.y0 + self.bands.legend_top
         } else {
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 56.0,
-                self.rect.x1 - 12.0,
+                left,
+                right,
             );
             self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
-        let items = chart_legend::layout(
-            self.series.iter().map(|series| series.name.as_str()),
-            self.rect.x0 + 56.0,
-            self.rect.x1 - 12.0,
-            y,
+        self.toggles.paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+            Rect::new(left, y, right, y),
         );
-        for (series, item) in self.series.iter().zip(items) {
-            let x = item.x0;
-            let y = item.y0;
-            let hidden = self.hidden_series.contains(&series.id);
-            let color = if hidden {
-                alpha(series.color, 70)
-            } else {
-                series.color
-            };
-            let text_color = if hidden {
-                alpha(theme.tokens.colors.text_dim, 100)
-            } else {
-                theme.tokens.colors.text_dim
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                color,
-                None,
-                &Circle::new((x + 4.0, y + 6.0), 4.0),
-            );
-            tr.draw_text(
-                scene,
-                &series.name,
-                theme.tokens.typography.scale.xs,
-                text_color,
-                transform * Affine::translate((x + 14.0, y)),
-                Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-            );
-            self.legend_hits.push((series.id.clone(), item));
-        }
     }
 
     fn draw_tooltip(
@@ -2503,14 +2495,14 @@ impl CartesianPlot {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((hovered.point.x, plot.y0), (hovered.point.x, plot.y1)),
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((plot.x0, hovered.point.y), (plot.x1, hovered.point.y)),
             );
@@ -2532,8 +2524,8 @@ impl CartesianPlot {
         } else {
             datum.detail.clone()
         };
-        let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
-        let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
+        let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
         let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let content_width = f64::from(title_width.max(detail_width));
         let available_width = (self.rect.width() - 16.0).max(1.0);
@@ -2561,24 +2553,25 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             title,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((x + padding, y + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((x + padding, y + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -2608,8 +2601,8 @@ impl CartesianPlot {
         } else {
             annotation.detail.as_str()
         };
-        let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
-        let (detail_width, _) = tr.measure(detail, theme.tokens.typography.scale.xs, None);
+        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
+        let (detail_width, _) = tr.measure_style(detail, None, &theme.text(TextRole::Caption));
         let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let available_width = (self.rect.width() - 16.0).max(1.0);
         let width = self
@@ -2633,31 +2626,32 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            alpha(annotation.color, 180),
+            with_alpha(annotation.color, 180),
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             title,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -2713,11 +2707,7 @@ impl CartesianPlot {
             return true;
         }
         if self.style.interactive_legend
-            && let Some(id) = self
-                .legend_hits
-                .iter()
-                .find(|(_, rect)| rect.contains(self.pointer))
-                .map(|(id, _)| id.clone())
+            && let Some(id) = self.toggles.hit(self.pointer)
         {
             return self.toggle_series(&id);
         }
@@ -2731,7 +2721,7 @@ impl CartesianPlot {
             .series
             .iter()
             .enumerate()
-            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
             .flat_map(|(series_index, series)| {
                 series
                     .data
@@ -2827,21 +2817,6 @@ impl CartesianPlot {
     }
 }
 
-fn format_compact(value: f64) -> String {
-    let absolute = value.abs();
-    if absolute >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if absolute >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if absolute >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if absolute >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    }
-}
-
 fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
     match format {
         AxisLabelFormat::Auto => {
@@ -2916,31 +2891,8 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2951,6 +2903,7 @@ impl Widget for CartesianPlot {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
+        self.bands = self.measure_bands(tr, theme);
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
@@ -2976,14 +2929,17 @@ impl Widget for CartesianPlot {
             }
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
+                transform
+                    * Affine::translate((
+                        self.rect.x0 + self.bands.gap,
+                        self.rect.y0 + self.bands.gap,
+                    )),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
@@ -3002,7 +2958,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(theme.accent_primary, 42),
+                with_alpha(theme.tokens.colors.intent.inverted, 42),
                 None,
                 &brush,
             );
@@ -3027,7 +2983,11 @@ impl Widget for CartesianPlot {
             }
             return;
         }
-        if let Some(action) = chart_nav_action(event) {
+        // Keys inspect the plot only while it has focus; otherwise they
+        // belong to whatever does.
+        if self.focused
+            && let Some(action) = chart_nav_action(event)
+        {
             if action == ChartNavAction::Activate {
                 let _ = self.activate_inspected();
             } else {
@@ -3039,8 +2999,7 @@ impl Widget for CartesianPlot {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 if self.update_pointer(point) {
                     *ctx.handled = true;
                 }
@@ -3119,7 +3078,7 @@ impl Widget for CartesianPlot {
         let mut children: Vec<AccessNode> = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| {
                 series
                     .data
@@ -3142,25 +3101,16 @@ impl Widget for CartesianPlot {
                             } else {
                                 datum.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     })
             })
             .collect();
         if self.style.interactive_legend && self.style.legend != LegendPosition::Hidden {
-            children.extend(self.series.iter().map(|series| {
-                AccessNode::new(Role::ToggleButton)
-                    .with_action_target(format!("plot-legend:{}", series.id))
-                    .with_name(format!("Show {}", series.name))
-                    .with_description("Toggle this series in the plot")
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(!self.hidden_series.contains(&series.id)),
-                        ..Default::default()
-                    })
-            }));
+            children.extend(
+                self.series
+                    .iter()
+                    .map(|series| self.toggles.access_node(&series.id, &series.name)),
+            );
         }
         children.extend(
             self.annotations
@@ -3179,10 +3129,7 @@ impl Widget for CartesianPlot {
                         } else {
                             annotation.detail.clone()
                         })
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 }),
         );
         Some(
@@ -3195,11 +3142,11 @@ impl Widget for CartesianPlot {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
@@ -3208,14 +3155,13 @@ impl Widget for CartesianPlot {
         let Some(key) = key_path.last() else {
             return false;
         };
-        if self.style.interactive_legend {
-            let legend_id = self.series.iter().find_map(|series| {
-                let target = format!("plot-legend:{}", series.id);
-                (crate::a11y::hash_key(&target) == *key).then(|| series.id.clone())
-            });
-            if let Some(id) = legend_id {
-                return self.toggle_series(&id);
-            }
+        if self.style.interactive_legend
+            && let Some(id) = chart_legend::SeriesToggles::activated(
+                self.series.iter().map(|series| series.id.as_str()),
+                *key,
+            )
+        {
+            return self.toggle_series(&id);
         }
         if let Some(annotation) = self.annotations.iter().find(|annotation| {
             annotation.interactive
@@ -3238,20 +3184,25 @@ impl Widget for CartesianPlot {
     fn name(&self) -> &'static str {
         "CartesianPlot"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()
     }
     fn is_focusable(&self) -> bool {
         true
     }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused && self.keyboard_inspection {
+            self.keyboard_inspection = false;
+            self.hovered = None;
+            self.hovered_annotation = None;
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
     fn wants_pointer_capture(&self) -> bool {
         self.pan_last.is_some() || self.brush_start.is_some()
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

@@ -24,28 +24,58 @@
 //! that exists **inside the sandbox** — this module derives the paths
 //! and the Linux sandbox launcher binds them.
 //!
-//! [`select_for_driver`] uses explicit driver/search inputs on every host.
-//! Sysfs discovery and default host search paths are Linux-only.
+//! [`select_for_device`] takes the node's identity, the search paths and
+//! the way ICDs are asked as inputs, so it runs against fixtures on every
+//! host. Sysfs discovery, default search paths and actually loading an ICD
+//! ([`select_for_node`]) are Linux-only.
 //!
-//! # Derivation, not a hardcoded vendor
+//! # Asked, not looked up
 //!
-//! The input is a render node: its kernel driver comes from sysfs, the
-//! driver maps to the implementation library its userspace ICD loads
-//! (`amdgpu` → `libvulkan_radeon`, …), and installed ICD JSONs are
-//! scanned for the one whose `library_path` names that library. Nothing
-//! here assumes AMD or a Fedora path layout.
+//! The input is a render node and its `(major, minor)`. Every installed
+//! Vulkan ICD for this architecture is loaded and asked for its physical
+//! devices; the one whose `VK_EXT_physical_device_drm` render node is this
+//! node is the driver for it. No table maps kernel driver names to
+//! libraries: sysfs names the *platform* driver the node hangs off, which
+//! for a Snapdragon X display controller is `msm_dpu` rather than `msm`,
+//! and a table keyed on names silently pinned nothing there. A GPU nobody
+//! listed works the moment its ICD can see it.
 //!
-//! If exactly one ICD matches, it's pinned. If none does, the variable
-//! is **not set** and the reason is recorded in
+//! The EGL vendor follows the Vulkan driver's vendor — Mesa's ICDs and
+//! Mesa's GLVND vendor ship together, NVIDIA's likewise.
+//!
+//! If exactly one ICD claims the node, it's pinned. If none does, the
+//! variable is **not set** and every ICD's answer is recorded in
 //! [`GpuSelection::notes`] — a wrong pin strands the app on a driver
 //! that can't drive its GPU, while no pin merely leaves the loader's
 //! own default in place, the strictly smaller failure.
 
 use std::path::{Path, PathBuf};
+use tilo_lock::MutexRecover as _;
 
 /// GLVND's EGL vendor selection: a colon-separated list of vendor ICD
 /// JSONs; when set, GLVND loads only these and skips the directory scan.
 pub const EGL_VENDOR_ENV: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+
+/// Name of the session's pipeline cache directory under
+/// `$XDG_RUNTIME_DIR/tilo/` (see `ui::pipeline_seed`).
+pub const PIPELINE_SEED_DIR_NAME: &str = "pipeline-seed";
+
+/// Where that directory appears inside a sandbox, read-only.
+pub const SANDBOX_PIPELINE_SEED_DIR: &str = "/run/tilo/pipeline-seed";
+
+/// Names [`SANDBOX_PIPELINE_SEED_DIR`] to the app; `ui::pipeline_seed`
+/// reads it.
+pub const PIPELINE_SEED_ENV: &str = "TILO_PIPELINE_SEED_DIR";
+
+/// The session's pipeline cache directory on this host, if one was
+/// published.
+#[must_use]
+pub fn host_pipeline_seed() -> Option<PathBuf> {
+    let dir = tilo_paths::xdg::runtime_dir()?
+        .join("tilo")
+        .join(PIPELINE_SEED_DIR_NAME);
+    dir.is_dir().then_some(dir)
+}
 
 /// Vulkan loader driver selection (loader 1.3.207+).
 pub const VK_DRIVER_FILES_ENV: &str = "VK_DRIVER_FILES";
@@ -82,7 +112,7 @@ const ARCH_TOKENS: &[&str] = &[
 /// Where to look for ICD manifests. Split out so tests can point the
 /// *production* selection code at a fixture tree instead of the host's
 /// real `/usr/share`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IcdSearch {
     pub egl_vendor_dirs: Vec<PathBuf>,
     pub vulkan_icd_dirs: Vec<PathBuf>,
@@ -100,7 +130,7 @@ impl Default for IcdSearch {
 
 /// The GPU an app should be pinned to, and the loader manifests that
 /// pin it there.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GpuSelection {
     /// The DRM render node the compositor resolved, e.g.
     /// `/dev/dri/renderD128`.
@@ -109,12 +139,18 @@ pub struct GpuSelection {
     /// no answer, in which case nothing can be derived and every field
     /// below is `None`.
     pub driver: Option<String>,
-    /// GLVND EGL vendor manifest matching `driver`, if exactly one is
-    /// installed.
+    /// GLVND EGL vendor manifest of the Vulkan driver's vendor, if exactly
+    /// one is installed.
     pub egl_vendor_json: Option<PathBuf>,
-    /// Vulkan ICD manifest matching `driver`, if exactly one is
-    /// installed.
+    /// The one Vulkan ICD manifest whose driver reports this node.
     pub vulkan_icd_json: Option<PathBuf>,
+    /// The physical device that ICD reported for the node, e.g.
+    /// `Turnip Adreno (TM) X1-85`.
+    pub vulkan_device: Option<String>,
+    /// The session's published pipeline cache directory on the host, bound
+    /// read-only at [`SANDBOX_PIPELINE_SEED_DIR`] when it exists.
+    #[serde(default)]
+    pub pipeline_seed: Option<PathBuf>,
     /// Human-readable record of everything that was *not* pinned and why —
     /// otherwise invisible until a tile renders black.
     pub notes: Vec<String>,
@@ -164,44 +200,6 @@ pub fn driver_for(node: &Path) -> Option<String> {
     let link = Path::new("/sys/class/drm").join(name).join("device/driver");
     let target = std::fs::read_link(link).ok()?;
     Some(target.file_name()?.to_str()?.to_string())
-}
-
-/// The EGL vendor library a kernel driver's userspace is implemented
-/// by. Everything Mesa drives shares one GLVND vendor; NVIDIA ships its
-/// own.
-fn egl_vendor_library(driver: &str) -> Option<&'static str> {
-    match driver {
-        "nvidia" | "nvidia-drm" => Some("libEGL_nvidia"),
-        // Every in-tree DRM driver is served by Mesa's GLVND vendor, listed
-        // explicitly so an unrecognised driver falls through to "don't pin"
-        // instead of being pointed at Mesa on a hunch.
-        "amdgpu" | "radeon" | "i915" | "xe" | "nouveau" | "msm" | "v3d" | "vc4" | "lima"
-        | "panfrost" | "panthor" | "etnaviv" | "virtio_gpu" | "vgem" | "vkms" | "asahi"
-        | "powervr" | "komeda" | "tegra" => Some("libEGL_mesa"),
-        _ => None,
-    }
-}
-
-/// The Vulkan driver library that serves a kernel driver.
-///
-/// One kernel driver, one Vulkan implementation. Drivers with no
-/// Vulkan implementation map to `None`, correctly leaving
-/// `VK_DRIVER_FILES` unset.
-fn vulkan_driver_library(driver: &str) -> Option<&'static str> {
-    match driver {
-        "amdgpu" | "radeon" => Some("libvulkan_radeon"),
-        "i915" | "xe" => Some("libvulkan_intel"),
-        "nouveau" => Some("libvulkan_nouveau"),
-        "msm" => Some("libvulkan_freedreno"),
-        "v3d" => Some("libvulkan_broadcom"),
-        "panfrost" | "panthor" => Some("libvulkan_panfrost"),
-        "asahi" => Some("libvulkan_asahi"),
-        "powervr" => Some("libvulkan_powervr"),
-        "virtio_gpu" => Some("libvulkan_virtio"),
-        // NVIDIA's Vulkan ICD is implemented inside libGLX_nvidia.
-        "nvidia" | "nvidia-drm" => Some("libGLX_nvidia"),
-        _ => None,
-    }
 }
 
 /// `library_path` out of a loader manifest, as a bare file name.
@@ -310,74 +308,657 @@ fn render_dirs(dirs: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// Derive the loader pinning for `node`, reading its driver from sysfs.
-#[cfg(target_os = "linux")]
-pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
-    let driver = driver_for(node);
-    match driver {
-        Some(d) => select_for_driver(node, &d, search),
-        None => GpuSelection {
-            node: node.to_path_buf(),
-            driver: None,
-            egl_vendor_json: None,
-            vulkan_icd_json: None,
-            notes: vec![format!(
-                "no kernel driver reported for {} in /sys/class/drm; \
-                 leaving the EGL/Vulkan loaders at their own defaults",
-                node.display()
-            )],
-        },
+/// `library_path` out of a loader manifest, as something `dlopen` can
+/// load: absolute and bare sonames as written, a relative path resolved
+/// against the manifest's directory the way the Vulkan loader does.
+fn manifest_library_path(path: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let raw = Path::new(value.get("ICD")?.get("library_path")?.as_str()?);
+    if raw.is_absolute() || raw.components().count() == 1 {
+        Some(raw.to_path_buf())
+    } else {
+        Some(path.parent()?.join(raw))
     }
 }
 
-/// Derive the loader pinning for a node whose driver is already known.
-/// The function the tests drive: taking driver name and search paths
-/// as data lets a fixture tree stand in for the host's `/usr/share`.
-pub fn select_for_driver(node: &Path, driver: &str, search: &IcdSearch) -> GpuSelection {
+/// One physical device an ICD exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VulkanDevice {
+    /// `VkPhysicalDeviceProperties::deviceName`.
+    pub name: String,
+    /// `(major, minor)` of its DRM render node, from
+    /// `VK_EXT_physical_device_drm`. `None` for a device with no render
+    /// node (lavapipe) or a driver without the extension.
+    pub render_node: Option<(u64, u64)>,
+}
+
+/// Asks one installed ICD which devices it drives.
+pub trait IcdProbe {
+    /// The physical devices the ICD at `library` (named by `manifest`)
+    /// reports, or why it could not be asked.
+    ///
+    /// # Errors
+    ///
+    /// A reason for the selection's notes when the library cannot be
+    /// loaded or its instance cannot be created.
+    fn devices(&self, manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String>;
+}
+
+/// `(major, minor)` of a device node.
+#[cfg(target_os = "linux")]
+fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let rdev = std::fs::metadata(node)?.rdev();
+    Ok((u64::from(libc::major(rdev)), u64::from(libc::minor(rdev))))
+}
+
+/// Derive the loader pinning for `node` by asking every installed ICD.
+///
+/// Loading an ICD is not free (lavapipe initialises LLVM), so the answer
+/// is kept for the life of the process: a node's driver does not change
+/// under a running session. Callers that launch many apps should still
+/// resolve once and pass the result on, as the compositor does.
+#[cfg(target_os = "linux")]
+pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<(PathBuf, IcdSearch), GpuSelection>>> = Mutex::new(None);
+    let key = (node.to_path_buf(), search.clone());
+    if let Some(found) = CACHE
+        .lock_recover()
+        .as_ref()
+        .and_then(|cache| cache.get(&key))
+    {
+        return found.clone();
+    }
+    let selection = match node_numbers(node) {
+        Ok(numbers) => in_isolation(|| {
+            select_for_device(
+                node,
+                numbers,
+                driver_for(node),
+                search,
+                &loaded::LoadedIcdProbe,
+            )
+        })
+        .unwrap_or_else(|why| GpuSelection {
+            node: node.to_path_buf(),
+            driver: driver_for(node),
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: None,
+            notes: vec![format!(
+                "asking the installed Vulkan drivers about {} failed: {why}; leaving the \
+                 EGL/Vulkan loaders at their own defaults",
+                node.display()
+            )],
+        }),
+        Err(error) => GpuSelection {
+            node: node.to_path_buf(),
+            driver: driver_for(node),
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: None,
+            notes: vec![format!(
+                "cannot stat {}: {error}; leaving the EGL/Vulkan loaders at their own defaults",
+                node.display()
+            )],
+        },
+    };
+    CACHE
+        .lock_recover()
+        .get_or_insert_with(HashMap::new)
+        .insert(key, selection.clone());
+    selection
+}
+
+/// Run `probe` where the drivers it loads cannot affect the caller.
+///
+/// Loading a GPU driver runs its initialisers, and some start threads. The
+/// compositor resolves its GPU from `main` while it is still
+/// single-threaded, because it then pins the loaders with `set_var`, which
+/// is only sound with no other thread alive. So a single-threaded caller
+/// runs the probe in a forked child and reads the answer back over a pipe:
+/// no driver is ever loaded into it, and a driver that crashes takes only
+/// the child down. A caller that already has threads cannot fork safely;
+/// it probes in-process, which is fine because it has no environment left
+/// to pin.
+///
+/// # Errors
+///
+/// Why the child produced no answer: it crashed, or the pipe failed.
+#[cfg(target_os = "linux")]
+pub fn in_isolation<T: serde::Serialize + serde::de::DeserializeOwned>(
+    probe: impl FnOnce() -> T,
+) -> Result<T, String> {
+    if !std::fs::read_dir("/proc/self/task").is_ok_and(|tasks| tasks.count() == 1) {
+        return Ok(probe());
+    }
+    isolated::in_child(probe)
+}
+
+#[cfg(target_os = "linux")]
+mod isolated {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+
+    #[allow(
+        unsafe_code,
+        reason = "fork/pipe/_exit isolate driver initialisers from a single-threaded caller"
+    )]
+    pub(super) fn in_child<T: serde::Serialize + serde::de::DeserializeOwned>(
+        probe: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        let mut fds = [0; 2];
+        // SAFETY: `fds` has room for the two descriptors pipe2 writes.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(format!("pipe: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: pipe2 succeeded, so both are fresh descriptors we own.
+        let (read_end, write_end) =
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: the caller is single-threaded (checked by the caller), so
+        // the child is a complete copy and may do anything the parent could.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(format!("fork: {}", std::io::Error::last_os_error()));
+        }
+        if pid == 0 {
+            drop(read_end);
+            let answer = serde_json::to_vec(&probe()).unwrap_or_default();
+            let mut out = std::fs::File::from(write_end);
+            let code = i32::from(out.write_all(&answer).is_err());
+            // SAFETY: leave without running the parent's exit handlers or
+            // the drivers' destructors.
+            unsafe { libc::_exit(code) };
+        }
+        drop(write_end);
+        let mut answer = Vec::new();
+        let read = std::fs::File::from(read_end).read_to_end(&mut answer);
+        let mut status = 0;
+        // SAFETY: `pid` is our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        read.map_err(|error| format!("reading the answer: {error}"))?;
+        if libc::WIFSIGNALED(status) {
+            return Err(format!(
+                "a driver crashed the probe (signal {})",
+                libc::WTERMSIG(status)
+            ));
+        }
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+            return Err(format!("the probe exited with status {status}"));
+        }
+        serde_json::from_slice(&answer).map_err(|error| format!("unreadable answer: {error}"))
+    }
+}
+
+/// The pin a compositor already applied to its own environment, when it
+/// names exactly one installed manifest per loader and one is the Vulkan
+/// driver's. The compositor resolves its node once at startup and exports
+/// the result through these variables; every launcher it spawns reads them
+/// back instead of loading every driver again per launch.
+#[must_use]
+pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
+    let single_file = |key: &str| {
+        let value = std::env::var_os(key)?;
+        let path = PathBuf::from(value);
+        (path.is_absolute() && path.is_file()).then_some(path)
+    };
+    let vulkan_icd_json = single_file(VK_DRIVER_FILES_ENV)?;
+    Some(GpuSelection {
+        node: node.to_path_buf(),
+        driver: driver_name(node),
+        egl_vendor_json: single_file(EGL_VENDOR_ENV),
+        vulkan_icd_json: Some(vulkan_icd_json),
+        vulkan_device: None,
+        pipeline_seed: None,
+        notes: Vec::new(),
+    })
+}
+
+/// The Vulkan driver of a machine with no GPU: Mesa's software rasteriser,
+/// lavapipe.
+const SOFTWARE_VULKAN_LIBRARY: &str = "libvulkan_lvp";
+
+/// Mesa's GLVND vendor, which serves the software OpenGL rasteriser.
+const MESA_EGL_LIBRARY: &str = "libEGL_mesa";
+
+/// The loader pin of a machine whose compositor found no GPU at all (every
+/// render node is a virtio GPU the host renders nothing for): the compositor
+/// renders with lavapipe, and so must its apps.
+///
+/// Without a pin the Vulkan loader still loads every installed driver for
+/// every app, and an app cannot tell a GPU-less render node from a GPU with
+/// only an OpenGL driver, so it also initialises OpenGL (`ui::gpu`). Pinned,
+/// the loader loads lavapipe alone and the app asks for Vulkan alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftwarePin {
+    /// Lavapipe's Vulkan ICD manifest.
+    pub vulkan_icd_json: PathBuf,
+    /// Mesa's GLVND EGL vendor manifest, if exactly one is installed.
+    pub egl_vendor_json: Option<PathBuf>,
+}
+
+impl SoftwarePin {
+    /// The environment the compositor and its apps run with.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if let Some(path) = &self.egl_vendor_json {
+            out.push((EGL_VENDOR_ENV, path.display().to_string()));
+        }
+        let vulkan = self.vulkan_icd_json.display().to_string();
+        out.push((VK_DRIVER_FILES_ENV, vulkan.clone()));
+        out.push((VK_ICD_FILENAMES_ENV, vulkan));
+        out
+    }
+
+    /// Files that must be readable inside the sandbox for [`Self::env`].
+    pub fn manifest_files(&self) -> Vec<PathBuf> {
+        self.egl_vendor_json
+            .iter()
+            .chain(std::iter::once(&self.vulkan_icd_json))
+            .cloned()
+            .collect()
+    }
+}
+
+/// The software pin from the manifests installed under `search`, or why
+/// there is none (no lavapipe manifest, or several).
+///
+/// # Errors
+///
+/// A line for the boot log when lavapipe has not exactly one manifest.
+pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
+    let vulkan_icd_json = unique_manifest_for(
+        &search.vulkan_icd_dirs,
+        SOFTWARE_VULKAN_LIBRARY,
+        "Vulkan ICD",
+    )?;
+    Ok(SoftwarePin {
+        vulkan_icd_json,
+        egl_vendor_json: unique_manifest_for(
+            &search.egl_vendor_dirs,
+            MESA_EGL_LIBRARY,
+            "EGL vendor",
+        )
+        .ok(),
+    })
+}
+
+/// The software pin a GPU-less compositor applied to its own environment,
+/// read back by a launch it started with no render node. Only lavapipe's
+/// manifest counts: an arbitrary driver someone named is no evidence that
+/// the machine has no GPU.
+#[must_use]
+pub fn inherited_software_pin() -> Option<SoftwarePin> {
+    software_pin_from(
+        std::env::var_os(VK_DRIVER_FILES_ENV),
+        std::env::var_os(EGL_VENDOR_ENV),
+    )
+}
+
+fn software_pin_from(
+    vulkan: Option<std::ffi::OsString>,
+    egl: Option<std::ffi::OsString>,
+) -> Option<SoftwarePin> {
+    let single_file = |value: std::ffi::OsString| {
+        let path = PathBuf::from(value);
+        (path.is_absolute() && path.is_file()).then_some(path)
+    };
+    let vulkan_icd_json = single_file(vulkan?)?;
+    let library = manifest_library_name(&vulkan_icd_json)?;
+    if library.split(".so").next() != Some(SOFTWARE_VULKAN_LIBRARY) {
+        return None;
+    }
+    let egl_vendor_json = egl.and_then(single_file).filter(|path| {
+        manifest_library_name(path)
+            .is_some_and(|name| name.split(".so").next() == Some(MESA_EGL_LIBRARY))
+    });
+    Some(SoftwarePin {
+        vulkan_icd_json,
+        egl_vendor_json,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn driver_name(node: &Path) -> Option<String> {
+    driver_for(node)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn driver_name(_node: &Path) -> Option<String> {
+    None
+}
+
+/// The GLVND vendor library shipped by the vendor of a Vulkan driver.
+/// Every Mesa Vulkan driver is a `libvulkan_*` beside Mesa's one EGL
+/// vendor; NVIDIA's Vulkan driver lives in `libGLX_nvidia`.
+fn egl_vendor_for_vulkan(library: &str) -> Option<&'static str> {
+    if library == "libGLX_nvidia" {
+        Some("libEGL_nvidia")
+    } else if library.starts_with("libvulkan_") {
+        Some("libEGL_mesa")
+    } else {
+        None
+    }
+}
+
+/// Derive the loader pinning for the node numbered `numbers`, asking each
+/// installed ICD through `probe`. The function the tests drive: a fixture
+/// tree and a scripted probe stand in for the host.
+pub fn select_for_device(
+    node: &Path,
+    numbers: (u64, u64),
+    driver: Option<String>,
+    search: &IcdSearch,
+    probe: &impl IcdProbe,
+) -> GpuSelection {
     let mut notes = Vec::new();
-
-    let egl_vendor_json = if let Some(lib) = egl_vendor_library(driver) {
-        match unique_manifest_for(&search.egl_vendor_dirs, lib, "EGL vendor") {
-            Ok(p) => Some(p),
-            Err(why) => {
-                notes.push(format!("{EGL_VENDOR_ENV} not set: {why}"));
-                None
-            }
+    let claim = match claim_for(node, numbers, search, probe) {
+        Ok(claim) => Some(claim),
+        Err(why) => {
+            notes.push(format!("{VK_DRIVER_FILES_ENV} not set: {why}"));
+            None
         }
-    } else {
-        notes.push(format!(
-            "{EGL_VENDOR_ENV} not set: no known EGL vendor for driver `{driver}`"
-        ));
-        None
     };
-
-    let vulkan_icd_json = if let Some(lib) = vulkan_driver_library(driver) {
-        match unique_manifest_for(&search.vulkan_icd_dirs, lib, "Vulkan ICD") {
-            Ok(p) => Some(p),
-            Err(why) => {
-                notes.push(format!("{VK_DRIVER_FILES_ENV} not set: {why}"));
-                None
-            }
+    let egl_vendor_json = match egl_vendor_after(claim.as_ref(), search) {
+        Ok(path) => Some(path),
+        Err(why) => {
+            notes.push(format!("{EGL_VENDOR_ENV} not set: {why}"));
+            None
         }
-    } else {
-        notes.push(format!(
-            "{VK_DRIVER_FILES_ENV} not set: no known Vulkan driver for `{driver}`"
-        ));
-        None
     };
-
+    let (vulkan_icd_json, vulkan_device) = claim.map_or((None, None), |claim| {
+        (Some(claim.manifest), Some(claim.device))
+    });
     GpuSelection {
         node: node.to_path_buf(),
-        driver: Some(driver.to_string()),
+        driver,
         egl_vendor_json,
         vulkan_icd_json,
+        vulkan_device,
+        pipeline_seed: None,
         notes,
+    }
+}
+
+/// The one ICD that reports a node as its render node.
+struct Claim {
+    manifest: PathBuf,
+    /// Library file name, e.g. `libvulkan_freedreno.so`.
+    library: String,
+    device: String,
+}
+
+/// How a device answered, for the notes when nothing claimed the node.
+fn describe(devices: &[VulkanDevice]) -> String {
+    if devices.is_empty() {
+        return "no devices".to_string();
+    }
+    devices
+        .iter()
+        .map(|d| match d.render_node {
+            Some((major, minor)) => format!("{} on {major}:{minor}", d.name),
+            None => format!("{} without a render node", d.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Ask every host-architecture ICD; exactly one must claim the node.
+fn claim_for(
+    node: &Path,
+    numbers: (u64, u64),
+    search: &IcdSearch,
+    probe: &impl IcdProbe,
+) -> Result<Claim, String> {
+    let mut claims = Vec::new();
+    let mut answers = Vec::new();
+    for manifest in manifests_in(&search.vulkan_icd_dirs) {
+        let Some(file) = manifest.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if is_foreign_arch(file) {
+            continue;
+        }
+        let (Some(path), Some(library)) = (
+            manifest_library_path(&manifest),
+            manifest_library_name(&manifest),
+        ) else {
+            answers.push(format!("{file}: unreadable manifest"));
+            continue;
+        };
+        match probe.devices(&manifest, &path) {
+            Ok(devices) => {
+                let before = claims.len();
+                claims.extend(
+                    devices
+                        .iter()
+                        .filter(|d| d.render_node == Some(numbers))
+                        .map(|d| Claim {
+                            manifest: manifest.clone(),
+                            library: library.clone(),
+                            device: d.name.clone(),
+                        }),
+                );
+                if claims.len() == before {
+                    answers.push(format!("{file}: {}", describe(&devices)));
+                }
+            }
+            Err(why) => answers.push(format!("{file}: {why}")),
+        }
+    }
+    match claims.len() {
+        1 => Ok(claims.remove(0)),
+        0 => Err(format!(
+            "no Vulkan driver reports {} ({}:{}) as its render node [{}]",
+            node.display(),
+            numbers.0,
+            numbers.1,
+            answers.join("; ")
+        )),
+        n => Err(format!(
+            "{n} Vulkan drivers claim {} ({}) — refusing to guess",
+            node.display(),
+            claims
+                .iter()
+                .map(|c| format!("{} = {}", c.manifest.display(), c.device))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// The EGL vendor of the claiming Vulkan driver's vendor.
+fn egl_vendor_after(claim: Option<&Claim>, search: &IcdSearch) -> Result<PathBuf, String> {
+    let Some(claim) = claim else {
+        return Err("the EGL vendor follows the Vulkan driver, and none was found".to_string());
+    };
+    let stem = claim.library.split(".so").next().unwrap_or(&claim.library);
+    let Some(vendor) = egl_vendor_for_vulkan(stem) else {
+        return Err(format!(
+            "no known EGL vendor ships the Vulkan driver `{stem}`"
+        ));
+    };
+    unique_manifest_for(&search.egl_vendor_dirs, vendor, "EGL vendor")
+}
+
+/// Asking a real ICD: load its library and talk to it directly, without
+/// the loader, so one answer belongs to exactly one manifest.
+#[cfg(target_os = "linux")]
+mod loaded {
+    use super::{IcdProbe, VulkanDevice};
+    use ash::vk;
+
+    use std::path::Path;
+
+    /// The probe the compositor and launcher use.
+    pub struct LoadedIcdProbe;
+
+    type NegotiateFn = unsafe extern "system" fn(*mut u32) -> vk::Result;
+
+    impl IcdProbe for LoadedIcdProbe {
+        #[allow(
+            unsafe_code,
+            reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
+        )]
+        fn devices(&self, _manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String> {
+            // SAFETY: loading a Vulkan ICD runs its initialisers, exactly
+            // as the Vulkan loader would in this process a moment later.
+            let lib = unsafe { libloading::Library::new(library) }
+                .map_err(|error| format!("cannot load: {error}"))?;
+            // SAFETY: the symbol names and signatures are the ICD
+            // interface's, fixed by the Vulkan loader-driver contract.
+            let get_instance_proc_addr = unsafe {
+                if let Ok(negotiate) =
+                    lib.get::<NegotiateFn>(b"vk_icdNegotiateLoaderICDInterfaceVersion\0")
+                {
+                    let mut version = 5u32;
+                    let _ = negotiate(&raw mut version);
+                }
+                *lib.get::<vk::PFN_vkGetInstanceProcAddr>(b"vk_icdGetInstanceProcAddr\0")
+                    .map_err(|error| format!("not a Vulkan ICD: {error}"))?
+            };
+            // Mesa drivers register exit handlers; unloading one would run
+            // them against freed code. Keep it, as the loader does.
+            std::mem::forget(lib);
+            // SAFETY: `get_instance_proc_addr` is the ICD's own entry point,
+            // kept alive by the library forgotten above.
+            let entry = unsafe { entry_of(get_instance_proc_addr) }?;
+            let app = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+            let create = vk::InstanceCreateInfo::default().application_info(&app);
+            // SAFETY: a plain instance with no layers or extensions.
+            let instance = unsafe { entry.create_instance(&create, None) }
+                .map_err(|error| format!("vkCreateInstance: {error}"))?;
+            let result = devices_of(&instance);
+            // SAFETY: nothing created from the instance outlives this call.
+            unsafe { instance.destroy_instance(None) };
+            result
+        }
+    }
+
+    /// The Vulkan entry an ICD's `get_instance_proc_addr` opens, or why it
+    /// opens none. A driver whose device has failed (an NVIDIA GPU that fell
+    /// off the bus, say) can still load yet hand out no vkCreateInstance;
+    /// ash panics on a missing entry point, and a panic in the probe cannot
+    /// unwind, so it would abort the whole compositor. Such a driver counts
+    /// as offering no devices instead.
+    ///
+    /// # Safety
+    ///
+    /// `get_instance_proc_addr` must be a Vulkan ICD's entry point that stays
+    /// loaded for as long as the returned entry is used.
+    #[allow(
+        unsafe_code,
+        reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
+    )]
+    unsafe fn entry_of(
+        get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
+    ) -> Result<ash::Entry, String> {
+        // SAFETY: the caller's entry point, asked with a null instance for a
+        // global command, as the loader-driver contract allows.
+        let create_instance =
+            unsafe { get_instance_proc_addr(vk::Instance::null(), c"vkCreateInstance".as_ptr()) };
+        if create_instance.is_none() {
+            return Err("the driver offers no vkCreateInstance".into());
+        }
+        // SAFETY: the caller guarantees a live ICD entry point.
+        Ok(unsafe {
+            ash::Entry::from_static_fn(ash::StaticFn {
+                get_instance_proc_addr,
+            })
+        })
+    }
+
+    #[allow(
+        unsafe_code,
+        reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
+    )]
+    fn devices_of(instance: &ash::Instance) -> Result<Vec<VulkanDevice>, String> {
+        // SAFETY: `instance` is live for the whole function.
+        let physical = unsafe { instance.enumerate_physical_devices() }
+            .map_err(|error| format!("vkEnumeratePhysicalDevices: {error}"))?;
+        let mut out = Vec::new();
+        for device in physical {
+            // SAFETY: `device` came from this instance.
+            let properties = unsafe { instance.get_physical_device_properties(device) };
+            let name = properties
+                .device_name_as_c_str()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if properties.api_version < vk::API_VERSION_1_1 {
+                out.push(VulkanDevice {
+                    name,
+                    render_node: None,
+                });
+                continue;
+            }
+            // SAFETY: as above.
+            let has_drm = unsafe { instance.enumerate_device_extension_properties(device) }
+                .unwrap_or_default()
+                .iter()
+                .any(|extension| {
+                    extension.extension_name_as_c_str().ok()
+                        == Some(ash::ext::physical_device_drm::NAME)
+                });
+            let render_node = if has_drm {
+                let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
+                let mut properties2 = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
+                // SAFETY: the device is Vulkan 1.1 and advertises the
+                // extension whose structure is chained.
+                unsafe { instance.get_physical_device_properties2(device, &mut properties2) };
+                (drm.has_render == vk::TRUE).then(|| {
+                    (
+                        u64::try_from(drm.render_major).unwrap_or(u64::MAX),
+                        u64::try_from(drm.render_minor).unwrap_or(u64::MAX),
+                    )
+                })
+            } else {
+                None
+            };
+            out.push(VulkanDevice { name, render_node });
+        }
+
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// What a failed driver answers for every command: nothing.
+        unsafe extern "system" fn nothing(
+            _instance: vk::Instance,
+            _name: *const std::ffi::c_char,
+        ) -> vk::PFN_vkVoidFunction {
+            None
+        }
+
+        /// A driver that loads but hands out no vkCreateInstance is refused
+        /// with a reason rather than panicking inside ash.
+        #[test]
+        #[allow(
+            unsafe_code,
+            reason = "calls the unsafe probe helper with a test entry point"
+        )]
+        fn a_driver_without_create_instance_offers_no_entry() {
+            // SAFETY: `nothing` is a static function that never dereferences.
+            let refused = unsafe { entry_of(nothing) };
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("the driver offers no vkCreateInstance")
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn host_icd_name(driver: &str) -> String {
         format!("{driver}_icd.{}.json", host_arch_token())
@@ -413,286 +994,371 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn loader_manifests_pin_the_selected_render_nodes_driver() {
-        // Phase `amdgpu_node_pins_mesa_and_radv_on_a_hybrid_host`.
-        // A hybrid box with both stacks installed: asking for the amdgpu node
-        // must pin Mesa's EGL vendor and RADV, never NVIDIA's.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[
-                    ("10_nvidia.json", "libEGL_nvidia.so.0"),
-                    ("50_mesa.json", "libEGL_mesa.so.0"),
-                ],
-                &[
-                    (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
-                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-                    (&host_icd_name("intel"), "/usr/lib64/libvulkan_intel.so"),
-                ],
-            );
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
-            assert_eq!(
-                sel.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
-                Some("50_mesa.json".as_ref()),
-                "notes: {:?}",
-                sel.notes
-            );
-            assert_eq!(
-                sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-                Some(host_icd_name("radeon").as_str().as_ref()),
-                "notes: {:?}",
-                sel.notes
-            );
-            // The env the app runs with names those files and nothing else.
-            let env = sel.env();
-            let vk = env
-                .iter()
-                .find(|(k, _)| *k == VK_DRIVER_FILES_ENV)
-                .expect("VK_DRIVER_FILES derived");
-            assert!(vk.1.ends_with(&host_icd_name("radeon")), "{vk:?}");
-            assert!(
-                env.iter()
-                    .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
-                "the pre-1.3.207 spelling must carry the same choice: {env:?}"
-            );
-            assert!(
-                !env.iter().any(|(_, v)| v.contains("nvidia")),
-                "an amdgpu node must never hand the app an NVIDIA manifest: {env:?}"
-            );
+    /// What each ICD library answers, keyed by its file name. A library
+    /// with no entry fails to load.
+    struct Scripted(HashMap<&'static str, Vec<VulkanDevice>>);
+
+    impl IcdProbe for Scripted {
+        fn devices(&self, _manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String> {
+            let name = library.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            self.0
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("cannot load {name}"))
         }
-        // Phase `nvidia_node_pins_the_nvidia_manifests`.
-        // Same tree, NVIDIA node: the derivation is device-driven, not a
-        // hardcoded preference for Mesa.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[
-                    ("10_nvidia.json", "libEGL_nvidia.so.0"),
-                    ("50_mesa.json", "libEGL_mesa.so.0"),
-                ],
-                &[
-                    (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
-                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-                ],
-            );
-            let sel = select_for_driver(Path::new("/dev/dri/renderD129"), "nvidia", &search);
-            assert_eq!(
-                sel.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
-                Some("10_nvidia.json".as_ref())
-            );
-            assert_eq!(
-                sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-                Some(host_icd_name("nvidia").as_str().as_ref())
-            );
-        }
-        // Phase `single_gpu_host_still_pins_its_only_driver`.
-        // The common case: one GPU, one Mesa install. Must still produce a
-        // pin rather than bailing because there's nothing to disambiguate.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[("50_mesa.json", "libEGL_mesa.so.0")],
-                &[(&host_icd_name("intel"), "/usr/lib64/libvulkan_intel.so")],
-            );
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "i915", &search);
-            assert_eq!(
-                sel.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
-                Some("50_mesa.json".as_ref())
-            );
-            assert_eq!(
-                sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-                Some(host_icd_name("intel").as_str().as_ref())
-            );
-            assert!(!sel.is_empty());
-        }
-        // Phase `every_pinned_file_is_offered_for_binding`.
-        // Every file the env names must be bindable — the two lists derive
-        // from the same fields, so they cannot drift.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[("50_mesa.json", "libEGL_mesa.so.0")],
-                &[(&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so")],
-            );
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
-            let binds = sel.manifest_files();
-            assert_eq!(
-                binds,
-                vec![
-                    search.egl_vendor_dirs[0].join("50_mesa.json"),
-                    search.vulkan_icd_dirs[0].join(host_icd_name("radeon")),
-                ],
-                "both loader manifests must be selected before checking their binds: {:?}",
-                sel.notes
-            );
-            let env = sel.env();
-            assert_eq!(
-                env.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-                vec![EGL_VENDOR_ENV, VK_DRIVER_FILES_ENV, VK_ICD_FILENAMES_ENV]
-            );
-            for (key, value) in env {
-                assert!(
-                    binds.iter().any(|b| b.display().to_string() == value),
-                    "{key} points at {value}, which is not bound into the sandbox"
-                );
-            }
+    }
+
+    fn device(name: &str, render_node: Option<(u64, u64)>) -> VulkanDevice {
+        VulkanDevice {
+            name: name.to_owned(),
+            render_node,
         }
     }
 
     #[test]
-    fn unmatched_or_foreign_loader_manifests_pin_nothing() {
-        // Phase `an_unmatched_driver_sets_nothing_and_says_why`.
-        // Nothing installed for this driver → nothing set, reason on the
-        // record. A guess here would strand the app on a driver that can't
-        // drive its GPU.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[("50_mesa.json", "libEGL_mesa.so.0")],
-                &[(&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so")],
-            );
-            // `lima` is a Mesa driver with no Vulkan implementation: EGL
-            // pins, Vulkan does not.
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "lima", &search);
-            assert!(sel.egl_vendor_json.is_some());
-            assert_eq!(sel.vulkan_icd_json, None);
-            assert!(
-                sel.notes.iter().any(|n| n.contains(VK_DRIVER_FILES_ENV)),
-                "the un-pinned loader must be explained: {:?}",
-                sel.notes
-            );
-            assert!(
-                !sel.env().iter().any(|(k, _)| *k == VK_DRIVER_FILES_ENV),
-                "an underived variable must be absent, not empty: {:?}",
-                sel.env()
-            );
+    fn a_gpu_less_machine_is_pinned_to_lavapipe_and_launches_inherit_only_that() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("radeon"), "libvulkan_radeon.so"),
+                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+            ],
+        );
+        let pin = software_pin(&search).expect("lavapipe is installed");
+        assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
+        assert!(
+            pin.egl_vendor_json
+                .as_ref()
+                .is_some_and(|path| path.ends_with("50_mesa.json"))
+        );
+        let lavapipe = pin.vulkan_icd_json.display().to_string();
+        assert!(pin.env().contains(&(VK_DRIVER_FILES_ENV, lavapipe.clone())));
+        assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
+        assert_eq!(pin.manifest_files().len(), 2);
 
-            // A driver nothing knows about pins neither loader.
-            let unknown =
-                select_for_driver(Path::new("/dev/dri/renderD128"), "some_future_gpu", &search);
-            assert!(unknown.is_empty());
-            assert!(unknown.env().is_empty());
-            assert_eq!(unknown.notes.len(), 2, "{:?}", unknown.notes);
-        }
-        // Phase `foreign_architecture_manifests_are_not_candidates`.
-        // Manifests for the host and a different recognized architecture name
-        // the same library — only the host file is eligible, or selection is ambiguous.
-        {
-            let foreign_arch = ARCH_TOKENS
-                .iter()
-                .copied()
-                .find(|arch| *arch != host_arch_token())
-                .expect("a recognized architecture different from this host");
-            let foreign_name = format!("radeon_icd.{foreign_arch}.json");
-            let tmp = tempfile::tempdir().unwrap();
-            let search = fixture(
-                tmp.path(),
-                &[("50_mesa.json", "libEGL_mesa.so.0")],
-                &[
-                    (&foreign_name, "/usr/lib/libvulkan_radeon.so"),
-                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-                ],
-            );
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
-            let picked = sel.vulkan_icd_json.expect("exactly one arch is eligible");
-            assert_eq!(
-                picked,
-                search.vulkan_icd_dirs[0].join(host_icd_name("radeon")),
-                "the foreign manifest must not replace or make the host manifest ambiguous"
-            );
+        // What a launch reads back from the compositor's environment.
+        assert_eq!(
+            software_pin_from(
+                Some(pin.vulkan_icd_json.clone().into()),
+                pin.egl_vendor_json.clone().map(Into::into),
+            ),
+            Some(pin)
+        );
+        let radeon = search.vulkan_icd_dirs[0].join(host_icd_name("radeon"));
+        assert_eq!(
+            software_pin_from(Some(radeon.into()), None),
+            None,
+            "a GPU's driver named in the environment is not evidence of a GPU-less machine"
+        );
+        assert_eq!(software_pin_from(None, None), None);
+        assert_eq!(
+            software_pin_from(Some("lvp_icd.json".into()), None),
+            None,
+            "only an absolute path to an existing manifest is inherited"
+        );
+
+        let without = tempfile::tempdir().unwrap();
+        let search = fixture(
+            without.path(),
+            &[],
+            &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
+        );
+        assert!(software_pin(&search).is_err(), "no lavapipe, no pin");
+    }
+
+    const RENDER_D128: (u64, u64) = (226, 128);
+    const RENDER_D129: (u64, u64) = (226, 129);
+
+    fn select(search: &IcdSearch, numbers: (u64, u64), probe: &Scripted) -> GpuSelection {
+        select_for_device(
+            Path::new("/dev/dri/renderD128"),
+            numbers,
+            Some("whatever-sysfs-says".to_owned()),
+            search,
+            probe,
+        )
+    }
+
+    #[test]
+    fn the_icd_that_reports_the_node_is_pinned_whatever_sysfs_calls_it() {
+        // A hybrid box: NVIDIA on renderD129, AMD on renderD128, lavapipe
+        // with no node. The AMD node pins RADV and Mesa's EGL vendor.
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[
+                ("10_nvidia.json", "libEGL_nvidia.so.0"),
+                ("50_mesa.json", "libEGL_mesa.so.0"),
+            ],
+            &[
+                (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
+            ],
+        );
+        let probe = Scripted(HashMap::from([
+            (
+                "libGLX_nvidia.so.0",
+                vec![device("NVIDIA GeForce RTX 4060", Some(RENDER_D129))],
+            ),
+            (
+                "libvulkan_radeon.so",
+                vec![device("AMD Radeon 780M (RADV PHOENIX)", Some(RENDER_D128))],
+            ),
+            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+        ]));
+        let amd = select(&search, RENDER_D128, &probe);
+        assert_eq!(
+            amd.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
+            Some(host_icd_name("radeon").as_str().as_ref()),
+            "{:?}",
+            amd.notes
+        );
+        assert_eq!(
+            amd.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
+            Some("50_mesa.json".as_ref())
+        );
+        assert_eq!(
+            amd.vulkan_device.as_deref(),
+            Some("AMD Radeon 780M (RADV PHOENIX)")
+        );
+        let env = amd.env();
+        let vk = env
+            .iter()
+            .find(|(k, _)| *k == VK_DRIVER_FILES_ENV)
+            .expect("VK_DRIVER_FILES derived");
+        assert!(
+            env.iter()
+                .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
+            "the pre-1.3.207 spelling must carry the same choice: {env:?}"
+        );
+        assert!(!env.iter().any(|(_, v)| v.contains("nvidia")), "{env:?}");
+        // Every file the env names is offered for binding.
+        for (key, value) in env {
             assert!(
-                picked.to_string_lossy().contains(host_arch_token()),
-                "picked {picked:?} on {}",
-                host_arch_token()
+                amd.manifest_files()
+                    .iter()
+                    .any(|b| b.display().to_string() == value),
+                "{key} points at {value}, which is not bound into the sandbox"
             );
         }
-        // Phase `arch_token_uses_the_manifest_spelling_not_rusts`.
-        // The architecture token has to be the one the manifest *files* are
-        // named with, not always Rust's spelling — getting it wrong silently
-        // unpins the driver.
-        {
-            assert!(
-                ARCH_TOKENS.contains(&host_arch_token()),
-                "`{}` is not a token any ICD file name uses",
-                host_arch_token()
-            );
-            assert!(!is_foreign_arch("50_mesa.json"), "no token means eligible");
-            assert!(
-                !is_foreign_arch(&format!("radeon_icd.{}.json", host_arch_token())),
-                "the host's own architecture must always be eligible"
-            );
-        }
-        // Phase `a_host_with_no_icd_directories_pins_nothing`.
-        // No ICD directories at all (a stripped container image) is not an
-        // error — the loaders keep their defaults and the app still runs.
-        {
-            let search = IcdSearch {
-                egl_vendor_dirs: vec![PathBuf::from("/nonexistent/egl")],
-                vulkan_icd_dirs: vec![PathBuf::from("/nonexistent/vulkan")],
-            };
-            let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
-            assert!(sel.is_empty());
-            assert!(sel.env().is_empty());
-            assert!(sel.manifest_files().is_empty());
-            assert!(
-                sel.notes.iter().all(|n| n.contains("no ")),
-                "{:?}",
-                sel.notes
-            );
-        }
+
+        // Same tree, the NVIDIA node: NVIDIA's ICD and EGL vendor.
+        let nvidia = select(&search, RENDER_D129, &probe);
+        assert_eq!(
+            nvidia
+                .vulkan_icd_json
+                .as_deref()
+                .and_then(|p| p.file_name()),
+            Some(host_icd_name("nvidia").as_str().as_ref())
+        );
+        assert_eq!(
+            nvidia
+                .egl_vendor_json
+                .as_deref()
+                .and_then(|p| p.file_name()),
+            Some("10_nvidia.json".as_ref())
+        );
+    }
+
+    #[test]
+    fn a_snapdragon_display_node_pins_turnip_over_lavapipe() {
+        // The field failure: sysfs names the node's driver `msm_dpu`, which
+        // no table listed. Turnip reporting the node is all it takes.
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("freedreno"), "libvulkan_freedreno.so"),
+                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+                (&host_icd_name("asahi"), "libvulkan_asahi.so"),
+            ],
+        );
+        let probe = Scripted(HashMap::from([
+            (
+                "libvulkan_freedreno.so",
+                vec![device("Turnip Adreno (TM) X1-85", Some(RENDER_D128))],
+            ),
+            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+            ("libvulkan_asahi.so", Vec::new()),
+        ]));
+        let sel = select_for_device(
+            Path::new("/dev/dri/renderD128"),
+            RENDER_D128,
+            Some("msm_dpu".to_owned()),
+            &search,
+            &probe,
+        );
+        assert_eq!(
+            sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
+            Some(host_icd_name("freedreno").as_str().as_ref()),
+            "{:?}",
+            sel.notes
+        );
+        assert_eq!(
+            sel.vulkan_device.as_deref(),
+            Some("Turnip Adreno (TM) X1-85")
+        );
+        assert!(sel.egl_vendor_json.is_some(), "{:?}", sel.notes);
+        assert!(sel.notes.is_empty(), "{:?}", sel.notes);
+    }
+
+    #[test]
+    fn nothing_is_pinned_when_no_icd_or_several_claim_the_node() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
+                (&host_icd_name("broken"), "/usr/lib64/libvulkan_broken.so"),
+            ],
+        );
+        // A GL-only GPU: nothing reports the node, so nothing is pinned
+        // and every ICD's answer is on the record.
+        let probe = Scripted(HashMap::from([
+            (
+                "libvulkan_radeon.so",
+                vec![device("AMD Radeon", Some(RENDER_D129))],
+            ),
+            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+        ]));
+        let sel = select(&search, RENDER_D128, &probe);
+        assert!(sel.is_empty());
+        assert!(sel.env().is_empty());
+        let notes = sel.notes.join("\n");
+        assert!(notes.contains("AMD Radeon on 226:129"), "{notes}");
+        assert!(notes.contains("llvmpipe without a render node"), "{notes}");
+        assert!(notes.contains("cannot load libvulkan_broken.so"), "{notes}");
+        assert!(notes.contains(EGL_VENDOR_ENV), "{notes}");
+
+        // Two drivers claiming one node is ambiguous, not a choice.
+        let probe = Scripted(HashMap::from([
+            (
+                "libvulkan_radeon.so",
+                vec![device("RADV", Some(RENDER_D128))],
+            ),
+            (
+                "libvulkan_lvp.so",
+                vec![device("also me", Some(RENDER_D128))],
+            ),
+        ]));
+        let sel = select(&search, RENDER_D128, &probe);
+        assert_eq!(sel.vulkan_icd_json, None);
+        assert!(
+            sel.notes.iter().any(|n| n.contains("refusing to guess")),
+            "{:?}",
+            sel.notes
+        );
+    }
+
+    #[test]
+    fn foreign_architecture_manifests_are_never_asked() {
+        let foreign_arch = ARCH_TOKENS
+            .iter()
+            .copied()
+            .find(|arch| *arch != host_arch_token())
+            .expect("a recognized architecture different from this host");
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (
+                    &format!("radeon_icd.{foreign_arch}.json"),
+                    "/usr/lib/libvulkan_radeon32.so",
+                ),
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+            ],
+        );
+        // Both would claim the node; only the host's file may be asked, or
+        // selection is ambiguous.
+        let probe = Scripted(HashMap::from([
+            (
+                "libvulkan_radeon32.so",
+                vec![device("RADV", Some(RENDER_D128))],
+            ),
+            (
+                "libvulkan_radeon.so",
+                vec![device("RADV", Some(RENDER_D128))],
+            ),
+        ]));
+        let sel = select(&search, RENDER_D128, &probe);
+        assert_eq!(
+            sel.vulkan_icd_json,
+            Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
+            "{:?}",
+            sel.notes
+        );
+        assert!(ARCH_TOKENS.contains(&host_arch_token()));
+        assert!(!is_foreign_arch("50_mesa.json"), "no token means eligible");
+    }
+
+    #[test]
+    fn relative_library_paths_resolve_against_their_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[],
+            &[
+                ("abs.json", "/usr/lib64/libvulkan_radeon.so"),
+                ("bare.json", "libvulkan_radeon.so"),
+                ("rel.json", "../lib/libvulkan_radeon.so"),
+            ],
+        );
+        let dir = &search.vulkan_icd_dirs[0];
+        assert_eq!(
+            manifest_library_path(&dir.join("abs.json")),
+            Some(PathBuf::from("/usr/lib64/libvulkan_radeon.so"))
+        );
+        assert_eq!(
+            manifest_library_path(&dir.join("bare.json")),
+            Some(PathBuf::from("libvulkan_radeon.so"))
+        );
+        assert_eq!(
+            manifest_library_path(&dir.join("rel.json")),
+            Some(dir.join("../lib/libvulkan_radeon.so"))
+        );
     }
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn host_render_node_driver_lookup() {
-        // Phase `host_render_node_resolves_to_files_that_exist`.
-        // On a machine with a real render node, the whole chain — sysfs
-        // driver → installed ICDs → env — has to produce a file that exists.
-        // This is the path the compositor actually calls.
-        fn host_render_node_resolves_to_files_that_exist() {
-            let Some(node) = std::fs::read_dir("/dev/dri")
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(std::result::Result::ok)
-                .map(|e| e.path())
-                .find(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("renderD"))
-                })
-            else {
-                eprintln!("skipping: no /dev/dri/renderD* on this machine");
-                return;
-            };
-            let sel = select_for_node(&node, &IcdSearch::default());
-            for path in sel.manifest_files() {
-                assert!(
-                    path.exists(),
-                    "{} was selected for driver {:?} but does not exist",
-                    path.display(),
-                    sel.driver
-                );
-            }
+    fn host_render_node_resolves_to_files_that_exist() {
+        // The path the compositor actually calls, against this machine's
+        // real drivers: whatever it pins has to exist.
+        assert_eq!(driver_for(Path::new("/dev/null")), None);
+        assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
+        let Some(node) = std::fs::read_dir("/dev/dri")
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("renderD"))
+            })
+        else {
+            eprintln!("skipping: no /dev/dri/renderD* on this machine");
+            return;
+        };
+        let sel = select_for_node(&node, &IcdSearch::default());
+        for path in sel.manifest_files() {
+            assert!(
+                path.exists(),
+                "{} was selected but does not exist",
+                path.display()
+            );
         }
-        // Phase `driver_lookup_rejects_non_drm_paths`.
-        // The sysfs lookup must not invent a driver for a path that isn't
-        // a DRM node.
-        {
-            assert_eq!(driver_for(Path::new("/dev/null")), None);
-            assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
-        }
-        // Phase `host_render_node_resolves_to_files_that_exist` (defined above).
-        host_render_node_resolves_to_files_that_exist();
+        assert_eq!(
+            select_for_node(&node, &IcdSearch::default()),
+            sel,
+            "a second ask answers from the cache"
+        );
     }
 }

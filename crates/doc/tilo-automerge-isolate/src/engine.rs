@@ -15,6 +15,42 @@ pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     AutoCommit::load_with_options(bytes, strict()).map_err(|e| Rejected::Invalid(e.to_string()))
 }
 
+/// [`load`] of bytes a worker has already loaded, taking each change's hash
+/// from that worker rather than rebuilding and hashing every change, which is
+/// about half the cost of loading a large document. `hashes` are what
+/// [`document_change_hashes`] gave for exactly these bytes in the worker;
+/// none (or any Automerge finds unfit) loads as [`load`] does.
+///
+/// The document is the one [`load`] builds: Automerge uses the hashes only
+/// in place of the ones it would compute, and only if they are one per
+/// change, distinct, and have the document's stored heads as the changes
+/// nothing depends on, heads the worker's [`load`] checked against the
+/// changes themselves.
+#[cfg(target_os = "linux")]
+pub(crate) fn load_validated(bytes: &[u8], hashes: &[ChangeHash]) -> Result<AutoCommit, Rejected> {
+    if hashes.is_empty() {
+        return load(bytes);
+    }
+    AutoCommit::load_with_options(bytes, strict().known_change_hashes(hashes))
+        .map_err(|e| Rejected::Invalid(e.to_string()))
+}
+
+/// The hash of every change of `doc`, which [`load`] built from `bytes`, in
+/// the order [`load_validated`] takes them: only when `bytes` is a single
+/// document chunk, whose changes are then exactly the document's, listed in
+/// the chunk's order. Otherwise none.
+#[cfg(target_os = "linux")]
+pub(crate) fn document_change_hashes(bytes: &[u8], doc: &mut AutoCommit) -> Vec<ChangeHash> {
+    let mut chunks = crate::precheck::chunks(bytes);
+    let single_document = chunks.next().is_some_and(|chunk| {
+        chunk.kind == crate::precheck::DOCUMENT && chunk.bytes.len() == bytes.len()
+    }) && chunks.next().is_none();
+    if !single_document {
+        return Vec::new();
+    }
+    doc.document().change_hashes().to_vec()
+}
+
 /// Apply `incoming` to `doc` as the caller will.
 ///
 /// `load_incremental` keeps the chunks before a malformed one, so every
@@ -31,11 +67,29 @@ pub(crate) fn apply(
     dependencies: Dependencies,
 ) -> Result<Applied, Rejected> {
     if is_blank(doc) {
-        let loaded = AutoCommit::load_with_options(
+        let loaded = match AutoCommit::load_with_options(
             incoming,
             strict().text_encoding(doc.document().text_encoding()),
-        )
-        .map_err(|e| Rejected::Invalid(e.to_string()))?;
+        ) {
+            Ok(loaded) => loaded,
+            // Strict loading reports this only after every chunk parsed and
+            // every decoded change was applied or queued. Repeating that
+            // validated input with Ignore retains the queue; no malformed
+            // tail can reach this branch. Both passes run inside the worker.
+            Err(automerge::AutomergeError::MissingDeps) => {
+                if dependencies == Dependencies::RequireComplete {
+                    return Ok(Applied::MissingDependencies);
+                }
+                AutoCommit::load_with_options(
+                    incoming,
+                    strict()
+                        .text_encoding(doc.document().text_encoding())
+                        .on_partial_load(OnPartialLoad::Ignore),
+                )
+                .map_err(|e| Rejected::Invalid(e.to_string()))?
+            }
+            Err(error) => return Err(Rejected::Invalid(error.to_string())),
+        };
         let actor = doc.get_actor().clone();
         *doc = loaded.with_actor(actor);
         if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
@@ -56,13 +110,23 @@ pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
 
 /// Parse one chunk without applying it. A change costs only its own decode;
 /// a document or bundle is loaded on its own, as it has no cheaper parse.
+///
+/// Parsing a change does not check its stored checksum, and into a document
+/// that is not blank `load_incremental` stops at a chunk with a bad checksum
+/// and keeps the chunks before it without an error. So a change's stored
+/// checksum is compared with its hash here, and the whole input is refused.
+/// For a compressed chunk that hash is the uncompressed change's, which
+/// Automerge requires the compressed chunk's checksum to match as well.
 fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
     let invalid = |e: automerge::AutomergeError| Rejected::Invalid(e.to_string());
     match chunk.kind {
         crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE => {
-            automerge::Change::from_bytes(chunk.bytes.to_vec())
-                .map(drop)
-                .map_err(|e| Rejected::Invalid(e.to_string()))
+            let change = automerge::Change::try_from(chunk.bytes)
+                .map_err(|e| Rejected::Invalid(e.to_string()))?;
+            if chunk.bytes.get(4..8) != change.hash().0.get(..4) {
+                return Err(Rejected::Invalid("bad change checksum".into()));
+            }
+            Ok(())
         }
         // On its own, a change whose dependencies are elsewhere loads as
         // `MissingDeps`: every chunk parsed, which is all this asks.
@@ -96,8 +160,9 @@ fn strict() -> LoadOptions<'static> {
 }
 
 /// Identifies a document's state: its heads, and the dependencies its queued
-/// changes still wait for. Two documents with the same key hold the same
-/// changes, so the worker's copy can stand in for the caller's.
+/// changes still wait for. Only complete states are cache identities: two
+/// different orphan queues can share the same heads and missing dependencies.
+/// Incomplete states must be rebuilt from the caller's exact saved document.
 // Only the Linux worker pool compares document states.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -41,6 +41,9 @@
 //! Most apps need none of this directly: drop an
 //! [`UndoButton`](crate::widget::UndoButton) into a toolbar and it is wired.
 
+// Canonical Edit operation identity is shared with portable widget dispatch.
+pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
+
 /// What the live undo history can do *right now*, as a widget sees it.
 ///
 /// Published by the host once per frame. Every field is derived from the real
@@ -148,7 +151,7 @@ impl UndoRequest {
 /// Which history verb, if any, a command-modified character key means.
 ///
 /// Both the live host ([`App`](crate::app::App)) and the headless
-/// [`Driver`](crate::headless::Driver) resolve the key through this, so an app
+/// [`FrameHarness`](crate::headless::FrameHarness) resolve the key through this, so an app
 /// driven by a test scenario undoes on the same keystroke the user's fingers
 /// do. The binding itself is the host-shortcut table in
 /// [`platform`](crate::platform::HostShortcut). `character` is winit's logical
@@ -171,7 +174,7 @@ pub fn shortcut(
     match HostShortcut::resolve(conventions, character, shift)? {
         HostShortcut::Undo => Some(UndoRequest::Undo),
         HostShortcut::Redo => Some(UndoRequest::Redo),
-        HostShortcut::Search | HostShortcut::History => None,
+        HostShortcut::Search | HostShortcut::History | HostShortcut::Sidebar => None,
     }
 }
 
@@ -181,7 +184,7 @@ pub fn shortcut(
 /// The counterpart of [`shortcut`] for the *other* direction: the single place
 /// "an edit became an undo boundary" is written down, so a widget behaves
 /// identically under the live host ([`App`](crate::app::App)) and under the
-/// headless [`Driver`](crate::headless::Driver). Both call this once per tick.
+/// headless [`FrameHarness`](crate::headless::FrameHarness). Both call this once per tick.
 ///
 /// It matters that there is only one of these, because there are two separate
 /// ways to get it wrong and both are silent:
@@ -200,7 +203,7 @@ pub fn shortcut(
 /// * **Draining only the root.** This is the third host→widget channel of its
 ///   kind, and it was the only one that read a single widget: no container in
 ///   the toolkit forwards `take_committed_action`, so an app that put its
-///   editor inside a `Row`, a `Column`, or an `AppShell` lost every boundary
+///   editor inside a `Row`, a `Column`, or a `NavShell` lost every boundary
 ///   with no error anywhere. Like [`UndoStatus`] and [`UndoRequest`], this
 ///   sweeps `node_map` — every laid-out widget registers itself there — so a
 ///   widget is reached at any depth.
@@ -218,7 +221,7 @@ pub fn shortcut(
 ///
 /// `root` and the `node_map` pointers must point at widgets that are alive for
 /// the call — the invariant every `node_map` sweep in
-/// [`App`](crate::app::App) and [`Driver`](crate::headless::Driver) already
+/// [`App`](crate::app::App) and [`FrameHarness`](crate::headless::FrameHarness) already
 /// relies on. Exactly one `&mut` is live at a time, so a widget that is both
 /// the root and registered in the map is safe (and yields its bracket once,
 /// because reading clears it).
@@ -282,14 +285,25 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             continue;
         }
         if let Some(binding) = bindings.binding_for(node) {
+            // Take the bracket first: it needs only the widget, and a sweep
+            // finds one on few nodes, if any. Opening the record frame of
+            // every bound node to find nothing was most of an idle frame.
             // SAFETY: the stable host topology supplies exclusive node access;
-            // metadata/lifetime checks precede delivery under its canonical Doc.
-            let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| unsafe {
-                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
-                    binding.drain_widget_actions(widget, doc)
-                })
-            });
-            bound_changed |= matches!(drained, Ok(Ok(Ok(true))));
+            // admission and lifetime are checked before the widget is reached.
+            let taken = unsafe {
+                crate::bound_dispatch::mutate_bound_node(
+                    bindings,
+                    nodes,
+                    node,
+                    crate::bound_dispatch::TakenActionBracket::take,
+                )
+            };
+            if let Ok(Some(taken)) = taken {
+                let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| {
+                    binding.drain_taken_actions(taken, doc)
+                });
+                bound_changed |= matches!(drained, Ok(Ok(true)));
+            }
         } else if bindings.legacy_for(node).is_some() {
             // SAFETY: the exact live map has exclusive ownership for this sweep.
             bound_changed |= unsafe {
@@ -351,12 +365,112 @@ pub trait UndoControl {
     }
 }
 
+/// A focused component's observed history, or an original-field observation
+/// that is not available yet. Pending is never replaced by document history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalUndoStatus {
+    Ready(UndoStatus),
+    Pending,
+}
+impl LocalUndoStatus {
+    pub(crate) fn key(&self) -> (bool, bool, bool) {
+        match self {
+            Self::Ready(status) => (true, status.can_undo, status.can_redo),
+            Self::Pending => (false, false, false),
+        }
+    }
+}
+
 /// A component with its own editing history, offered the host's keyboard
 /// undo/redo shortcut before the application document consumes it.
 pub trait LocalUndo {
+    /// None means this component does not own the focused history. Pending
+    /// means it owns it, but cannot currently advertise an available entry.
+    fn local_undo_status(&self) -> Option<LocalUndoStatus> {
+        None
+    }
+
+    /// True when exported Edit operations complete through Widget's existing
+    /// asynchronous operation receipts rather than on shortcut dispatch.
+    fn local_undo_is_deferred(&self) -> bool {
+        false
+    }
+
     /// `true` only while focus is inside the component and it consumed the
     /// request.
     fn handle_local_undo_request(&mut self, request: UndoRequest) -> bool;
+
+    /// Admit a deferred system Edit request without exposing the host's raw
+    /// operation protocol to apps. True means queued, never already succeeded.
+    /// The component retains this invocation and reports its actual native ACK
+    /// through `poll_local_undo_operation`. Required hosted custody continues to
+    /// be declined by the generic adapter; this interface supplies no grant.
+    /// # Errors
+    /// Returns the original field's admission refusal.
+    fn start_local_undo_operation(
+        &mut self,
+        _invocation: tilo_actions::InvocationId,
+        _request: UndoRequest,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// Complete only this component's previously admitted native Edit request.
+    /// A lost ACK must fail explicitly; it must not become document Undo.
+    fn poll_local_undo_operation(
+        &mut self,
+        _invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        None
+    }
+}
+
+pub(crate) fn has_deferred_local_history(widget: &(impl crate::widget::Widget + ?Sized)) -> bool {
+    crate::widget::capability::capability::<dyn LocalUndo>(widget)
+        .is_some_and(LocalUndo::local_undo_is_deferred)
+}
+
+pub(crate) fn start_local_history(
+    widget: &mut (impl crate::widget::Widget + ?Sized),
+    operation: &crate::widget::ResourceOperation<'_>,
+) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    let Some(request) = operation.unscoped() else {
+        return Ok(None);
+    };
+    if request.type_id != EDIT_OPERATION {
+        return Ok(None);
+    }
+    let Some(local) = crate::widget::capability::capability_mut::<dyn LocalUndo>(widget) else {
+        return Ok(None);
+    };
+    start_deferred_undo(local, request.invocation, request.payload)
+}
+
+/// Hands a native Edit request to `local` if it defers its history. Apart from
+/// the generic lookup, so the decoding lives in the toolkit, not in each app.
+#[inline(never)]
+fn start_deferred_undo(
+    local: &mut dyn LocalUndo,
+    invocation: tilo_actions::InvocationId,
+    payload: &[u8],
+) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    if !local.local_undo_is_deferred() {
+        return Ok(None);
+    }
+    let direction = serde_json::from_slice(payload).map_err(|_| "Invalid native Edit request")?;
+    Ok(local
+        .start_local_undo_operation(invocation, direction)?
+        .then_some(crate::widget::ResourceOperationStart::Accepted))
+}
+
+pub(crate) fn poll_local_history(
+    widget: &mut (impl crate::widget::Widget + ?Sized),
+    invocation: tilo_actions::InvocationId,
+    cancellation_requested: bool,
+) -> Option<tilo_actions::InvocationUpdate> {
+    crate::widget::capability::capability_mut::<dyn LocalUndo>(widget)?
+        .poll_local_undo_operation(invocation, cancellation_requested)
 }
 
 /// `widget`'s pending action bracket, if it reports one.
@@ -390,6 +504,25 @@ pub fn take_undo_request(
     crate::widget::capability::capability_mut::<dyn UndoControl>(widget)?.take_undo_request()
 }
 
+/// Observe the same component histories the host offers its UndoRequest.
+pub fn local_undo_status(widget: &dyn crate::widget::Widget) -> Option<LocalUndoStatus> {
+    if let Some(local) = crate::widget::capability::capability::<dyn LocalUndo>(widget) {
+        return local.local_undo_status();
+    }
+    widget.children().into_iter().find_map(local_undo_status)
+}
+
+pub(crate) fn local_undo_is_deferred(widget: &dyn crate::widget::Widget) -> bool {
+    if let Some(local) = crate::widget::capability::capability::<dyn LocalUndo>(widget) {
+        return local.local_undo_status().is_some() && local.local_undo_is_deferred();
+    }
+    widget
+        .children()
+        .into_iter()
+        .find(|child| local_undo_status(*child).is_some())
+        .is_some_and(local_undo_is_deferred)
+}
+
 /// Offer a keyboard undo/redo to the component histories under `widget`.
 pub fn handle_local_undo_request(
     widget: &mut dyn crate::widget::Widget,
@@ -404,36 +537,9 @@ pub fn handle_local_undo_request(
         .any(|child| handle_local_undo_request(child, request))
 }
 
-/// A widget whose native edits (flowing text, a drag) mark undo points, and
-/// which restores its ephemeral state (caret, selection) around them.
+/// A widget that restores its ephemeral state (caret, selection) around the
+/// undo points its owner's actions make.
 pub trait UndoPoints: crate::widget::Widget {
-    /// Whether an edit in this subtree asks the host to commit an undo point.
-    fn needs_commit(&self) -> bool {
-        let mut needed = false;
-        self.for_each_child(&mut |child| {
-            if !needed {
-                needed = needs_commit(child);
-            }
-        });
-        needed
-    }
-
-    /// Drain semantic provenance for the native transaction asking the host
-    /// to commit. Use this for document-native edits such as flowing text;
-    /// replayable discrete operations go through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.children_mut()
-            .into_iter()
-            .find_map(take_commit_context)
-    }
-
-    /// The host committed an undo point.
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            on_commit(child);
-        }
-    }
-
     /// Ephemeral state (caret, selection) saved with an undo point.
     fn get_state(&self) -> Option<String> {
         None
@@ -441,46 +547,6 @@ pub trait UndoPoints: crate::widget::Widget {
 
     /// Restore ephemeral state saved by [`Self::get_state`].
     fn set_state(&mut self, _state: &str) {}
-}
-
-/// Whether an edit under `widget` asks for an undo point.
-pub fn needs_commit(widget: &dyn crate::widget::Widget) -> bool {
-    if let Some(points) = crate::widget::capability::capability::<dyn UndoPoints>(widget) {
-        return points.needs_commit();
-    }
-    let mut needed = false;
-    widget.for_each_child(&mut |child| {
-        if !needed {
-            needed = needs_commit(child);
-        }
-    });
-    needed
-}
-
-/// Drain the provenance of the edit asking for an undo point under `widget`.
-pub fn take_commit_context(
-    widget: &mut dyn crate::widget::Widget,
-) -> Option<tilo_actions::ActionContext> {
-    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
-    {
-        return points.take_commit_context();
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .find_map(take_commit_context)
-}
-
-/// Tell every widget under `widget` that an undo point was committed.
-pub fn on_commit(widget: &mut dyn crate::widget::Widget) {
-    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
-    {
-        points.on_commit();
-        return;
-    }
-    for child in widget.children_mut() {
-        on_commit(child);
-    }
 }
 
 /// `widget`'s ephemeral state.
@@ -597,6 +663,138 @@ impl UndoAccess {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct NativeHistoryProbe {
+        pending: Option<tilo_actions::InvocationId>,
+        acknowledged: bool,
+    }
+
+    impl LocalUndo for NativeHistoryProbe {
+        fn local_undo_is_deferred(&self) -> bool {
+            true
+        }
+        fn handle_local_undo_request(&mut self, _: UndoRequest) -> bool {
+            false
+        }
+        fn start_local_undo_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            _: UndoRequest,
+        ) -> Result<bool, String> {
+            if self.pending.is_some() {
+                return Err("original operation pending".into());
+            }
+            self.pending = Some(invocation);
+            Ok(true)
+        }
+        fn poll_local_undo_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            cancellation_requested: bool,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            if self.pending != Some(invocation) {
+                return None;
+            }
+            if cancellation_requested {
+                self.pending = None;
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: None,
+                });
+            }
+            if !self.acknowledged {
+                return None;
+            }
+            self.pending = None;
+            Some(tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            })
+        }
+    }
+    impl crate::widget::Widget for NativeHistoryProbe {
+        fn name(&self) -> &str {
+            "NativeHistoryProbe"
+        }
+        crate::provides!(dyn LocalUndo);
+        crate::testing::inert_widget_methods!(leaf_layout);
+    }
+
+    #[test]
+    fn deferred_native_history_waits_for_original_ack_and_preserves_document() {
+        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart, Widget};
+        let mut widget = NativeHistoryProbe::default();
+        let mut doc = automerge::AutoCommit::new();
+        let original = doc.get_heads();
+        let invocation = tilo_actions::InvocationId::new();
+        let other = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&UndoRequest::Undo).unwrap();
+        let operation = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            EDIT_OPERATION,
+            &payload,
+        );
+        assert!(
+            widget
+                .resource_operation_handlers()
+                .contains(EDIT_OPERATION)
+        );
+        assert_eq!(
+            widget
+                .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
+                .unwrap(),
+            Some(ResourceOperationStart::Accepted)
+        );
+        assert!(
+            widget
+                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        widget.acknowledged = true;
+        assert!(
+            widget
+                .poll_resource_operation(other, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        assert!(
+            matches!(widget.poll_resource_operation(invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
+        );
+        assert!(
+            widget
+                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        assert_eq!(doc.get_heads(), original);
+    }
+
+    #[test]
+    fn deferred_native_history_cancellation_does_not_report_success() {
+        use crate::widget::{Edits, ResourceOperation, Widget};
+        let mut widget = NativeHistoryProbe::default();
+        let mut doc = automerge::AutoCommit::new();
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&UndoRequest::Redo).unwrap();
+        let operation = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            EDIT_OPERATION,
+            &payload,
+        );
+        widget
+            .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
+            .unwrap();
+        assert!(
+            matches!(widget.poll_resource_operation(invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
+        );
+        widget.acknowledged = true;
+        assert!(
+            widget
+                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+    }
+
     #[test]
     fn undo_access_publishes_status_and_refuses_unavailable_verbs_once() {
         // Case `unused_undo_status_is_not_evaluated`.
@@ -612,7 +810,7 @@ mod tests {
             use crate::widget::Widget;
             let mut button = crate::widget::UndoButton::undo();
             let mut calls = 0;
-            button.set_undo_status(&mut || {
+            crate::undo::set_undo_status(&mut button, &mut || {
                 calls += 1;
                 status(true, false)
             });
@@ -721,19 +919,26 @@ pub(crate) fn status_snapshot(
     history: &crate::state::UndoLog,
     author: Option<&crate::permissions::UserId>,
 ) -> UndoStatus {
-    let undo = history
-        .next_undo_as(author)
-        .map(|entry| (entry.before.clone(), entry.after.clone()));
-    let redo = history
-        .next_redo_as(author)
-        .map(|entry| (entry.after.clone(), entry.before.clone()));
-    let mut snapshot = doc.clone();
+    let undo = history.next_undo_as(doc, author);
+    let redo = history.next_redo_as(doc, author);
+    // Copied only for an entry that names no step of its own.
+    let mut snapshot = None;
+    // An entry an undo or redo already moved names the step it carries, not
+    // the undo change that moved it last.
+    let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
+        entry
+            .step
+            .as_ref()
+            .and_then(crate::history_source::sentence::step_summary)
+            .unwrap_or_else(|| {
+                let snapshot = snapshot.get_or_insert_with(|| doc.clone());
+                crate::history_source::change_summary(snapshot, from, to)
+            })
+    };
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
-        redo_summary: redo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
+        undo_summary: undo.map(|entry| summary(&entry, &entry.before, &entry.after)),
+        redo_summary: redo.map(|entry| summary(&entry, &entry.after, &entry.before)),
     }
 }

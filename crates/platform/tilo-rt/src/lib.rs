@@ -25,6 +25,9 @@
 //!   comes from [`spawn_thread`], never `std::thread::spawn`.
 //! - **A pause inside async work** — a retry backoff, a poll interval — is
 //!   [`sleep`], never `std::thread::sleep`.
+//! - **A helper a process can lose and restart** runs inside
+//!   [`panic_boundary::isolate`], so a process whose panic hook aborts for
+//!   every other thread lets that one unwind (see [`panic_boundary`]).
 //!
 //! Every thread this crate starts is named, so a stack dump or `top -H`
 //! attributes it.
@@ -33,17 +36,7 @@
 //! tasks run on the page thread from its microtask queue, [`cpu()`] work runs
 //! there as an app task, [`io`] refuses, [`spawn_thread`] fails, and nothing
 //! may block. [`availability`] answers which [`Feature`]s the running target
-//! has; [`CAPABILITIES`] lists them for every target.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! has, and each feature's `targets` for every target.
 
 #[cfg(not(target_family = "wasm"))]
 mod app;
@@ -56,15 +49,16 @@ mod cpu;
 #[cfg(not(target_family = "wasm"))]
 mod daemon;
 pub mod io;
+pub mod panic_boundary;
 mod pool;
 mod timer;
-pub mod wake;
+pub use tilo_wake as wake;
 
 use std::cell::Cell;
 use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
-pub use caps::{Availability, CAPABILITIES, Feature, availability};
+pub use caps::{Availability, Feature, availability, available};
 pub use cpu::{CpuTask, cpu, cpu_pool};
 #[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};
@@ -177,6 +171,7 @@ fn check_may_block() -> Result<(), Error> {
 /// runtime context, [`Error::Start`] when the runtime cannot be built.
 pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
     check_may_block()?;
+    panic_boundary::abort_outside_boundaries_in_release();
     // A browser page's one thread is its UI thread, and it cannot park.
     if cfg!(target_family = "wasm") {
         return Err(Error::UiThread);
@@ -233,6 +228,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    panic_boundary::abort_outside_boundaries_in_release();
     std::thread::Builder::new().name(name.into()).spawn(body)
 }
 

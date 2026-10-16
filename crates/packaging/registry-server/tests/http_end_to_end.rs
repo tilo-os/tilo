@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -37,6 +33,7 @@ use registry_types::{
 struct Harness {
     tmp: tempfile::TempDir,
     addr: SocketAddr,
+    state: AppState,
     storage: Storage,
     allowlist: PublisherAllowlist,
     publisher: SigningKey,
@@ -80,7 +77,7 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
 
     let state = AppState::with_options(storage.clone(), identity, options);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let bound = bind_and_run(addr, state).await.expect("bind");
+    let bound = bind_and_run(addr, state.clone()).await.expect("bind");
 
     // Give the tokio::spawn'd accept loop a beat to actually be
     // ready to accept. On a busy loopback stack the first
@@ -90,6 +87,7 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
     Harness {
         tmp,
         addr: bound,
+        state,
         storage,
         allowlist: allow,
         publisher,
@@ -134,10 +132,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             .unwrap();
         approve(&h, "so.tilo.editor");
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = tilo_clock::try_unix_now().unwrap();
         let report = signed_report(&h.outsider, "http-report-one", now);
         let response = client
             .post(url(h.addr, "/moderation/mutations"))
@@ -263,13 +258,18 @@ fn approve(h: &Harness, package_id: &str) {
 }
 
 fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &SigningKey) {
+    publish_snapshot_of(storage, allowlist, owner, storage.load_entries().unwrap());
+}
+
+fn publish_snapshot_of(
+    storage: &Storage,
+    allowlist: &PublisherAllowlist,
+    owner: &SigningKey,
+    mut entries: Vec<RegistryEntry>,
+) {
     let previous = storage.load_snapshot().unwrap();
-    let mut entries = storage.load_entries().unwrap();
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
         sequence: previous
@@ -293,6 +293,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();
@@ -301,6 +302,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
     RegistryEntry {
         package_id: "so.tilo.editor".into(),
+        kind: registry_types::EntryKind::App,
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         tagline: "Edit together".into(),
@@ -315,17 +317,20 @@ fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
         publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
-            tapp_root_hash_hex: "cd".repeat(32),
-            tapp_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
-            tapp_blake3_hex: "ef".repeat(32),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 1024,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),
@@ -483,6 +488,77 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
                 .await
                 .is_err()
         );
+
+        // phase: stored_objects_are_served_as_checked_compressed_twins
+        // Storing an object writes its zstd twin; the twin is served as an
+        // immutable `application/zstd` body with no Content-Encoding, and
+        // only while it decompresses to the object it is named for.
+        let binary_hex = binary.to_hex();
+        let decompress = |body: &[u8], limit: usize| {
+            let mut out = Vec::new();
+            tilo_app_package::compressed::decompress_bounded(body, limit as u64, &mut out)
+                .expect("twin decompresses");
+            out
+        };
+        for (path, raw) in [
+            (
+                format!("/blobs/{binary_hex}.zst"),
+                b"reviewed binary".to_vec(),
+            ),
+            (format!("/artifacts/{digest}.tapp.zst"), full.clone()),
+        ] {
+            let served = client.get(url(h.addr, &path)).send().await.unwrap();
+            assert_eq!(served.status(), reqwest::StatusCode::OK, "{path}");
+            assert_eq!(served.headers()["content-type"], "application/zstd");
+            assert_eq!(
+                served
+                    .headers()
+                    .get_all("cache-control")
+                    .iter()
+                    .collect::<Vec<_>>(),
+                ["public, max-age=31536000, immutable"],
+                "exactly one Cache-Control, so an edge cache may keep it"
+            );
+            assert!(served.headers().get("content-encoding").is_none());
+            let body = served.bytes().await.unwrap();
+            assert_eq!(decompress(&body, raw.len()), raw, "{path}");
+        }
+        let data = h.tmp.path();
+        let twin_file = data.join("payload-blobs").join(format!("{binary_hex}.zst"));
+        assert!(twin_file.exists(), "storing the blob wrote its twin");
+        // A twin of other bytes is never served under this name.
+        std::fs::write(
+            &twin_file,
+            tilo_app_package::compressed::compress(b"reviewed binarY").unwrap(),
+        )
+        .unwrap();
+        let tampered = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            tampered.status(),
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        // Without a twin the route is a 404 and clients take the raw blob.
+        std::fs::remove_file(&twin_file).unwrap();
+        let missing = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            blobs.fetch_all(&[binary]).await.unwrap()[0].as_ref(),
+            b"reviewed binary"
+        );
+        // The backfill writes exactly the missing twin.
+        let report = h.storage.compress_stored_objects().unwrap();
+        assert_eq!(report.written, 1, "{report:?}");
+        assert!(report.present >= 2, "{report:?}");
+        assert!(twin_file.exists());
+        assert_eq!(h.storage.compress_stored_objects().unwrap().written, 0);
     }
 }
 
@@ -887,6 +963,43 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
+/// An allowlisted publisher whose row names no namespace — a hand-written or
+/// pre-namespace `publishers.toml` row — owns nothing, so it cannot claim Tilo's
+/// own `so.tilo.store`.
+#[tokio::test]
+async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
+    let h = spawn_server(true).await;
+    std::fs::write(
+        h.storage.publishers_path(),
+        format!(
+            "[[publisher]]\npubkey_hex = \"{}\"\ncan_add_new = true\nnote = \"community\"\n",
+            hex::encode(h.publisher.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    let row = h.storage.load_allowlist().unwrap().publishers[0].clone();
+    assert!(row.can_add_new);
+    assert!(row.namespaces.is_empty());
+
+    let client = tilo_net::http::client().build().expect("http client");
+    let mut store = sample_entry(&h.publisher, 100);
+    store.package_id = "so.tilo.store".into();
+    registry_types::sign_entry(&mut store, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, store, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("package id so.tilo.store is outside this publisher's verified namespaces"),
+        "{body}"
+    );
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
+}
+
 /// A package signed by `key`, in full.
 fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
@@ -979,10 +1092,10 @@ async fn publishers_upload_their_own_packages_for_review() {
     let package = app_registry::tapp::load(&bytes).unwrap();
     let mut entry = sample_entry(&h.publisher, 100);
     entry.versions[0].version = "1.0.0".into();
-    entry.versions[0].tapp_url = artifact_url;
-    entry.versions[0].tapp_root_hash_hex = package.package_id.to_hex();
-    entry.versions[0].tapp_size_bytes = bytes.len() as u64;
-    entry.versions[0].tapp_blake3_hex = digest.clone();
+    entry.versions[0].tapp_mut().unwrap().tapp_url = artifact_url;
+    entry.versions[0].tapp_mut().unwrap().tapp_root_hash_hex = package.package_id.to_hex();
+    entry.versions[0].tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+    entry.versions[0].tapp_mut().unwrap().tapp_blake3_hex = digest.clone();
     let storage = h.storage.clone();
     let reviewed = tokio::task::spawn_blocking(move || {
         registry_server::review_entry_bytes(
@@ -1119,4 +1232,168 @@ fn cors_origins_must_be_exact_serialized_origins() {
     ] {
         assert!(!valid_cors_origin(origin), "{origin}");
     }
+}
+
+/// A catalogue the size of a public store's: `count` signed entries.
+fn large_catalogue(h: &Harness, count: usize) {
+    let entries = (0..count)
+        .map(|index| {
+            let mut entry = sample_entry(&h.publisher, 100);
+            entry.package_id = format!("so.tilo.app{index}");
+            registry_types::sign_entry(&mut entry, &h.publisher);
+            entry
+        })
+        .collect();
+    publish_snapshot_of(&h.storage, &h.allowlist, &h.owner, entries);
+}
+
+fn p50(samples: &mut [std::time::Duration]) -> std::time::Duration {
+    samples.sort_unstable();
+    samples.get(samples.len() / 2).copied().unwrap_or_default()
+}
+
+/// What a client of a busy store waits for: the catalogue, and a missing
+/// blob asked for while other clients fetch the catalogue. Prints the
+/// numbers; the regression checks are the counters in the next test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
+    let h = spawn_server(true).await;
+    large_catalogue(&h, 1_000);
+    let client = tilo_net::http::client().build().expect("http client");
+    let entries = url(h.addr, "/entries");
+    let missing = url(h.addr, &format!("/blobs/{}", "0".repeat(64)));
+
+    let started = std::time::Instant::now();
+    let first = client.get(&entries).send().await.unwrap();
+    assert_eq!(first.status(), reqwest::StatusCode::OK);
+    let body = first.bytes().await.unwrap();
+    let cold = started.elapsed();
+
+    let mut warm = Vec::new();
+    for _ in 0..20 {
+        let started = std::time::Instant::now();
+        let response = client.get(&entries).send().await.unwrap();
+        assert_eq!(response.bytes().await.unwrap(), body);
+        warm.push(started.elapsed());
+    }
+
+    // Eight clients fetch the catalogue while a ninth asks for a blob the
+    // store does not have.
+    let mut busy = Vec::new();
+    for _ in 0..10 {
+        let fetches: Vec<_> = (0..8)
+            .map(|_| {
+                let request = client.get(&entries).send();
+                tokio::spawn(async move { request.await.unwrap().bytes().await.unwrap().len() })
+            })
+            .collect();
+        // Let the catalogue requests reach the server first.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let started = std::time::Instant::now();
+        let response = client.get(&missing).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        busy.push(started.elapsed());
+        for fetch in fetches {
+            assert_eq!(fetch.await.unwrap(), body.len());
+        }
+    }
+    eprintln!(
+        "perf registry /entries ({} KB, 1000 entries): first {:?}, then p50 {:?}; \
+         missing blob beside 8 catalogue fetches p50 {:?}",
+        body.len() / 1024,
+        cold,
+        p50(&mut warm),
+        p50(&mut busy),
+    );
+}
+
+/// The catalogue is read, verified and encoded once per published revision,
+/// however many clients ask and in whichever form, and every client gets
+/// the whole body.
+#[tokio::test]
+async fn the_catalogue_is_verified_once_per_published_revision() {
+    let h = spawn_server(true).await;
+    large_catalogue(&h, 300);
+    let client = tilo_net::http::client().build().expect("http client");
+    let entries = url(h.addr, "/entries");
+
+    let fetches: Vec<_> = (0..24)
+        .map(|index| {
+            let path = match index % 3 {
+                0 => "/entries",
+                1 => "/entries?format=compact",
+                _ => "/entries/so.tilo.app7",
+            };
+            let request = client.get(url(h.addr, path)).send();
+            tokio::spawn(async move {
+                let response = request.await.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::OK);
+                let length = response.content_length().unwrap();
+                let body = response.bytes().await.unwrap();
+                assert_eq!(body.len() as u64, length, "the whole body arrives");
+                serde_json::from_slice::<SignedRegistrySnapshot>(&body).unwrap()
+            })
+        })
+        .collect();
+    for fetch in fetches {
+        let snapshot = fetch.await.unwrap();
+        assert_eq!(snapshot.entries.len(), 300);
+        assert_eq!(snapshot.sequence, 2);
+    }
+    let unknown = client
+        .get(url(h.addr, "/entries/so.tilo.nothing"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(h.state.catalogue_loads(), 1);
+
+    // A newly published snapshot is served from the next request on.
+    large_catalogue(&h, 301);
+    let next: SignedRegistrySnapshot = client
+        .get(&entries)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!((next.sequence, next.entries.len()), (3, 301));
+    let _ = client.get(&entries).send().await.unwrap();
+    assert_eq!(h.state.catalogue_loads(), 2);
+}
+
+/// A client that stops reading its catalogue holds up no one else.
+#[tokio::test]
+async fn a_client_that_stops_reading_holds_up_no_one() {
+    use tokio::io::AsyncWriteExt as _;
+    let h = spawn_server(true).await;
+    large_catalogue(&h, 1_000);
+    let mut stalled = Vec::new();
+    for _ in 0..8 {
+        let mut stream = tokio::net::TcpStream::connect(h.addr).await.unwrap();
+        stream
+            .write_all(b"GET /entries HTTP/1.1\r\nHost: registry\r\n\r\n")
+            .await
+            .unwrap();
+        // Never read: the server's writes to it fill the socket and wait.
+        stalled.push(stream);
+    }
+    let client = tilo_net::http::client().build().expect("http client");
+    let answered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        for _ in 0..8 {
+            let entries = client.get(url(h.addr, "/entries")).send().await.unwrap();
+            assert_eq!(entries.status(), reqwest::StatusCode::OK);
+            entries.bytes().await.unwrap();
+            let missing = client
+                .get(url(h.addr, &format!("/blobs/{}", "0".repeat(64))))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        }
+    })
+    .await;
+    assert!(answered.is_ok(), "stalled readers held up other clients");
+    drop(stalled);
 }

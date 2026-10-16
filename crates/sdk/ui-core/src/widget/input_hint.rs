@@ -16,9 +16,9 @@ use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamil
 use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
 /// Height of a painted hint row; hosts that centre a hint in their own band
@@ -29,7 +29,7 @@ const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
 
 fn token_height(theme: &Theme) -> f64 {
-    HEIGHT.max(f64::from(theme.tokens.typography.scale.sm) + 8.0)
+    HEIGHT.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +274,11 @@ impl InputHint {
         rects.last().map_or(0.0, |(_, rect)| rect.x1 - origin.x)
     }
 
+    /// The height of one keycap in `theme`, for centring a row of them.
+    pub fn keycap_height(theme: &Theme) -> f64 {
+        token_height(theme)
+    }
+
     pub fn measure_keycap_labels(
         labels: &[String],
         text_renderer: &mut TextRenderer,
@@ -329,9 +334,7 @@ impl InputHint {
         let share_modifiers = first.modifiers == second.modifiers;
         let mut x = origin.x;
 
-        let first_rect;
-        let second_rect;
-        if share_modifiers {
+        let (first_labels, second_labels) = if share_modifiers {
             let modifier_count = first_labels
                 .len()
                 .saturating_sub(1)
@@ -347,50 +350,34 @@ impl InputHint {
                 );
                 x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
             }
-            let first_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
+            (
                 first_labels.get(modifier_count..).unwrap_or_default(),
-                ctx.text,
-                theme,
-            );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-            let second_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
                 second_labels.get(modifier_count..).unwrap_or_default(),
-                ctx.text,
-                theme,
-            );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
+            )
         } else {
-            let first_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
-                &first_labels,
-                ctx.text,
-                theme,
-            );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-            let second_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
-                &second_labels,
-                ctx.text,
-                theme,
-            );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
-        }
+            (first_labels.as_slice(), second_labels.as_slice())
+        };
+        let first_x = x;
+        x += Self::paint_keycap_labels_at(
+            ctx.scene,
+            ctx.transform,
+            Point::new(x, origin.y),
+            first_labels,
+            ctx.text,
+            theme,
+        );
+        let first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
+        x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
+        let second_x = x;
+        x += Self::paint_keycap_labels_at(
+            ctx.scene,
+            ctx.transform,
+            Point::new(x, origin.y),
+            second_labels,
+            ctx.text,
+            theme,
+        );
+        let second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         [first_rect, second_rect]
     }
 
@@ -461,11 +448,11 @@ impl InputHint {
 
 fn paint_separator(ctx: &mut PaintCtx<'_>, origin: Point, label: &str) -> f64 {
     let (text_renderer, theme) = (&mut *ctx.text, ctx.theme);
-    let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-    let (width, height) = text_renderer.measure(label, size, None);
+    let style = theme.text(TextRole::Caption);
+    let (width, height) = text_renderer.measure_style(label, None, &style);
     ctx.text(
         label,
-        &TextStyle::new(size),
+        &style.clone(),
         theme.tokens.colors.text_dim,
         Point::new(
             origin.x,
@@ -515,8 +502,8 @@ fn token_rects(
     tokens
         .iter()
         .map(|(label, shape)| {
-            let size = token_text_size(label, theme, text_renderer);
-            let (text_width, _) = text_renderer.measure(label, size, None);
+            let style = token_text_style(theme);
+            let (text_width, _) = text_renderer.measure_style(label, None, &style);
             let width = match shape {
                 HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(height),
                 HintShape::Keycap | HintShape::Gesture => {
@@ -541,11 +528,11 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
     // Keycap body is a lift off the ground with an edge derived from it
     // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
     crate::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
-    let size = token_text_size(label, theme, ctx.text);
-    let (tw, th) = ctx.text.measure(label, size, None);
+    let style = token_text_style(theme);
+    let (tw, th) = ctx.text.measure_style(label, None, &style);
     ctx.text(
         label,
-        &TextStyle::new(size).with_weight(TextWeight::Semibold),
+        &style.clone().with_weight(TextWeight::Semibold),
         colors.text_primary,
         Point::new(
             rect.center().x - f64::from(tw) / 2.0,
@@ -555,15 +542,8 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
     );
 }
 
-fn token_text_size(label: &str, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
-    renderer_type_size(
-        text_renderer,
-        if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
-            theme.tokens.typography.scale.sm
-        } else {
-            theme.tokens.typography.scale.xs
-        },
-    )
+fn token_text_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 impl Widget for InputHint {
@@ -603,19 +583,16 @@ impl Widget for InputHint {
             })
             .sum::<f64>()
             + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(approximate)),
-                height: Dimension::length(crate::num::f32_of_f64(
-                    f64::from(theme.tokens.spacing.s6).max(height),
-                )),
-            },
+        let style = Style {
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(approximate),
+                crate::num::f32_of_f64(f64::from(theme.tokens.spacing.s6).max(height)),
+            ),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -635,15 +612,30 @@ impl Widget for InputHint {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+    /// The estimate `build_layout` reserved becomes the keycaps' measured
+    /// width, so the hint ends where its last keycap does and a column of
+    /// hints shares one trailing edge.
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let width =
+            Self::measure_width(&self.binding, self.conventions(), text, &self.layout_theme).ceil();
+        let Ok(current) = tree.style(node) else {
+            return false;
+        };
+        let wanted = Dimension::length(crate::num::f32_of_f64(width));
+        if current.size.width == wanted {
+            return false;
+        }
+        let mut style = current.clone();
+        style.size.width = wanted;
+        tree.set_style(node, style).is_ok()
     }
+
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -666,10 +658,6 @@ impl Widget for InputHint {
 
     fn name(&self) -> &'static str {
         "InputHint"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

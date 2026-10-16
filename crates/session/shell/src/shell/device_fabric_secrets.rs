@@ -14,8 +14,6 @@
 use std::collections::BTreeSet;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_seal::{Label, PublicKey, SealedBox, SecretKey};
@@ -91,8 +89,7 @@ pub fn seal_wifi_credential(
         return Err(WifiSecretError::InvalidCredential);
     }
     let network_id = wifi_network_id(ssid, security);
-    let mut bundle_nonce = [0_u8; 24];
-    UnwrapErr(SysRng).fill_bytes(&mut bundle_nonce);
+    let bundle_nonce = crate::random::bytes::<24>();
     let mut envelopes = Vec::with_capacity(recipients.len());
     for recipient in recipients {
         let recipient_public = recipient_public_key(&recipient)?;

@@ -264,6 +264,33 @@ class ProvenanceTests(unittest.TestCase):
                     self.assertIn("verify-blob", runner.call_args.args[0])
                 generic = dict(board, target_profile="generic", target_image=base,
                                qcow2_sha256="f" * 64)
+                updated = {**identity, "schema": "tilo.whpx-ci-installer-medium.v2",
+                           "os_source_revision": "c" * 40, "build_revision": "8" * 40}
+                path.write_text(json.dumps(updated))
+                with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stderr="", stdout="")):
+                    updated_board = proof.signed_medium_identity(path, ci_proof, key)
+                    for revision in (None, "invalid"):
+                        path.write_text(json.dumps({**updated, "os_source_revision": revision}))
+                        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+                            proof.signed_medium_identity(path, ci_proof, key)
+                updated_generic = {**generic, "build_revision": "8" * 40,
+                                   "os_source_revision": "c" * 40}
+                pair_args = ({"first_boot_verified": False,
+                              "installer_medium_sha256": "d" * 64},
+                             {"first_boot_verified": True,
+                              "installer_medium_sha256": "f" * 64},
+                             image.split("@", 1)[1], base.split("@", 1)[1], base, "c" * 40)
+                proof.checked_medium_pair(updated_board, updated_generic, *pair_args)
+                with self.assertRaisesRegex(ValueError, "source revision differs"):
+                    proof.checked_medium_pair(updated_board,
+                                              {**updated_generic, "os_source_revision": "9" * 40},
+                                              *pair_args)
+                with self.assertRaisesRegex(ValueError, "paired WHPX"):
+                    proof.checked_medium_pair(updated_board,
+                                              {**updated_generic, "build_revision": "7" * 40},
+                                              *pair_args)
+                path.write_text(json.dumps(identity))
                 proof.checked_medium_pair(board, generic,
                                           {"first_boot_verified": False,
                                            "installer_medium_sha256": "d" * 64},
@@ -371,11 +398,34 @@ class ProvenanceTests(unittest.TestCase):
                     json.dumps(value).encode()).decode()})
             good = proof.checked_slsa_attestation(wrapped(statement), digest, [], "lenovo-83ed")
             self.assertEqual(good["firmware_candidate"], candidate)
+            successor = copy.deepcopy(statement)
+            successor["predicate"]["buildDefinition"]["externalParameters"]["generation"] = 2
+            accepted = proof.checked_slsa_attestation(wrapped(successor), digest, [], "lenovo-83ed")
+            self.assertEqual(accepted["generation"], 2)
+            self.assertEqual(accepted["source_revision"], "d" * 40)
+            self.assertEqual(accepted["firmware_candidate"], candidate)
+            current = copy.deepcopy(statement)
+            metadata = current["predicate"]["runDetails"]["metadata"]
+            metadata["invocationID"] = metadata.pop("invocationId")
+            current["predicate"]["buildDefinition"]["resolvedDependencies"].extend([
+                {"uri": "registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:" + "1" * 64},
+                {"uri": "registry.tilo.so/tilo/tilo-development-windows-guest@sha256:" + "2" * 64}])
+            normalized = proof.checked_slsa_attestation(wrapped(current), digest, [], "lenovo-83ed")
+            self.assertEqual(normalized["invocation_id"], "123")
+            self.assertEqual(normalized["firmware_candidate"], candidate)
+            for name, change in (
+                ("duplicate firmware", lambda d: d["predicate"]["buildDefinition"]["resolvedDependencies"].append({"uri": candidate})),
+                ("ambiguous invocation", lambda d: d["predicate"]["runDetails"]["metadata"].update(invocationId="456"))):
+                with self.subTest(name=name):
+                    bad = copy.deepcopy(current)
+                    change(bad)
+                    with self.assertRaisesRegex(ValueError, "does not uniquely bind"):
+                        proof.checked_slsa_attestation(wrapped(bad), digest, [], "lenovo-83ed")
             for name, change in (
                 ("profile", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(hardwareProfile="other")),
                 ("architecture", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(architecture="x86_64")),
                 ("firmware", lambda d: d["predicate"]["buildDefinition"]["resolvedDependencies"][-1].update(uri="local")),
-                ("generation", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(generation=2))):
+                ("generation", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(generation=0))):
                 with self.subTest(name=name):
                     bad = copy.deepcopy(statement)
                     change(bad)

@@ -159,9 +159,40 @@ pub enum StartCause {
     Init,
 }
 
+/// Content-free operation for an opted-in original Wayland text field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrivateIme {
+    pub serial: u32,
+    pub kind: PrivateImeKind,
+    pub snapshot: [u8; 32],
+}
+/// Admission metadata; final text still arrives as the standard IME commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateImeKind {
+    Prepare,
+    Start,
+    Final,
+    Cancel,
+}
+impl PrivateImeKind {
+    #[doc(hidden)]
+    pub fn from_protocol(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Prepare),
+            1 => Some(Self::Start),
+            2 => Some(Self::Final),
+            3 => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+}
+
 /// Describes an event from a [`Window`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
+    /// Original-field metadata beside standard IME delivery; contains no text.
+    PrivateIme(PrivateIme),
+
     /// The activation token was delivered back and now could be used.
     #[cfg_attr(
         not(any(x11_platform, wayland_platform)),
@@ -239,6 +270,10 @@ pub enum WindowEvent {
     /// The keyboard modifiers have changed.
     ModifiersChanged(Modifiers),
 
+    /// Immutable symbols and masks of the focused Wayland keyboard. `None`
+    /// revokes an unavailable keymap; other platforms do not fabricate one.
+    KeyboardLayoutChanged(Option<std::sync::Arc<crate::keyboard::KeyboardLayout>>),
+
     /// An event from an input method.
     ///
     /// **Note:** You have to explicitly enable this event using [`Window::set_ime_allowed`].
@@ -301,6 +336,33 @@ pub enum WindowEvent {
         device_id: DeviceId,
         state: ElementState,
         button: MouseButton,
+    },
+
+    /// The stylus behind the pointer event that follows: a pen, or the
+    /// eraser end of one, with its pressure and tilt.
+    ///
+    /// A stylus still moves the cursor and clicks as a mouse does, so every
+    /// window works with one. This event comes immediately before each
+    /// [`WindowEvent::CursorMoved`] and [`WindowEvent::MouseInput`] a stylus
+    /// produces, for the same window; a mouse's events come without one. The
+    /// tip touching the surface is the left button, the barrel buttons the
+    /// right and middle ones.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - Only available on **Wayland**, with a compositor offering
+    ///   `zwp_tablet_manager_v2`.
+    PenSample {
+        device_id: DeviceId,
+        /// How hard the tip is pressed, `0.0..=1.0`: `0.0` while it hovers,
+        /// and on a tool that reports no pressure.
+        pressure: f64,
+        /// The tool's tilt in degrees from the surface normal, towards the
+        /// positive x and y axes, each within `-90.0..=90.0`: `(0.0, 0.0)`
+        /// upright, and on a tool that reports no tilt.
+        tilt: (f64, f64),
+        /// The tool is an eraser, such as the back end of a pen.
+        eraser: bool,
     },
 
     /// A completed three-finger trackpad swipe.
@@ -725,6 +787,8 @@ impl KeyEvent {
             orbital_platform,
         ))]
         let platform_specific = platform_impl::KeyEventExtra {
+            #[cfg(any(x11_platform, wayland_platform))]
+            wayland_stamp: None,
             text_with_all_modifiers,
             key_without_modifiers,
         };
@@ -1175,6 +1239,12 @@ mod tests {
                     device_id: did,
                     state: event::ElementState::Pressed,
                     button: event::MouseButton::Other(0),
+                });
+                with_window_event(PenSample {
+                    device_id: did,
+                    pressure: 0.5,
+                    tilt: (0.0, 0.0),
+                    eraser: false,
                 });
                 with_window_event(PinchGesture {
                     device_id: did,

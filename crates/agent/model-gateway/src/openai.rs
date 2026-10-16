@@ -10,7 +10,6 @@
 //! answers failures as `{"error": "...", "code": "..."}`.
 
 use std::fmt;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -108,14 +107,14 @@ pub fn idempotency_key(parts: &[&[u8]]) -> String {
     // RFC 9562 version 8 (custom) with the RFC variant.
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let mut key = String::with_capacity(36);
-    for (at, byte) in bytes.iter().enumerate() {
-        if matches!(at, 4 | 6 | 8 | 10) {
-            key.push('-');
-        }
-        let _ = write!(key, "{byte:02x}");
-    }
-    key
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex::encode(&bytes[0..4]),
+        hex::encode(&bytes[4..6]),
+        hex::encode(&bytes[6..8]),
+        hex::encode(&bytes[8..10]),
+        hex::encode(&bytes[10..16])
+    )
 }
 
 /// The key for turn `turn` of one planning run seeded by `run`, asking with
@@ -163,12 +162,25 @@ pub struct ToolCall {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Turn {
     /// The assistant message to send back on the next turn, holding only the
-    /// fields every endpoint accepts.
+    /// tool-call fields and optional provider reasoning metadata. Replay this
+    /// only within the conversation with the endpoint that produced it.
     pub message: Value,
     /// Its function calls, in order.
     pub calls: Vec<ToolCall>,
     /// Its text, if it said anything.
     pub text: Option<String>,
+}
+
+/// Read provider-authored reasoning metadata for same-conversation replay.
+/// This is separate from user-visible final content; absent/null stays absent.
+/// # Errors
+/// Rejects non-string reasoning content rather than guessing or coercing it.
+pub fn reasoning_content(message: &Value) -> Result<Option<&str>, String> {
+    match message.get("reasoning_content") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err("the model's reasoning_content was not a string".into()),
+    }
 }
 
 /// The first choice of a chat-completions response.
@@ -210,19 +222,36 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
             name: name.to_owned(),
             input: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
         });
-        echoed.push(json!({
+        let mut replay = json!({
             "id": id,
             "type": "function",
             "function": { "name": name, "arguments": arguments },
-        }));
+        });
+        // Gemini on Vertex AI signs each call and refuses a next turn
+        // whose replayed call lacks its `thought_signature`.
+        if let (Some(extra), Some(object)) = (
+            call.get("extra_content").filter(|extra| extra.is_object()),
+            replay.as_object_mut(),
+        ) {
+            object.insert("extra_content".into(), extra.clone());
+        }
+        echoed.push(replay);
     }
-    let message = if echoed.is_empty() {
+    let mut replay = if echoed.is_empty() {
         json!({ "role": "assistant", "content": text.clone().unwrap_or_default() })
     } else {
         json!({ "role": "assistant", "content": text, "tool_calls": echoed })
     };
+    if let Some(reasoning) = reasoning_content(message)?
+        && let Some(object) = replay.as_object_mut()
+    {
+        object.insert(
+            "reasoning_content".into(),
+            Value::String(reasoning.to_owned()),
+        );
+    }
     Ok(Turn {
-        message,
+        message: replay,
         calls,
         text,
     })
@@ -482,6 +511,41 @@ mod tests {
             json!({"role": "assistant", "content": null, "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
         );
+    }
+
+    /// Vertex AI's Gemini signs each call; the signature is replayed with
+    /// it, or the next turn is refused.
+    #[test]
+    fn a_signed_tool_call_is_echoed_with_its_signature() {
+        let signature = json!({"google": {"thought_signature": "c2ln"}});
+        let turn = read_turn(&json!({"choices": [{"message": {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
+                "function": {"name": "plan", "arguments": "{}"}}]
+        }}]}))
+        .unwrap();
+        assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
+    }
+
+    #[test]
+    fn provider_reasoning_is_replayed_without_becoming_final_text() {
+        let response = json!({"choices":[{"message":{"content":"done","reasoning_content":"provider reasoning","tool_calls":[]}}]});
+        let turn = read_turn(&response).unwrap();
+        assert_eq!(turn.text.as_deref(), Some("done"));
+        assert_eq!(turn.message["reasoning_content"], "provider reasoning");
+        assert_eq!(turn.message["content"], "done");
+        for invalid in [json!({}), json!([]), json!(true), json!(17)] {
+            let malformed =
+                json!({"choices":[{"message":{"content":"done","reasoning_content":invalid}}]});
+            assert!(read_turn(&malformed).is_err());
+        }
+        for absent in [
+            json!({"content":"done"}),
+            json!({"content":"done","reasoning_content":null}),
+        ] {
+            let turn = read_turn(&json!({"choices":[{"message":absent}]})).unwrap();
+            assert!(turn.message.get("reasoning_content").is_none());
+        }
     }
 
     #[test]

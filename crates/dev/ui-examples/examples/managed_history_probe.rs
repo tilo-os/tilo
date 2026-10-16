@@ -15,6 +15,7 @@
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::RefCell, collections::HashMap};
 use taffy::{NodeId, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::{
     State,
     history_mode::{
@@ -132,9 +133,6 @@ impl AppWidget for Note {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("N")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 impl Widget for Note {
     fn name(&self) -> &'static str {
@@ -220,11 +218,11 @@ fn fixture() -> (
     let note = Note(
         Column::new()
             .push(Box::new(
-                Text::new("Shared native History probe").with_size(28.0),
+                Text::new("Shared native History probe").with_role(TextRole::LargeTitle),
             ))
             .push(Box::new(
                 Text::from_document(|doc, _| format!("Live document: {}", body(doc)))
-                    .with_size(22.0),
+                    .with_role(TextRole::LargeTitle),
             )),
     );
     let mut tile = TileHost::new(TileContent::App(Box::new(note)));

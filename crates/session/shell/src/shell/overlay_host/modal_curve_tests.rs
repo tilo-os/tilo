@@ -65,12 +65,13 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         // Deterministic proof (no wall-clock sleep) that the palette fades
         // out rather than popping, by sampling openness at explicit instants.
         let mut t = ui::Transition::open();
-        t.set_open(
+        let start = Instant::now();
+        t.set_open_at(
             false,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
             ui::Curve::EaseOut,
+            start,
         );
-        let start = Instant::now();
         let at_start = t.value(start);
         let at_mid = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS / 3));
         let at_end = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50));
@@ -119,7 +120,7 @@ fn modal_transitions_pump_only_the_frames_they_need() {
 
     fn osd_sleeps_while_opaque_and_pumps_only_its_fade_tail() {
         use crate::shell::chrome_state::ChromeState;
-        use crate::shell::osd::{OSD_FADE, OSD_HOLD, Osd};
+        use crate::shell::osd::{OSD_FADE, OSD_FADE_IN, OSD_HOLD, Osd};
         use crate::shell::state::WorkspaceTree;
         use ui::widget::Container;
 
@@ -130,7 +131,11 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         chrome.borrow_mut().show_osd(osd);
 
         assert!(
-            !host.needs_animation_frame_at(raised_at),
+            host.needs_animation_frame_at(raised_at),
+            "the fade-in pumps its frames"
+        );
+        assert!(
+            !host.needs_animation_frame_at(raised_at + OSD_FADE_IN),
             "the static hold must not repaint continuously"
         );
         let expiry = raised_at.checked_add(OSD_HOLD).unwrap();

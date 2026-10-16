@@ -67,6 +67,9 @@ pub enum FakeFault {
     ServerError,
     /// The next download declares its full length but sends half the body.
     TruncatedBody,
+    /// The next download sends half the body, declares no length and closes
+    /// the connection.
+    ClosedEarly,
     /// 401 once, as for an expired access token.
     ExpiredCredential,
 }
@@ -366,7 +369,7 @@ fn split_path(path: &str) -> (&str, &str) {
 
 fn guid_for(id: &str) -> String {
     let digest = sha2::Sha256::digest(id.as_bytes());
-    let hex = upper_hex(&digest);
+    let hex = hex::encode_upper(digest);
     let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or("0").to_owned();
     format!(
         "{}-{}-{}-{}-{}",
@@ -376,14 +379,6 @@ fn guid_for(id: &str) -> String {
         part(16..20),
         part(20..32)
     )
-}
-
-fn upper_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02X}");
-        out
-    })
 }
 
 fn in_an_hour() -> SystemTime {
@@ -706,7 +701,7 @@ impl State {
             Kind::File => {
                 let mut hashes = json!({"quickXorHash": quick_xor_base64(&node.bytes)});
                 if !business {
-                    let sha = upper_hex(&sha2::Sha256::digest(&node.bytes));
+                    let sha = hex::encode_upper(sha2::Sha256::digest(&node.bytes));
                     hashes["sha256Hash"] = json!(sha);
                 }
                 value["file"] = json!({
@@ -792,7 +787,7 @@ impl State {
             return Some(error(404, "itemNotFound"));
         };
         self.stats.graph_requests = self.stats.graph_requests.saturating_add(1);
-        match self.take_fault(|f| f != FakeFault::TruncatedBody) {
+        match self.take_fault(|f| !matches!(f, FakeFault::TruncatedBody | FakeFault::ClosedEarly)) {
             Some(FakeFault::RateLimited) => {
                 return Some(error(429, "activityLimitReached").header("Retry-After", "1"));
             }
@@ -1351,7 +1346,7 @@ impl State {
         self.stats.fragments = self.stats.fragments.saturating_add(1);
         let Some((range, Some(total))) = request
             .header("content-range")
-            .and_then(crate::paths::parse_content_range)
+            .and_then(cloud_source::http::parse_content_range)
         else {
             return error(400, "invalidRequest");
         };
@@ -1416,7 +1411,10 @@ impl State {
         let fault = self.take_fault(|f| {
             matches!(
                 f,
-                FakeFault::RateLimited | FakeFault::ServerError | FakeFault::TruncatedBody
+                FakeFault::RateLimited
+                    | FakeFault::ServerError
+                    | FakeFault::TruncatedBody
+                    | FakeFault::ClosedEarly
             )
         });
         match fault {
@@ -1456,15 +1454,11 @@ impl State {
         if let Some(content_range) = content_range {
             reply = reply.header("Content-Range", &content_range);
         }
-        if fault == Some(FakeFault::TruncatedBody) {
-            let declared = body.len();
-            let half = body.get(..declared / 2).unwrap_or_default().to_vec();
-            return reply
-                .header("Content-Length", &declared.to_string())
-                .body(half)
-                .without_content_length();
+        match fault {
+            Some(FakeFault::TruncatedBody) => reply.body(body).cut_short(true),
+            Some(FakeFault::ClosedEarly) => reply.body(body).cut_short(false),
+            _ => reply.body(body),
         }
-        reply.body(body)
     }
 }
 

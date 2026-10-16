@@ -4,16 +4,28 @@ Documentation=https://github.com/tilo/tilo
 PartOf=graphical-session.target
 
 [Service]
+# Session-critical: file access the person is waiting on (see
+# os/etc/systemd/user/session.slice.d).
+Slice=session.slice
 Type=simple
 # The launcher connects to this per-user socket and passes only the connected
 # descriptor into sandboxed Files. Bearer URIs never enter process arguments.
-# Create the FUSE and cache roots before the sandbox treats a missing
-# `-%h/...` path as absent and then refuses create_dir_all on a read-only home.
-ExecStartPre=-/usr/bin/mkdir -p %h/Shared %h/.cache/tilo/received-files
+# The FUSE and cache roots come from user-tmpfiles.d/tilo-fs.conf: the home
+# is read-only in the sandbox, and a user unit with PrivateIPC=yes cannot
+# run a second sandboxed process such as an ExecStartPre (systemd 259:
+# 226/NAMESPACE).
 ExecStart=/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock --mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files
 Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=15s
+
+# The sandbox below runs in a user namespace that maps only this account, so
+# the root-owned device key would read as owned by nobody and be refused. The
+# service manager, a member of tilo-identity, reads it and passes the service
+# its own copy. Before enrollment there is no key: the placeholder is no key,
+# and the service waits idle instead of failing to start.
+LoadCredential=device-key:/var/lib/tilo/device-private/keypair.bin
+SetCredential=device-key:absent
 
 # Recipient mounts require `fusermount3`'s privilege transition in supervised
 # children, so NoNewPrivileges must remain off. Other kernel-facing surfaces

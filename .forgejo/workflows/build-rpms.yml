@@ -17,6 +17,7 @@ on:
       - os/base-snapshot.env
       - os/Containerfile.rpms
       - os/dev/verify-rpm-snapshot-signatures.sh
+      - os/scripts/verify-no-cisco-openh264.sh
       - os/dev/layer-rpm-snapshot.py
       - os/dev/rpm-snapshot-fingerprint.py
       - os/dev/resolve-rpm-snapshot.sh
@@ -35,6 +36,8 @@ on:
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
+      - os/Containerfile.env-runtime
+      - os/dev/uki-tools.packages
       - .forgejo/workflows/build-rpms.yml
 
 concurrency:
@@ -48,15 +51,13 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       fingerprint: ${{ steps.fp.outputs.fingerprint }}
       tag: ${{ steps.fp.outputs.tag }}
       exists: ${{ steps.fp.outputs.exists }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install registry tools
         run: |
           if ! command -v skopeo >/dev/null; then
@@ -90,7 +91,7 @@ jobs:
     if: >-
       needs.fingerprint.outputs.exists != 'true'
       && github.ref == 'refs/heads/main'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -127,8 +128,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -226,7 +225,7 @@ jobs:
           PY
 
       - name: Upload the native child descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: rpms-native-${{ matrix.arch }}
           path: native-child/
@@ -244,7 +243,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
 
@@ -260,7 +258,7 @@ jobs:
 
       - name: Download native child descriptors
         if: env.skip != 'true'
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: native-children
 
@@ -404,13 +402,11 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh

@@ -13,26 +13,17 @@
 //! ```
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::frame::FrameBuilder;
 use vello::kurbo::Point;
 use vello::peniko::Color;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 const W: u32 = 1600;
 const H: u32 = 900;
@@ -58,34 +49,20 @@ impl Driver {
     }
     fn send(&mut self, fb: &mut FrameBuilder, ev: &WindowEvent) {
         let mods = Modifiers::default();
-        fb.dispatch_event(ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+        fb.dispatch_event(
+            ev,
+            &mods,
+            &mut ui::widget::Edits::lend(&mut self.doc),
+            &ROOT,
+            &mut self.focus,
+        );
     }
     fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
-        self.send(
-            fb,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-            },
-        );
+        self.send(fb, &ui::synthetic_input::cursor_moved(p.x, p.y));
     }
     fn click(&mut self, fb: &mut FrameBuilder) {
-        self.send(
-            fb,
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        self.send(
-            fb,
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
+        self.send(fb, &ui::synthetic_input::mouse_press());
+        self.send(fb, &ui::synthetic_input::mouse_release());
     }
 }
 

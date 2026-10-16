@@ -18,6 +18,13 @@
 //!
 //! Only then does the caller make the identical call on its own document.
 //! Automerge is deterministic, so that call does what the worker's did.
+//! [`Isolate::load`] skips the part of that call whose result the worker
+//! already has:
+//! the worker rebuilds and hashes every change of a document chunk and checks
+//! them against the heads the chunk stores, then hands the caller those
+//! hashes, so the caller's load of the same bytes takes them rather than
+//! rebuilding and hashing every change again (about half of loading a large
+//! document). It builds the same document.
 //!
 //! Workers are long-lived and keep copies of the documents they have seen,
 //! keyed by state, so an incoming change costs the change, not a reload of
@@ -42,19 +49,7 @@
 //! A wasm build has no processes. There [`Isolate`] only pre-checks and then
 //! applies in the page, to a copy that replaces the document on success. The
 //! browser's bound comes from where its bytes come from: publications are
-//! signed by the host, which admitted them through its workers first, and
-//! frames from other browsers are checked by the page in a Web Worker (see the
-//! browser runtime's `automerge-check-worker.mjs`).
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! signed by the host, which admitted them through its workers first.
 
 mod engine;
 #[cfg(target_os = "linux")]
@@ -246,24 +241,6 @@ pub fn apply(
 /// A [`Rejected`] reason.
 pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
-}
-
-/// Run the check a browser Web Worker performs for the page: apply
-/// `incoming` to the document saved as `base` (empty for none) in this
-/// process. Only for a process whose crash costs nothing but the check.
-///
-/// # Errors
-///
-/// A [`Rejected`] reason.
-pub fn check_here(
-    base: &[u8],
-    incoming: &[u8],
-    dependencies: Dependencies,
-    limits: &Limits,
-) -> Result<Applied, Rejected> {
-    precheck::check(incoming, limits)?;
-    let mut doc = engine::load(base)?;
-    engine::apply(&mut doc, incoming, dependencies)
 }
 
 /// Outside Linux there are no workers yet, so none of their bounds apply:

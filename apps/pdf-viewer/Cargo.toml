@@ -19,17 +19,17 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
+hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-blake3.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # The Tilo ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Comment and reply text is rich text, written in the SDK editor.
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 tilo-content = { path = "../../crates/system/content" }
 serde.workspace = true

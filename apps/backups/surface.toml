@@ -1,0 +1,14 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "backups.workspace"
+label = "Backups"
+version = 1
+fields = [
+  { path = "policy", type = "RetentionPolicy", stored = "record" },
+  { path = "policy.hourly", type = "u32" },
+  { path = "policy.daily", type = "u32" },
+  { path = "policy.weekly", type = "u32" },
+  { path = "policy.monthly", type = "u32" },
+]
+

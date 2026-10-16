@@ -2,6 +2,7 @@ use super::*;
 use crate::SeedState;
 use crate::seed_room;
 use automerge::AutoCommit;
+use collab_types::CommitNamed as _;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -98,10 +99,16 @@ fn room_media_reconciliation_promotes_verified_union_once_and_does_not_change_ep
     let mut candidate = revoked(&peer, &root, now);
     assert!(
         candidate
+            .media()
             .validate_media_governance_for_publication()
             .is_err()
     );
-    assert!(candidate.reconcile_media_governance(&key, now).unwrap());
+    assert!(
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&key, now)
+            .unwrap()
+    );
     assert_eq!(
         candidate
             .validated_media_policy()
@@ -111,18 +118,35 @@ fn room_media_reconciliation_promotes_verified_union_once_and_does_not_change_ep
         2
     );
     let bytes = candidate.durable().unwrap();
-    assert!(!candidate.reconcile_media_governance(&key, now).unwrap());
+    assert!(
+        !candidate
+            .media_mut()
+            .reconcile_media_governance(&key, now)
+            .unwrap()
+    );
     assert_eq!(candidate.durable().unwrap(), bytes);
-    assert!(peer.verify_security_metadata_only(&candidate).is_err());
+    assert!(
+        peer.media()
+            .verify_security_metadata_only(&candidate)
+            .is_err()
+    );
 }
 #[test]
 fn room_media_exhaustion_preserves_only_sealed_verified_metadata_and_reopens_denied() {
     let (peer, root, key, now) = fixture(u64::MAX);
     let mut candidate = revoked(&peer, &root, now);
     let bytes = candidate.durable().unwrap();
-    assert!(candidate.reconcile_media_governance(&key, now).is_err());
+    assert!(
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&key, now)
+            .is_err()
+    );
     assert_eq!(candidate.durable().unwrap(), bytes);
-    let proof = peer.verify_security_metadata_only(&candidate).unwrap();
+    let proof = peer
+        .media()
+        .verify_security_metadata_only(&candidate)
+        .unwrap();
     proof.validate(&peer, &candidate).unwrap();
     let restored = StatePeer::restore(
         &bytes,
@@ -141,7 +165,7 @@ fn room_media_exhaustion_preserves_only_sealed_verified_metadata_and_reopens_den
             .authorization_revision,
         u64::MAX
     );
-    assert!(peer.verify_security_metadata_only(&peer).is_err());
+    assert!(peer.media().verify_security_metadata_only(&peer).is_err());
     let mut changed = candidate.clone();
     changed.core.receipts.insert("unrelated".into(), vec![1]);
     assert!(proof.validate(&peer, &changed).is_err());
@@ -190,13 +214,14 @@ fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
     )
     .unwrap();
     assert!(
-        peer.admit_certificate_with_workspace_delegation(
-            cert.clone(),
-            delegation.clone(),
-            &key,
-            now
-        )
-        .unwrap()
+        peer.governance_mut()
+            .admit_certificate_with_workspace_delegation(
+                cert.clone(),
+                delegation.clone(),
+                &key,
+                now
+            )
+            .unwrap()
     );
     assert_eq!(
         peer.validated_media_policy()
@@ -207,6 +232,7 @@ fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_certificate_with_workspace_delegation(cert, delegation, &key, now)
             .unwrap()
     );
@@ -223,7 +249,12 @@ fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
 fn room_media_reconciliation_preserves_disabled_policy_before_first_call() {
     let (peer, root, key, now) = fixture(0);
     let mut candidate = revoked(&peer, &root, now);
-    assert!(candidate.reconcile_media_governance(&key, now).unwrap());
+    assert!(
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&key, now)
+            .unwrap()
+    );
     assert!(candidate.validated_media_policy().unwrap().is_none());
     assert_eq!(
         media::security_basis(candidate.admitted_room().unwrap(), &[]).unwrap(),
@@ -238,8 +269,11 @@ fn room_media_security_projection_keeps_stored_state_and_binds_stored_proof() {
     let mut live = stored.clone();
     live.core.receipts.insert("volatile-only".into(), vec![7]);
     let observed = revoked(&live, &root, now);
-    live.verify_security_metadata_only(&observed).unwrap();
+    live.media()
+        .verify_security_metadata_only(&observed)
+        .unwrap();
     let (projected, proof) = stored
+        .media()
         .project_verified_security_metadata(&observed)
         .unwrap();
     assert!(!projected.core.receipts.contains_key("volatile-only"));
@@ -255,6 +289,7 @@ fn room_media_security_projection_keeps_stored_state_and_binds_stored_proof() {
     wrong_room.core.room = "different".into();
     assert!(
         stored
+            .media()
             .project_verified_security_metadata(&wrong_room)
             .is_err()
     );
@@ -262,10 +297,16 @@ fn room_media_security_projection_keeps_stored_state_and_binds_stored_proof() {
     wrong_authority.core.authority.device_label = "different".into();
     assert!(
         stored
+            .media()
             .project_verified_security_metadata(&wrong_authority)
             .is_err()
     );
-    assert!(stored.project_verified_security_metadata(&stored).is_err());
+    assert!(
+        stored
+            .media()
+            .project_verified_security_metadata(&stored)
+            .is_err()
+    );
 }
 
 #[test]
@@ -294,7 +335,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_roundtrip() {
         let before = chat.get_heads();
         chat.put(ROOT, format!("author-{seed}"), u64::from(seed))
             .unwrap();
-        chat.commit();
+        chat.commit_edit("fixture", "fixture");
         peer.publish_incremental("so.tilo.chat", "", chat.save_after(&before), &author, now)
             .unwrap();
     }
@@ -352,6 +393,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_roundtrip() {
     };
     let stored = restore();
     let (projected, proof) = stored
+        .media()
         .project_verified_security_metadata(&revoked(&stored, &root, now))
         .unwrap();
     // Require an actual different randomized map order, not a lucky single
@@ -477,9 +519,15 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
             .revocations
             .is_revoked(&peer.core.authority.device_public_key)
     );
-    let proof = peer.verify_security_metadata_only(&observed).unwrap();
+    let proof = peer
+        .media()
+        .verify_security_metadata_only(&observed)
+        .unwrap();
     proof.validate(&peer, &observed).unwrap();
-    let (projected, projected_proof) = peer.project_verified_security_metadata(&observed).unwrap();
+    let (projected, projected_proof) = peer
+        .media()
+        .project_verified_security_metadata(&observed)
+        .unwrap();
     projected_proof.validate(&peer, &projected).unwrap();
     assert_eq!(projected.durable().unwrap(), observed.durable().unwrap());
     assert!(
@@ -505,12 +553,23 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn room_media_security_no_policy_rejects_wrong_root_and_unrelated_mutations() {
     let (peer, root, key, now) = no_policy_document_fixture();
     let candidate = revoked(&peer, &root, now);
-    let proof = peer.verify_security_metadata_only(&candidate).unwrap();
-    assert!(peer.verify_security_metadata_only(&peer).is_err());
-    assert!(peer.project_verified_security_metadata(&peer).is_err());
+    let proof = peer
+        .media()
+        .verify_security_metadata_only(&candidate)
+        .unwrap();
+    assert!(peer.media().verify_security_metadata_only(&peer).is_err());
+    assert!(
+        peer.media()
+            .project_verified_security_metadata(&peer)
+            .is_err()
+    );
     let foreign_root = SigningKey::from_bytes(&[210; 32]);
     let mut foreign = RevocationEntry {
         user_public_key: foreign_root.verifying_key().to_bytes(),
@@ -522,9 +581,14 @@ fn room_media_security_no_policy_rejects_wrong_root_and_unrelated_mutations() {
     sign_revocation_entry(&mut foreign, &foreign_root).unwrap();
     let mut wrong_root = peer.clone();
     wrong_root.core.revocations.insert(foreign.clone()).unwrap();
-    assert!(peer.verify_security_metadata_only(&wrong_root).is_err());
     assert!(
-        peer.project_verified_security_metadata(&wrong_root)
+        peer.media()
+            .verify_security_metadata_only(&wrong_root)
+            .is_err()
+    );
+    assert!(
+        peer.media()
+            .project_verified_security_metadata(&wrong_root)
             .is_err()
     );
     let mut received = peer.clone();
@@ -603,7 +667,12 @@ fn room_media_security_no_policy_rejects_wrong_root_and_unrelated_mutations() {
 fn room_media_security_no_policy_requires_an_effective_security_basis_change() {
     let (peer, root, key, now) = fixture(0);
     let mut governed = revoked(&peer, &root, now);
-    assert!(governed.reconcile_media_governance(&key, now).unwrap());
+    assert!(
+        governed
+            .media_mut()
+            .reconcile_media_governance(&key, now)
+            .unwrap()
+    );
     // The signed room already carries this revocation. Adding the same entry
     // only to its durable sidecar is not a new effective security change.
     governed.core.revocations = RevocationList::new();
@@ -615,12 +684,14 @@ fn room_media_security_no_policy_requires_an_effective_security_basis_change() {
     );
     assert_eq!(
         governed
+            .media()
             .verify_security_metadata_only(&duplicate)
             .unwrap_err(),
         "security metadata does not change the verified security basis"
     );
     assert!(
         governed
+            .media()
             .project_verified_security_metadata(&duplicate)
             .is_err()
     );

@@ -34,27 +34,14 @@ const MAX_VALUE: usize = 16 * 1024;
 #[cfg(target_os = "linux")]
 const MAX_ENTRIES: usize = 4096;
 
-#[allow(
-    dead_code,
-    reason = "legacy scalar variants remain readable during store migration"
-)]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 enum StoredValue {
+    #[default]
     Empty,
     /// Complete D-Bus variant encoding. This preserves arbitrary bounded
     /// portal restore tuples/dictionaries instead of narrowing the standard
     /// `v` field to a handful of scalar types.
     Wire(Vec<u8>),
-    Bool(bool),
-    Unsigned(u32),
-    Text(String),
-    Texts(Vec<String>),
-}
-
-impl Default for StoredValue {
-    fn default() -> Self {
-        Self::Empty
-    }
 }
 
 impl StoredValue {
@@ -88,11 +75,6 @@ impl StoredValue {
                     .map(|(value, _)| value)
                     .unwrap_or_else(|| OwnedValue::from(Str::from("")))
             }
-            Self::Bool(value) => OwnedValue::from(*value),
-            Self::Unsigned(value) => OwnedValue::from(*value),
-            Self::Text(value) => OwnedValue::from(Str::from(value.as_str())),
-            Self::Texts(values) => OwnedValue::try_from(zbus::zvariant::Value::new(values.clone()))
-                .unwrap_or_else(|_| OwnedValue::from(Str::from(""))),
         }
     }
 }
@@ -151,14 +133,14 @@ impl PermissionStoreBackend {
 impl PermissionStoreData {
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = atomic_file::json::load_or_default(&path);
+        let state = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             state: Arc::new(Mutex::new(state)),
             path: Arc::new(path),
         }
     }
     fn commit(&self, state: &StoreFile) -> zbus::fdo::Result<()> {
-        atomic_file::json::write_private(&self.path, state)
+        tilo_files::native::atomic::json::write_private(&self.path, state)
             .map_err(|e| failed(&format!("cannot commit permission store: {e}")))
     }
 
@@ -522,7 +504,7 @@ mod tests {
                                 "org.example.App".into(),
                                 vec!["yes".into()],
                             )]),
-                            data: StoredValue::Text("x".into()),
+                            data: StoredValue::Empty,
                         },
                     );
                     Ok(())

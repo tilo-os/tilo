@@ -3,47 +3,17 @@
 //! Each macro expands inside an `impl Widget for ...` (or produces the whole
 //! `impl AppWidget`) so a probe only spells out the methods it observes.
 
-/// No-op implementations of required [`Widget`](crate::widget::Widget)
-/// methods. Without arguments it emits `apply_layout`, `draw` and a zero
-/// `get_rect`; with a list it emits exactly the named pieces:
+/// Stubs for [`Widget`](crate::widget::Widget) methods a probe does not
+/// observe; it emits exactly the named pieces:
 ///
-/// - `apply_layout`, `draw`: do nothing
-/// - `get_rect`: [`Rect::ZERO`](vello::kurbo::Rect::ZERO)
 /// - `leaf_layout`: a default-styled leaf registered for this widget
 /// - `unregistered_leaf_layout`: a default-styled leaf left out of the node map
 /// - `name = "..."`: a fixed widget name
 /// - `name_field`: the name stored in `self.name`
 ///
-/// `handle_event` needs no stub: the trait default ignores every event.
+/// `apply_layout`, `draw`, `get_rect` and `handle_event` need no stub: the
+/// trait defaults do nothing.
 macro_rules! inert_widget_methods {
-    () => {
-        $crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
-    };
-    (@ apply_layout) => {
-        fn apply_layout(
-            &mut self,
-            _: &::taffy::TaffyTree<()>,
-            _: ::taffy::NodeId,
-            _: ::vello::kurbo::Point,
-        ) {
-        }
-    };
-    (@ draw) => {
-        fn draw(
-            &mut self,
-            _: &mut ::vello::Scene,
-            _: ::vello::kurbo::Affine,
-            _: &mut $crate::text_render::TextRenderer,
-            _: &$crate::theme::Theme,
-            _: &$crate::presence::PresenceCtx,
-        ) {
-        }
-    };
-    (@ get_rect) => {
-        fn get_rect(&self) -> ::vello::kurbo::Rect {
-            ::vello::kurbo::Rect::ZERO
-        }
-    };
     (@ leaf_layout) => {
         fn build_layout(
             &mut self,
@@ -90,7 +60,7 @@ macro_rules! inert_widget_methods {
 /// handle_event, get_rect)`.
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
-        fn sync(&mut self, doc: &mut $crate::widget::AppModel, path: &$crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &$crate::widget::AppModel, path: &$crate::widget::ModelPath) {
             self.$field.sync(doc, path);
         }
     };

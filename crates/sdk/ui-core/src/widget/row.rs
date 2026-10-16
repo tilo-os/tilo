@@ -1,17 +1,11 @@
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
+use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use winit::event::WindowEvent;
 
 /// Keep the small savings from coalescing adjacent row children without
 /// turning sparse animation damage into a broad horizontal strip. A merged
@@ -24,35 +18,8 @@ fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
         && a.union(b).width() * a.union(b).height() <= covered_area * MAX_DAMAGE_MERGE_OVERDRAW
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent invalidation and cache flags model orthogonal retained-widget state"
-)]
 pub struct Row {
-    children: Vec<Box<dyn Widget>>,
-    /// Retained Taffy identities for `children`. Rebuilt only with the layout
-    /// tree; hot event/layout traversal must not allocate `taffy.children()`.
-    child_nodes: Vec<NodeId>,
-    /// Stable graph / test identity when this row was built from a serialized
-    /// UI node.
-    id: Option<String>,
-    rect: vello::kurbo::Rect,
-    /// Overflow extent used for culling independently of an exact allocation.
-    paint_rect: vello::kurbo::Rect,
-    presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
+    flow: Flow,
     /// When set, the row keeps all children on one line (no flex wrap) —
     /// the right choice for a toolbar of fixed-size buttons.
     no_wrap: bool,
@@ -63,9 +30,6 @@ pub struct Row {
     /// Optional explicit insets for toolbars and sticky action rows.
     horizontal_padding: f32,
     vertical_padding: f32,
-    /// See [`Row::with_gap`]. `None` is the theme's `gap_standard` on both
-    /// axes (between children, and between wrapped lines).
-    gap_override: Option<f32>,
     /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
     justify: Option<taffy::JustifyContent>,
     /// See [`Row::with_align_items`]. `None` keeps the fill-height /
@@ -74,12 +38,11 @@ pub struct Row {
     /// Align intrinsic-height children to the top edge. The default remains
     /// centred for toolbars and compact control rows.
     align_start: bool,
-    /// Subtree cache — same pattern as `Column::subtree_cache`.
-    /// See that field for the gory rationale.
-    subtree_cache: Scene,
-    cache_rect: vello::kurbo::Rect,
-    cache_present: bool,
-    descendant_caches_released: bool,
+    /// See [`Row::with_min_height`]: resolved from the theme at layout.
+    min_height: Option<super::ControlSize>,
+    /// The gap, padding (across, along) and minimum height the last layout
+    /// resolved from the theme, for [`Widget::measure`].
+    resolved: (f32, f32, f32, f32),
 }
 
 impl Default for Row {
@@ -91,61 +54,27 @@ impl Default for Row {
 impl Row {
     pub fn new() -> Self {
         Self {
-            children: Vec::new(),
-            child_nodes: Vec::new(),
-            id: None,
-            rect: vello::kurbo::Rect::ZERO,
-            paint_rect: vello::kurbo::Rect::ZERO,
-            presence_path: Vec::new(),
-            permission_scope: None,
+            flow: Flow::new(),
             no_wrap: false,
             fill_height: false,
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
-            gap_override: None,
             justify: None,
             align_items_override: None,
             align_start: false,
-            subtree_cache: Scene::new(),
-            cache_rect: vello::kurbo::Rect::ZERO,
-            cache_present: false,
-            descendant_caches_released: false,
+            min_height: None,
+            resolved: (0.0, 0.0, 0.0, 0.0),
         }
     }
 
-    #[must_use]
-    pub fn push(mut self, child: Box<dyn Widget>) -> Self {
-        self.children.push(child);
-        self
-    }
-
-    /// Address this row by a stable id in inspection and graph reconcile.
-    #[must_use]
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-
-    /// Take ownership of the child list for identity-preserving reconcile.
-    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
-        self.child_nodes.clear();
-        self.cache_present = false;
-        std::mem::take(&mut self.children)
-    }
-
-    /// Replace the child list after a graph reconcile pass.
-    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
-        self.children = children;
-        self.child_nodes.clear();
-        self.cache_present = false;
-    }
+    flow_builders!();
 
     /// Apply layout flags from a serialized row node without rebuilding.
     pub fn apply_graph_props(&mut self, id: &str, no_wrap: bool, fill_remaining_height: bool) {
-        self.id = Some(id.to_owned());
+        self.flow.id = Some(id.to_owned());
         self.no_wrap = no_wrap;
         self.fill_height = fill_remaining_height;
-        self.cache_present = false;
+        self.flow.invalidate();
     }
 
     #[must_use]
@@ -163,6 +92,7 @@ impl Row {
     /// Inset row contents without introducing a second layout wrapper.
     #[must_use]
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.flow.padding_rhythm = None;
         self.horizontal_padding = horizontal.max(0.0);
         self.vertical_padding = vertical.max(0.0);
         self
@@ -175,7 +105,8 @@ impl Row {
     /// carry their own spacing.
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
-        self.gap_override = Some(px.max(0.0));
+        self.flow.gap_override = Some(px.max(0.0));
+        self.flow.rhythm = None;
         self
     }
 
@@ -201,6 +132,16 @@ impl Row {
         self
     }
 
+    /// Stand at least as tall as a control of `size`, resolved from the
+    /// theme at layout (it follows text size and density): rows of a list
+    /// whose controls differ (a keycap, a recorder field) keep one rhythm
+    /// without a pixel literal.
+    #[must_use]
+    pub fn with_min_height(mut self, size: super::ControlSize) -> Self {
+        self.min_height = Some(size);
+        self
+    }
+
     /// Top-align children with different intrinsic heights, as in a wrapping
     /// collection of cards.
     #[must_use]
@@ -208,49 +149,15 @@ impl Row {
         self.align_start = true;
         self
     }
-
-    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
-    #[must_use]
-    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
-        self.presence_path = path;
-        self
-    }
-
-    /// Gate this layout behind a permission scope.
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Row {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler: offer each child once.
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    /// Forward the per-frame update pass; every child runs, and a
-    /// change in any of them is a change here. Not short-circuited —
-    /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in &mut self.children {
-            changed |= child.update(state, path);
-        }
-        changed
-    }
+    flow_widget_methods!();
 
     fn build_layout(
         &mut self,
@@ -258,132 +165,103 @@ impl Widget for Row {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.child_nodes = self
-            .children
-            .iter_mut()
-            .map(|c| c.build_layout(taffy, theme, node_map))
-            .collect();
+        self.flow.build_children(taffy, theme, node_map);
+        yield_full_width_children(taffy, &self.flow.child_nodes);
 
-        let gap = self.gap_override.unwrap_or(theme.gap_standard);
+        let gap = self.flow.gap(theme);
+        let (pad_x, pad_y) = self
+            .flow
+            .rhythm_padding(theme)
+            .unwrap_or((self.horizontal_padding, self.vertical_padding));
+        let min_height = self
+            .min_height
+            .map_or(0.0, |size| crate::num::f32_of_f64(size.height(theme)));
+        self.resolved = (gap, pad_x, pad_y, min_height);
 
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Row,
-                flex_wrap: if self.no_wrap {
-                    taffy::FlexWrap::NoWrap
-                } else {
-                    taffy::FlexWrap::Wrap
-                },
-                // Stretch children to the row height when it is a fill-body
-                // row (so the file list spans the available height);
-                // otherwise centre them (toolbar/button rows).
-                align_items: Some(self.align_items_override.unwrap_or(if self.fill_height {
-                    taffy::AlignItems::Stretch
-                } else if self.align_start {
-                    taffy::AlignItems::FlexStart
-                } else {
-                    taffy::AlignItems::Center
-                })),
-                justify_content: self.justify,
-                flex_grow: if self.fill_height { 1.0 } else { 0.0 },
-                flex_shrink: 0.0, // Prevent vertical squashing
-                gap: taffy::Size {
-                    width: length(gap),
-                    height: length(gap),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                // Keep optional toolbar padding inside the row's percentage
-                // width instead of growing the parent's content bounds.
-                box_sizing: taffy::BoxSizing::BorderBox,
-                padding: super::layout::insets_xy(self.horizontal_padding, self.vertical_padding),
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Row,
+            flex_wrap: if self.no_wrap {
+                taffy::FlexWrap::NoWrap
+            } else {
+                taffy::FlexWrap::Wrap
             },
-            &self.child_nodes,
-        );
+            // Stretch children to the row height when it is a fill-body
+            // row (so the file list spans the available height);
+            // otherwise centre them (toolbar/button rows).
+            align_items: Some(self.align_items_override.unwrap_or(if self.fill_height {
+                taffy::AlignItems::Stretch
+            } else if self.align_start {
+                taffy::AlignItems::FlexStart
+            } else {
+                taffy::AlignItems::Center
+            })),
+            justify_content: self.justify,
+            flex_grow: if self.fill_height { 1.0 } else { 0.0 },
+            flex_shrink: 0.0, // Prevent vertical squashing
+            gap: taffy::Size {
+                width: length(gap),
+                height: length(gap),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            min_size: taffy::Size {
+                width: taffy::Dimension::auto(),
+                height: if self.min_height.is_some() {
+                    length(min_height)
+                } else {
+                    taffy::Dimension::auto()
+                },
+            },
+            // Keep optional toolbar padding inside the row's percentage
+            // width instead of growing the parent's content bounds.
+            box_sizing: taffy::BoxSizing::BorderBox,
+            padding: super::layout::insets_xy(pad_x, pad_y),
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
-        let w = f64::from(allocated.width);
-        let h = f64::from(allocated.height);
-        self.paint_rect = vello::kurbo::Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (
-                f64::from(layout.size.width.max(layout.content_size.width)),
-                f64::from(layout.size.height.max(layout.content_size.height)),
-            ),
-        );
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + w,
-            origin.y + f64::from(layout.location.y) + h,
-        );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
-
-        for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.apply_layout(taffy, *child_node, new_origin);
-        }
-    }
-
-    fn draw(
+    /// The row's own intrinsic size, from its children's, for a host that
+    /// measures a control before laying it out (a form field deciding
+    /// whether it fits beside its label). A single-line row is its children
+    /// side by side; a wrapping one is at least its widest child.
+    fn measure(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Same pointer-capture short-circuit as `Column::handle_event` —
-        // a dragging child gets exclusive event routing so the drag
-        // survives the cursor wandering through peer widgets.
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture())
-            && let Some(&cnode) = self.child_nodes.get(idx)
-            && let Some(child) = self.children.get_mut(idx)
+    ) -> taffy::Size<f32> {
+        let (gap, pad_x, pad_y, min_height) = self.resolved;
+        let sizes: Vec<taffy::Size<f32>> = self
+            .flow
+            .children
+            .iter_mut()
+            .map(|child| Widget::measure(child.as_mut(), known, available, text_renderer))
+            .collect();
+        let count = u16::try_from(sizes.len()).unwrap_or(u16::MAX);
+        let gaps = gap * f32::from(count.saturating_sub(1));
+        let line = sizes.iter().map(|size| size.width).sum::<f32>() + gaps;
+        let width = if self.no_wrap || matches!(available.width, taffy::AvailableSpace::MaxContent)
         {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            return;
+            line
+        } else {
+            sizes.iter().map(|size| size.width).fold(0.0, f32::max)
+        };
+        let height = sizes.iter().map(|size| size.height).fold(0.0, f32::max);
+        taffy::Size {
+            width: width + 2.0 * pad_x,
+            height: (height + 2.0 * pad_y).max(min_height),
         }
-        for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
-    /// Propagate pointer-capture intent from any descendant — mirrors
-    /// `Column::wants_pointer_capture`. See that comment for why.
-    fn wants_pointer_capture(&self) -> bool {
-        self.children.iter().any(|c| c.wants_pointer_capture())
-    }
-
-    /// Direct-field recurse — the default impl allocates a
-    /// `Vec` via `children()`, which the subtree-cache check
-    /// hits per frame.
-    fn needs_redraw(&self) -> bool {
-        self.children.iter().any(|c| c.needs_redraw())
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         let first = regions.len();
-        for child in &self.children {
+        for child in &self.flow.children {
             child.collect_damage(regions);
         }
         // Adjacent row children can share a pass, but unconditionally
@@ -404,181 +282,57 @@ impl Widget for Row {
         regions.extend(merged);
     }
 
-    fn is_layout_dirty(&self) -> bool {
-        self.children.iter().any(|c| c.is_layout_dirty())
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in &self.children {
-            visitor(child.as_ref());
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children
-            .iter_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .collect()
-    }
-
-    fn mark_drawn(&mut self) {
-        for child in &mut self.children {
-            child.mark_drawn();
-        }
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
-
     fn name(&self) -> &'static str {
         "Row"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        self.id.as_deref()
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         Some(self)
     }
+}
 
-    fn is_focused(&self) -> bool {
-        false
-    }
+flow_capabilities!(Row);
 
-    // `.any` would short-circuit and skip `take_structure_dirty()` on later
-    // children once one reports dirty, leaving their flags uncleared --
-    // the non-short-circuiting `.fold` below is required, not incidental.
-    #[allow(
-        clippy::unnecessary_fold,
-        reason = "The fold must visit every child to drain every structure-dirty flag; any would stop after the first dirty child."
-    )]
-    fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |acc, d| acc || d)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.paint_rect) {
-            return;
+/// Along a row's axis, children ask only for the room they need:
+///
+/// * A child that claims its parent's full width and refuses to shrink —
+///   a nested `Row`, a fluid `Container` — keeps a `Column` from squashing
+///   it vertically, but beside siblings in a row the same style takes the
+///   whole row on top of them and overflows it, starving any spacer to
+///   nothing. A nested row is as wide as its own children, and any other
+///   such child gives back what its siblings need, down to its content's
+///   width, as `Dropdown` and `SearchField` already do.
+/// * A child that grows into the room its siblings leave and names the
+///   least it can be (`Container::with_flex_grow().with_min_width(..)`)
+///   needs no more than that: its content's width must not count towards
+///   the row's own, or a row measured for its content (in a column with no
+///   scrollable above it) is as wide as its longest label and overflows.
+fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
+    for &child in children {
+        let Ok(style) = taffy.style(child) else {
+            continue;
+        };
+        let full_width = style.size.width == percent(1.0_f32) && style.flex_shrink == 0.0;
+        let grows_from_its_least = style.flex_grow > 0.0
+            && style.flex_basis == length(0.0_f32)
+            && style.size.width == taffy::Dimension::auto()
+            && style.min_size.width.into_option().is_some();
+        if !full_width && !grows_from_its_least {
+            continue;
         }
-        // Subtree cache — see `Column::draw_with_presence` for the
-        // `Affine::IDENTITY` rebuild requirement.
-        let size_changed = (self.rect.width() - self.cache_rect.width()).abs() > f64::EPSILON
-            || (self.rect.height() - self.cache_rect.height()).abs() > f64::EPSILON;
-        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
-        if needs_rebuild {
-            // Drop the active viewport for the recursion — see
-            // `Column::draw_with_presence` for why.
-            let prev_vp = presence.viewport.replace(None);
-            let mut local = std::mem::take(&mut self.subtree_cache);
-            local.reset();
-            for child in &mut self.children {
-                child.draw_with_presence(
-                    &mut local,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
-            scene.append(&local, Some(transform));
-            self.subtree_cache = local;
-            self.cache_rect = self.rect;
-            self.cache_present = true;
-            self.descendant_caches_released = false;
-            presence.viewport.set(prev_vp);
+        let mut style = style.clone();
+        if grows_from_its_least {
+            style.size.width = style.min_size.width;
         } else {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(&self.subtree_cache, Some(translated(transform, dx, dy)));
-            if !self.descendant_caches_released {
-                for child in &mut self.children {
-                    child.release_scene_cache();
-                }
-                self.descendant_caches_released = true;
+            if style.display == taffy::Display::Flex
+                && style.flex_direction == taffy::FlexDirection::Row
+                && style.flex_grow == 0.0
+            {
+                style.size.width = taffy::Dimension::auto();
             }
+            style.flex_shrink = 1.0;
         }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
-
-    fn release_scene_cache(&mut self) {
-        self.subtree_cache = Scene::new();
-        self.cache_present = false;
-        self.descendant_caches_released = true;
-        for child in &mut self.children {
-            child.release_scene_cache();
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Row {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
-impl crate::presence::capability::PublishesPresence for Row {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-}
-
-impl crate::permissions::capability::PermissionGated for Row {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
+        let _ = taffy.set_style(child, style);
     }
 }
 
@@ -586,6 +340,7 @@ impl crate::permissions::capability::PermissionGated for Row {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use vello::kurbo::Point;
 
     /// Same five-pass layout the `Column` tests use, with the real text
     /// renderer measuring the `Text` children.
@@ -615,11 +370,109 @@ mod tests {
         root.children().iter().map(|c| c.get_rect()).collect()
     }
 
+    /// A row of short content stands as tall as the control size it names,
+    /// so a list mixing keycaps and recorder fields keeps one rhythm.
+    #[test]
+    fn a_row_stands_at_least_a_control_high() {
+        let regular = crate::widget::ControlSize::Regular.height(&Theme::dark());
+        let mut plain = two_texts();
+        lay_out(&mut plain, 400.0);
+        assert!(plain.get_rect().height() < regular, "text alone is shorter");
+        let mut row = two_texts().with_min_height(crate::widget::ControlSize::Regular);
+        lay_out(&mut row, 400.0);
+        assert!(
+            (row.get_rect().height() - regular).abs() < 0.5,
+            "{} vs {regular}",
+            row.get_rect().height()
+        );
+    }
+
     fn two_texts() -> Row {
         Row::new()
             .no_wrap()
             .push(Box::new(Text::new("lead")))
             .push(Box::new(Text::new("trail")))
+    }
+
+    /// A label, a spacer and a full-width child (a nested row of buttons,
+    /// a fluid container) stay inside the row instead of overflowing it.
+    #[test]
+    fn a_full_width_child_beside_a_spacer_stays_inside_the_row() {
+        use crate::widget::{Button, Container, Spacer};
+        let buttons = || {
+            Row::new()
+                .no_wrap()
+                .with_gap(4.0)
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")))
+        };
+        let nested = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new("Label")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(buttons()));
+        let fluid = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new("Label")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(buttons())),
+            ));
+        for mut row in [nested, fluid] {
+            let rects = lay_out(&mut row, 400.0);
+            let right = rects.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+            assert!(right <= 400.5, "the row overflows its 400 px: {rects:?}");
+            assert!(
+                rects[2].width() >= 100.0,
+                "the trailing child keeps its content's width: {rects:?}"
+            );
+            assert!(
+                rects[2].x1 > 390.0,
+                "the spacer pushes the trailing child to the far end: {rects:?}"
+            );
+            assert!(
+                rects[0].width() > 20.0,
+                "the label keeps its text: {rects:?}"
+            );
+        }
+    }
+
+    /// A child growing into the leftover room from the least it names
+    /// does not make a row measured for its content (no scrollable above
+    /// it) as wide as that child's longest label.
+    #[test]
+    fn a_growing_child_does_not_widen_a_row_measured_for_its_content() {
+        use crate::widget::{Button, Column, Container};
+        let label = "A long layer name that would not fit in a narrow panel at all";
+        let row = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_min_width(0.0)
+                    .with_child(Box::new(Text::new(label))),
+            ))
+            .push(Box::new(Button::new("eye", "Eye")));
+        let mut panel = Container::new()
+            .with_no_padding()
+            .with_width(240.0)
+            .with_child(Box::new(Column::new().with_no_padding().push(Box::new(
+                Column::new().with_intrinsic_height().push(Box::new(row)),
+            ))));
+        lay_out(&mut panel, 600.0);
+        let mut widest: f64 = 0.0;
+        let mut stack: Vec<&dyn Widget> = vec![&panel];
+        while let Some(widget) = stack.pop() {
+            widest = widest.max(widget.get_rect().x1);
+            stack.extend(widget.children());
+        }
+        assert!(
+            widest <= 240.5,
+            "the row overflows its 240 px panel: {widest}"
+        );
     }
 
     #[test]

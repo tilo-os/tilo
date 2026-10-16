@@ -1,49 +1,64 @@
 [workspace]
-# qdoc-codec-markdown-wasm is intentionally excluded from default `cargo build`
+# tilo-doc-codec-markdown-wasm is intentionally excluded from default `cargo build`
 # runs: it is a format-provider guest compiled for `wasm32-unknown-unknown`,
 # not a host-target library. Build it from its own directory so its
 # `.cargo/config.toml` applies:
-# `crates/doc/qdoc-codec-markdown-wasm/build.sh`.
+# `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/buffa-build",
+    "tools/web/wasm-split",
     "fuzz",
-    "crates/doc/qdoc-codec-markdown-wasm",
+    "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/google-cast-protocol",
+    "vendor/fcast-sender-sdk",
     "vendor/libspa-sys",
     "vendor/winit",
-    "crates/forks/winit",
     "vendor/accesskit_winit",
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
+    "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
+    "vendor/librespot-core",
+    "vendor/hyper-proxy2",
+    "vendor/cosmic-text",
+    "vendor/iroh",
+    "vendor/iroh-gossip",
+    "vendor/netwatch",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
 # Default builds cover core crates. CI checks affected packages and runs
 # the full workspace nightly.
 default-members = [
-    "crates/doc/qdoc",
-    "crates/doc/qdoc-codecs",
+    "crates/doc/tilo-doc",
+    "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
     "crates/session/shell",
+    "crates/session/control-cli",
     "crates/sdk/ui-core",
     "crates/packaging/tilo-app-package",
-    "crates/runtime/runtime",
 ]
 members = [
+    "crates/platform/tilo-messaging",
+    "crates/dev/registry-review",
+    "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
+    "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
-    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -61,8 +76,14 @@ members = [
     "apps/calendar",
     "apps/camera",
     "apps/chat",
+    "apps/discord",
+    "apps/discord-model",
+    "apps/moderation-model",
+    "apps/discord/worker",
+    "apps/messages",
     "apps/clocks",
     "apps/code-editor",
+    "apps/chip-design",
     "apps/contacts",
     "apps/containers",
     "apps/db-client",
@@ -75,7 +96,6 @@ members = [
     "apps/firewall",
     "apps/git-client",
     "apps/hex-editor",
-    "apps/image-editor",
     "apps/imager",
     "apps/logs",
     "apps/mail",
@@ -97,9 +117,11 @@ members = [
     "apps/slides",
     "apps/shortcuts",
     "apps/snippets",
+    "apps/staging-handoff-model",
     "apps/store",
     "apps/terminal",
     "apps/themes",
+    "apps/thumbnails",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",
@@ -112,6 +134,7 @@ members = [
 
     # Agent
     "crates/agent/agent-participant",
+    "crates/agent/connector",
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
@@ -119,9 +142,10 @@ members = [
     # SDK
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
+    "crates/sdk/tilo-history",
+    "crates/sdk/tilo-cpu-raster",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -129,28 +153,39 @@ members = [
     "crates/sdk/search",
 
     # Collab
+    "crates/collab/action-policy",
     "crates/collab/actions",
     "crates/collab/automation",
     "crates/collab/channel-crypto",
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
+    "crates/collab/owner-commit",
     "crates/collab/reference",
+    "crates/collab/feedback-review",
+    "crates/collab/feedback",
+    "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-joined-room",
+    "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
+    "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
+    "crates/dev/room-load",
+    "crates/dev/fake-discord",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-app-registry",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
+    "crates/dev/tilo-device-admin",
     "crates/dev/tilo-vm",
     "crates/dev/tilo-vm-protocol",
     "crates/dev/tilo-vmd",
@@ -162,10 +197,10 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
-    "crates/doc/qdoc",
-    "crates/doc/qdoc-codecs",
-    "crates/doc/qdoc-rich-text",
-    "crates/doc/qdoc-pdf",
+    "crates/doc/tilo-doc",
+    "crates/doc/tilo-doc-codecs",
+    "crates/doc/tilo-document",
+    "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
 
@@ -174,16 +209,22 @@ members = [
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
+    "crates/hosting/tilo-relay-session",
+    "crates/hosting/tilo-relay-shell",
+    "crates/hosting/tilo-relay-store",
 
     # Media
     "crates/media/ocr",
+    "crates/media/segment",
     "crates/media/thumbnail",
     "crates/media/vision",
+    "crates/media/wet-media",
 
     # Packaging
     "crates/packaging/app-cli",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
+    "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/installed-apps",
@@ -192,11 +233,10 @@ members = [
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
+    "crates/packaging/bot-directory",
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
-    "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 
@@ -218,59 +258,84 @@ members = [
     "crates/platform/tilo-appearance",
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
+    "crates/platform/tilo-input-context",
+    "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-lock",
+    "crates/platform/tilo-wake",
+    "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
+    "crates/platform/tilo-image-codec",
+    "crates/platform/tilo-keyboard-map",
+    "crates/platform/tilo-locale",
+    "crates/platform/tilo-accessibility-settings",
     "crates/platform/tilo-media",
+    "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
     "crates/platform/tilo-pdf",
     "crates/platform/tilo-process",
+    "crates/platform/tilo-presentation",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
+    "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
 
     # Runtime
     "crates/runtime/cli",
-    "crates/runtime/runtime",
+    "crates/runtime/legacy-agent",
+    "crates/runtime/legacy-agent-protocol",
+    "crates/runtime/legacy-vm",
     "crates/runtime/runtime-collab",
-    "crates/runtime/runtime-connected",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
+    # Engines one or two apps load, shipped beside it in the runtime bundle.
+    "crates/runtime/engines/paint",
+    "crates/runtime/engines/spotify",
+    "crates/runtime/engines/typst",
+    "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
-    "crates/runtime/runtime-portal-xdg",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
+    "crates/runtime/environment",
+    "crates/runtime/egress",
     "crates/runtime/ush",
+    "crates/runtime/env-tools",
 
     # Session
     "crates/session/console-control",
+    "crates/session/control-cli",
     "crates/session/desktop-model",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
+    "crates/session/install-profile-model",
     "crates/session/installer",
-    "crates/session/tilo-connected-protocol",
+    "crates/session/network-secret-agent",
+    "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
-    "crates/session/tilo-native-media-control",
     "crates/session/tilo-unlock-helper",
+    "crates/session/tray-host",
 
     # System
     "crates/system/account-custody",
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
-    "crates/system/atomic-file",
     "crates/system/block-devices",
+    "crates/system/board-successor",
+    "crates/system/boot-order",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -278,23 +343,33 @@ members = [
     "crates/system/cloud-source-dropbox",
     "crates/system/cloud-source-onedrive",
     "crates/system/cloud-source-icloud",
-    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",
     "crates/system/durable-store",
+    "crates/system/endpoint-reachability",
+    "crates/system/esp-write",
+    "crates/system/extension-helper",
+    "crates/system/firstboot-files",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/image-policy-check",
+    "crates/system/tilo-pycompat",
+    "crates/system/install-helpers",
+    "crates/system/libvirt-domain",
+    "crates/system/messaging-protocol",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
+    "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
-    "crates/system/ssh-agent-client",
+    "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -303,13 +378,14 @@ members = [
     "crates/system/tilo-dav",
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
+    "crates/system/tilo-nm",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
+    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
     "crates/system/wire-frame",
-    "crates/system/xdg-paths",
 
     # Text
     "crates/text/emoji",
@@ -337,6 +413,12 @@ homepage = "https://tilo.so"
 # workspace-hack is never named in code: it only unifies third-party features.
 [workspace.metadata.cargo-machete]
 ignored = ["workspace-hack"]
+
+[workspace.lints.rust]
+# `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
+# JavaScript page (a sandboxed format provider), which must link no
+# wasm-bindgen glue.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -383,6 +465,7 @@ uninhabited_references = "deny"
 set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
+equatable_if_let = "deny"                   # if let used as an equality test
 # Crates list their banned calls in their own clippy.toml; a listed call is an
 # error, not a style suggestion.
 disallowed_methods = "deny"
@@ -439,6 +522,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
 tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
+tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
@@ -482,9 +566,7 @@ quick-xml = "0.41.0"
 roxmltree = "0.21"
 capnp = "0.26"
 capnp-rpc = "0.26"
-capnpc = "0.26"
 base64 = "0.22.1"
-bs58 = "0.5.1"
 data-encoding = "2.10"
 data-encoding-macro = "0.1.19"
 hex = "0.4.3"
@@ -513,9 +595,8 @@ sha2 = "0.11"
 # Gravatar paths and the Drive fake's checksums.
 md-5 = "0.11"
 hmac = "0.13"
-# SRP-6a for the iCloud sign-in (cloud-source-icloud).
+# SRP-6a for the iCloud sign-in (tilo-crypto `srp`).
 pbkdf2 = "0.13"
-num-bigint = "0.5"
 blake3 = "1.8.5"
 # Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
 # `tools/policy/check_crypto_dependencies.py` rejects any other direct user.
@@ -584,7 +665,7 @@ notify = "8"
 landlock = "0.4"
 seccompiler = "0.5"
 sd-notify = "0.4"
-sysinfo = "0.32"
+sysinfo = "0.36"
 open = "5.3.5"
 libc = "0.2.186"
 rustix = "1.1.4"
@@ -607,6 +688,9 @@ walkdir = "2.5.0"
 lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
+# For patterns in code every browser visitor loads first (action schemas,
+# feedback redaction): about a tenth of `regex`'s size, ASCII classes only.
+regex-lite = "0.1"
 semver = "1"
 parking_lot = "0.12.5"
 fluent = "0.17.0"
@@ -637,6 +721,37 @@ opt-level = 3
 [profile.test.package.tilo-automerge-fork]
 opt-level = 3
 [profile.test.package.hexane]
+opt-level = 3
+# crates.io automerge, the reference tilo-automerge's tests compare the fork to.
+[profile.test.package.automerge]
+opt-level = 3
+
+# The wet-media simulations re-run on every edit of a painted layer; unoptimised
+# they take seconds per stroke, and the canvas app is unusable in a dev build.
+[profile.dev.package.tilo-wet-media]
+opt-level = 3
+[profile.test.package.tilo-wet-media]
+opt-level = 3
+[profile.dev.package.tiny-skia]
+opt-level = 3
+[profile.test.package.tiny-skia]
+opt-level = 3
+# Refining a selection's edge filters every pixel of a photograph, and the
+# subject model runs a network: unoptimised, select subject takes many
+# seconds in a dev build. rten's kernels are its own crates.
+[profile.dev.package.tilo-segment]
+opt-level = 3
+[profile.test.package.tilo-segment]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
 opt-level = 3
 
 # Hashing, signature verification and font parsing run on every fixture in
@@ -776,25 +891,58 @@ opt-level = 3
 [profile.test.package.tilo-search]
 opt-level = 3
 
+# Release binaries keep their symbol table (`strip = "debuginfo"`), so a field
+# crash log (shell::crash_log) names each frame's function; fully stripped,
+# the same backtrace was only `<unknown>` frames. The line tables compiled
+# below are stripped: kept in the compositor they would also give file:line,
+# but measured on `shell` (thin LTO as packages build it, panic = "abort")
+# they grow the zstd-compressed binary from 46 MB to 220 MB, against 42 MB
+# fully stripped.
+# The OS image, RPM, Debian and Arch packages ship these binaries as built
+# (the RPM spec and PKGBUILD turn their strip passes off); Nix's default
+# debug-only strip keeps the symbol table too.
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
-strip = "symbols"
+# Unwind, so a process can contain a helper that fails: the compositor
+# restarts its collaboration broker rather than end the session. Every other
+# panic still aborts the process: tilo-rt installs a hook that aborts outside
+# `tilo_rt::panic_boundary::isolate` (see that module).
+panic = "unwind"
+strip = "debuginfo"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
 # The browser bundles' release build (`build.sh --profile release`), measured
-# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO, one codegen unit and
-# stripped symbols come from `release`. `panic = "abort"` is the only panic
+# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
+# come from `release`. `panic = "abort"` is the only panic
 # strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
 # reports the message, then the module traps and the page must reload.
-# No debug info: `strip` would drop it after the linker had written it.
+# No debug info or symbol table: the bundle size is what matters in a browser.
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+panic = "abort"
+debug = false
+strip = "symbols"
+
+# `wasm-release` with the symbol table kept: the desktop bundle is split into
+# a start module and per-app modules loaded on demand, and the splitter reads
+# function names and relocations from the linked module. The modules it
+# writes are stripped.
+[profile.wasm-split]
+inherits = "wasm-release"
+strip = "none"
+
+# The browser bundles' quick development build (`build.sh --profile quick`).
+# Without debug information and with light optimisation, the linked desktop
+# module is a quarter of `dev`'s, and wasm-bindgen and the splitter take half
+# as long on it, for a compile that is barely slower.
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
 debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
@@ -810,6 +958,9 @@ debug = false
 inherits = "release"
 panic = "unwind"
 lto = false
+# Signed app packages stay fully stripped; only the native release binaries
+# keep their symbol table.
+strip = "symbols"
 # Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
 # release links in CI and the image) is inherited by thin-app unless the child
 # profile names its own value. The wrapper also forces one unit on each tapp
@@ -842,6 +993,19 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
+buffa-build = { path = "vendor/buffa-build" }
+# Verify Cast TLS handshake signatures and bound cancellation; identity
+# authentication remains a separate explicit trust decision. See provenance.
+fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
+# Spotify parser/session and Rustls proxy repairs; preserve Tilo trust roots.
+# See the two vendor PROVENANCE.md files.
+librespot-core = { path = "vendor/librespot-core" }
+hyper-proxy2 = { path = "vendor/hyper-proxy2" }
+# Shapes a variable font at its `wdth` as well as its `wght`, so condensed
+# text is measured and kerned at the width it is drawn. See
+# vendor/cosmic-text/TILO-PATCH.md.
+cosmic-text = { path = "vendor/cosmic-text" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.
@@ -865,9 +1029,6 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
-# crates.io crates that depend on winit (accesskit_winit, smithay) get the
-# fork through a re-exporting facade, so they share its types.
-winit = { path = "crates/forks/winit" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared
 # from inside a request callback which had just created a child object. OAuth
 # browser launches make that race easy to hit: a probing helper can connect,
@@ -875,6 +1036,13 @@ winit = { path = "crates/forks/winit" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
+# the relay map is empty, no wall-clock poll on Linux (a timerfd that the
+# kernel cancels on resume or a clock step replaces it), and no gossip cache
+# sweep once a topic's caches are empty. See each crate's TILO-PATCH.md.
+iroh = { path = "vendor/iroh" }
+iroh-gossip = { path = "vendor/iroh-gossip" }
+netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }

@@ -1,8 +1,7 @@
 //! A field label aligned to its first control, independent of supporting rows.
 use super::{
-    Affine, AutoCommit, HashMap, NodeId, ObjId, Parts, Point, PresenceCtx, Rect, Scene, Size,
-    Style, TaffyTree, TextRenderer, Theme, Widget, column_style, length, measure_owned,
-    retained_parts,
+    Affine, HashMap, NodeId, Parts, Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree,
+    TextRenderer, Theme, Widget, column_style, length, measure_owned, retained_parts,
 };
 
 pub(super) struct FieldLabel {
@@ -38,7 +37,12 @@ impl Widget for FieldLabel {
             measure_owned(label.as_mut(), available.width, text)
         })
     }
-    fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(current) = tree.style(node) else {
             return false;
         };

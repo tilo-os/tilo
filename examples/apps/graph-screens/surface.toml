@@ -1,0 +1,16 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.projects"
+label = "Project"
+version = 1
+fields = [
+  { path = "draft", type = "String" },
+  { path = "projects", type = "Collection<Project>", stored = "collection" },
+  { path = "projects.*.name", type = "String" },
+]
+
+[[resources.verbs]]
+id = "create"
+kind = "undoable"
+

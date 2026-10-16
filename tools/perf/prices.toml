@@ -1,0 +1,85 @@
+# Price sheet for the relay hosting-cost records, read by
+# tools/perf/adapters.py hosting-load.
+#
+# The VM prices are the cost model's assumptions (#3965, "Hosting cost model
+# ($/active user/month)", 2026-10-09). Change a price here, with its date and
+# source, when the provider changes it; the records name the sheet's date.
+#
+# How a measurement becomes dollars, per provider:
+#
+#   capacity     = min(vCPU-seconds the VM sells per hour / CPU-seconds per
+#                      collaborator-hour,
+#                      (memory - the idle relay) / resident MiB per collaborator)
+#                  at `target_utilisation`: collaborators one VM carries at once
+#   compute      = VM price per hour / capacity
+#   egress       = transport bytes per collaborator-hour beyond the VM's
+#                  included traffic (spread over a VM-month at capacity)
+#                  x price per GB
+#   $ per collaborator-hour = compute + egress
+#   $ per active user-month = $ per collaborator-hour x active_hours_per_user_month
+#
+# The VM is priced as if kept at the target utilisation around the clock;
+# peak-to-average provisioning and storage growth are not modelled.
+
+checked = "2026-10-09"
+# The [room_node.*] prices below.
+room_node_checked = "2026-10-14"
+hours_per_month = 730.0
+# An active user: 4 collaborative hours a day, 22 days a month.
+active_hours_per_user_month = 88.0
+# Headroom: plan a VM to this share of its CPU and memory.
+target_utilisation = 0.7
+
+[provider.hetzner-cx22]
+description = "Hetzner Cloud CX22: 2 shared vCPU, 4 GB RAM, 40 GB NVMe, 20 TB traffic included"
+monthly_usd = 5.0
+vcpus = 2.0
+memory_gib = 4.0
+included_egress_gb_month = 20000.0
+# Hetzner's EU rate beyond the included traffic, EUR 1 per TB.
+egress_usd_per_gb = 0.0011
+
+[provider.aws-t4g-small]
+description = "AWS EC2 t4g.small on demand with 40 GB gp3: 2 vCPU, 2 GiB RAM, internet egress billed"
+monthly_usd = 15.5
+vcpus = 2.0
+memory_gib = 2.0
+included_egress_gb_month = 0.0
+egress_usd_per_gb = 0.09
+
+# Nodes a public room host (tilo-room-service and its relay) runs on, read by
+# tools/perf/room_capacity.py summarize to price concurrent guests from a
+# tilo-room-load sweep (docs/benchmarks/room-host-capacity-2026-10.md). The
+# same capacity rule as above, without egress beyond what a node includes.
+# Hetzner's EUR list prices are converted at the rate of its own USD price
+# list (CCX13: EUR 43.49 = USD 51.09, so 1.175); `room_node_checked` above
+# dates them.
+
+[room_node.hetzner-ax102]
+description = "Hetzner AX102: Ryzen 9 7950X3D (16 cores, 32 threads), 128 GB, EUR 257.30 a month from 2026-06-15, traffic unmetered at 1 Gbit/s"
+monthly_usd = 302.33
+vcpus = 32.0
+memory_gib = 128.0
+included_egress_gb_month = 1000000000.0
+egress_usd_per_gb = 0.0
+# The 1 Gbit/s port the unmetered traffic runs through.
+port_mbit_s = 1000.0
+
+[room_node.hetzner-ax42]
+description = "Hetzner AX42: Ryzen 7 PRO 8700GE (8 cores, 16 threads), 64 GB, EUR 97.30 a month from 2026-06-15, traffic unmetered at 1 Gbit/s"
+monthly_usd = 114.33
+vcpus = 16.0
+memory_gib = 64.0
+included_egress_gb_month = 1000000000.0
+egress_usd_per_gb = 0.0
+port_mbit_s = 1000.0
+
+[room_node.aws-c7a-2xlarge]
+description = "AWS EC2 c7a.2xlarge on demand, us-east-1: 8 vCPU (one core each), 16 GiB, USD 0.41056 an hour, internet egress USD 0.09/GB"
+monthly_usd = 299.71
+vcpus = 8.0
+memory_gib = 16.0
+included_egress_gb_month = 0.0
+egress_usd_per_gb = 0.09
+# Baseline network bandwidth (bursts to 12.5 Gbit/s).
+port_mbit_s = 3125.0

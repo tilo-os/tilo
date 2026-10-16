@@ -5,16 +5,6 @@
 //! helper emits geometry (data-side population and wire integration are
 //! covered by `presence_remote_cursors_test` and `cross_process_presence_pump`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use vello::Scene;
 use vello::peniko::Color;
 

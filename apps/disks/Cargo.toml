@@ -20,10 +20,9 @@ path = "src/main.rs"
 [features]
 thin = ["dep:runtime-dylib"]
 # The optional udisks2 transport uses zbus for privileged device operations;
-# it connects only when `DISKS_LIVE` is set for an explicit device action.
+# it connects only for an explicit device action in a live window.
 default = ["live"]
-# The CLI fallback and read benchmark are always available; the zbus path is
-# selected by `DISKS_LIVE`.
+# The CLI fallback and read benchmark are always available.
 live = ["block-devices/udisks"]
 
 [dependencies]
@@ -41,6 +40,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

@@ -1,17 +1,19 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
+use crate::num::f64_of_u64;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
+use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::hover_intent::HoverIntent;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -47,10 +49,6 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
-/// Idle "+" slot dotted-outline alpha; aliases the shell-wide hairline weight
-/// (`crates/sdk/ui-core/HIG.md` §9.5) so the tab strip can't drift from the rest of the chrome.
-const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
-
 /// Alias of [`crate::chrome::shell::SelectionTier`] so the tab strip, top bar,
 /// quick settings, workspace disc and strip ribbon all express selection the same
 /// way.
@@ -71,10 +69,6 @@ fn compose(a: Affine, b: Affine) -> Affine {
 /// Offsets a rect by a delta. `Rect`'s `Add<Vec2>` impl is pure `f64` component
 /// addition with no overflow trap, so — like [`compose`] — it cannot panic and
 /// the exemption is centralised here instead of at every call site.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Rect + Vec2 is float component addition and cannot panic"
-)]
 /// One pill's paint state, resolved once per frame by `draw_pill_inner` and
 /// shared by the helpers that paint its body and chips.
 #[allow(
@@ -100,17 +94,6 @@ struct PillPaint<'a> {
 
 fn shift_rect(r: Rect, d: vello::kurbo::Vec2) -> Rect {
     r + d
-}
-
-/// Converts a millisecond animation-timing constant to `f64`. These are small
-/// compile-time durations (well under a second), nowhere near `f64`'s 52-bit
-/// mantissa limit, so the conversion is exact.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "millisecond timing constants stay far below 2^52; exact in f64"
-)]
-fn ms_f64(ms: u64) -> f64 {
-    ms as f64
 }
 
 /// Converts an elapsed-time reading (in milliseconds) to `f64`. Only ever fed a
@@ -178,6 +161,8 @@ struct RevealAnim {
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
+    index: usize,
+    was_active: bool,
     /// Rect at close-start; the fade animates in place, not tracking the layout
     /// spring.
     pill_rect: Rect,
@@ -212,6 +197,36 @@ enum GroupFocus {
     Unfocused,
 }
 
+/// What a tab's content is doing, marked in the tab's leading slot in place
+/// of its icon: loading, or making sound. A sound mark is a control: a
+/// click on it is reported by [`TabBar::take_mark_click`] (the host mutes
+/// or unmutes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabMark {
+    /// The content is loading.
+    Busy,
+    /// The content is playing sound.
+    Playing,
+    /// The content's sound is muted.
+    Muted,
+}
+
+impl TabMark {
+    /// What the mark says to someone who cannot see it.
+    fn description(self) -> &'static str {
+        match self {
+            Self::Busy => "Loading",
+            Self::Playing => "Playing audio",
+            Self::Muted => "Muted",
+        }
+    }
+
+    /// Whether a click on the mark does something.
+    fn is_control(self) -> bool {
+        matches!(self, Self::Playing | Self::Muted)
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
@@ -244,18 +259,36 @@ pub struct TabBar {
     /// Keyed by tab id, alongside the title/size it was measured at, so a rename or
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
     /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
-    title_advance: HashMap<u64, (String, f32, f64)>,
+    title_advance: HashMap<u64, (String, TextStyle, f64)>,
+    /// `draw` measured an advance that differs from the one the last layout
+    /// used for some pill, so the next layout must run to settle the row.
+    advance_changed: bool,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
+    /// Peer faces each pill shows at its trailing edge, aligned 1:1 with
+    /// `tabs`. Set from `draw` (the only pass with presence) before titles
+    /// are elided, so the title gives way to the faces instead of hiding
+    /// under them.
+    pill_faces: Vec<PillFaces>,
+    face_metrics: FaceMetrics,
+    /// Width each unpinned tab's full set of faces wants, keyed by tab id.
+    /// Recorded in `draw` (presence is only known there) and added to the
+    /// pill's natural width so a short title still has room for its faces.
+    face_demand: HashMap<u64, f64>,
+    /// `face_demand` changed since the last layout: the pills must resize.
+    face_demand_stale: bool,
     pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
-    /// Candidate pill and the instant its deliberate-hover dwell began.
-    hover_intent: Option<(usize, Instant)>,
-    /// Previous pointer sample used to reject fast transit across tabs.
-    hover_motion_sample: Option<(Point, Instant)>,
+    /// Which pill the pointer has opened: a short dwell before a pill opens,
+    /// and menu-aim prediction that keeps it open while the pointer travels
+    /// toward its chips.
+    hover_intent: HoverIntent,
+    /// The pill the intent last saw under the pointer, for settling its
+    /// timers between pointer samples.
+    hover_intent_under: Option<usize>,
     hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
     /// Offset from the pressed pill's top-left to the cursor at press time; the
@@ -311,6 +344,22 @@ pub struct TabBar {
     /// window has nothing for it to do, and a chip that appears under the
     /// pointer and then does nothing is worse than no chip.
     show_maximize: bool,
+    /// Whether tabs close from the strip. A strip of fixed views (a
+    /// settings window's sections) has no close control.
+    closable: bool,
+    /// Whether the strip offers a new-tab control.
+    new_tab: bool,
+    /// Per-tab content marks, keyed by tab id (a sidecar like the others).
+    marks: HashMap<u64, TabMark>,
+    /// The painted mark of each tab, aligned 1:1 with `tabs`.
+    mark_rects: Vec<Rect>,
+    /// A click on a sound mark, drained by [`TabBar::take_mark_click`].
+    pending_mark: Option<(u64, TabMark)>,
+    /// Whether this strip's host shows which window group has keyboard
+    /// input ([`TabBar::set_group_focused`]). Only then does the active tab
+    /// carry the focus keyline; in a strip of documents the active tab is
+    /// the lift alone, like every other selection.
+    shows_group_focus: bool,
     reveal_anim: HashMap<u64, RevealAnim>,
     /// Aligned 1:1 with `tabs`; read by the title zone, chip rects and body wash so
     /// width, hit region and paint can never disagree.
@@ -318,6 +367,9 @@ pub struct TabBar {
     /// Cached because `apply_layout`, where the reveal is interpolated, has no
     /// `Theme` of its own.
     reduce_motion: bool,
+    /// The host's reduced-motion setting ([`Widget::set_motion_reduced`]),
+    /// which holds whatever the theme says.
+    host_reduced_motion: bool,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
     /// the same reason: the pointer target of a maximize/search chip is
     /// derived from its glyph rect at hit-test time (see
@@ -342,6 +394,32 @@ pub(crate) struct TabDragVisual {
 }
 
 impl TabBar {
+    /// Move the bar and every rectangle laid out in it by `dx`; see
+    /// [`super::window_group::WindowGroup::offset_layout`].
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = shift_rect(self.rect, shift);
+        for rect in &mut self.tab_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.close_hit_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.max_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        for rect in &mut self.search_rects {
+            *rect = shift_rect(*rect, shift);
+        }
+        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
+    }
+
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the slot still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
@@ -364,19 +442,30 @@ impl TabBar {
             search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
+            advance_changed: false,
             visible_titles: Vec::new(),
+            pill_faces: Vec::new(),
+            face_metrics: FaceMetrics::default(),
+            face_demand: HashMap::new(),
+            face_demand_stale: false,
             pending_context_menu: None,
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
-            hover_intent: None,
-            hover_motion_sample: None,
+            hover_intent: HoverIntent::default(),
+            hover_intent_under: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             show_maximize: true,
+            closable: true,
+            new_tab: true,
+            marks: HashMap::new(),
+            mark_rects: Vec::new(),
+            pending_mark: None,
+            shows_group_focus: false,
             press_origin: None,
             drag_offset: None,
             drag_lifted_at: None,
@@ -400,13 +489,62 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            host_reduced_motion: false,
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
 
+    /// Whether tabs close from the strip (default `true`). Without it no
+    /// close control is drawn, reserved or announced.
+    #[must_use]
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// No new-tab control at the end of the strip.
+    #[must_use]
+    pub fn without_new_tab(mut self) -> Self {
+        self.new_tab = false;
+        self
+    }
+
+    /// Mark what tab `id`'s content is doing, or clear the mark.
+    pub fn set_mark(&mut self, id: u64, mark: Option<TabMark>) {
+        match mark {
+            Some(mark) => {
+                self.marks.insert(id, mark);
+            }
+            None => {
+                self.marks.remove(&id);
+            }
+        }
+    }
+
+    /// Tab `id`'s mark, if any.
+    pub fn mark(&self, id: u64) -> Option<TabMark> {
+        self.marks.get(&id).copied()
+    }
+
+    /// Where tab `id`'s mark is painted, for hit-testing and tests.
+    pub fn mark_rect(&self, id: u64) -> Option<Rect> {
+        self.marks.get(&id)?;
+        let i = self.tabs.iter().position(|t| t.id == id)?;
+        self.mark_rects.get(i).copied().filter(|r| r.area() > 0.0)
+    }
+
+    /// A click on a tab's sound mark, once: the host mutes or unmutes it.
+    pub fn take_mark_click(&mut self) -> Option<(u64, TabMark)> {
+        self.pending_mark.take()
+    }
+
+    /// The host shows which window group has keyboard input: the active tab
+    /// of the focused group carries a keyline in primary ink, and the others
+    /// carry the lift alone.
     pub fn set_group_focused(&mut self, focused: bool) {
+        self.shows_group_focus = true;
         self.group_focus = if focused {
             GroupFocus::Focused
         } else {
@@ -431,6 +569,15 @@ impl TabBar {
         self.layout_anim_started = Some(crate::time::now());
     }
 
+    /// Test fixture: the pointer over pill `idx`, having dwelt long enough to
+    /// open it.
+    #[cfg(test)]
+    fn hover_open_for_tests(&mut self, idx: usize) {
+        self.hover_idx = Some(idx);
+        self.hover_intent.force_open(Some(idx));
+        self.hover_intent_under = Some(idx);
+    }
+
     /// Pin transient pill geometry at its resting state for deterministic
     /// integration screenshots. This does not alter production animation;
     /// it only removes wall-clock sampling from visual regression tests.
@@ -440,8 +587,8 @@ impl TabBar {
         self.hover_close_idx = None;
         self.hover_max_idx = None;
         self.hover_search_idx = None;
-        self.hover_intent = None;
-        self.hover_motion_sample = None;
+        self.hover_intent.clear();
+        self.hover_intent_under = None;
         self.hover_new_tab = false;
         self.press_origin = None;
         self.pending_drag = None;
@@ -493,8 +640,8 @@ impl TabBar {
             return;
         };
         let is_pinned = self.pinned_ids.contains(&t.id);
-        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
-        let radius = pill_height / 2.0;
+        // Tabs are not pills: the control radius (design language, Shape).
+        let radius = f64::from(theme.tokens.radii.control);
         let Some(&target) = self.tab_rects.get(i) else {
             return;
         };
@@ -519,7 +666,7 @@ impl TabBar {
         // can't drift from the rest of the chrome.
         let shape = RoundedRect::from_rect(r, radius);
         crate::chrome::shell::paint_glass_body(scene, pill_transform, r, radius, theme, &look, 1.0);
-        if is_active && self.group_focus == GroupFocus::Focused {
+        if is_active && self.shows_group_focus && self.group_focus == GroupFocus::Focused {
             // A restrained focus keyline separates two different facts that
             // used to share one treatment: "active tab in this group" and
             // "group receiving keyboard input".  It sits inside the pill so
@@ -534,10 +681,13 @@ impl TabBar {
                 ),
                 FOCUS_KEYLINE_PX / 2.0,
             );
+            // Primary ink, not your colour: which group has input is state,
+            // and a coloured underline on every focused window made the
+            // accent the loudest thing on the desktop (HIG 9.4).
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.text_primary,
                 None,
                 &keyline,
             );
@@ -546,7 +696,15 @@ impl TabBar {
         // compresses with the body when pressed.
         let transform = pill_transform;
 
-        Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
+        // Faces name who is here; the mist only stands in when no face fits,
+        // so a pill never carries both and is never washed in their colours.
+        if self
+            .pill_faces
+            .get(i)
+            .is_none_or(|faces| faces.slots() == 0)
+        {
+            Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
+        }
 
         // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
         // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
@@ -571,6 +729,7 @@ impl TabBar {
         };
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.draw_pill_body(&mut ctx, &pill);
+        self.draw_pill_faces(&mut ctx, presence, &pill);
         self.draw_pill_close_chip(&mut ctx, &pill);
         self.draw_pill_action_chips(&mut ctx, &pill);
     }
@@ -596,21 +755,38 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let text_color = if is_active || is_hover {
+        // The cursor-following copy suppresses hover, but carries the primary
+        // label ink so an inactive source stays readable in motion.
+        let text_color = if is_active || is_hover || pill.suppress_hover {
             text_primary
         } else {
             text_dim
         };
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &t.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let accent = self.accent_ids.get(&t.id).copied();
         if is_pinned {
             Self::draw_pill_pinned_marker(scene, transform, r, t, accent, text_color);
             return;
         }
-        let leading_shift =
-            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color);
+        let leading_shift = if let Some(mark) = self.marks.get(&t.id).copied() {
+            self.draw_pill_mark(
+                scene,
+                transform,
+                theme,
+                leading_glyph_rect(r),
+                mark,
+                text_color,
+            );
+            ICON_W + ICON_GAP
+        } else {
+            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color)
+        };
         let title_x = title_x0(r, leading_shift);
         let title_y = r.center().y - f64::from(th) / 2.0;
         // Clip at this frame's reveal, not the close chip, so an idle pill gets
@@ -635,14 +811,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             label,
-            text_size,
             text_color,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
     }
@@ -678,6 +853,78 @@ impl TabBar {
             // centred like the glyph would have been.
             let c = vello::kurbo::Circle::new(r.center(), ACCENT_DOT_R);
             scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
+        }
+    }
+
+    /// A tab's content mark in its leading slot: a turning arc while busy
+    /// (a still three-quarter ring under reduced motion), a speaker while it
+    /// plays or is muted, lifted under the pointer since a click on it
+    /// mutes or unmutes.
+    fn draw_pill_mark(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        mark: TabMark,
+        ink: vello::peniko::Color,
+    ) {
+        match mark {
+            TabMark::Busy => {
+                let turn = if self.reduce_motion {
+                    0.0
+                } else {
+                    let t = crate::time::now()
+                        .saturating_duration_since(busy_epoch())
+                        .as_secs_f64();
+                    t.fract() * std::f64::consts::TAU
+                };
+                let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
+                let arc = vello::kurbo::Arc::new(
+                    rect.center(),
+                    (radius, radius),
+                    turn,
+                    std::f64::consts::TAU * 0.75,
+                    0.0,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.5).with_caps(vello::kurbo::Cap::Round),
+                    transform,
+                    ink,
+                    None,
+                    &arc,
+                );
+            }
+            TabMark::Playing | TabMark::Muted => {
+                if rect.inflate(2.0, 2.0).contains(self.last_cursor) {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.content, 1.0),
+                        None,
+                        &RoundedRect::from_rect(
+                            rect.inflate(2.0, 2.0),
+                            f64::from(theme.tokens.radii.item),
+                        ),
+                    );
+                }
+                let icon = if mark == TabMark::Muted {
+                    icons::Icon::VolumeX
+                } else {
+                    icons::Icon::Volume2
+                };
+                icons::draw_icon(
+                    scene,
+                    transform,
+                    rect,
+                    icon,
+                    ink,
+                    icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
         }
     }
 
@@ -741,10 +988,7 @@ impl TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tab_key = PresenceKey::Tab {
-            id: format!("{:x}", t.id),
-        };
-        let peers = presence.peers_on(&tab_key);
+        let peers = presence.peers_on(&tab_presence_key(t.id));
         if peers.is_empty() {
             return;
         }
@@ -772,6 +1016,137 @@ impl TabBar {
             presence.draw_peer_mist(scene, theme, peer, mist_rect);
         }
         scene.pop_layer();
+    }
+
+    /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
+    /// plus a "+N" disc, fewer when the title would drop under
+    /// its full width or [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
+    /// single face. The mist then says someone is there.
+    fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
+        let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
+            return PillFaces::default();
+        };
+        if self.pinned_ids.contains(&tab.id) {
+            return PillFaces::default();
+        }
+        let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+        let (x0, x1) = self.title_zone_without_faces(i, r);
+        let keep = self.shaped_title_width(i).min(MIN_TITLE_PX);
+        PillFaces::fit(peers, x1 - x0, keep, self.face_metrics)
+    }
+
+    /// Records how wide each unpinned tab's faces want to be, and marks the
+    /// layout stale when that changed so the pills grow or shrink for them.
+    fn record_face_demand(&mut self, presence: &PresenceCtx) {
+        let metrics = self.face_metrics;
+        let demand: HashMap<u64, f64> = self
+            .tabs
+            .iter()
+            .filter(|tab| !self.pinned_ids.contains(&tab.id))
+            .filter_map(|tab| {
+                let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+                let faces = peers.min(PILL_MAX_FACES);
+                let wanted = PillFaces {
+                    faces,
+                    overflow: peers - faces,
+                }
+                .width(metrics);
+                (wanted > 0.0).then_some((tab.id, wanted))
+            })
+            .collect();
+        if demand != self.face_demand {
+            self.face_demand = demand;
+            self.face_demand_stale = true;
+        }
+    }
+
+    /// Small faces of the peers on this tab, at the trailing end of the
+    /// title zone (never under the close chip): initials in each person's
+    /// presence colour, agents in the agent identity mark so software never
+    /// reads as a person, ringed so overlapping faces stay separate.
+    fn draw_pill_faces(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        pill: &PillPaint<'_>,
+    ) {
+        let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
+        if faces.slots() == 0 {
+            return;
+        }
+        let r = pill.rect;
+        let reserve = self
+            .reveal_px
+            .get(pill.i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
+        let metrics = self.face_metrics;
+        let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
+        let cy = r.center().y;
+        // The ring is the pill's own ground (its glass film over the strip),
+        // so overlapping faces read as cut out of the tab, not stickered on.
+        let ring = crate::tokens::colors::over(
+            ctx.theme.tokens.colors.surfaces.base,
+            pill.look.fill.with_alpha(1.0),
+            pill.look.fill.components[3],
+        );
+        let face_rect = |slot: usize| {
+            square_at(
+                Point::new(
+                    x0 + metrics.face / 2.0 + crate::num::f64_of_usize(slot) * metrics.step(),
+                    cy,
+                ),
+                metrics.face,
+            )
+        };
+        let peers = presence.peers_on(&tab_presence_key(pill.tab.id));
+        for (slot, user) in peers.iter().take(faces.faces).enumerate() {
+            let rect = face_rect(slot);
+            let (red, green, blue) = presence.color_for(user);
+            let colour = vello::peniko::Color::from_rgb8(red, green, blue);
+            if presence.is_agent(user) {
+                let theme = ctx.theme;
+                let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ring,
+                    None,
+                    &RoundedRect::from_rect(
+                        rect.inflate(ring_px, ring_px),
+                        f64::from(theme.tokens.radii.detail),
+                    ),
+                );
+                crate::agent_identity::draw_agent_identity_mark(
+                    ctx.scene,
+                    ctx.transform,
+                    rect,
+                    theme.tokens.colors.presence.of_rgb((red, green, blue)),
+                    theme,
+                    crate::agent_identity::AgentIdentityStyle::Solid,
+                );
+            } else {
+                let name = presence
+                    .names
+                    .get(user)
+                    .map_or(user.0.as_str(), String::as_str);
+                let initial = name
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map(|c| c.to_uppercase().collect::<String>())
+                    .unwrap_or_default();
+                crate::widget::AvatarFace::new(&initial, "")
+                    .presence(colour)
+                    .ringed_on(ring)
+                    .paint(ctx, rect);
+            }
+        }
+        crate::widget::AvatarFace::paint_overflow(
+            ctx,
+            face_rect(faces.faces),
+            faces.overflow,
+            Some(ring),
+        );
     }
 
     /// The close × (or unsaved-changes dot) chip. Split out of
@@ -884,7 +1259,7 @@ impl TabBar {
 
         let max_rect_target = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if self.show_maximize && max_rect_target.area() > 0.0 {
-            let alpha = chip_alpha_at(zone, CLOSE_HIT_PX + ACTION_GAP + ACTION_W);
+            let alpha = chip_alpha_at(zone, MAX_CHIP_REACH);
             let max_r = shift_rect(max_rect_target, offset);
             let max_hover = Some(i) == self.hover_max_idx;
             if max_hover {
@@ -950,8 +1325,7 @@ impl TabBar {
         theme: &Theme,
     ) {
         let r = c.pill_rect;
-        let pill_height = (r.height()).max(0.0);
-        let radius = pill_height / 2.0;
+        let radius = f64::from(theme.tokens.radii.control);
         let text_dim = theme.tokens.colors.text_dim;
         // Hovered tier, not inactive: active-id already shifted at close-start, and
         // an inactive pill is fully transparent, which would leave the title and ×
@@ -965,9 +1339,13 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &c.desc.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let leading_shift = if let Some(kind) = c.desc.app_kind {
             draw_app_icon(scene, transform, leading_glyph_rect(r), kind, text_dim);
             ICON_W + ICON_GAP
@@ -986,14 +1364,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &c.desc.title,
-            text_size,
             text_dim,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
         icons::draw_icon(
@@ -1075,7 +1452,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         if t.id == self.active_id || self.modified_ids.contains(&t.id) {
@@ -1094,16 +1471,19 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
-        let hover_intended = self.hover_intent.is_some_and(|(idx, started)| {
-            idx == i && started.elapsed() >= Duration::from_millis(HOVER_INTENT_MS)
-        });
-        // Keyboard focus is explicit intent and must remain immediate. Pointer
-        // hover, by contrast, waits so crossing the tab row does not move it.
-        if hover_intended || pressed || self.keyboard_focus && t.id == self.active_id {
+        // The pointer opens a pill after a short dwell from when it entered
+        // (not re-armed by motion inside it), so sweeping across the row moves
+        // nothing; and an open pill stays open while the pointer heads for its
+        // chips, even across a neighbour or the gap. A press and keyboard
+        // focus are explicit and open at once.
+        if Some(i) == self.hover_intent.open()
+            || pressed
+            || self.keyboard_focus && t.id == self.active_id
+        {
             // With the maximize chip withheld there is nothing above `Close` to
             // open into, and reserving `Full`'s width for a chip that will
             // never be placed would just push the title around for nothing.
@@ -1123,7 +1503,7 @@ impl TabBar {
         let Some(a) = self.reveal_anim.get(&id) else {
             return Reveal::None.reserve();
         };
-        let span = ms_f64(REVEAL_ANIM_MS) / 1000.0;
+        let span = f64_of_u64(REVEAL_ANIM_MS) / 1000.0;
         if span <= 0.0 {
             return a.to;
         }
@@ -1135,6 +1515,31 @@ impl TabBar {
             let u = 1.0 - t.clamp(0.0, 1.0);
             a.from + (a.to - a.from) * (1.0 - u * u * u)
         }
+    }
+
+    /// Where pill `i`'s chips sit once it has finished opening: the menu-aim
+    /// target. Taken at the settled width rather than the current one, so a
+    /// pointer that outruns the opening pill is still heading for them, and
+    /// over the bar's full height, so a path that grazes the strip of bar
+    /// above or below the pill on its way is still heading for them too.
+    fn aim_target(&self, i: usize) -> Option<Rect> {
+        let r = self.tab_rects.get(i).copied().filter(|r| r.area() > 0.0)?;
+        let id = self.tabs.get(i)?.id;
+        let still_to_grow = (Reveal::Full.reserve() - self.reveal_reserve(id)).max(0.0);
+        let x1 = r.x1 + still_to_grow;
+        let (y0, y1) = if self.rect.height() > 0.0 {
+            (self.rect.y0.min(r.y0), self.rect.y1.max(r.y1))
+        } else {
+            (r.y0, r.y1)
+        };
+        Some(Rect::new((x1 - CHIP_CLUSTER_W).max(r.x0), y0, x1, y1))
+    }
+
+    /// Lets the hover intent's dwell and aim hold run out between pointer
+    /// samples.
+    fn settle_hover_intent(&mut self) {
+        self.hover_intent
+            .settle(self.hover_intent_under, crate::time::now());
     }
 
     /// 0 at [`Reveal::None`], 1 at [`Reveal::Full`]. The body wash rides this so the
@@ -1196,16 +1601,15 @@ impl TabBar {
         from
     }
 
-    /// Test/shot clock control for the pointer-intent dwell. Production input
-    /// still arms this exclusively through `on_cursor_moved`.
+    /// Test/shot clock control for the hover dwell: settle the pointer intent
+    /// as if the dwell had run out since the pointer entered the pill it
+    /// rests on. Production input still arms the dwell exclusively through
+    /// `on_cursor_moved`. Returns whether a pill is open by pointer now.
     #[cfg(any(test, debug_assertions))]
-    pub fn hold_hover_intent_at(&mut self, at: Duration) -> bool {
-        let Some((idx, _)) = self.hover_intent else {
-            return false;
-        };
-        let now = crate::time::now();
-        self.hover_intent = Some((idx, now.checked_sub(at).unwrap_or(now)));
-        true
+    pub fn elapse_hover_dwell(&mut self) -> bool {
+        let later = crate::time::now() + crate::widget::hover_intent::DWELL;
+        self.hover_intent.settle(self.hover_intent_under, later);
+        self.hover_intent.open().is_some()
     }
 
     /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
@@ -1242,32 +1646,39 @@ impl TabBar {
         }
         let title_w = self.shaped_title_width(i);
         let lead = self.leading_zone(i);
-        (PILL_PAD_X + lead + title_w + reserve).max(PILL_MIN_PX)
+        let faces = self.face_demand.get(&t.id).copied().unwrap_or(0.0);
+        (PILL_PAD_X + lead + title_w + faces + reserve).max(PILL_MIN_PX)
     }
 
     fn shaped_title_width(&self, i: usize) -> f64 {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        self.title_advance
-            .get(&t.id)
-            .filter(|(title, _, _)| title == &t.title)
-            .map_or_else(
-                || {
-                    // Title lengths never approach `u32::MAX` chars, so this is
-                    // lossless in practice; `f64::from` preserves the value.
-                    let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
-                    f64::from(chars) * APPROX_CHAR_W
-                },
-                |(_, _, w)| *w,
-            )
+        match self.title_advance.get(&t.id) {
+            Some((title, _, w)) if title == &t.title => *w,
+            // A retitled tab keeps the width it was drawn at until `draw`
+            // measures the new title. Guessing from the character count
+            // first made the pill jump wide, then narrow, on every title
+            // change a client makes (a terminal's running status, say).
+            Some((_, _, w)) => *w,
+            None => {
+                // Title lengths never approach `u32::MAX` chars, so this is
+                // lossless in practice; `f64::from` preserves the value.
+                let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
+                f64::from(chars) * APPROX_CHAR_W
+            }
+        }
     }
 
     fn leading_zone(&self, i: usize) -> f64 {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        if t.app_kind.is_some() || t.icon.is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.app_kind.is_some()
+            || t.icon.is_some()
+            || self.accent_ids.contains_key(&t.id)
+            || self.marks.contains_key(&t.id)
+        {
             ICON_W + ICON_GAP
         } else {
             0.0
@@ -1275,6 +1686,17 @@ impl TabBar {
     }
 
     fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
+        let (x0, x1) = self.title_zone_without_faces(i, r);
+        let faces = self
+            .pill_faces
+            .get(i)
+            .copied()
+            .unwrap_or_default()
+            .width(self.face_metrics);
+        (x0, (x1 - faces).max(x0))
+    }
+
+    fn title_zone_without_faces(&self, i: usize, r: Rect) -> (f64, f64) {
         let x0 = r.x0 + PILL_PAD_X + self.leading_zone(i);
         let reserve = self
             .reveal_px
@@ -1297,14 +1719,23 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Label);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
         // its own, so it reads this back on the next pass.
-        let (full_w, _) = tr.measure_weighted(&title, size, None, TextWeight::Semibold);
-        self.title_advance
-            .insert(id, (title.clone(), size, f64::from(full_w)));
+        let (full_w, _) = tr.measure_style(
+            &title,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
+        let measured = f64::from(full_w);
+        let previous = self
+            .title_advance
+            .insert(id, (title.clone(), style.clone(), measured));
+        if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
+            self.advance_changed = true;
+        }
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
@@ -1329,7 +1760,11 @@ impl TabBar {
                         .collect();
                     let candidate = format!("…{tail}{suffix}");
                     if tr
-                        .measure_weighted(&candidate, size, None, TextWeight::Semibold)
+                        .measure_style(
+                            &candidate,
+                            None,
+                            &style.clone().with_weight(TextWeight::Semibold),
+                        )
                         .0
                         <= budget
                     {
@@ -1338,7 +1773,11 @@ impl TabBar {
                 }
             }
         }
-        Some(tr.elide_to_width_weighted(&title, size, budget, TextWeight::Semibold))
+        Some(tr.elide_to_width_style(
+            &title,
+            budget,
+            &style.clone().with_weight(TextWeight::Semibold),
+        ))
     }
 
     pub fn tabs(&self) -> &[TabDescriptor] {
@@ -1496,6 +1935,7 @@ impl TabBar {
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
         self.snapshot_layout_for_spring();
+        let was_active = self.active_id == id;
         self.tabs.remove(idx);
         if self.active_id == id {
             // Prefer the tab that slid into this index; fall back to the
@@ -1508,10 +1948,31 @@ impl TabBar {
         }
         self.closing_tabs.push(ClosingTab {
             desc,
+            index: idx,
+            was_active,
             pill_rect,
             close_rect,
             started_at: crate::time::now(),
         });
+        true
+    }
+
+    /// Restore a requested close whose host still owns the live tab. No
+    /// metadata or focus is lost while the client asks for a save decision.
+    pub fn cancel_close(&mut self, id: u64) -> bool {
+        let Some(index) = self.closing_tabs.iter().position(|tab| tab.desc.id == id) else {
+            return false;
+        };
+        let tab = self.closing_tabs.remove(index);
+        if !self.tabs.iter().any(|live| live.id == id) {
+            self.tabs.insert(tab.index.min(self.tabs.len()), tab.desc);
+        }
+        if tab.was_active {
+            self.active_id = id;
+        }
+        if self.pending_close == Some(id) {
+            self.pending_close = None;
+        }
         true
     }
 
@@ -1604,9 +2065,17 @@ impl TabBar {
         let t = self.tabs.remove(from);
         self.tabs.insert(to, t);
     }
-    pub fn take_drag(&mut self) -> Option<DragPayload> {
-        self.pending_drag.take()
+    /// Abandon a pending or lifted tab without turning its release into a drop.
+    pub fn cancel_drag(&mut self) -> bool {
+        if self.press_origin.is_none() && self.pending_drag.is_none() {
+            return false;
+        }
+        self.pending_drag = None;
+        let mut handled = false;
+        self.finish_drag_release(&mut handled);
+        true
     }
+
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
@@ -1686,30 +2155,6 @@ impl TabBar {
     }
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
-    }
-    /// Shifts the bar's whole painted region — background, pills, hit rects —
-    /// right by `px`, after `apply_layout` has already fit the row. A host
-    /// drawing its own control over the bar's left corner (e.g. an overlay
-    /// sidebar's hamburger toggle) reserves room for it here, rather than
-    /// teaching the fit itself about a chip this widget doesn't know exists.
-    /// No-op past a `px` that would collapse the bar.
-    pub fn inset_left(&mut self, px: f64) {
-        if px <= 0.0 || self.rect.width() <= px {
-            return;
-        }
-        let shift = vello::kurbo::Vec2::new(px, 0.0);
-        self.rect = Rect::new(self.rect.x0 + px, self.rect.y0, self.rect.x1, self.rect.y1);
-        for r in self
-            .tab_rects
-            .iter_mut()
-            .chain(self.close_rects.iter_mut())
-            .chain(self.close_hit_rects.iter_mut())
-            .chain(self.max_rects.iter_mut())
-            .chain(self.search_rects.iter_mut())
-        {
-            *r = shift_rect(*r, shift);
-        }
-        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
     }
     /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)` so
     /// integration tests in other crates (which link the release-shaped lib) can
@@ -1840,11 +2285,19 @@ impl TabBar {
         let is_active = self.tabs.get(idx).is_some_and(|t| t.id == self.active_id);
         let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
         let is_pressed = !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
-        let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        let is_carried = suppress_hover
+            && matches!(
+                &self.pending_drag,
+                Some(DragPayload::Tab { tab, .. })
+                    if self.tabs.get(idx).is_some_and(|item| item.id == *tab)
+            );
+        // The carried object needs its own readable surface even when its
+        // source tab is inactive. This changes paint, not tab selection.
+        let mut look = pill_appearance(theme, is_active || is_carried, is_hover, is_pressed);
         // Inactive body rides the reveal curve instead of switching on/off with
         // the pointer, fading (fill + edge together, so the hairline can't flicker
         // off a frame late) over the same frames its chips slide back in.
-        if !is_active && !is_pressed {
+        if !is_active && !is_pressed && !is_carried {
             let fade = if suppress_hover {
                 0.0
             } else {
@@ -1955,13 +2408,13 @@ impl TabBar {
 // (`TAB_BAR_HEIGHT`, `NEW_TAB_CHIP_PX`). Against the 4 px spacing scale:
 //
 //   on the grid   TAB_BAR_HEIGHT 44, PILL_PAD_X 12 (= s3), CLOSE_HIT_PX 32
-//                 (= s8, the minimum pointer target), ACTION_GAP 4 (= s1),
+//                 (= s8, the minimum pointer target), CHIP_PITCH 24 (= s6),
 //                 ACTION_HIT_INSET_Y 4 (= s1), PINNED_W 28, MIN_TITLE_PX 40,
 //                 PILL_MIN_PX 84
 //   off the grid  TAB_PILL_INSET_Y 6 (pill 32 tall inside a 44 bar — the
 //                 bar height is pinned), PILL_GAP 6, ICON_GAP 6, CLOSE_W 18,
-//                 ACTION_W 14, ICON_W 14, CLOSE_INSET 3, TITLE_CHIP_GAP 10,
-//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54, NEW_TAB_GLYPH_PX 11
+//                 ACTION_W 14, ICON_W 14, CLOSE_INSET 7, TITLE_CHIP_GAP 10,
+//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54
 //
 // The off-grid values are lucide glyph sizes and optical gaps around a
 // 32 px pill; they are kept, named, and audited here rather than rounded,
@@ -1979,13 +2432,12 @@ const PILL_PAD_X: f64 = 12.0;
 const CLOSE_W: f64 = 18.0;
 /// The glyph remains compact; its pointer target does not.
 const CLOSE_HIT_PX: f64 = 32.0;
-const CLOSE_INSET: f64 = 3.0;
+/// The × sits centred in its pointer target, so the three chips can share
+/// one rhythm (see [`CHIP_PITCH`]).
+const CLOSE_INSET: f64 = (CLOSE_HIT_PX - CLOSE_W) / 2.0;
 /// How far a maximize/search chip's pointer rect stops short of the pill's
 /// top and bottom edges.
 const ACTION_HIT_INSET_Y: f64 = 4.0;
-/// The "+" glyph inside the new-tab chip. Smaller than the action glyphs:
-/// at 14 px the arms nearly touched the dashed ring and read as crowded.
-const NEW_TAB_GLYPH_PX: f64 = 11.0;
 /// The group-focus keyline under an active pill: its thickness, and how
 /// far it floats above the pill's bottom edge.
 const FOCUS_KEYLINE_PX: f64 = 2.0;
@@ -1999,7 +2451,10 @@ const ACTION_HOVER_TINT_ALPHA: u8 = 64;
 /// target; maximize/search are secondary and also reachable from the
 /// context menu.
 const ACTION_W: f64 = 14.0;
-const ACTION_GAP: f64 = 4.0;
+/// Centre-to-centre distance between neighbouring chips. Search, maximize
+/// and close glyphs stand on one even rhythm; they used to sit 18 px apart
+/// on the left and 31 px on the right, which read as two loose groups.
+const CHIP_PITCH: f64 = 24.0;
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
 const PINNED_W: f64 = 28.0;
@@ -2011,6 +2466,8 @@ const ACCENT_DOT_R: f64 = 4.0;
 const MODIFIED_DOT_R: f64 = 3.5;
 /// Fits an app glyph, a couple of characters, and the close chip.
 const PILL_MIN_PX: f64 = 84.0;
+/// Peer faces on a pill: at most this many faces before a "+N" disc.
+const PILL_MAX_FACES: usize = 2;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -2019,9 +2476,17 @@ const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
 /// instead of characters — the cluster drops search, then maximize, then close.
 const MIN_TITLE_PX: f64 = 40.0;
 
+/// Right edge to the left edge of the maximize glyph: the reveal zone that
+/// places it.
+const MAX_CHIP_REACH: f64 = CLOSE_HIT_PX / 2.0 + CHIP_PITCH + ACTION_W / 2.0;
+
 /// Right edge to the left edge of the leftmost revealed chip: close, then
 /// maximize, then search.
-const CHIP_CLUSTER_W: f64 = CLOSE_HIT_PX + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+const CHIP_CLUSTER_W: f64 = MAX_CHIP_REACH + CHIP_PITCH;
+
+// The painted maximize glyph stays clear of the close chip's 32 px target,
+// so a press on what the eye sees as maximize never closes the tab.
+const _: () = assert!(CLOSE_HIT_PX / 2.0 + CHIP_PITCH - ACTION_W / 2.0 > CLOSE_HIT_PX);
 
 /// Gap between title and trailing chip; must be at least [`CHIP_FADE_PX`] for
 /// a settled pill to paint its cluster at full opacity.
@@ -2063,12 +2528,6 @@ const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
 /// Matched to [`LAYOUT_ANIM_MS`] so a pill opening and neighbours sliding
 /// aside read as one motion.
 const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
-/// A pointer merely crossing the row must not reflow it. Secondary actions
-/// appear only after a short, deliberate hover.
-const HOVER_INTENT_MS: u64 = 200;
-/// Cursor travel faster than this is navigation, not intent.
-const HOVER_INTENT_MAX_SPEED_PX_PER_MS: f64 = 0.45;
-
 /// First-frame estimate before `draw` records the real advance into
 /// [`TabBar::title_advance`]. Deliberately an over-estimate: guessing wide is
 /// invisible by the next frame; guessing narrow elides the title, which is
@@ -2156,12 +2615,14 @@ fn chip_rects(
     // the pill's centre line whatever their rects' heights.
     let chip_y0 = r.y0 + ACTION_HIT_INSET_Y;
     let chip_y1 = r.y1 - ACTION_HIT_INSET_Y;
-    let close_target_x0 = r.x1 - CLOSE_HIT_PX;
     let close_x0 = r.x1 - close_w - close_inset;
-    // Secondary actions sit outside the close target. This keeps the 32px
-    // close target from swallowing a visible maximize/search button.
-    let max_x0 = close_target_x0 - max_w - ACTION_GAP;
-    let search_x0 = max_x0 - search_w - ACTION_GAP;
+    // One pitch between neighbouring glyph centres. At that pitch the
+    // maximize glyph already sits outside the 32 px close target (asserted
+    // at compile time beside `CHIP_CLUSTER_W`), so the target cannot
+    // swallow a visible maximize/search button.
+    let close_cx = close_x0 + close_w / 2.0;
+    let max_x0 = close_cx - CHIP_PITCH - max_w / 2.0;
+    let search_x0 = close_cx - 2.0 * CHIP_PITCH - search_w / 2.0;
     let close = if effective >= CLOSE_HIT_PX {
         // The close glyph remains an 18px visual, centred in the larger pill.
         // Its 32px pointer target is derived separately in `apply_layout`.
@@ -2175,7 +2636,7 @@ fn chip_rects(
     } else {
         Rect::ZERO
     };
-    let max_rect = if effective >= CLOSE_HIT_PX + ACTION_GAP + ACTION_W {
+    let max_rect = if effective >= MAX_CHIP_REACH {
         Rect::new(max_x0, chip_y0, max_x0 + max_w, chip_y1)
     } else {
         Rect::ZERO
@@ -2202,6 +2663,87 @@ fn square_at(c: Point, side: f64) -> Rect {
 /// `ICON_W` square, starting on the pill's text inset and centred on the
 /// pill's centre line. The title starts `ICON_GAP` after it — see
 /// [`title_x0`].
+/// The instant a busy mark's turn is measured from, shared by every strip so
+/// two loading tabs turn together.
+fn busy_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(crate::time::now)
+}
+
+/// The presence key peers on a tab are registered under.
+fn tab_presence_key(id: u64) -> PresenceKey {
+    PresenceKey::Tab {
+        id: format!("{id:x}"),
+    }
+}
+
+/// Peer faces a pill shows: `faces` initials, then a "+`overflow`" disc
+/// for everyone else (none when zero).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PillFaces {
+    faces: usize,
+    overflow: usize,
+}
+
+/// Sizes of a pill's peer faces, from the theme: each face is a medium icon
+/// wide (large enough for a legible initial), keeps the smallest spacing
+/// step from the title, and overlaps its neighbour by only half that step so
+/// both initials stay whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FaceMetrics {
+    face: f64,
+    gap: f64,
+    overlap: f64,
+}
+
+impl FaceMetrics {
+    fn of(theme: &Theme) -> Self {
+        let gap = f64::from(theme.tokens.spacing.s1);
+        Self {
+            face: f64::from(theme.tokens.metrics.icon_md),
+            gap,
+            // The ring alone overlaps the next face onto this one's edge,
+            // never onto its initial.
+            overlap: 0.0,
+        }
+    }
+
+    fn step(self) -> f64 {
+        self.face - self.overlap
+    }
+}
+
+impl PillFaces {
+    fn slots(self) -> usize {
+        self.faces.saturating_add(usize::from(self.overflow > 0))
+    }
+
+    /// Width the faces take from the title zone, including their gap.
+    fn width(self, metrics: FaceMetrics) -> f64 {
+        match self.slots() {
+            0 => 0.0,
+            slots => {
+                metrics.face
+                    + crate::num::f64_of_usize(slots.saturating_sub(1)) * metrics.step()
+                    + metrics.gap
+            }
+        }
+    }
+
+    /// The most faces for `peers` that still leave the title `keep` px of a
+    /// `room`-wide zone; fewer faces fold into "+N".
+    fn fit(peers: usize, room: f64, keep: f64, metrics: FaceMetrics) -> Self {
+        (1..=peers.min(PILL_MAX_FACES))
+            .rev()
+            .map(|faces| Self {
+                faces,
+                overflow: peers.saturating_sub(faces),
+            })
+            .find(|candidate| room - candidate.width(metrics) >= keep)
+            .unwrap_or_default()
+    }
+}
+
 fn leading_glyph_rect(r: Rect) -> Rect {
     let x0 = r.x0 + PILL_PAD_X;
     Rect::new(
@@ -2246,7 +2788,7 @@ impl Widget for TabBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.reduce_motion = theme.reduce_motion;
+        self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
@@ -2255,26 +2797,21 @@ impl Widget for TabBar {
             reason = "TAB_BAR_HEIGHT is a small fixed layout constant"
         )]
         let bar_height = TAB_BAR_HEIGHT as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::length(bar_height),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.advance_changed = false;
+        self.face_demand_stale = false;
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -2290,7 +2827,10 @@ impl Widget for TabBar {
         self.reveal_px.clear();
         self.reveal_px
             .resize(self.tabs.len(), Reveal::None.reserve());
+        self.mark_rects.clear();
+        self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
+        self.settle_hover_intent();
         let (visual_order, widths, grow) = self.compute_pill_layout();
 
         let gap = PILL_GAP;
@@ -2357,6 +2897,13 @@ impl Widget for TabBar {
             if let Some(slot) = self.tab_rects.get_mut(i) {
                 *slot = r;
             }
+            // Every unpinned tab keeps the slot, so a mark set between
+            // layouts lands (and hit-tests) where it will be painted.
+            if let Some(slot) = self.mark_rects.get_mut(i)
+                && !is_pinned
+            {
+                *slot = leading_glyph_rect(r);
+            }
             if let Some(slot) = self.close_rects.get_mut(i) {
                 *slot = close;
             }
@@ -2374,7 +2921,7 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if plus_x1 <= self.rect.x1 {
+        self.new_tab_rect = if self.new_tab && plus_x1 <= self.rect.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -2394,6 +2941,11 @@ impl Widget for TabBar {
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
+        self.face_metrics = FaceMetrics::of(theme);
+        self.record_face_demand(presence);
+        self.pill_faces = (0..self.tabs.len())
+            .map(|i| self.fit_pill_faces(i, presence))
+            .collect();
         // Only pass with a TextRenderer — shapes every title up front.
         self.visible_titles = (0..self.tabs.len())
             .map(|i| self.visible_title(i, tr, theme))
@@ -2407,7 +2959,7 @@ impl Widget for TabBar {
             if elapsed >= Duration::from_millis(LAYOUT_ANIM_MS) {
                 None
             } else {
-                let raw = elapsed.as_secs_f64() / (ms_f64(LAYOUT_ANIM_MS) / 1000.0);
+                let raw = elapsed.as_secs_f64() / (f64_of_u64(LAYOUT_ANIM_MS) / 1000.0);
                 Some(crate::ease_out(raw))
             }
         });
@@ -2418,14 +2970,27 @@ impl Widget for TabBar {
             .retain(|_, started| started.elapsed() < fade_window);
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
-        self.draw_keyboard_focus(scene, transform, theme);
-        self.draw_new_tab_chip(scene, transform, theme);
+        // The tab list's focus ring comes and goes with keyboard focus: a
+        // damage part around the active pill, not a repaint of the bar.
+        let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
+        crate::scene_parts::part_drawn(scene, focus, |scene| {
+            self.draw_keyboard_focus(scene, transform, theme)
+        });
+        self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.cancel_drag()
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && self.handle_keyboard_navigation(&event.logical_key)
@@ -2436,6 +3001,15 @@ impl Widget for TabBar {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.on_cursor_moved(*position, ctx.scale_factor, ctx.handled);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Nothing can be aimed at from outside the surface.
+                self.hover_idx = None;
+                self.hover_close_idx = None;
+                self.hover_max_idx = None;
+                self.hover_search_idx = None;
+                self.hover_intent.clear();
+                self.hover_intent_under = None;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2537,7 +3111,7 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
-                let node = if self.pinned_ids.contains(&t.id) {
+                let node = if self.pinned_ids.contains(&t.id) || !self.closable {
                     node
                 } else {
                     node.with_children(vec![
@@ -2550,22 +3124,42 @@ impl Widget for TabBar {
                             }),
                     ])
                 };
-                if self.modified_ids.contains(&t.id) {
+                let node = if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))
                 } else {
                     node
+                };
+                match self.marks.get(&t.id) {
+                    Some(mark) if mark.is_control() => {
+                        let mut node = node.with_description(mark.description());
+                        node.children.push(
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name(format!("Mute {}", t.title))
+                                .with_action_target(format!("tab-mute:{}", t.id))
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    checked: Some(*mark == TabMark::Muted),
+                                    ..Default::default()
+                                }),
+                        );
+                        node
+                    }
+                    Some(mark) => node.with_description(mark.description()),
+                    None => node,
                 }
             })
             .collect();
-        tab_children.push(
-            AccessNode::new(Role::Button)
-                .with_name("New tab")
-                .with_action_target("tab-new")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        );
+        if self.new_tab {
+            tab_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New tab")
+                    .with_action_target("tab-new")
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         node = node.with_children(tab_children);
         Some(node)
     }
@@ -2574,13 +3168,16 @@ impl Widget for TabBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
         if target == "tab-new" {
+            if !self.new_tab {
+                return false;
+            }
             self.pending_new_tab = Some(());
             return true;
         }
@@ -2588,7 +3185,17 @@ impl Widget for TabBar {
             .strip_prefix("tab-close:")
             .and_then(|value| value.parse::<u64>().ok())
         {
-            return !self.pinned_ids.contains(&id) && self.start_closing(id);
+            return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-mute:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            let Some(mark) = self.marks.get(&id).copied().filter(|m| m.is_control()) else {
+                return false;
+            };
+            self.pending_mark = Some((id, mark));
+            return true;
         }
         let Some(id) = target
             .strip_prefix("tab:")
@@ -2610,9 +3217,10 @@ impl Widget for TabBar {
         self.rect
     }
     /// A fixed-height strip sized by its parent: only its first layout is a
-    /// size change. Tab additions and removals are structural.
+    /// size change. Tab additions and removals are structural; peers arriving
+    /// on or leaving a tab resize its pill for their faces.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.advance_changed || self.face_demand_stale
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
@@ -2626,9 +3234,15 @@ impl Widget for TabBar {
     fn wants_pointer_capture(&self) -> bool {
         self.press_origin.is_some() || self.pending_drag.is_some()
     }
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        matches!(payload, DragPayload::Tab { .. })
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        // The busy mark stands still and a drag lifts at once.
+        self.host_reduced_motion = reduced;
+        self.reduce_motion = reduced;
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
     }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep pumping redraws while any curve is in flight: drop-zone expand,
         // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
@@ -2658,14 +3272,14 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
+        // A dwell or an aim hold still to run out: the next layout settles it.
+        let hover_intent = self.hover_intent.deadline().is_some();
+        let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
             && self
                 .drag_lifted_at
                 .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
-        let hover_intent = self
-            .hover_intent
-            .is_some_and(|(_, started)| started.elapsed() < Duration::from_millis(HOVER_INTENT_MS));
         drop_zone
             || layout
             || insert_fade
@@ -2674,6 +3288,7 @@ impl Widget for TabBar {
             || reveal
             || drag_lift
             || hover_intent
+            || busy
     }
 }
 
@@ -2793,7 +3408,7 @@ impl TabBar {
                     if elapsed >= fade_window {
                         (1.0, 0.0)
                     } else {
-                        let raw = (elapsed.as_secs_f64() / (ms_f64(INSERT_FADE_MS) / 1000.0))
+                        let raw = (elapsed.as_secs_f64() / (f64_of_u64(INSERT_FADE_MS) / 1000.0))
                             .clamp(0.0, 1.0);
                         let eased = crate::ease_out(raw);
                         #[allow(
@@ -2822,32 +3437,42 @@ impl TabBar {
                 compose(transform, Affine::translate((0.0, fade_y)))
             };
             let pill_alpha_active = combined_alpha < 1.0;
-            if pill_alpha_active {
-                // Wider than the pill so hover-reveal action icons fade in cleanly.
-                let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
-                let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    combined_alpha,
-                    transform,
-                    &clip,
+            // Wider than the pill so hover-reveal action icons fade in cleanly.
+            let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
+            let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
+            // Each pill is a damage part: hovering one repaints that pill.
+            // It paints inside the clip a fading pill is held to, at its
+            // fade offset; a press only shrinks it.
+            let bounds = vec![
+                transform.transform_rect_bbox(clip),
+                pill_transform.transform_rect_bbox(clip),
+            ];
+            let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                if pill_alpha_active {
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        combined_alpha,
+                        transform,
+                        &clip,
+                    );
+                }
+                // Uses `pill_transform` so the fade's y-offset composes with any
+                // layout-spring dx/dy.
+                self.draw_pill_inner(
+                    &mut PaintCtx::new(scene, pill_transform, tr, theme),
+                    presence,
+                    i,
+                    r,
+                    false,
                 );
-            }
-            // Uses `pill_transform` so the fade's y-offset composes with any
-            // layout-spring dx/dy.
-            self.draw_pill_inner(
-                &mut PaintCtx::new(scene, pill_transform, tr, theme),
-                presence,
-                i,
-                r,
-                false,
-            );
 
-            // Must mirror the push above exactly — `pill_alpha_active` tracks that.
-            if pill_alpha_active {
-                scene.pop_layer();
-            }
+                // Must mirror the push above exactly — `pill_alpha_active` tracks that.
+                if pill_alpha_active {
+                    scene.pop_layer();
+                }
+            });
         }
     }
 
@@ -2855,10 +3480,16 @@ impl TabBar {
     /// remains the active pill's glass/keyline treatment, while this outline
     /// says that the *tab list* now owns keyboard input. The semantic focus
     /// and the painted target therefore stay in lockstep under high contrast
-    /// and large text alike.
-    fn draw_keyboard_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// and large text alike. Returns the bounds of what it painted, in scene
+    /// coordinates.
+    fn draw_keyboard_focus(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Vec<Rect> {
         if !self.keyboard_focus {
-            return;
+            return Vec::new();
         }
         let Some((idx, _)) = self
             .tabs
@@ -2866,7 +3497,7 @@ impl TabBar {
             .enumerate()
             .find(|(_, tab)| tab.id == self.active_id)
         else {
-            return;
+            return Vec::new();
         };
         let Some(rect) = self
             .tab_rects
@@ -2874,65 +3505,49 @@ impl TabBar {
             .copied()
             .filter(|rect| rect.area() > 0.0)
         else {
-            return;
+            return Vec::new();
         };
         let ring_rect = rect.inset(1.0);
-        let ring = RoundedRect::from_rect(ring_rect, (ring_rect.height() / 2.0).max(0.0));
+        let ring = RoundedRect::from_rect(
+            ring_rect,
+            f64::from(
+                theme
+                    .tokens
+                    .radii
+                    .concentric(theme.tokens.radii.control, 1.0),
+            ),
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
             transform,
-            theme.tokens.colors.border_focus,
+            theme.tokens.colors.intent.you,
             None,
             &ring,
         );
+        // Half the stroke outside the ring, and a pixel of antialiasing.
+        vec![transform.transform_rect_bbox(ring_rect.inflate(2.0, 2.0))]
     }
 
     /// The idle/hover "+" new-tab chip, painted after the pills so a springing
     /// neighbour never draws over it; skipped during a drag so it can't be
     /// mistaken for a drop target.
-    fn draw_new_tab_chip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_new_tab_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if !(self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none()) {
             return;
         }
-        let r = self.new_tab_rect;
-        let radius = r.height() / 2.0;
-        let shape = RoundedRect::from_rect(r, radius);
-        let colors = &theme.tokens.colors;
-        // Idle: dotted outline, not a filled button, so it doesn't compete with
-        // the active pill. Hover: the same glass a hovered pill uses.
-        if self.hover_new_tab {
-            crate::chrome::shell::paint_glass_body(
-                scene,
-                transform,
-                r,
-                radius,
-                theme,
-                &pill_appearance(theme, false, true, false),
-                1.0,
-            );
-        } else {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA),
-                None,
-                &shape,
-            );
-        }
-        let glyph_rect = square_at(r.center(), NEW_TAB_GLYPH_PX);
-        let glyph_color = if self.hover_new_tab {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        icons::draw_icon(
-            scene,
-            transform,
-            glyph_rect,
-            icons::Icon::Plus,
-            glyph_color,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        // The shared icon button: bare at rest so it never competes with the
+        // active tab, a lift of the bar under the pointer.
+        let face =
+            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, "New tab")
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(self.hover_new_tab);
+        crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Pills mid close-fade, retained past the fade window (at alpha 0) until
@@ -3011,10 +3626,10 @@ impl TabBar {
         }
         let now = crate::time::now();
         let elapsed_ms = self.hover_drop_animated_at.map_or_else(
-            || ms_f64(HOVER_DROP_FADE_MS),
+            || f64_of_u64(HOVER_DROP_FADE_MS),
             |t| duration_ms_f64(now.duration_since(t).as_millis()),
         );
-        let raw_t = (elapsed_ms / ms_f64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
+        let raw_t = (elapsed_ms / f64_of_u64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
         let eased_t = crate::ease_out(raw_t);
         // 4px above/below the pill's extent for bleed past the rounded caps.
         let (cx, y0, y1) = if gap_idx == 0 {
@@ -3091,7 +3706,11 @@ impl TabBar {
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
-            Self::GHOST_PILL_ALPHA,
+            if theme.colors_are_forced() {
+                1.0
+            } else {
+                Self::GHOST_PILL_ALPHA
+            },
             transform,
             &clip,
         );
@@ -3115,16 +3734,6 @@ impl TabBar {
         handled: &mut bool,
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-        let now = crate::time::now();
-        let speed = self.hover_motion_sample.map_or(0.0, |(previous, sampled)| {
-            let elapsed_ms = now.duration_since(sampled).as_secs_f64() * 1000.0;
-            if elapsed_ms <= f64::EPSILON {
-                f64::INFINITY
-            } else {
-                point_delta(p, previous).hypot() / elapsed_ms
-            }
-        });
-        self.hover_motion_sample = Some((p, now));
         self.last_cursor = p;
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
         // skip them so a cursor crossing (0,0) doesn't latch a hover on a
@@ -3158,21 +3767,19 @@ impl TabBar {
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
-        let close_excluded = self.hover_close_idx.is_some();
-        self.hover_intent = match (self.hover_intent, self.hover_idx) {
-            (_, None) => None,
-            (_, Some(_)) if close_excluded => None,
-            (Some((candidate, started)), Some(idx))
-                if candidate == idx && speed <= HOVER_INTENT_MAX_SPEED_PX_PER_MS =>
-            {
-                Some((candidate, started))
-            }
-            // Entering quickly starts a fresh dwell instead of dropping the
-            // candidate. If the pointer stops here there is no later motion
-            // event to arm it; if transit continues, each event resets the
-            // timestamp and the reveal still cannot mature mid-flight.
-            (_, Some(idx)) => Some((idx, now)),
+        // A pill that is not open yet does not start opening from its close
+        // glyph: opening grows the pill rightward and would carry the × out
+        // from under the pointer that is about to press it.
+        let open = self.hover_intent.open();
+        let under = if self.hover_close_idx.is_some() && self.hover_close_idx != open {
+            None
+        } else {
+            self.hover_idx
         };
+        let target = open.and_then(|i| self.aim_target(i));
+        self.hover_intent_under = under;
+        self.hover_intent
+            .on_motion(p, under, target, crate::time::now());
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some((idx, origin)) = self.press_origin
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
@@ -3254,6 +3861,18 @@ impl TabBar {
             *handled = true;
             return;
         }
+        // A sound mark is a control of its own: it mutes, it does not select.
+        let mark_hit = self.tabs.iter().zip(&self.mark_rects).find_map(|(t, r)| {
+            let mark = self.marks.get(&t.id).copied()?;
+            (mark.is_control() && r.area() > 0.0 && r.inflate(2.0, 2.0).contains(cursor_pos))
+                .then_some((t.id, mark))
+        });
+        if let Some(hit) = mark_hit {
+            self.pending_mark = Some(hit);
+            *handled = true;
+            return;
+        }
+
         // Close button takes priority over selection/drag.
         if let Some(ci) = close_idx
             && let Some(t) = self.tabs.get(ci)
@@ -3423,6 +4042,7 @@ fn draw_app_icon(
 mod tests {
     use super::*;
     use crate::presence::user_color;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::AutoCommit;
 
     fn bar() -> TabBar {
@@ -3500,7 +4120,7 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .all(|run| run.font_size <= theme.tokens.typography.scale.sm)
+                    .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Label))
             );
             assert!(
                 scene
@@ -3508,7 +4128,10 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01),
+                    .any(
+                        |run| (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
+                            < 0.01
+                    ),
                 "tab title must retain the requested 200% font size"
             );
         }
@@ -3905,7 +4528,7 @@ mod tests {
                 "the active tab (A) is not modified, so it has no dot"
             );
 
-            b.hover_idx = Some(1);
+            b.hover_open_for_tests(1);
             assert_eq!(
                 b.modified_marker_color_for_tests(1, &theme),
                 None,
@@ -3957,13 +4580,7 @@ mod tests {
                     b.set_modified(2, true);
                 }
                 if hover {
-                    b.hover_idx = Some(1);
-                    b.hover_intent = Some((
-                        1,
-                        Instant::now()
-                            .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
-                            .expect("hover intent instant"),
-                    ));
+                    b.hover_open_for_tests(1);
                 }
 
                 let theme = Theme::dark();
@@ -4071,29 +4688,11 @@ mod tests {
             b.hover_idx = Some(1);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut b, &press);
 
             assert_eq!(
                 b.take_max(),
@@ -4143,29 +4742,11 @@ mod tests {
             b.hover_idx = Some(2);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut b, &press);
 
             assert_eq!(
                 b.take_search(),
@@ -4357,29 +4938,11 @@ mod tests {
             b.last_cursor = close_centre;
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
 
             assert!(
                 b.pending_close.is_none(),
@@ -4639,6 +5202,128 @@ mod tests {
             );
         }
 
+        // Case `peers_on_a_tab_show_faces_that_give_way_to_the_title`.
+        {
+            fn faces_at(width: f64) -> (Vec<PillFaces>, f64) {
+                let mut b = TabBar::new(
+                    "g1",
+                    vec![
+                        TabDescriptor::new(1, "Alpha"),
+                        TabDescriptor::new(2, "Quarterly planning"),
+                    ],
+                    1,
+                );
+                b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 80.0 + width, 34.0),
+                ];
+                b.close_rects = vec![Rect::ZERO; 2];
+                b.max_rects = vec![Rect::ZERO; 2];
+                b.search_rects = vec![Rect::ZERO; 2];
+                let mut presence = PresenceCtx::default();
+                for peer in ["ada", "bot", "cy", "dee", "eve"] {
+                    presence.register_peer_at(
+                        peer.to_string(),
+                        PresenceKey::Tab {
+                            id: "2".to_string(),
+                        },
+                    );
+                }
+                presence.set_participant_kind(crate::permissions::UserId("bot".into()), true);
+                b.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &presence,
+                );
+                let r = b.tab_rects[1];
+                let (_, title_x1) = b.title_zone(1, r);
+                (b.pill_faces.clone(), r.x1 - title_x1)
+            }
+
+            let (wide, wide_trailing) = faces_at(200.0);
+            assert_eq!(wide[0], PillFaces::default(), "nobody is on tab 1");
+            assert_eq!(
+                wide[1],
+                PillFaces {
+                    faces: 2,
+                    overflow: 3
+                },
+                "two faces, the rest folded into +3"
+            );
+            assert!(
+                wide_trailing
+                    >= wide[1].width(FaceMetrics::of(&Theme::dark())) + Reveal::None.reserve(),
+                "the title zone ends before the faces, so they never cover it"
+            );
+            let (medium, _) = faces_at(110.0);
+            assert_eq!(
+                medium[1],
+                PillFaces {
+                    faces: 1,
+                    overflow: 4
+                },
+                "a tighter pill keeps a legible title and shows fewer faces"
+            );
+            let (narrow, _) = faces_at(70.0);
+            assert_eq!(narrow[1], PillFaces::default(), "too narrow: mist only");
+
+            // A short title: the pill grows by its faces' width, so after
+            // the relayout the faces show next to the whole title.
+            let mut b = TabBar::new(
+                "g1",
+                vec![
+                    TabDescriptor::new(1, "Main"),
+                    TabDescriptor::new(2, "Notes"),
+                ],
+                1,
+            );
+            let reserve = b.resting_reveal(1).reserve();
+            let draw_at = |b: &mut TabBar, width: f64, presence: &PresenceCtx| {
+                b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 80.0 + width, 34.0),
+                ];
+                b.reveal_px = vec![0.0, reserve];
+                b.close_rects = vec![Rect::ZERO; 2];
+                b.max_rects = vec![Rect::ZERO; 2];
+                b.search_rects = vec![Rect::ZERO; 2];
+                b.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    presence,
+                );
+            };
+            draw_at(&mut b, 200.0, &PresenceCtx::default());
+            let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
+            let mut presence = PresenceCtx::default();
+            presence.register_peer_at(
+                "ada".to_string(),
+                PresenceKey::Tab {
+                    id: "2".to_string(),
+                },
+            );
+            draw_at(&mut b, content.max(PILL_MIN_PX), &presence);
+            assert!(b.face_demand_stale, "a new peer asks for a relayout");
+            let one = PillFaces {
+                faces: 1,
+                overflow: 0,
+            };
+            let grown = b.natural_pill_width(1, reserve);
+            let wanted = (content + one.width(FaceMetrics::of(&Theme::dark()))).max(PILL_MIN_PX);
+            assert!(
+                (grown - wanted).abs() < 0.01,
+                "the pill grows by the face: {grown} vs {wanted}"
+            );
+            draw_at(&mut b, grown, &presence);
+            assert_eq!(b.pill_faces[1], one, "the grown pill shows the face");
+        }
+
         // Case `user_color_is_stable_per_id_and_differs_across_ids`.
         {
             let a1 = user_color("alice");
@@ -4771,28 +5456,10 @@ mod tests {
             // Pill B's left half → drop index 1 (insert before B).
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(
                 b.drop_zone_target(),
                 Some(1),
@@ -4806,46 +5473,23 @@ mod tests {
 
             // Move cursor past pill C's midpoint → gap 3 (append).
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
             };
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &release,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
-                b.hover_intent.is_some() && b.needs_animation_frame(),
-                "release clears the drag target but preserves the stationary pill-hover dwell",
+                b.hover_intent.deadline().is_some() && b.needs_animation_frame(),
+                "release clears the drag target but keeps the resting pointer's \
+                 hover dwell running, so the pill under it still opens",
             );
         }
 
@@ -4869,28 +5513,10 @@ mod tests {
             b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(
                 b.hover_drop_idx(),
                 Some(1),
@@ -4902,23 +5528,11 @@ mod tests {
             );
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &release,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &release);
             assert_eq!(
                 b.hover_drop_idx(),
                 None,
@@ -5507,53 +6121,22 @@ mod tests {
             // Pill 2's old rect was [86,6,166,34]; survivors keep their original
             // rects in `tab_rects` until the next apply_layout, so index 1 now
             // matches live tab 3, not the closing tab.
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-
             // Cursor over the closing pill's old close chip.
             let cursor = Point::new(155.0, 20.0);
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
             };
-            b.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &moved);
             // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
             let before_count = b.closing_tab_ids().len();
             let before_tabs: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
             // The closing set may stay the same or *add* tab 3 (its close chip
             // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
             // re-added and the press didn't touch the in-flight fade.
@@ -5603,54 +6186,6 @@ mod tests {
     }
 
     #[test]
-    fn inset_left_shifts_every_rect_until_it_exceeds_the_bar() {
-        // Case `inset_left_shifts_the_bar_and_every_cached_rect_together`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            let before_bar = b.bar_rect();
-            let before_tab0 = b.tab_rects()[0];
-            let before_close0 = b.close_rects[0];
-
-            b.inset_left(40.0);
-
-            assert_eq!(
-                b.bar_rect(),
-                Rect::new(
-                    before_bar.x0 + 40.0,
-                    before_bar.y0,
-                    before_bar.x1,
-                    before_bar.y1
-                ),
-                "the left edge moves in, the right edge does not",
-            );
-            assert_eq!(
-                b.tab_rects()[0],
-                before_tab0 + vello::kurbo::Vec2::new(40.0, 0.0),
-                "every pill must move with the bar, not just its background",
-            );
-            assert_eq!(
-                b.close_rects[0],
-                before_close0 + vello::kurbo::Vec2::new(40.0, 0.0),
-                "cached hit rects must move too, or a click would land on the \
-             wrong pill after an inset",
-            );
-        }
-
-        // Case `inset_left_is_a_no_op_past_the_bars_own_width`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            let before = b.bar_rect();
-            b.inset_left(before.width() + 1.0);
-            assert_eq!(
-                b.bar_rect(),
-                before,
-                "an inset that would collapse the bar must be refused, not \
-             produce a negative-width rect",
-            );
-        }
-    }
-
-    #[test]
     fn close_glyph_paints_only_over_a_pill_body() {
         // Case `close_glyph_only_paints_on_pills_that_have_a_body`.
         // A `×` is never painted without a pill body behind it — see
@@ -5676,13 +6211,7 @@ mod tests {
             }
 
             // The affordance is reachable via hover, just not permanent.
-            b.hover_idx = Some(1);
-            b.hover_intent = Some((
-                1,
-                Instant::now()
-                    .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
-                    .expect("hover intent instant"),
-            ));
+            b.hover_open_for_tests(1);
             assert!(
                 b.close_affordance_visible_for_tests(1, &theme),
                 "a hovered pill has a lifted body to host the ×",
@@ -5694,7 +6223,6 @@ mod tests {
 
             // Pressing does the same, so the glyph never blinks out mid-click.
             b.hover_idx = None;
-            b.hover_intent = None;
             b.press_origin = Some((2, Point::ZERO));
             assert!(
                 b.close_affordance_visible_for_tests(2, &theme),
@@ -5961,12 +6489,13 @@ mod tests {
                 "and keeps its 32 px"
             );
 
-            // The search glyph's trailing edge lies inside the enlarged maximize
-            // target; the painted glyph wins over the target.
+            // At the even chip pitch the enlarged maximize target stops short
+            // of the painted search glyph, so its trailing edge is search's
+            // alone (the press resolution would let the glyph win anyway).
             let on_search_glyph = Point::new(search.x1 - 1.0, search.center().y);
             assert!(
-                b.action_hit_rect(max).contains(on_search_glyph),
-                "the overlap this test relies on exists"
+                !b.action_hit_rect(max).contains(on_search_glyph),
+                "the maximize target leaves the search glyph alone"
             );
             let mut handled = false;
             b.last_cursor = on_search_glyph;
@@ -6006,29 +6535,11 @@ mod tests {
             b.last_cursor = Point::new(50.0, 20.0);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
             assert_eq!(
                 b.hover_idx, None,
                 "stale hover_idx must be cleared when the rect cache no \
@@ -6086,7 +6597,7 @@ mod tests {
                 &mut b,
                 "tab-new",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(b.take_new_tab().is_some());
@@ -6094,7 +6605,7 @@ mod tests {
                 &mut b,
                 "tab-close:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(b.take_close(), Some(2));
@@ -6141,7 +6652,7 @@ mod tests {
                 &mut b,
                 "tab:3",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(b.active_id(), 3);
@@ -6150,7 +6661,7 @@ mod tests {
                 &mut b,
                 "tab:999",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }
@@ -6246,6 +6757,32 @@ mod tests {
             )
             .unwrap();
         b.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn a_retitled_pill_keeps_its_measured_width_until_the_new_title_is_measured() {
+        let theme = crate::theme::Theme::dark();
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+        b.title_advance
+            .insert(1, ("Notes".into(), theme.text(TextRole::Label), 60.0));
+        lay_out_at_width(&mut b, 900.0);
+        let measured = b.tab_rects[0].width();
+        // A client retitles the window: the character-count guess for the
+        // new title would be far wider, and the pill must not jump to it.
+        b.tabs[0].title = "a considerably longer title than before".into();
+        lay_out_at_width(&mut b, 900.0);
+        assert!(
+            (b.tab_rects[0].width() - measured).abs() < 0.01,
+            "pill jumped from {measured} to {} before the new title was measured",
+            b.tab_rects[0].width()
+        );
+        // Once `draw` has measured a different advance, the bar asks for a
+        // layout instead of keeping the stale width.
+        assert!(!b.is_layout_dirty());
+        b.advance_changed = true;
+        assert!(b.is_layout_dirty());
+        lay_out_at_width(&mut b, 900.0);
+        assert!(!b.is_layout_dirty());
     }
 
     #[test]
@@ -6422,78 +6959,57 @@ mod tests {
         }
     }
 
-    /// Aims at the pill's leading third so the cursor never lands on a chip.
+    /// Aims at the pill's leading third so the cursor never lands on a chip,
+    /// then lays out once the hover dwell has run.
     fn hover_pill(b: &mut TabBar, idx: usize, width: f64, theme: &crate::theme::Theme) {
         let r = b.tab_rects()[idx];
         let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
         let mut handled = false;
         dispatch_cursor(b, p, &mut handled);
-        assert!(b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1))));
+        assert!(b.elapse_hover_dwell(), "resting on the pill opens it");
         lay_out_at_width_with(b, width, theme);
     }
 
     fn dispatch_cursor(b: &mut TabBar, p: Point, handled: &mut bool) {
-        use std::collections::HashMap;
-        let mut doc = automerge::AutoCommit::new();
-        let obj = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = {
-            let theme = crate::theme::Theme::dark();
-            b.build_layout(&mut taffy, &theme, &mut node_map)
-        };
-        let mut focus = None;
-        b.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut doc,
-                path: &obj,
-                handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let (taffy, node) = built_layout(b);
+        *handled = Dispatch::new()
+            .handled(*handled)
+            .layout(&taffy, node)
+            .send(
+                b,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+                },
+            )
+            .handled;
     }
 
     /// Dispatches a left `MouseInput` event at the given press/release state —
     /// shared by every test that drives a click through `handle_event` without
     /// a real pointer.
     fn dispatch_left_button(b: &mut TabBar, state: ElementState, handled: &mut bool) {
-        use std::collections::HashMap;
-        let mut doc = automerge::AutoCommit::new();
-        let obj = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
+        let (taffy, node) = built_layout(b);
+        *handled = Dispatch::new()
+            .handled(*handled)
+            .layout(&taffy, node)
+            .send(
+                b,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Left,
+                },
+            )
+            .handled;
+    }
+
+    fn built_layout(b: &mut TabBar) -> (TaffyTree<()>, NodeId) {
         let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = {
-            let theme = crate::theme::Theme::dark();
-            b.build_layout(&mut taffy, &theme, &mut node_map)
-        };
-        let mut focus = None;
-        b.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state,
-                button: MouseButton::Left,
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut doc,
-                path: &obj,
-                handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = b.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
+        (taffy, node)
     }
 
     fn four_tab_bar() -> TabBar {
@@ -6509,61 +7025,244 @@ mod tests {
         )
     }
 
+    /// Runs `f` with the toolkit clock reading `at`, so pointer samples and
+    /// layout passes see one synthetic timeline.
+    fn at_time<T>(at: Instant, f: impl FnOnce() -> T) -> T {
+        crate::time::testing::with_monotonic_time(at, f)
+    }
+
+    /// A pointer sample at `p`, `ms` after `t0`, followed by the layout pass
+    /// of the frame it lands in.
+    fn sample_at(b: &mut TabBar, t0: Instant, ms: u64, p: Point, theme: &Theme) {
+        let at = t0 + Duration::from_millis(ms);
+        at_time(at, || {
+            let mut handled = false;
+            dispatch_cursor(b, p, &mut handled);
+            lay_out_at_width_with(b, 900.0, theme);
+        });
+    }
+
+    fn layout_at(b: &mut TabBar, t0: Instant, ms: u64, theme: &Theme) {
+        at_time(t0 + Duration::from_millis(ms), || {
+            lay_out_at_width_with(b, 900.0, theme);
+        });
+    }
+
+    fn chips_open(b: &TabBar, i: usize) -> bool {
+        b.max_rects()[i].area() > 0.0 && b.search_rects()[i].area() > 0.0
+    }
+
+    /// Points along a straight line from `a` to `b`, `n` steps, excluding `a`.
+    fn path(a: Point, b: Point, n: u32) -> Vec<Point> {
+        (1..=n)
+            .map(|k| a.lerp(b, f64::from(k) / f64::from(n)))
+            .collect()
+    }
+
+    /// A bar with pill 1 opened by a pointer resting on its leading third,
+    /// and the instant (after the dwell) it opened at.
+    fn bar_with_pill_one_open(theme: &Theme) -> (TabBar, Instant) {
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, theme);
+        let r = b.tab_rects()[1];
+        let t0 = crate::time::now();
+        sample_at(&mut b, t0, 0, Point::new(r.x0 + 12.0, r.center().y), theme);
+        let dwell = u64::try_from(crate::widget::hover_intent::DWELL.as_millis()).unwrap();
+        layout_at(&mut b, t0, dwell, theme);
+        assert!(chips_open(&b, 1), "resting on the pill opens it");
+        (b, t0 + Duration::from_millis(dwell))
+    }
+
+    /// Resting on a pill opens it after a short dwell, counted from when the
+    /// pointer entered: slow motion inside the pill does not restart it (the
+    /// old gate re-armed on every sample, so chips came late), and the dwell
+    /// is shorter than the old 200 ms one. Until it runs out the bar keeps
+    /// frames coming, so a pointer that stops dead still opens the pill.
     #[test]
-    fn pointer_reveal_waits_for_hover_intent() {
-        // Case `pointer_reveal_waits_for_hover_intent_timeout`.
-        {
-            let theme = Theme::dark().with_reduce_motion(true);
-            let width = 900.0;
-            let mut b = four_tab_bar();
-            lay_out_at_width_with(&mut b, width, &theme);
-            let idle = b.tab_rects()[1].width();
-            let p = Point::new(b.tab_rects()[1].x0 + 12.0, b.tab_rects()[1].center().y);
-            let mut handled = false;
-            dispatch_cursor(&mut b, p, &mut handled);
-            lay_out_at_width_with(&mut b, width, &theme);
-            assert!((b.tab_rects()[1].width() - idle).abs() < 0.01);
-            assert!(b.max_rects()[1].area() == 0.0 && b.search_rects()[1].area() == 0.0);
+    fn resting_on_a_pill_opens_it_after_a_short_dwell_from_entry() {
+        use crate::widget::hover_intent::DWELL;
+        assert!(DWELL < Duration::from_millis(200), "shorter than before");
+        let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let idle = b.tab_rects()[1].width();
+        let r = b.tab_rects()[1];
+        let t0 = crate::time::now();
 
+        // Slow drift inside the pill: one pixel every 10 ms.
+        let mut ms = 0;
+        while ms < dwell {
+            let x = r.x0 + 12.0 + f64::from(u32::try_from(ms / 10).unwrap());
+            sample_at(&mut b, t0, ms, Point::new(x, r.center().y), &theme);
             assert!(
-                b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1)))
+                !chips_open(&b, 1),
+                "opened {ms} ms in, before the dwell ran"
             );
-            lay_out_at_width_with(&mut b, width, &theme);
-            assert!(b.tab_rects()[1].width() > idle + 1.0);
-            assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
-        }
-
-        // Case `leaving_or_hovering_close_cancels_hover_intent`.
-        {
-            let mut b = ghost_test_bar();
-            let mut handled = false;
-            dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
-            assert!(b.hover_intent.is_some());
-            dispatch_cursor(&mut b, Point::new(90.0, 50.0), &mut handled);
-            assert_eq!(b.hover_intent, None);
-
-            b.hover_motion_sample = None;
-            dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
-            dispatch_cursor(&mut b, Point::new(150.0, 20.0), &mut handled);
-            assert_eq!(b.hover_close_idx, Some(1));
-            assert_eq!(b.hover_intent, None);
-        }
-
-        // Case `fast_transit_across_tabs_restarts_the_reveal_dwell`.
-        {
-            let mut b = ghost_test_bar();
-            let now = Instant::now();
-            b.hover_motion_sample = Some((Point::new(10.0, 20.0), now));
-            let mut handled = false;
-            dispatch_cursor(&mut b, Point::new(190.0, 20.0), &mut handled);
-            assert_eq!(b.hover_idx, Some(2));
-            let (candidate, started) = b.hover_intent.expect("destination dwell starts");
-            assert_eq!(candidate, 2);
             assert!(
-                started.elapsed() < Duration::from_millis(HOVER_INTENT_MS),
-                "fast transit must not carry a mature reveal into its destination",
+                b.needs_animation_frame(),
+                "a pending dwell must keep frames coming"
+            );
+            ms += 10;
+        }
+        layout_at(&mut b, t0, dwell, &theme);
+        assert!(
+            chips_open(&b, 1),
+            "the dwell counts from entry, not the last sample"
+        );
+        assert!(b.tab_rects()[1].width() > idle + 1.0);
+        assert_eq!(b.hover_intent.deadline(), None, "nothing left to wake for");
+    }
+
+    /// A pointer sweeping across the row (to reach a window below, say)
+    /// spends less than the dwell over each pill, so none of them opens and
+    /// nothing reflows under it.
+    #[test]
+    fn a_fast_sweep_across_the_row_opens_no_pill() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let idle: Vec<Rect> = b.tab_rects().to_vec();
+        let y = idle[0].center().y;
+        let from = Point::new(idle[0].x0 + 2.0, y);
+        let to = Point::new(idle[3].x1 + 40.0, y);
+        let t0 = crate::time::now();
+        // A sample per 8 ms frame at 3 px/ms, a brisk but ordinary sweep.
+        let steps = (1_u32..=1_000)
+            .find(|n| f64::from(*n) * 24.0 >= to.x - from.x)
+            .expect("a finite row");
+        for (k, p) in path(from, to, steps).into_iter().enumerate() {
+            let ms = u64::try_from(k).unwrap() * 8;
+            sample_at(&mut b, t0, ms, p, &theme);
+            for i in 0..4 {
+                assert!(
+                    !chips_open(&b, i),
+                    "pill {i} opened under a sweep at {ms} ms"
+                );
+            }
+            assert_eq!(b.tab_rects(), idle.as_slice(), "the row reflowed mid-sweep");
+        }
+        // Off the row: nothing is pending, nothing opens later.
+        let end = u64::from(steps) * 8;
+        sample_at(&mut b, t0, end + 8, Point::new(to.x, 400.0), &theme);
+        layout_at(&mut b, t0, end + 2000, &theme);
+        assert!((0..4).all(|i| !chips_open(&b, i)));
+    }
+
+    /// Menu aim: once a pill is open, a pointer heading for its chips keeps
+    /// it open even where the path leaves the pill (here it grazes the strip
+    /// of bar under the pill). Holds on a fast path (few, far-apart samples)
+    /// and a slow one (many samples, each well inside the hold).
+    #[test]
+    fn an_open_pill_holds_while_the_pointer_heads_for_its_chips() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        for (name, steps, frame_ms) in [("fast", 2_u32, 8_u64), ("slow", 24, 20)] {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let open_w = b.tab_rects()[1].width();
+            let r = b.tab_rects()[1];
+            let chip = b.max_rects()[1].center();
+            // From where it rested, down-right out under the pill's bottom
+            // edge, then up onto the maximize chip.
+            let start = Point::new(r.x0 + 12.0, r.center().y);
+            let dip = Point::new(chip.x - 30.0, r.y1 + 3.0);
+            assert!(dip.y < b.rect.y1, "the dip stays on the bar");
+            let mut points = vec![start];
+            points.extend(path(start, dip, steps));
+            points.extend(path(dip, chip, steps));
+            for (k, p) in points.into_iter().enumerate() {
+                let ms = u64::try_from(k).unwrap() * frame_ms;
+                sample_at(&mut b, opened, ms, p, &theme);
+                assert!(
+                    chips_open(&b, 1) && (b.tab_rects()[1].width() - open_w).abs() < 0.01,
+                    "{name}: the pill closed or moved at {p:?} on the way to its chip",
+                );
+            }
+            assert_eq!(b.hover_max_idx, Some(1), "{name}: arrived on the chip");
+        }
+    }
+
+    /// The hold is only for a pointer still heading for the chips: moving
+    /// away closes the pill at once, and stopping short releases it once the
+    /// hold lapses, handing over to whatever is under the pointer.
+    #[test]
+    fn the_aim_hold_ends_when_the_pointer_turns_away_or_stops_short() {
+        use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+        let theme = Theme::dark().with_reduce_motion(true);
+
+        // Turning away: back to the left, onto pill 0.
+        {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let idle0 = b.tab_rects()[0];
+            let p = Point::new(idle0.center().x, idle0.center().y);
+            sample_at(&mut b, opened, 8, p, &theme);
+            assert!(
+                !chips_open(&b, 1),
+                "moving away closes the open pill at once"
+            );
+            assert!(
+                !chips_open(&b, 0),
+                "and the next pill waits out its own dwell"
+            );
+            let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+            layout_at(&mut b, opened, 8 + dwell, &theme);
+            assert!(chips_open(&b, 0));
+        }
+
+        // Stopping short, under the pill and off any other pill.
+        {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let r = b.tab_rects()[1];
+            let chip = b.max_rects()[1].center();
+            let start = Point::new(r.x0 + 12.0, r.y1 - 3.0);
+            let short = Point::new(chip.x - 30.0, r.y1 + 3.0);
+            sample_at(&mut b, opened, 0, start, &theme);
+            sample_at(&mut b, opened, 8, short, &theme);
+            assert!(chips_open(&b, 1), "still heading for the chips");
+            assert!(
+                b.needs_animation_frame(),
+                "a running hold must keep frames coming"
+            );
+            let hold = u64::try_from(AIM_HOLD.as_millis()).unwrap();
+            layout_at(&mut b, opened, 8 + hold - 1, &theme);
+            assert!(chips_open(&b, 1));
+            layout_at(&mut b, opened, 8 + hold, &theme);
+            assert!(
+                !chips_open(&b, 1),
+                "a pointer resting short of the chips lets go"
             );
         }
+    }
+
+    /// The three chips stand on one rhythm: search, maximize and close glyph
+    /// centres are one pitch apart, and the × sits centred in its target.
+    #[test]
+    fn the_three_chips_are_evenly_spaced() {
+        let r = Rect::new(0.0, 6.0, 400.0, 38.0);
+        let (close, max_rect, search) = chip_rects(
+            r,
+            CHIP_CLUSTER_W,
+            false,
+            CLOSE_W,
+            CLOSE_INSET,
+            ACTION_W,
+            ACTION_W,
+        );
+        let gap_left = max_rect.center().x - search.center().x;
+        let gap_right = close.center().x - max_rect.center().x;
+        assert!(
+            (gap_left - gap_right).abs() < 1e-9,
+            "{gap_left} vs {gap_right}"
+        );
+        assert!((gap_left - CHIP_PITCH).abs() < 1e-9);
+        assert!((close.center().x - (r.x1 - CLOSE_HIT_PX / 2.0)).abs() < 1e-9);
+        assert!(
+            max_rect.x1 <= r.x1 - CLOSE_HIT_PX,
+            "maximize clears the close target"
+        );
+        assert!(
+            (search.x0 - (r.x1 - CHIP_CLUSTER_W)).abs() < 1e-9,
+            "the cluster is exactly as wide as the zone that places it",
+        );
     }
 
     #[test]
@@ -6780,5 +7479,105 @@ mod tests {
                 "no curve may be left running under reduce-motion"
             );
         }
+    }
+
+    #[test]
+    fn a_strip_of_fixed_views_has_no_close_or_new_tab_and_marks_paint_and_hit() {
+        let theme = crate::theme::Theme {
+            reduce_motion: true,
+            ..crate::theme::Theme::dark()
+        };
+        let mut fixed = bar().closable(false).without_new_tab();
+        lay_out_at_width_with(&mut fixed, 600.0, &theme);
+        assert_eq!(fixed.new_tab_rect(), Rect::ZERO, "no new-tab control");
+        hover_pill(&mut fixed, 1, 600.0, &theme);
+        assert!(
+            fixed.close_rects.iter().all(|r| r.area() <= 0.0),
+            "no close control, even under the pointer"
+        );
+        let node = Widget::accessibility(&fixed).unwrap();
+        assert!(
+            node.children
+                .iter()
+                .all(|tab| tab.children.is_empty() && tab.name.as_deref() != Some("New tab")),
+            "nothing to close or add is announced"
+        );
+
+        // Marks: a playing tab's speaker is a control of its own.
+        let mut tabs = bar();
+        tabs.set_mark(2, Some(TabMark::Playing));
+        tabs.set_mark(3, Some(TabMark::Busy));
+        lay_out_at_width_with(&mut tabs, 600.0, &theme);
+        let speaker = tabs
+            .mark_rect(2)
+            .expect("the mark stands in the leading slot");
+        assert!(tabs.tab_rects()[1].contains(speaker.center()));
+        let mut handled = false;
+        dispatch_cursor(&mut tabs, speaker.center(), &mut handled);
+        dispatch_left_button(&mut tabs, ElementState::Pressed, &mut handled);
+        assert_eq!(tabs.take_mark_click(), Some((2, TabMark::Playing)));
+        assert_eq!(
+            tabs.active_id(),
+            1,
+            "a click on the mark does not select the tab"
+        );
+        assert!(
+            tabs.needs_animation_frame() || theme.reduce_motion,
+            "a busy mark turns"
+        );
+        let node = Widget::accessibility(&tabs).unwrap();
+        assert_eq!(
+            node.children[1].description.as_deref(),
+            Some("Playing audio")
+        );
+        assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        tabs.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(!scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn the_active_tab_is_the_lift_alone_unless_the_host_shows_group_focus() {
+        let theme = crate::theme::Theme::dark();
+        let colour = |c: vello::peniko::Color| c.premultiply().to_rgba8().to_u32();
+        let you = colour(theme.tokens.colors.intent.you);
+        let ink = colour(theme.tokens.colors.text_primary);
+        let paint = |b: &mut TabBar| {
+            lay_out_at_width_with(b, 600.0, &theme);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().draw_data.clone()
+        };
+        let mut documents = bar();
+        let unfocused = paint(&mut documents);
+        assert!(
+            !unfocused.contains(&you),
+            "a strip of documents wears no accent"
+        );
+        let mut groups = bar();
+        groups.set_group_focused(true);
+        let focused = paint(&mut groups);
+        assert!(
+            focused.len() > unfocused.len() && focused.contains(&ink),
+            "the focused window group's active tab carries a keyline"
+        );
+        assert!(
+            !focused.contains(&you),
+            "in primary ink: your colour is for keyboard focus rings, carets and selection"
+        );
     }
 }

@@ -555,10 +555,6 @@ mod tests {
 
     /// Linux, 4Kn and Windows stages and requirements.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn full_stages_write_exact_sectors_and_follow_bundle_minimums() {
         // Phase `full_linux_stage`.
         {
@@ -856,10 +852,6 @@ mod tests {
 
     /// Boot-next races, pending operations and arming.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn pending_stages_block_and_arming_reverifies_ownership() {
         // Phase `boot_next_taken_mid_operation_is_refused_at_arming`.
         {
@@ -980,10 +972,6 @@ mod tests {
 
     /// Removal, crash-safe removal and ownership checks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn remove_restores_owned_state_and_never_touches_changed_objects() {
         // Phase `remove_restores_firmware_partitions_and_the_shrink`.
         {

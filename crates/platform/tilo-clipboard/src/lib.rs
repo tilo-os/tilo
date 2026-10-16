@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -44,7 +41,7 @@ mod wayland;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 /// The Wayland backend, for the compositor's clipboard tests. Apps use
 /// [`system`].
@@ -52,11 +49,84 @@ pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
 #[doc(hidden)]
 pub use wayland::WaylandClipboard;
 
+/// Largest HTML payload accepted from a clipboard offer.
+pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
+
+/// Largest plain-text fallback captured with a rich clipboard offer.
+pub const MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES: usize = 1024 * 1024;
+
+/// HTML and its optional plain fallback captured from the same clipboard offer.
+/// Adapters must bound payloads before copying them into this value. Decoders
+/// may use this fallback after rejecting HTML, without rereading the clipboard.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RichTextOffer {
+    pub html: String,
+    pub plain: Option<String>,
+}
+
+impl RichTextOffer {
+    /// Whether this offer fits the shared transport limits and contains HTML.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.html.is_empty()
+            && self.html.len() <= MAX_CLIPBOARD_HTML_BYTES
+            && self
+                .plain
+                .as_ref()
+                .is_none_or(|plain| plain.len() <= MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES)
+    }
+}
+
+impl std::fmt::Debug for RichTextOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RichTextOffer")
+            .field("html_bytes", &self.html.len())
+            .field("plain_bytes", &self.plain.as_ref().map(String::len))
+            .finish()
+    }
+}
+
 /// Largest PNG a clipboard image may encode to.
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Largest RGBA buffer accepted for a clipboard image.
 pub const MAX_CLIPBOARD_IMAGE_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Largest encoded image read from another app's clipboard. A larger one is
+/// not read at all.
+pub const MAX_PASTED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Encoded image types read from the clipboard, most preferred first.
+pub const PASTED_IMAGE_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// An encoded image on the clipboard: what a screenshot tool or an image
+/// viewer copied.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    /// One of [`PASTED_IMAGE_TYPES`].
+    pub mime: &'static str,
+    /// The image file's bytes, as the copying app offered them.
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ClipboardImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardImage")
+            .field("mime", &self.mime)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// The most preferred image type among `offered`, if any.
+pub fn preferred_image_type<'a>(
+    offered: impl IntoIterator<Item = &'a str>,
+) -> Option<&'static str> {
+    let offered: Vec<&str> = offered.into_iter().collect();
+    PASTED_IMAGE_TYPES
+        .into_iter()
+        .find(|mime| offered.contains(mime))
+}
 
 /// Which selection a clipboard operation refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,11 +155,36 @@ pub trait ClipboardBackend: Send + Sync {
     /// something that is not text.
     fn text(&self, target: ClipboardTarget) -> Option<String>;
 
+    /// Request text for an explicit paste. A native transfer may finish after
+    /// this call returns; the backend must wake its owner when it answers.
+    /// No answer may substitute text from an older selection or focus owner.
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(self.text(target));
+        result
+    }
+
+    /// Read HTML and its plain fallback from one Ctrl+V clipboard offer.
+    /// Optional: unsupported backends return `None` without reading plain text.
+    /// A successful read consumes event-scoped offers; use the captured plain
+    /// fallback if decoding refuses the HTML. Never reread to recover a stale
+    /// selection, a permission refusal, or an active composition.
+    fn rich_text(&self) -> Option<RichTextOffer> {
+        None
+    }
+
     /// Offer an RGBA8 image on the clipboard. Optional: the default refuses,
     /// which is appropriate for backends that only carry text.
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
         let _ = (width, height, rgba);
         false
+    }
+
+    /// The image on the Ctrl+V clipboard, when it holds one: a screenshot,
+    /// an image copied in a viewer or a browser. Optional: the default reads
+    /// none, which is right for backends that only carry text.
+    fn image(&self) -> Option<ClipboardImage> {
+        None
     }
 
     /// Offer `text` only where other processes can read it. Returns `false`

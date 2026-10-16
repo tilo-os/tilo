@@ -1,14 +1,16 @@
-//! Shared scenario registry and command-line dispatcher for the four UI
+//! Shared scenario registry and command-line dispatcher for the three UI
 //! example surfaces.
 
-#![allow(dead_code)] // Each binary intentionally compiles one surface subset.
+#![expect(
+    dead_code,
+    reason = "each example binary includes this registry and constructs only its own surface"
+)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     Lab,
     Shots,
     Perf,
-    Wpe,
 }
 
 impl Surface {
@@ -17,7 +19,6 @@ impl Surface {
             Self::Lab => "ui-lab",
             Self::Shots => "ui-shots",
             Self::Perf => "ui-perf",
-            Self::Wpe => "ui-wpe",
         }
     }
 }
@@ -80,18 +81,14 @@ pub(crate) use scenario_modules;
 
 const LAB_SOURCES: &[&str] = &[
     "activity_timeline.rs",
-    "channel_browser.rs",
     "chart_gallery.rs",
-    "collaboration_overview.rs",
-    "conflict_picker.rs",
     "dashboard.rs",
     "gallery.rs",
-    "identity_flow_demo.rs",
     "responsive_gallery.rs",
-    "widget_showcase.rs",
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
+    "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
@@ -102,7 +99,6 @@ const SHOT_SOURCES: &[&str] = &[
     "history_cases.rs",
     "nav_shell_shots.rs",
     "perf_hud_shot.rs",
-    "rich_text_editor_shots.rs",
     "scrollbar_shots.rs",
     "search_showcase.rs",
     "soft_shadow_shots.rs",
@@ -110,18 +106,13 @@ const SHOT_SOURCES: &[&str] = &[
     "text_shots.rs",
     "textinput_ext_shots.rs",
     "undo_controls_shots.rs",
-    "widget_showcase_snapshot.rs",
-    "widget_snapshot.rs",
+    "widget_states_shots.rs",
+    "window_chrome_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
     "perf_scenario.rs",
     "widget_perf_bench.rs",
-];
-const WPE_SOURCES: &[&str] = &[
-    "wpe_dmabuf_probe.rs",
-    "wpe_latency_bench.rs",
-    "wpe_scroll_repro.rs",
 ];
 
 fn expected(surface: Surface) -> &'static [&'static str] {
@@ -129,7 +120,6 @@ fn expected(surface: Surface) -> &'static [&'static str] {
         Surface::Lab => LAB_SOURCES,
         Surface::Shots => SHOT_SOURCES,
         Surface::Perf => PERF_SOURCES,
-        Surface::Wpe => WPE_SOURCES,
     }
 }
 
@@ -182,6 +172,13 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
 pub fn fatal(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
+}
+
+/// The capture theme every `--shots` honours (`TILO_SHOTS_THEME`,
+/// `TILO_SHOTS_TEXT_SCALE`, …). An unknown theme name is fatal, never a
+/// silent dark shot.
+pub fn shot_theme() -> tilo_ui::theme::Theme {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| fatal(error))
 }
 
 #[allow(
@@ -279,12 +276,17 @@ mod tests {
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
         "block_editor_typing.rs",
         "card_composition_shots.rs",
+        "distinct_letters_shots.rs",
+        "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
+        "multiline_typing.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "reading_face_shots.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 
@@ -304,7 +306,7 @@ mod tests {
                 .then_some(name)
             })
             .collect();
-        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES, WPE_SOURCES]
+        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES]
             .into_iter()
             .flatten()
             .map(|source| (*source).to_owned())

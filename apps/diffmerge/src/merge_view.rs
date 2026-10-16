@@ -3,120 +3,116 @@
 //! Top band: three columns — base / ours / theirs — rendered hunk-by-hunk so a
 //! conflict shows the same vertical span across all three. Conflicts get
 //! per-hunk action chips (take ours / take theirs / take both). Bottom band:
-//! the merged result, mirrored from the Automerge `Text` so it is the
-//! collaboratively-editable authoritative output. Clicking an action chip
-//! re-composes the merged buffer and writes it into the CRDT.
+//! the merged result, the record's text, which every collaborator edits
+//! through a [`TextControl`] at its path. Clicking an action chip submits the hunk's
+//! resolution, which recomposes the merged result.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::framework::{Dispatcher, TextControl};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{CodeEditor, Language, Widget};
-
-use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
-use crate::doc::MergeDoc;
-use crate::highlight;
-use crate::model::{MergeHunk, MergeModel, Resolution};
-use ui::paint::{PaintCtx, with_alpha};
+use ui::tilo_resource::Invoke;
+use ui::tokens::TextRole;
 use ui::widget::code_editor::Span;
+use ui::widget::toggle_group::SegmentedStyle;
+use ui::widget::{
+    BadgeFace, ChipStyle, CodeEditor, ControlSize, EmptyState, EmptyStateContent, Language,
+    SegmentedFace, ToggleGroup, Tone, Widget,
+};
 
-/// Minimum code-line pitch; the measured line height of `FONT_SIZE` wins
-/// when the text scale makes it taller (see [`Metrics`]).
-const ROW_H: f64 = 19.0;
-/// Minimum column / merged header band.
-const HEADER_H: f64 = 30.0;
-/// Minimum band a change hunk reserves under its rows for the chips
-/// (`chip_h + 6`).
-const ACTION_H: f64 = 26.0;
-pub(crate) const FONT_SIZE: f32 = 12.5;
-const PAD_X: f64 = 8.0;
-const GAP: f64 = 6.0;
-/// Text sizes the panel paints with; [`Metrics::measure`] measures the same
-/// values so bands and glyphs move together.
-const HEADER_FONT_SIZE: f32 = 12.5;
-const CHIP_FONT_SIZE: f32 = 11.5;
-const COMPACT_SOURCE_FONT_SIZE: f32 = 12.0;
-const MERGED_HEADER_FONT_SIZE: f32 = 13.0;
-const GUTTER_FONT_SIZE: f32 = 11.0;
-/// Chip label padding for the wide and compact layouts. The inter-chip gap
-/// is a spacing step read from the theme at the use site (`s2` wide, `s1`
-/// compact — HIG §7b siblings in a dense row).
-const CHIP_PAD_X: f64 = 8.0;
-const CHIP_PAD_X_COMPACT: f64 = 7.0;
-/// Minimum x where compact chips start (after the status label).
-const COMPACT_CHIPS_X: f64 = 64.0;
-/// Minimum merged-band line-number gutter.
-const MERGED_GUTTER_W: f64 = 44.0;
+use crate::doc::{HunkChoice, MergeInputs, Session};
+use crate::highlight;
+use crate::i18n::{count, t, t_args};
+use crate::model::{MergeHunk, MergeModel, Resolution};
+use crate::pane::{self, CodeMetrics};
+use crate::resource::session;
+use crate::scroll::{HScroll, wheel_pixels};
 
 /// Row metrics measured from the renderer the panel paints with.
 ///
-/// Refreshed at the top of every draw; hunk spans, scrolling, chip hit rects,
-/// the accessibility export and the paint all read this one snapshot, so a
-/// text-scale change moves rows, chips and the merged band together instead
-/// of letting 25px glyphs overprint 19px rows.
+/// Refreshed at the top of every draw; hunk spans, scrolling, resolution hit
+/// rects, the accessibility export and the paint all read this one snapshot,
+/// so a text-scale change moves rows, controls and the merged band together
+/// instead of letting large glyphs overprint small rows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Metrics {
-    /// Code line pitch.
-    row_h: f64,
-    /// Column header / merged header band.
-    header_h: f64,
-    /// Resolution chip height.
-    chip_h: f64,
-    /// Band a change hunk reserves under its rows (`chip_h` plus breathing room).
-    action_h: f64,
-    /// Top offset that centres a `FONT_SIZE` line inside `row_h`.
-    text_dy: f64,
-    /// Merged band line-number gutter width.
-    gutter_w: f64,
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            row_h: ROW_H,
-            header_h: HEADER_H,
-            chip_h: ACTION_H - 6.0,
-            action_h: ACTION_H,
-            text_dy: 2.0,
-            gutter_w: MERGED_GUTTER_W,
-        }
-    }
+    code: CodeMetrics,
+    /// Height of the segmented resolution control.
+    strip_h: f64,
+    /// Height of a status badge.
+    badge_h: f64,
+    /// Band the merged result's title sits in.
+    merged_header_h: f64,
+    /// Below this width three code panes cease to be readable. Keep one full
+    /// source pane and make switching sources explicit instead of merely
+    /// squeezing desktop geometry into a phone.
+    breakpoint: f64,
+    /// Space between a hunk's rows and its resolution controls, and after.
+    gap: f64,
 }
 
 impl Metrics {
-    fn measure(tr: &mut TextRenderer) -> Self {
-        let line_h = f64::from(tr.measure("Ag", FONT_SIZE, None).1);
-        let row_h = (line_h + 3.0).max(ROW_H);
-        let header_label_h = f64::from(tr.measure("Ag", HEADER_FONT_SIZE, None).1);
-        let header_h = (header_label_h + 14.0).max(HEADER_H);
-        let chip_label_h = f64::from(tr.measure("Ag", CHIP_FONT_SIZE, None).1);
-        let chip_h = (chip_label_h + 5.0).max(ACTION_H - 6.0);
-        let gutter_w =
-            (f64::from(tr.measure("000", GUTTER_FONT_SIZE, None).0) + 20.0).max(MERGED_GUTTER_W);
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let code = CodeMetrics::measure(tr, theme);
+        let sp = &theme.tokens.spacing;
+        let subheading_h = f64::from(
+            tr.measure_style("Ag", None, &theme.text(TextRole::Subheading))
+                .1,
+        );
         Self {
-            row_h,
-            header_h,
-            chip_h,
-            action_h: chip_h + 6.0,
-            text_dy: (row_h - line_h) / 2.0,
-            gutter_w,
+            strip_h: SegmentedFace::height(ControlSize::Small, theme),
+            badge_h: BadgeFace::height(theme),
+            merged_header_h: (subheading_h + 2.0 * f64::from(sp.s2)).ceil(),
+            breakpoint: f64::from(theme.tokens.metrics.compact_breakpoint),
+            gap: f64::from(sp.s2),
+            code,
         }
     }
+
+    /// What is known before the first frame measures anything.
+    fn unmeasured(theme: &Theme) -> Self {
+        let code = CodeMetrics::unmeasured(theme);
+        let sp = &theme.tokens.spacing;
+        Self {
+            strip_h: SegmentedFace::height(ControlSize::Small, theme),
+            badge_h: BadgeFace::height(theme),
+            merged_header_h: code.header_h,
+            breakpoint: f64::from(theme.tokens.metrics.compact_breakpoint),
+            gap: f64::from(sp.s2),
+            code,
+        }
+    }
+
+    /// The band a change hunk reserves under its rows for its status and
+    /// resolution: side by side in the wide layout, stacked in the narrow.
+    fn action_h(&self, compact: bool) -> f64 {
+        let controls = if compact {
+            self.badge_h + self.gap + self.strip_h
+        } else {
+            self.strip_h.max(self.badge_h)
+        };
+        self.gap + controls + self.gap
+    }
 }
-/// Below this width, three code panes cease to be readable.  Keep one full
-/// source pane and make switching sources explicit instead of merely squeezing
-/// desktop geometry into a phone.
-const COMPACT_BREAKPOINT: f64 = 640.0;
+
+/// The prefix of the accessibility target that switches the narrow layout's
+/// source.
+pub(crate) const SOURCE_TARGET: &str = "diffmerge.merge-source:";
+
+/// The fewest lines of the merged result the source band leaves room for.
+const MERGED_MIN_LINES: usize = 5;
 
 /// One of the source revisions shown by the compact merge view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,11 +125,19 @@ enum SourcePane {
 impl SourcePane {
     const ALL: [Self; 3] = [Self::Base, Self::Ours, Self::Theirs];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Base => "Base",
-            Self::Ours => "Ours",
-            Self::Theirs => "Theirs",
+            Self::Base => t("source-base"),
+            Self::Ours => t("source-ours"),
+            Self::Theirs => t("source-theirs"),
+        }
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Ours => "ours",
+            Self::Theirs => "theirs",
         }
     }
 
@@ -160,6 +164,16 @@ impl SourcePane {
             Self::Theirs => Self::Base,
         }
     }
+
+    /// The colour that marks this source: the rule under its column header.
+    fn provenance(self, theme: &Theme) -> Color {
+        let s = &theme.tokens.colors.semantic;
+        match self {
+            Self::Base => theme.text_dim,
+            Self::Ours => s.success,
+            Self::Theirs => s.info,
+        }
+    }
 }
 
 /// A compact source-switcher hit rect. The same `SourcePane` is used by
@@ -170,7 +184,7 @@ struct SourceHit {
     source: SourcePane,
 }
 
-/// A clickable action chip rect tagged with the hunk + side it takes.
+/// A resolution segment's rect tagged with the hunk + side it takes.
 #[derive(Clone, Copy)]
 struct ActionHit {
     rect: Rect,
@@ -181,6 +195,13 @@ struct ActionHit {
 /// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
+    /// The inputs shown, as the document holds them.
+    inputs: Option<MergeInputs>,
+    /// Whether the merged result is what the recorded sides compose, so a
+    /// side may still be taken ([`Session::composed`]).
+    composed: bool,
+    /// The participant may only view.
+    read_only: bool,
     base_label: String,
     ours_label: String,
     theirs_label: String,
@@ -199,22 +220,26 @@ pub struct MergeView {
     active_hunk: Option<usize>,
     /// Cursor position cache for click hit-testing.
     cursor: Point,
+    modifiers: ModifiersState,
+    /// Horizontal scroll shared by the three source columns.
+    across: HScroll,
+    /// The widest source line in characters, which sets how far code scrolls.
+    widest: usize,
+    /// The hunk the next draw scrolls into view, once the pane has a size:
+    /// the change under review when fresh inputs were loaded.
+    reveal: Option<usize>,
     dirty: bool,
-    /// Set when a fresh set of inputs was loaded: the next `sync` seeds the
-    /// merged buffer (a projection of the external inputs, not a replayable
-    /// action) and clears any stale per-hunk resolutions.
-    pending_seed: bool,
-    expected_content: Option<crate::doc::AuthoredSnapshot>,
-    merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
-    /// drained by the parent app and dispatched as a [`DiffmergeAction`] through
-    /// the shared action path (so a chip and Ctrl+K produce one undo boundary).
-    pending_action: Option<DiffmergeAction>,
-    /// Last measured row metrics (see [`Metrics`]); defaults until the first draw.
+    /// drained by the parent app and submitted through its dispatcher (so a
+    /// chip and Ctrl+K produce the same action).
+    pending_action: Option<Invoke<Session>>,
+    /// Last measured row metrics (see [`Metrics`]); an estimate until the
+    /// first draw.
     metrics: Metrics,
-    /// The authoritative merged CRDT text, edited through the same shared
-    /// caret/selection/IME/clipboard implementation as every code surface.
-    merged_editor: CodeEditor,
+    /// The merged result, edited through the same caret/selection/IME/
+    /// clipboard implementation as every code surface, every edit a splice
+    /// of the document's text.
+    merged_editor: TextControl<CodeEditor, Session>,
 }
 
 impl Default for MergeView {
@@ -227,6 +252,9 @@ impl MergeView {
     pub fn new() -> Self {
         Self {
             model: MergeModel::default(),
+            inputs: None,
+            composed: false,
+            read_only: false,
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
@@ -239,43 +267,56 @@ impl MergeView {
             selected_source: SourcePane::Ours,
             active_hunk: None,
             cursor: Point::ZERO,
+            modifiers: ModifiersState::empty(),
+            across: HScroll::default(),
+            widest: 0,
+            reveal: None,
             dirty: true,
-            pending_seed: false,
-            expected_content: None,
-            merged_output: String::new(),
             pending_action: None,
-            metrics: Metrics::default(),
-            merged_editor: CodeEditor::new(Vec::new())
-                .with_language(Language::PlainText)
-                .with_id("diffmerge_merged_editor"),
+            metrics: Metrics::unmeasured(&Theme::dark()),
+            merged_editor: TextControl::view_only_at(
+                CodeEditor::new(Vec::new())
+                    .with_language(Language::PlainText)
+                    .with_id("diffmerge_merged_editor"),
+                Session::paths().merged,
+            ),
         }
     }
 
-    pub(crate) fn context_matches(&self, doc: &AutoCommit) -> bool {
-        self.expected_content
-            .as_ref()
-            .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
+    /// Submit edits of the merged result through `dispatcher`.
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Session>) {
+        self.merged_editor.attach(dispatcher);
     }
-    pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
-        self.expected_content = Some(crate::doc::authored_snapshot(doc));
-        self.merged_output = MergeDoc::merged_text(doc);
-    }
-    /// Historical/remote content cannot identify the unsaved original input hunks.
-    pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
-        if !self.pending_seed && !self.context_matches(doc) {
-            self.model = MergeModel::default();
-            self.base_label.clear();
-            self.ours_label.clear();
-            self.theirs_label.clear();
-            self.source_spans.clear();
-            self.pending_action = None;
-            self.action_hits.clear();
-            self.hunk_spans.clear();
-            self.active_hunk = None;
-            self.expected_content = None;
+
+    /// The participant may only view: no side can be taken.
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
             self.dirty = true;
         }
-        self.merged_output = MergeDoc::merged_text(doc);
+    }
+
+    /// Show `state`: the inputs when they changed, the side recorded for
+    /// each hunk, and whether sides can still be taken.
+    pub(crate) fn present(&mut self, state: &Session) {
+        if self.inputs != state.merge {
+            match &state.merge {
+                Some(inputs) => self.set_inputs(inputs),
+                None => self.clear_inputs(),
+            }
+        }
+        let model = state.merge_model();
+        self.composed = state.composed(&model);
+        if self.model.hunks.len() == model.hunks.len() {
+            for (shown, stored) in self.model.hunks.iter_mut().zip(&model.hunks) {
+                shown.resolution = stored.resolution;
+            }
+        } else {
+            self.model = model;
+            self.recompute_spans();
+        }
+        self.pending_action = None;
+        self.dirty = true;
     }
 
     /// Place the panel at `rect` directly (the parent app owns the toolbar
@@ -289,13 +330,13 @@ impl MergeView {
         }
     }
 
-    /// `(row_h, header_h, chip_h)` from the last draw.
+    /// `(row_h, header_h, strip_h)` from the last draw.
     #[cfg(test)]
     pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
         (
-            self.metrics.row_h,
-            self.metrics.header_h,
-            self.metrics.chip_h,
+            self.metrics.code.row_h,
+            self.metrics.code.header_h,
+            self.metrics.strip_h,
         )
     }
 
@@ -305,42 +346,64 @@ impl MergeView {
         self.content_height()
     }
 
-    pub fn set_inputs(
-        &mut self,
-        base_label: &str,
-        base: &str,
-        ours_label: &str,
-        ours: &str,
-        theirs_label: &str,
-        theirs: &str,
-    ) {
-        self.model = MergeModel::compute(base, ours, theirs);
-        self.base_label = base_label.to_string();
-        self.ours_label = ours_label.to_string();
-        self.theirs_label = theirs_label.to_string();
-        self.source_spans =
-            HunkSpans::for_model(&self.model, [base_label, ours_label, theirs_label]);
+    fn set_inputs(&mut self, inputs: &MergeInputs) {
+        self.inputs = Some(inputs.clone());
+        self.model = inputs.model();
+        self.base_label.clone_from(&inputs.base_label.0);
+        self.ours_label.clone_from(&inputs.ours_label.0);
+        self.theirs_label.clone_from(&inputs.theirs_label.0);
+        self.source_spans = HunkSpans::for_model(
+            &self.model,
+            [
+                &inputs.base_label.0,
+                &inputs.ours_label.0,
+                &inputs.theirs_label.0,
+            ],
+        );
         // Spans depend on the model as much as on the metrics; a new input
         // set at an unchanged rect must not paint against stale spans.
         self.recompute_spans();
         self.scroll_y = 0.0;
+        self.across.reset();
         self.active_hunk = self
             .first_conflict()
             .or_else(|| self.model.change_indices().first().copied());
+        self.reveal = self.active_hunk;
         self.dirty = true;
-        self.pending_seed = true;
+    }
+
+    fn clear_inputs(&mut self) {
+        self.inputs = None;
+        self.model = MergeModel::default();
+        self.base_label.clear();
+        self.ours_label.clear();
+        self.theirs_label.clear();
+        self.source_spans.clear();
+        self.recompute_spans();
+        self.action_hits.clear();
+        self.scroll_y = 0.0;
+        self.active_hunk = None;
+        self.dirty = true;
     }
 
     pub fn model(&self) -> &MergeModel {
         &self.model
     }
 
+    /// The change the reviewer is on, for the status bar.
+    pub fn active_change(&self) -> Option<(usize, usize)> {
+        let changes = self.model.change_indices();
+        let active = self.active_hunk?;
+        let position = changes.iter().position(|&c| c == active)?;
+        Some((position + 1, changes.len()))
+    }
+
     pub(crate) fn merged_editor_focused(&self) -> bool {
-        self.merged_editor.is_focused()
+        self.merged_editor.control().is_focused()
     }
 
     fn is_compact(&self) -> bool {
-        self.rect.width() < COMPACT_BREAKPOINT
+        self.rect.width() < self.metrics.breakpoint
     }
 
     fn select_source(&mut self, source: SourcePane) {
@@ -357,22 +420,18 @@ impl MergeView {
         if !self.is_compact() {
             return Vec::new();
         }
-        let inset = PAD_X;
-        let gap = 4.0;
-        let available = (self.rect.width() - 2.0 * inset - 2.0 * gap).max(0.0);
+        let m = self.metrics;
+        let inset = m.code.pad;
+        let available = (self.rect.width() - 2.0 * inset).max(0.0);
         let width = available / SourcePane::ALL.len() as f64;
+        let y0 = self.rect.y0 + (m.code.header_h - m.strip_h) / 2.0;
         SourcePane::ALL
             .iter()
             .enumerate()
             .map(|(index, source)| {
-                let x0 = self.rect.x0 + inset + index as f64 * (width + gap);
+                let x0 = self.rect.x0 + inset + index as f64 * width;
                 SourceHit {
-                    rect: Rect::new(
-                        x0,
-                        self.rect.y0 + 4.0,
-                        x0 + width,
-                        self.rect.y0 + self.metrics.header_h - 4.0,
-                    ),
+                    rect: Rect::new(x0, y0, x0 + width, y0 + m.strip_h),
                     source: *source,
                 }
             })
@@ -380,16 +439,16 @@ impl MergeView {
     }
 
     #[cfg(test)]
-    pub(crate) fn compact_source_hits(&self) -> Vec<(Rect, &'static str)> {
+    pub(crate) fn compact_source_hits(&self) -> Vec<(Rect, String)> {
         self.source_selector_rects()
             .into_iter()
             .map(|hit| (hit.rect, hit.source.label()))
             .collect()
     }
 
-    /// The resolution-chip hit rects captured by the last `draw`, each with the
-    /// hunk and choice it dispatches. Lets a headless test click a chip through
-    /// the real pointer path instead of calling `resolve` directly.
+    /// The resolution-segment hit rects captured by the last `draw`, each with
+    /// the hunk and choice it dispatches. Lets a headless test click a segment
+    /// through the real pointer path instead of calling `resolve` directly.
     #[cfg(test)]
     pub(crate) fn chip_hits(&self) -> Vec<(Rect, usize, HunkChoice)> {
         self.action_hits
@@ -398,28 +457,58 @@ impl MergeView {
             .collect()
     }
 
-    /// Presentation context for the Ctrl+K resource tree: the merge title plus a
-    /// snapshot of the model the per-hunk specs compose from. `None` when there
-    /// is nothing to resolve.
-    pub(crate) fn resource_ctx(&self) -> Option<MergeResourceCtx> {
-        if self.model.change_count() == 0 {
-            return None;
-        }
-        let title = if self.ours_label.is_empty() && self.theirs_label.is_empty() {
-            "Merge result".to_string()
-        } else {
-            format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
-        };
-        Some(MergeResourceCtx {
-            title,
-            model: self.model.clone(),
-        })
-    }
-
     /// Take the pending chip-triggered resolution, if any, so the parent app can
     /// dispatch it through the shared action path. Rising-edge: cleared on read.
-    pub(crate) fn take_pending_action(&mut self) -> Option<DiffmergeAction> {
+    pub(crate) fn take_pending_action(&mut self) -> Option<Invoke<Session>> {
         self.pending_action.take()
+    }
+
+    /// The controls the last draw laid out, as accessibility nodes: the source
+    /// switch of the narrow layout and every change's resolution. The root
+    /// publishes them, so they are exposed once and act through the same
+    /// action path as a click.
+    pub(crate) fn access_controls(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut controls = Vec::new();
+        if self.is_compact() {
+            controls.extend(SourcePane::ALL.into_iter().map(|source| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Show {} source", source.label()))
+                    .with_description("Switch the visible merge source")
+                    .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(source == self.selected_source),
+                    )
+            }));
+        }
+        controls.extend(self.action_hits.iter().map(|hit| {
+            let choice = match hit.choice {
+                HunkChoice::Ours => "ours",
+                HunkChoice::Theirs => "theirs",
+                HunkChoice::Both => "both",
+            };
+            let label = match hit.choice {
+                HunkChoice::Ours => t("take-ours"),
+                HunkChoice::Theirs => t("take-theirs"),
+                HunkChoice::Both => t("take-both"),
+            };
+            AccessNode::new(Role::Button)
+                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_description("Resolve this shared merge hunk")
+                .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
+                .with_bounds(hit.rect)
+                .with_state(
+                    AccessState::new().focusable(true).selected(
+                        self.model
+                            .hunks
+                            .get(hit.hunk)
+                            .is_some_and(|hunk| chip_is_selected(hunk.resolution, hit.choice)),
+                    ),
+                )
+        }));
+        controls
     }
 
     fn first_conflict(&self) -> Option<usize> {
@@ -429,25 +518,29 @@ impl MergeView {
             .position(|h| h.resolution.is_conflict())
     }
 
-    /// Resolve `hunk` by taking `choice`. Updates the in-memory model for
-    /// immediate feedback and queues the matching [`DiffmergeAction`] (with the
-    /// recomposed merged output baked in) for the parent app to dispatch through
-    /// the shared action path — so a chip click and the Ctrl+K row produce the
-    /// same replayable action under one undo boundary. The document write itself
-    /// happens via that action, not here.
+    /// Whether a side can be taken for `hunk` now.
+    pub(crate) fn can_resolve(&self, hunk: usize) -> bool {
+        self.composed && !self.read_only && self.model.hunks.get(hunk).is_some_and(|h| h.is_change)
+    }
+
+    /// Resolve `hunk` by taking `choice`: shows the choice at once and queues
+    /// the matching verb for the parent app to submit — the
+    /// same action the palette's row builds. The document changes through
+    /// that action; if it is refused, the stored state is presented again.
     pub fn resolve(&mut self, hunk: usize, choice: HunkChoice) {
-        if hunk >= self.model.hunks.len() {
+        if !self.can_resolve(hunk) {
             return;
         }
-        // Compose the resulting merged output BEFORE mutating so the queued
-        // action is composed from the same model state the palette spec is —
-        // guaranteeing a byte-identical envelope from either entry point.
-        let merged = actions::compose_choice(&self.model, hunk, choice);
         if let Some(h) = self.model.hunks.get_mut(hunk) {
             h.resolution = choice.to_resolution();
         }
         self.active_hunk = Some(hunk);
-        self.pending_action = Some(actions::resolve_hunk_action(hunk, choice, merged));
+        let hunk = u64::try_from(hunk).unwrap_or(u64::MAX);
+        self.pending_action = Some(match choice {
+            HunkChoice::Ours => Session::TAKE_OURS.with(session::TakeOurs { hunk }),
+            HunkChoice::Theirs => Session::TAKE_THEIRS.with(session::TakeTheirs { hunk }),
+            HunkChoice::Both => Session::TAKE_BOTH.with(session::TakeBoth { hunk }),
+        });
         self.dirty = true;
     }
 
@@ -481,6 +574,22 @@ impl MergeView {
         true
     }
 
+    /// Scroll just far enough that the whole of `hunk`, with its resolution,
+    /// shows in the band.
+    fn reveal_hunk(&mut self, hunk: usize) {
+        if let Some((top, bottom)) = self.hunk_spans.get(hunk).copied() {
+            let band = self.source_band_height();
+            let target = if top < self.scroll_y {
+                top
+            } else if bottom > self.scroll_y + band {
+                bottom - band
+            } else {
+                self.scroll_y
+            };
+            self.scroll_y = target.max(0.0).min(self.max_scroll());
+        }
+    }
+
     fn scroll_hunk_into_view(&mut self, hunk: usize) {
         if let Some((top, bot)) = self.hunk_spans.get(hunk).copied() {
             let vh = self.source_band_height();
@@ -489,14 +598,60 @@ impl MergeView {
         }
     }
 
+    /// The height of the source band. It takes what the hunks need, so every
+    /// change and its resolution show at once, and leaves the merged result
+    /// at least [`MERGED_MIN_LINES`] lines. When the hunks need more than
+    /// that, the band ends where the last hunk that fits ends, so what rests
+    /// at the foot of the band is a whole hunk and not half a control.
     fn source_band_height(&self) -> f64 {
-        // The source band occupies the top ~58% of the panel.
-        ((self.rect.height() - self.metrics.header_h) * 0.58).max(0.0)
+        let m = &self.metrics;
+        let total = (self.rect.height() - m.code.header_h).max(0.0);
+        let merged_min = m.merged_header_h + MERGED_MIN_LINES as f64 * m.code.row_h;
+        let room = (total - merged_min).max(0.0);
+        let content = self.content_height();
+        if self.hunk_spans.is_empty() {
+            return room.max(total / 2.0);
+        }
+        if content <= room {
+            return content;
+        }
+        self.hunk_spans
+            .iter()
+            .map(|&(_, bottom)| bottom)
+            .take_while(|&bottom| bottom <= room)
+            .last()
+            .unwrap_or(room)
+    }
+
+    /// The source columns as `(x0, x1)`: three side by side, or the one the
+    /// narrow layout shows.
+    fn source_columns(&self) -> Vec<(f64, f64)> {
+        let r = self.rect;
+        if self.is_compact() {
+            return vec![(r.x0, r.x1)];
+        }
+        let col_w = r.width() / 3.0;
+        (0..3)
+            .map(|i| {
+                let x0 = r.x0 + f64::from(i) * col_w;
+                (x0, if i == 2 { r.x1 } else { x0 + col_w })
+            })
+            .collect()
+    }
+
+    /// Tell the horizontal scroll how wide the code is and how much of it
+    /// shows.
+    fn fit_across(&mut self) {
+        let m = self.metrics;
+        let col_w = self.rect.width() / self.source_columns().len().max(1) as f64;
+        let viewport = (col_w - 2.0 * m.code.pad).max(0.0);
+        let content = self.widest as f64 * m.code.cell_w + m.code.pad;
+        self.across.set_extent(content, viewport);
     }
 
     fn merged_band_rect(&self) -> Rect {
         let r = self.rect;
-        let band_top = r.y0 + self.metrics.header_h + self.source_band_height();
+        let band_top = r.y0 + self.metrics.code.header_h + self.source_band_height();
         Rect::new(r.x0, band_top, r.x1, r.y1)
     }
 
@@ -519,13 +674,22 @@ impl MergeView {
     /// Recompute the per-hunk vertical spans (content space).
     fn recompute_spans(&mut self) {
         self.hunk_spans.clear();
+        self.widest = self
+            .model
+            .hunks
+            .iter()
+            .flat_map(|h| h.base.iter().chain(&h.ours).chain(&h.theirs))
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
         let m = self.metrics;
+        let compact = self.is_compact();
         let mut y = 0.0;
         for h in &self.model.hunks {
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
-            let mut height = rows as f64 * m.row_h;
+            let mut height = rows as f64 * m.code.row_h;
             if h.is_change {
-                height += m.action_h + GAP;
+                height += m.action_h(compact);
             }
             self.hunk_spans.push((y, y + height));
             y += height;
@@ -533,123 +697,93 @@ impl MergeView {
     }
 
     /// Column headers (base / ours / theirs) above the source band.
-    fn draw_column_headers(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let c = &theme.tokens.colors;
+    fn draw_column_headers(&mut self, ctx: &mut PaintCtx<'_>) {
+        let theme = ctx.theme;
         let r = self.rect;
+        let m = self.metrics;
         if self.is_compact() {
             self.source_hits = self.source_selector_rects();
-            for hit in &self.source_hits {
-                let selected = hit.source == self.selected_source;
-                let accent = match hit.source {
-                    SourcePane::Base => c.text_dim,
-                    SourcePane::Ours => c.semantic.success,
-                    SourcePane::Theirs => c.semantic.info,
-                };
-                let chip = RoundedRect::from_rect(hit.rect, 5.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if selected {
-                        with_alpha(accent, 210)
-                    } else {
-                        with_alpha(accent, 42)
-                    },
-                    None,
-                    &chip,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    with_alpha(accent, if selected { 230 } else { 130 }),
-                    None,
-                    &chip,
-                );
-                let label = hit.source.label();
-                let (_, lh) = tr.measure(label, COMPACT_SOURCE_FONT_SIZE, None);
-                tr.draw_text(
-                    scene,
-                    label,
-                    COMPACT_SOURCE_FONT_SIZE,
-                    if selected { c.surfaces.base } else { accent },
-                    transform
-                        * Affine::translate((
-                            hit.rect.x0 + 8.0,
-                            hit.rect.y0 + (hit.rect.height() - f64::from(lh)) / 2.0,
-                        )),
-                    Some((hit.rect.width() - 16.0) as f32),
-                );
-            }
+            let rects: Vec<Rect> = self.source_hits.iter().map(|hit| hit.rect).collect();
+            let labels: Vec<String> = SourcePane::ALL.iter().map(|s| s.label()).collect();
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let selected = SourcePane::ALL
+                .iter()
+                .position(|s| *s == self.selected_source)
+                .unwrap_or(0);
+            ToggleGroup::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &SegmentedFace::new(&rects, &labels, selected)
+                    .style(SegmentedStyle::Segmented)
+                    .control_size(ControlSize::Small)
+                    .hovered(rects.iter().position(|rect| rect.contains(self.cursor))),
+            );
             return;
         }
 
-        let header_h = self.metrics.header_h;
         let col_w = r.width() / 3.0;
-        let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + header_h);
-        let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + header_h);
-        let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + header_h);
-
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            base_col,
-            &self.base_label,
-            c.text_dim,
-        );
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            ours_col,
-            &self.ours_label,
-            c.semantic.success,
-        );
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            theirs_col,
-            &self.theirs_label,
-            c.semantic.info,
-        );
+        for (index, (source, label)) in [
+            (SourcePane::Base, &self.base_label),
+            (SourcePane::Ours, &self.ours_label),
+            (SourcePane::Theirs, &self.theirs_label),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let x0 = r.x0 + index as f64 * col_w;
+            let band = Rect::new(x0, r.y0, x0 + col_w, r.y0 + m.code.header_h);
+            pane::paint_header(ctx, band, label, Some(source.provenance(theme)));
+        }
     }
 
     /// Vertical separators between the three source columns.
-    fn draw_band_separators(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_band_separators(&self, ctx: &mut PaintCtx<'_>) {
         if self.is_compact() {
             return;
         }
-        let c = &theme.tokens.colors;
+        let edge = ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.content);
         let r = self.rect;
         let col_w = r.width() / 3.0;
-        let band_top = r.y0 + self.metrics.header_h;
+        let band_top = r.y0 + self.metrics.code.header_h;
         let band_bot = band_top + self.source_band_height();
         for k in 1..3 {
             let x = r.x0 + f64::from(k) * col_w;
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(c.surfaces.raised),
-                None,
-                &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
-            );
+            ctx.fill_rect(Rect::new(x - 0.5, band_top, x + 0.5, band_bot), edge);
         }
     }
 
-    /// Draw every hunk row in the source band: side tints, the active-hunk
-    /// ring, the three code columns and (for change hunks) the resolution
-    /// chips. Populates `self.action_hits` for the next click hit-test.
-    /// Hunk tint per side plus the active-hunk highlight ring (part of
-    /// [`Self::draw_hunks`]).
+    /// The wash each side of a hunk takes for its resolution; `active` is the
+    /// hunk under review, which takes the stronger wash of its hue.
+    fn hunk_washes(
+        resolution: Resolution,
+        active: bool,
+        theme: &Theme,
+    ) -> (Option<Color>, Option<Color>) {
+        let washed = |tone| pane::washed(theme, tone, active);
+        match resolution {
+            Resolution::Unchanged => (None, None),
+            Resolution::Conflict => (
+                Some(washed(ui::widget::Tone::Danger)),
+                Some(washed(ui::widget::Tone::Danger)),
+            ),
+            Resolution::Ours | Resolution::TookOurs => {
+                (Some(washed(ui::widget::Tone::Success)), None)
+            }
+            Resolution::Theirs | Resolution::TookTheirs => {
+                (None, Some(washed(ui::widget::Tone::Info)))
+            }
+            Resolution::TookBoth => (
+                Some(washed(ui::widget::Tone::Success)),
+                Some(washed(ui::widget::Tone::Info)),
+            ),
+        }
+    }
+
+    /// Hunk tint per side. The hunk under review takes a stronger wash of its
+    /// own hue; a side with no hue stays on the ground, since a neutral lift
+    /// beside a coloured wash reads as an unrelated grey.
     fn draw_hunk_tint(
         ctx: &mut PaintCtx<'_>,
         block: Rect,
@@ -657,230 +791,118 @@ impl MergeView {
         h: &MergeHunk,
         is_active: bool,
     ) {
-        let col_w = block.width() / 3.0;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        // Hunk tint per side.
-        let (ours_tint, theirs_tint) = match h.resolution {
-            Resolution::Unchanged => (None, None),
-            Resolution::Conflict => (
-                Some(with_alpha(c.semantic.danger, 34)),
-                Some(with_alpha(c.semantic.danger, 34)),
-            ),
-            Resolution::Ours | Resolution::TookOurs => {
-                (Some(with_alpha(c.semantic.success, 40)), None)
-            }
-            Resolution::Theirs | Resolution::TookTheirs => {
-                (None, Some(with_alpha(c.semantic.info, 40)))
-            }
-            Resolution::TookBoth => (
-                Some(with_alpha(c.semantic.success, 36)),
-                Some(with_alpha(c.semantic.info, 36)),
-            ),
-        };
-
+        let active = is_active && h.is_change;
+        let (ours_tint, theirs_tint) = Self::hunk_washes(h.resolution, active, ctx.theme);
         if let Some(source) = compact_source {
             let tint = match source {
                 SourcePane::Base => None,
                 SourcePane::Ours => ours_tint,
                 SourcePane::Theirs => theirs_tint,
             };
-            if let Some(t) = tint {
-                ctx.fill_rect(block, t);
+            if let Some(tint) = tint {
+                ctx.fill_rect(block, tint);
             }
-        } else {
-            if let Some(t) = ours_tint {
-                let rect = Rect::new(block.x0 + col_w, block.y0, block.x0 + 2.0 * col_w, block.y1);
-                ctx.fill_rect(rect, t);
-            }
-            if let Some(t) = theirs_tint {
-                let rect = Rect::new(block.x0 + 2.0 * col_w, block.y0, block.x1, block.y1);
-                ctx.fill_rect(rect, t);
-            }
+            return;
         }
-
-        // Active hunk highlight ring.
-        if is_active && h.is_change {
-            let ring = Rect::new(
-                block.x0 + 1.0,
-                block.y0 - 1.0,
-                block.x1 - 1.0,
-                block.y1 + 1.0,
-            );
-            ctx.stroke_round(ring, 3.0, c.accent[5], 1.5);
+        let col_w = block.width() / 3.0;
+        for (index, tint) in [None, ours_tint, theirs_tint].into_iter().enumerate() {
+            if let Some(tint) = tint {
+                let x0 = block.x0 + index as f64 * col_w;
+                ctx.fill_rect(Rect::new(x0, block.y0, x0 + col_w, block.y1), tint);
+            }
         }
     }
 
-    /// The resolution status label + take-ours/theirs/both chips painted
-    /// under hunk `hi`'s `block` (part of [`Self::draw_hunks`]). Returns the
-    /// chips' hit targets.
-    /// Hunk `h`'s resolution status label, under `block` on the left. On a
-    /// phone, keep this semantically distinct from the source switcher and the
-    /// mutation chips: it says whether the hunk still needs a resolution, while
-    /// every chip says what it will do. Returns the label's right edge.
-    fn draw_hunk_status(
-        ctx: &mut PaintCtx<'_>,
-        block: Rect,
-        h: &MergeHunk,
-        compact: bool,
-        m: Metrics,
-    ) -> f64 {
-        let ay = block.y1 + 2.0;
-        let status = resolution_label(h.resolution);
-        let status_label = if compact {
-            compact_status_label(h.resolution)
-        } else {
-            status.0
+    /// Hunk `h`'s status badge, with its left edge at `x`, centred in the
+    /// control band starting at `y`. Returns nothing for an unchanged hunk.
+    fn draw_hunk_status(ctx: &mut PaintCtx<'_>, h: &MergeHunk, x: f64, y: f64, m: Metrics) {
+        let Some((label, style)) = resolution_badge(h.resolution) else {
+            return;
         };
-        let status_x = if compact {
-            block.x0 + PAD_X
-        } else {
-            block.x0 + block.width() / 3.0 + PAD_X
-        };
-        let (status_w, status_h) = ctx.text.measure(status_label, CHIP_FONT_SIZE, None);
-        ctx.text.draw_text(
+        let width = BadgeFace::intrinsic_width(&label, ctx.text, ctx.theme);
+        let rect = Rect::new(x, y, x + width, y + m.badge_h);
+        BadgeFace::new(rect, &label).style(style).paint(
             ctx.scene,
-            status_label,
-            CHIP_FONT_SIZE,
-            status.1.color(&ctx.theme.tokens.colors),
-            ctx.transform
-                * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
-            None,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
         );
-        status_x + f64::from(status_w)
     }
 
-    fn draw_hunk_action_chips(
+    /// The take-ours / take-theirs / take-both segments, starting at `x0` and
+    /// ending by `x_max`, in the band whose top is `y`. The explicit "Take …"
+    /// labels are used wherever they fit; where they cannot the short form is
+    /// used, so no segment paints past the pane edge. Returns the segments'
+    /// hit targets.
+    fn draw_hunk_resolution(
         ctx: &mut PaintCtx<'_>,
-        block: Rect,
         (hi, h): (usize, &MergeHunk),
-        compact: bool,
+        (x0, x_max, y): (f64, f64, f64),
         m: Metrics,
+        hover: Point,
     ) -> Vec<ActionHit> {
-        let PaintCtx {
-            scene,
-            transform,
-            text: tr,
-            theme,
-        } = ctx.reborrow();
-        let (r, col_w) = (block, block.width() / 3.0);
-        let mut action_hits = Vec::with_capacity(3);
-        let c = &theme.tokens.colors;
-        let ay = block.y1 + 2.0;
-        // Chip hues track the theme so a palette / high-contrast swap
-        // keeps the resolution controls coherent: ours = success (green),
-        // theirs = info (blue), both = the neutral dim tone — mirroring
-        // the status label's own `ColorClass` mapping.
-        let choices = [
-            (HunkChoice::Ours, c.semantic.success),
-            (HunkChoice::Theirs, c.semantic.info),
-            (HunkChoice::Both, c.text_dim),
+        let choices = [HunkChoice::Ours, HunkChoice::Theirs, HunkChoice::Both];
+        let long = [t("take-ours"), t("take-theirs"), t("take-both")];
+        let short = [
+            t("take-ours-short"),
+            t("take-theirs-short"),
+            t("take-both-short"),
         ];
-        let sp = &theme.tokens.spacing;
-        let (pad_x, gap) = if compact {
-            (CHIP_PAD_X_COMPACT, f64::from(sp.s1))
-        } else {
-            (CHIP_PAD_X, f64::from(sp.s2))
-        };
-
-        let status_x1 = Self::draw_hunk_status(
-            &mut PaintCtx::new(scene, transform, tr, theme),
-            block,
-            h,
-            compact,
-            m,
-        );
-
-        // Chips live in the theirs column (wide) or after the status label
-        // (compact). Their labels are measured with the style they are painted
-        // in; when the explicit verb form cannot fit the pane the short form is
-        // used, so no chip ever paints past the pane edge.
-        let chips_x0 = if compact {
-            (r.x0 + COMPACT_CHIPS_X).max(status_x1 + PAD_X)
-        } else {
-            r.x0 + 2.0 * col_w + PAD_X
-        };
-        let available = r.x1 - PAD_X - chips_x0;
-        let long: [&str; 3] = if compact {
-            ["Use ours", "Use theirs", "Use both"]
-        } else {
-            ["Take ours", "Take theirs", "Take both"]
-        };
-        let short: [&str; 3] = ["Ours", "Theirs", "Both"];
-        let prefer_long = compact || h.resolution.is_conflict();
-        let widths_for = |tr: &mut TextRenderer, labels: &[&str; 3]| -> [f64; 3] {
-            let mut widths = [0.0; 3];
-            for (w, label) in widths.iter_mut().zip(labels) {
-                *w = f64::from(tr.measure(label, CHIP_FONT_SIZE, None).0) + 2.0 * pad_x;
-            }
-            widths
-        };
-        let mut labels = if prefer_long { long } else { short };
-        let mut widths = widths_for(tr, &labels);
-        if prefer_long && widths.iter().sum::<f64>() + 2.0 * gap > available {
-            labels = short;
-            widths = widths_for(tr, &short);
+        let available = (x_max - x0).max(0.0);
+        let mut labels = as_refs(&long);
+        let mut width =
+            SegmentedFace::intrinsic_width(&labels, ControlSize::Small, ctx.text, ctx.theme);
+        if width > available {
+            labels = as_refs(&short);
+            width =
+                SegmentedFace::intrinsic_width(&labels, ControlSize::Small, ctx.text, ctx.theme);
         }
-
-        let mut cx = chips_x0;
-        for ((label, w), (choice, col)) in labels.iter().zip(widths).zip(choices) {
-            let chip = Rect::new(cx, ay, cx + w, ay + m.chip_h);
-            let selected = chip_is_selected(h.resolution, choice);
-            let bg = if selected {
-                with_alpha(col, 220)
-            } else {
-                with_alpha(col, 50)
-            };
-            let rr = RoundedRect::from_rect(chip, 5.0);
-            scene.fill(Fill::NonZero, transform, bg, None, &rr);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                with_alpha(col, 160),
-                None,
-                &rr,
-            );
-            // A selected chip is filled in its hue; the label takes the ink
-            // that reads on that hue rather than a fixed near-black.
-            let text_col = if selected { c.on_surface(col).ink } else { col };
-            let (lw, lh) = tr.measure(label, CHIP_FONT_SIZE, None);
-            tr.draw_text(
-                scene,
-                label,
-                CHIP_FONT_SIZE,
-                text_col,
-                transform
-                    * Affine::translate((
-                        cx + (w - f64::from(lw)) / 2.0,
-                        ay + (m.chip_h - f64::from(lh)) / 2.0,
-                    )),
-                None,
-            );
-            action_hits.push(ActionHit {
-                rect: chip,
+        let width = width.min(available);
+        let segment_w = width / 3.0;
+        let rects: Vec<Rect> = (0..3u8)
+            .map(|i| {
+                let sx = x0 + f64::from(i) * segment_w;
+                Rect::new(sx, y, sx + segment_w, y + m.strip_h)
+            })
+            .collect();
+        let selected = choices
+            .iter()
+            .position(|choice| chip_is_selected(h.resolution, *choice))
+            .unwrap_or(usize::MAX);
+        ToggleGroup::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .style(SegmentedStyle::Segmented)
+                .control_size(ControlSize::Small)
+                .hovered(rects.iter().position(|rect| rect.contains(hover))),
+        );
+        rects
+            .into_iter()
+            .zip(choices)
+            .map(|(rect, choice)| ActionHit {
+                rect,
                 hunk: hi,
                 choice,
-            });
-            cx += w + gap;
-        }
-        action_hits
+            })
+            .collect()
     }
 
-    fn draw_hunks(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    /// Draw every hunk row in the source band: side tints, the three code
+    /// columns and (for change hunks) the status badge and resolution.
+    /// Populates `self.action_hits` for the next click hit-test.
+    fn draw_hunks(&mut self, ctx: &mut PaintCtx<'_>) {
         let r = self.rect;
         let m = self.metrics;
         let col_w = r.width() / 3.0;
-        let compact_source = self.is_compact().then_some(self.selected_source);
-        let band_top = r.y0 + m.header_h;
+        let compact = self.is_compact();
+        let compact_source = compact.then_some(self.selected_source);
+        let band_top = r.y0 + m.code.header_h;
         let band_bot = band_top + self.source_band_height();
+        let action_h = m.action_h(compact);
 
-        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for (hi, h) in self.model.hunks.iter().enumerate() {
             // `hunk_spans` is rebuilt one-for-one with `model.hunks` in
             // `recompute_spans`; skip drawing rather than panic if that ever
@@ -890,21 +912,15 @@ impl MergeView {
             };
             let y = band_top + top - self.scroll_y;
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
-            let block_h = rows as f64 * m.row_h;
+            let block_h = rows as f64 * m.code.row_h;
 
             // Cull off-screen hunks cheaply.
-            if y + block_h + m.action_h < band_top || y > band_bot {
+            if y + block_h + action_h < band_top || y > band_bot {
                 continue;
             }
 
             let block = Rect::new(r.x0, y, r.x1, y + block_h);
-            Self::draw_hunk_tint(
-                &mut ctx,
-                block,
-                compact_source,
-                h,
-                Some(hi) == self.active_hunk,
-            );
+            Self::draw_hunk_tint(ctx, block, compact_source, h, Some(hi) == self.active_hunk);
 
             // Phones show one source at a time; tablets and desktops keep the
             // aligned three-column comparison.
@@ -915,144 +931,131 @@ impl MergeView {
                 (&h.ours, side(|s| &s.ours)),
                 (&h.theirs, side(|s| &s.theirs)),
             );
-            match compact_source {
-                Some(SourcePane::Base) => {
-                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
-                }
-                Some(SourcePane::Ours) => {
-                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), ours, m);
-                }
-                Some(SourcePane::Theirs) => {
-                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), theirs, m);
-                }
-                None => {
-                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
-                    draw_lines(&mut ctx, Point::new(r.x0 + col_w + PAD_X, y), ours, m);
-                    draw_lines(
-                        &mut ctx,
-                        Point::new(r.x0 + 2.0 * col_w + PAD_X, y),
-                        theirs,
-                        m,
-                    );
-                }
+            let pad = m.code.pad;
+            let across = self.across.offset();
+            let sources = match compact_source {
+                Some(source) => vec![(source, r.x0, r.x1)],
+                None => vec![
+                    (SourcePane::Base, r.x0, r.x0 + col_w),
+                    (SourcePane::Ours, r.x0 + col_w, r.x0 + 2.0 * col_w),
+                    (SourcePane::Theirs, r.x0 + 2.0 * col_w, r.x1),
+                ],
+            };
+            for (source, x0, x1) in sources {
+                let lines = match source {
+                    SourcePane::Base => base,
+                    SourcePane::Ours => ours,
+                    SourcePane::Theirs => theirs,
+                };
+                let view = Rect::new(x0 + pad, y, x1 - pad, y + block_h);
+                ctx.scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    ctx.transform,
+                    &view,
+                );
+                draw_lines(ctx, Point::new(view.x0 - across, y), lines, m);
+                ctx.scene.pop_layer();
             }
 
-            // Action chips for change hunks.
-            if h.is_change {
-                let hits = Self::draw_hunk_action_chips(
-                    &mut ctx,
-                    block,
+            // Status and resolution for change hunks.
+            if h.is_change && self.can_resolve(hi) {
+                let band_y = block.y1 + m.gap;
+                let (status_x, status_y, strip_x, strip_y) = if compact {
+                    (r.x0 + pad, band_y, r.x0 + pad, band_y + m.badge_h + m.gap)
+                } else {
+                    let centre = |height: f64| band_y + (m.strip_h.max(m.badge_h) - height) / 2.0;
+                    (
+                        r.x0 + col_w + pad,
+                        centre(m.badge_h),
+                        r.x0 + 2.0 * col_w + pad,
+                        centre(m.strip_h),
+                    )
+                };
+                Self::draw_hunk_status(ctx, h, status_x, status_y, m);
+                let hits = Self::draw_hunk_resolution(
+                    ctx,
                     (hi, h),
-                    compact_source.is_some(),
+                    (strip_x, r.x1 - pad, strip_y),
                     m,
+                    self.cursor,
                 );
                 self.action_hits.extend(hits);
             }
         }
     }
 
-    /// The merged-result band: header (with conflict count) and the scrolled
-    /// merged buffer body.
-    fn draw_merged_band(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    /// The merged-result band: its title with the conflict count, and the
+    /// scrolled merged buffer body.
+    fn draw_merged_band(&mut self, ctx: &mut PaintCtx<'_>) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let m = self.metrics;
         let merged = self.merged_band_rect();
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
-        // Merged header.
-        let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + m.header_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(c.accent[5], 40),
-            None,
-            &mh,
+        // The merged header stands on the content ground, closed by a hairline.
+        let header = Rect::new(
+            merged.x0,
+            merged.y0,
+            merged.x1,
+            merged.y0 + m.merged_header_h,
         );
-        let conflicts = self.model.conflict_count();
-        let header_label = if self.expected_content.is_none() {
-            "Saved merged output · originals unavailable".to_string()
-        } else if conflicts == 0 {
-            if self.is_compact() {
-                "Merged result · resolved".to_string()
+        let pad = m.code.pad;
+        let title = t("merged-title");
+        let title_style = theme.text(TextRole::Subheading);
+        let (title_w, _) = ctx.text.measure_style(&title, None, &title_style);
+        ctx.text_role_in_band(
+            &title,
+            TextRole::Subheading,
+            c.text_primary,
+            header.x0 + pad,
+            header,
+            None,
+        );
+        if self.inputs.is_some() {
+            let conflicts = self.model.conflict_count();
+            let (label, tone) = if conflicts == 0 {
+                (t("merged-resolved"), Tone::Success)
             } else {
-                "Merged result · all conflicts resolved".to_string()
-            }
-        } else if self.is_compact() {
-            format!("Merged result · {conflicts} conflict(s)")
-        } else {
-            format!("Merged result · {conflicts} conflict(s) remaining")
-        };
-        let hc = if conflicts == 0 {
-            c.semantic.success
-        } else {
-            c.semantic.danger
-        };
-        let (_, hh) = tr.measure(&header_label, MERGED_HEADER_FONT_SIZE, None);
-        tr.draw_text(
-            scene,
-            &header_label,
-            MERGED_HEADER_FONT_SIZE,
-            hc,
-            transform
-                * Affine::translate((
-                    merged.x0 + PAD_X + 4.0,
-                    merged.y0 + (m.header_h - f64::from(hh)) / 2.0,
-                )),
-            Some((merged.width() - PAD_X * 2.0 - 8.0) as f32),
+                (
+                    t_args("merged-conflicts", &[("count", count(conflicts))]),
+                    Tone::Danger,
+                )
+            };
+            let width = BadgeFace::intrinsic_width(&label, ctx.text, theme);
+            let x = header.x0 + pad + f64::from(title_w) + m.gap * 2.0;
+            let rect = Rect::from_center_size(
+                Point::new(x + width / 2.0, header.center().y),
+                (width, m.badge_h),
+            );
+            BadgeFace::new(rect, &label)
+                .style(ChipStyle::Tinted(tone))
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
+        }
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            header.x0,
+            header.x1,
+            header.y1,
+            0.0,
+            c.surfaces.content,
         );
 
         // Merged buffer body. The shared editor owns text, caret, selection,
         // scrolling, clipboard, IME, accessibility, and CRDT splices.
-        let merged_body = Rect::new(merged.x0, merged.y0 + m.header_h, merged.x1, merged.y1);
-        self.merged_editor.set_rect(merged_body);
+        let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
+        self.merged_editor.control_mut().set_rect(merged_body);
         self.merged_editor
-            .draw_embedded(scene, transform, tr, theme);
+            .control_mut()
+            .draw_embedded(ctx.scene, ctx.transform, ctx.text, theme);
     }
 }
 
 impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output (a projection of
-            // the external inputs, not a replayable action) and drop any stale
-            // per-hunk resolutions whose indices no longer correspond.
-            MergeDoc::clear_resolutions(state);
-            MergeDoc::set_merged(state, &self.model.merged_text());
-            self.pending_seed = false;
-            self.acknowledge_content(state);
-        } else {
-            self.reconcile_content(state);
-        }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
-            MergeDoc::set_merged(state, &self.model.merged_text());
-        }
-        let merged = MergeDoc::merged_text_obj(state);
-        self.merged_editor.bind_text(merged);
-        self.merged_editor.pull(state);
-        // Reconcile chip state from resolutions recorded by (possibly remote)
-        // actions, so a reload or a peer shows the same take-a-side selections.
-        // The merged `Text` itself stays authoritative — the actions already
-        // wrote it — so this only tints the in-memory hunks.
-        for (hunk, choice) in MergeDoc::resolutions(state) {
-            if let (Some(h), Some(c)) = (
-                self.model.hunks.get_mut(hunk),
-                HunkChoice::from_tag(&choice),
-            ) && h.is_change
-            {
-                let res = c.to_resolution();
-                if h.resolution != res {
-                    h.resolution = res;
-                    self.dirty = true;
-                }
-            }
-        }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document_ref(state, path);
+        self.merged_editor.pull(doc);
     }
 
     fn build_layout(
@@ -1062,36 +1065,21 @@ impl Widget for MergeView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(ui::widget::layout_rect(taffy, node, origin));
         self.recompute_spans();
         let merged = self.merged_band_rect();
-        self.merged_editor.set_rect(Rect::new(
+        self.merged_editor.control_mut().set_rect(Rect::new(
             merged.x0,
-            merged.y0 + self.metrics.header_h,
+            merged.y0 + self.metrics.merged_header_h,
             merged.x1,
             merged.y1,
         ));
@@ -1107,71 +1095,112 @@ impl Widget for MergeView {
     ) {
         self.action_hits.clear();
         self.source_hits.clear();
-        // One metric snapshot per frame: spans, scroll clamp, chips and paint
+        // One metric snapshot per frame: spans, scroll clamp, controls and paint
         // all follow the renderer's actual line height.
-        let measured = Metrics::measure(tr);
+        let measured = Metrics::measure(tr, theme);
         if measured != self.metrics {
             self.metrics = measured;
             self.recompute_spans();
             self.scroll_y = self.scroll_y.min(self.max_scroll());
         }
-        let c = &theme.tokens.colors;
+        self.fit_across();
+        if self.rect.height() > 0.0
+            && let Some(hunk) = self.reveal.take()
+        {
+            self.reveal_hunk(hunk);
+        }
         let r = self.rect;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
 
-        self.draw_column_headers(scene, transform, tr, theme);
-        self.draw_band_separators(scene, transform, theme);
+        self.draw_column_headers(&mut ctx);
+        self.draw_band_separators(&mut ctx);
 
-        let band_top = r.y0 + self.metrics.header_h;
+        let band_top = r.y0 + self.metrics.code.header_h;
         let band_bot = band_top + self.source_band_height();
         let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
-        scene.push_layer(
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            r.x0,
+            r.x1,
+            band_top,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
+        ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
             &band_clip,
         );
-        self.draw_hunks(scene, transform, tr, theme);
-        if self.expected_content.is_none() && !self.merged_output.is_empty() {
-            tr.draw_text(scene, "Original inputs unavailable for this saved output. Load new inputs to resolve hunks.", 14., c.text_dim,
-                transform * Affine::translate((r.x0 + 16., band_top + 16.)), Some((r.width()-32.) as f32));
+        self.draw_hunks(&mut ctx);
+        if self.inputs.is_none() {
+            EmptyState::paint(
+                &mut ctx,
+                band_clip,
+                &EmptyStateContent::new(&t("empty-title")),
+                Point::new(-1.0, -1.0),
+            );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         // Divider between source band and merged band.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_focus,
-            None,
-            &Line::new(Point::new(r.x0, band_bot), Point::new(r.x1, band_bot)),
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            r.x0,
+            r.x1,
+            band_bot,
+            0.0,
+            theme.tokens.colors.surfaces.content,
         );
 
-        self.draw_merged_band(scene, transform, tr, theme);
+        self.draw_merged_band(&mut ctx);
         self.dirty = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
-            self.merged_editor.handle_event(event, ctx);
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = ctx.logical(position);
+        }
+        let editor = self.merged_editor.control();
+        if editor.is_focused() || editor.rect().contains(self.cursor) {
+            self.merged_editor.control_mut().handle_event(event, ctx);
+            self.merged_editor.submit(&mut ctx.state);
             if *ctx.handled {
                 return;
             }
         }
         match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty = true;
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Only scroll the source band when the cursor is above the
-                // merged divider; otherwise let the merged band stay put.
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y,
-                };
+                let (dx, dy) =
+                    wheel_pixels(*delta, self.metrics.code.row_h, self.modifiers.shift_key());
                 self.scroll_by(dy);
+                if self.across.scroll_by(dx) {
+                    self.dirty = true;
+                }
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1179,6 +1208,12 @@ impl Widget for MergeView {
                 button: MouseButton::Left,
                 ..
             } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                    return;
+                }
                 if let Some(source) = self
                     .source_hits
                     .iter()
@@ -1238,11 +1273,11 @@ impl Widget for MergeView {
     }
 
     fn set_focus(&mut self, focused: bool) {
-        self.merged_editor.set_focused(focused);
+        self.merged_editor.control_mut().set_focused(focused);
     }
 
     fn is_focused(&self) -> bool {
-        self.merged_editor.is_focused()
+        self.merged_editor.control().is_focused()
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -1266,6 +1301,7 @@ impl Widget for MergeView {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(format!("Show {} source", source.label()))
                     .with_description("Switch the visible merge source")
+                    .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1326,12 +1362,12 @@ impl Widget for MergeView {
         true
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
     ) -> bool {
         use ui::a11y::hash_key;
         if !self.is_compact()
@@ -1352,13 +1388,7 @@ impl Widget for MergeView {
         true
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
@@ -1373,89 +1403,24 @@ fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
     )
 }
 
-/// The phone-width status label: only whether the hunk still needs a
-/// resolution, so it stays distinct from the chips that say what they do.
-const fn compact_status_label(res: Resolution) -> &'static str {
-    match res {
-        Resolution::Conflict => "Conflict",
-        Resolution::Ours
-        | Resolution::Theirs
-        | Resolution::TookOurs
-        | Resolution::TookTheirs
-        | Resolution::TookBoth => "Resolved",
-        Resolution::Unchanged => "",
-    }
+/// The status badge of a hunk's resolution: what happened to it, in the tone
+/// that says how it stands. An unchanged hunk has none.
+fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
+    let (key, style) = match res {
+        Resolution::Conflict => ("hunk-conflict", ChipStyle::Tinted(Tone::Danger)),
+        Resolution::Ours => ("hunk-auto-ours", ChipStyle::Neutral),
+        Resolution::Theirs => ("hunk-auto-theirs", ChipStyle::Neutral),
+        Resolution::TookOurs => ("hunk-took-ours", ChipStyle::Tinted(Tone::Success)),
+        Resolution::TookTheirs => ("hunk-took-theirs", ChipStyle::Tinted(Tone::Success)),
+        Resolution::TookBoth => ("hunk-took-both", ChipStyle::Tinted(Tone::Success)),
+        Resolution::Unchanged => return None,
+    };
+    Some((t(key), style))
 }
 
-/// Status label + colour-class for a hunk's resolution.
-fn resolution_label(res: Resolution) -> (&'static str, ColorClass) {
-    match res {
-        Resolution::Conflict => ("● conflict", ColorClass::Danger),
-        Resolution::Ours => ("auto: ours", ColorClass::Success),
-        Resolution::Theirs => ("auto: theirs", ColorClass::Info),
-        Resolution::TookOurs => ("resolved: ours", ColorClass::Success),
-        Resolution::TookTheirs => ("resolved: theirs", ColorClass::Info),
-        Resolution::TookBoth => ("resolved: both", ColorClass::Dim),
-        Resolution::Unchanged => ("", ColorClass::Dim),
-    }
-}
-
-enum ColorClass {
-    Success,
-    Info,
-    Danger,
-    Dim,
-}
-
-impl ColorClass {
-    fn color(&self, c: &ui::tokens::colors::Colors) -> Color {
-        match self {
-            ColorClass::Success => c.semantic.success,
-            ColorClass::Info => c.semantic.info,
-            ColorClass::Danger => c.semantic.danger,
-            ColorClass::Dim => c.text_dim,
-        }
-    }
-}
-
-fn draw_header(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    col: Rect,
-    label: &str,
-    accent: Color,
-) {
-    let c = &theme.tokens.colors;
-    scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &col);
-    // The header band's top edge, derived against the band itself, so the
-    // raised header reads as a surface above the raised source columns.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::surface::edge_on(c.surfaces.raised),
-        None,
-        &Rect::new(col.x0, col.y0, col.x1, col.y0 + 1.0),
-    );
-    // Accent underline keyed to the column role.
-    let underline = Rect::new(col.x0, col.y1 - 2.0, col.x1, col.y1);
-    scene.fill(Fill::NonZero, transform, accent, None, &underline);
-    if !label.is_empty() {
-        let (_, lh) = tr.measure(label, HEADER_FONT_SIZE, None);
-        tr.draw_text(
-            scene,
-            label,
-            HEADER_FONT_SIZE,
-            c.text_primary,
-            transform
-                * Affine::translate((
-                    col.x0 + PAD_X + 2.0,
-                    col.y0 + (col.height() - f64::from(lh)) / 2.0,
-                )),
-            Some((col.width() - 2.0 * PAD_X) as f32),
-        );
-    }
+/// Three owned labels as the borrowed slice a segmented face takes.
+fn as_refs(labels: &[String; 3]) -> [&str; 3] {
+    [labels[0].as_str(), labels[1].as_str(), labels[2].as_str()]
 }
 
 /// One hunk's source lines, as syntax spans per side.
@@ -1509,8 +1474,8 @@ fn draw_lines(
     m: Metrics,
 ) {
     for (i, line) in lines.iter().enumerate() {
-        let y = origin.y + i as f64 * m.row_h + m.text_dy;
+        let y = origin.y + i as f64 * m.code.row_h + m.code.text_dy;
         let line_spans = spans.get(i).map_or(&[][..], Vec::as_slice);
-        highlight::draw_line(ctx, Point::new(origin.x, y), line, line_spans, FONT_SIZE);
+        highlight::draw_line(ctx, Point::new(origin.x, y), line, line_spans);
     }
 }

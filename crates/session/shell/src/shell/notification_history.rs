@@ -2,83 +2,9 @@
 //! survive a compositor restart.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
 
-use serde::{Deserialize, Serialize};
-
-use tilo_desktop::notifications::{MAX_HISTORY, Notification, NotificationSeverity};
-
-/// Longest title/body/app label kept on disk. The live toast never shows
-/// more than a few lines; a hostile sender must not be able to grow the
-/// private store without bound through one enormous notification.
-const MAX_PERSISTED_TEXT: usize = 2048;
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum PersistedSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-impl From<NotificationSeverity> for PersistedSeverity {
-    fn from(severity: NotificationSeverity) -> Self {
-        match severity {
-            NotificationSeverity::Info => Self::Info,
-            NotificationSeverity::Warning => Self::Warning,
-            NotificationSeverity::Error => Self::Error,
-        }
-    }
-}
-
-impl From<PersistedSeverity> for NotificationSeverity {
-    fn from(severity: PersistedSeverity) -> Self {
-        match severity {
-            PersistedSeverity::Info => Self::Info,
-            PersistedSeverity::Warning => Self::Warning,
-            PersistedSeverity::Error => Self::Error,
-        }
-    }
-}
-
-/// The durable shape of one retained notification. Process-scoped routes
-/// (the D-Bus id, a mirrored notification's restart-scoped id) and action
-/// keys are deliberately absent: after a restart nothing they address still
-/// exists.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct PersistedNotification {
-    title: String,
-    body: String,
-    severity: PersistedSeverity,
-    app_name: Option<String>,
-    app_id: Option<String>,
-    source_workspace: Option<u64>,
-    show_preview: bool,
-    posted_unix_ms: u64,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PersistedHistory {
-    notifications: Vec<PersistedNotification>,
-}
-
-fn bounded(text: &str) -> String {
-    if text.len() <= MAX_PERSISTED_TEXT {
-        return text.to_string();
-    }
-    let mut end = MAX_PERSISTED_TEXT;
-    while !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    text.get(..end).unwrap_or_default().to_string()
-}
-
-fn unix_ms(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0)
-}
+use tilo_desktop::notifications::Notification;
 
 /// Private, bounded file holding the retained history between sessions.
 #[derive(Clone, Debug)]
@@ -94,7 +20,7 @@ impl NotificationHistoryStore {
     /// `$XDG_STATE_HOME/tilo/notification-history.json`, or `None` when the
     /// session has no user state directory (tests, offscreen renders).
     pub fn for_user() -> Option<Self> {
-        xdg_paths::state_dir().map(|root| Self::at(root.join("tilo/notification-history.json")))
+        tilo_paths::state_dir().map(|root| Self::at(root.join("tilo/notification-history.json")))
     }
 
     pub fn path(&self) -> &Path {
@@ -111,33 +37,11 @@ impl NotificationHistoryStore {
         let Ok(bytes) = std::fs::read(&self.path) else {
             return Vec::new();
         };
-        let Ok(stored) = serde_json::from_slice::<PersistedHistory>(&bytes) else {
-            tracing::warn!(
-                path = %self.path.display(),
-                "notification history is unreadable; starting empty"
-            );
-            return Vec::new();
-        };
-        let wall_now_ms = unix_ms(wall_now);
-        let skip = stored.notifications.len().saturating_sub(MAX_HISTORY);
-        stored
-            .notifications
-            .into_iter()
-            .skip(skip)
-            .map(|entry| {
-                let age = Duration::from_millis(wall_now_ms.saturating_sub(entry.posted_unix_ms));
-                let mut notification =
-                    Notification::new(bounded(&entry.title), bounded(&entry.body))
-                        .with_severity(entry.severity.into())
-                        .with_created_at(now.checked_sub(age).unwrap_or(now));
-                notification.app_name = entry.app_name.as_deref().map(bounded);
-                notification.app_id = entry.app_id.as_deref().map(bounded);
-                notification.source_workspace = entry.source_workspace;
-                notification.show_preview = entry.show_preview;
-                notification.show_on_lock_screen = false;
-                notification
+        tilo_desktop::notifications::decode_history(&bytes, wall_now, now)
+            .unwrap_or_else(|error| {
+                tracing::warn!(path = %self.path.display(), %error, "notification history is unreadable; starting empty");
+                Vec::new()
             })
-            .collect()
     }
 
     /// Replace the file with `history` (oldest first, already bounded by the
@@ -157,44 +61,61 @@ impl NotificationHistoryStore {
         wall_now: SystemTime,
         now: Instant,
     ) -> std::io::Result<()> {
-        let wall_now_ms = unix_ms(wall_now);
-        let skip = history.len().saturating_sub(MAX_HISTORY);
-        let stored = PersistedHistory {
-            notifications: history
-                .iter()
-                .skip(skip)
-                .map(|notification| {
-                    let age = now.saturating_duration_since(notification.created_at);
-                    PersistedNotification {
-                        title: bounded(&notification.title),
-                        body: bounded(&notification.body),
-                        severity: notification.severity.into(),
-                        app_name: notification.app_name.as_deref().map(bounded),
-                        app_id: notification.app_id.as_deref().map(bounded),
-                        source_workspace: notification.source_workspace,
-                        show_preview: notification.show_preview,
-                        posted_unix_ms: wall_now_ms
-                            .saturating_sub(u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
-                    }
-                })
-                .collect(),
-        };
-        let bytes = serde_json::to_vec(&stored).map_err(std::io::Error::other)?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            }
-        }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
+        let bytes = tilo_desktop::notifications::encode_history(history, wall_now, now)
+            .map_err(std::io::Error::other)?;
+        write_history(&self.path, &bytes)
     }
+
+    /// [`Self::save`] on the process's state writer, for the compositor's
+    /// loop: under I/O pressure the write's fsyncs can take seconds, and the
+    /// loop must not wait for them. The history is encoded now; a newer save
+    /// that has not started replaces this one, and a failed write is logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error when the history cannot be encoded.
+    pub fn save_in_background(&self, history: &[Notification]) -> std::io::Result<()> {
+        self.save_in_background_at(history, SystemTime::now(), Instant::now())
+    }
+
+    fn save_in_background_at(
+        &self,
+        history: &[Notification],
+        wall_now: SystemTime,
+        now: Instant,
+    ) -> std::io::Result<()> {
+        let bytes = tilo_desktop::notifications::encode_history(history, wall_now, now)
+            .map_err(std::io::Error::other)?;
+        let path = self.path.clone();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = write_history(&path, &bytes) {
+                tracing::warn!(path = %path.display(), "could not save notification history: {error}");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// The directory is `0700` and the file `0600`, written atomically so a crash
+/// mid-write never leaves a torn history.
+fn write_history(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tilo_desktop::notifications::MAX_HISTORY;
+    const MAX_PERSISTED_TEXT: usize = 2048;
 
     fn from_app(app: &str, title: &str) -> Notification {
         let mut notification = Notification::new(title, "");
@@ -246,6 +167,35 @@ mod tests {
             (Duration::from_secs(119)..=Duration::from_secs(121)).contains(&age),
             "age survives the round trip, got {age:?}"
         );
+    }
+
+    /// The compositor's loop saves the history whenever it changed; under
+    /// I/O pressure the write's fsyncs froze the desktop. The loop only
+    /// hands the write to the state writer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saving_from_the_loop_never_waits_for_the_disk() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = NotificationHistoryStore::at(dir.path().join("state/tilo/history.json"));
+        let now = Instant::now();
+        let wall = SystemTime::now();
+        let history = vec![from_app("mail", "queued")];
+        let saving = store.clone();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(move || {
+            saving
+                .save_in_background_at(&history, wall, now)
+                .expect("encoded");
+        });
+        crate::shell::durable_writer::global().flush();
+        let restored = store.load_at(wall, now);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].title, "queued");
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the history file is private");
     }
 
     #[test]

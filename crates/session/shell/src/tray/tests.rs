@@ -21,12 +21,13 @@ use tokio::net::UnixStream;
 use zbus::connection::Builder;
 use zbus::zvariant::{Array, Dict, OwnedObjectPath, OwnedValue, StructureBuilder, Value};
 
-use super::{Tray, WATCHER_BUS_NAME, WATCHER_PATH, watcher};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::chrome_state::SearchScope;
 use crate::shell::search::SearchRegistry;
 use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
 use crate::shell::search::providers::tray_items::{self, TrayItemsProvider};
+use tilo_lock::MutexRecover as _;
+use tilo_tray_host::{Tray, TrayRequest, WATCHER_BUS_NAME, WATCHER_PATH, watcher};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -69,10 +70,7 @@ impl FakeItem {
     }
 
     fn activate(&self, x: i32, y: i32) {
-        self.calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("activate {x} {y}"));
+        self.calls.lock_recover().push(format!("activate {x} {y}"));
     }
 }
 
@@ -157,10 +155,7 @@ impl FakeMenu {
     }
 
     fn event(&self, id: i32, event_id: String, _data: OwnedValue, _timestamp: u32) {
-        self.calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("{event_id} {id}"));
+        self.calls.lock_recover().push(format!("{event_id} {id}"));
     }
 }
 
@@ -174,9 +169,7 @@ fn transcript_cap() -> Duration {
 static PENDING: Mutex<&str> = Mutex::new("starting the runtime");
 
 fn pending(what: &'static str) {
-    *PENDING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = what;
+    *PENDING.lock_recover() = what;
 }
 
 async fn step<T>(what: &'static str, future: impl std::future::Future<Output = T>) -> T {
@@ -220,9 +213,7 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
             "the tray transcript is stuck after {} s, still waiting for {}",
             transcript_cap().as_secs(),
-            PENDING
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            PENDING.lock_recover()
         ),
     }
 }
@@ -232,7 +223,7 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
     reason = "the transcript runs on its own runtime's block_on and is never sent"
 )]
 async fn transcript() {
-    let tray = Tray::new();
+    let tray = Tray::new(super::icon_rasteriser());
     let calls: Calls = Arc::default();
     let (shell_socket, app_socket) = UnixStream::pair().expect("socket pair");
     let shell_side = Builder::unix_stream(shell_socket)
@@ -370,29 +361,26 @@ async fn transcript() {
         catalog
             .select(&ResourceRef::new(tray_items::PROVIDER_ID, lock.clone()))
             .expect("lock action")
-            .invoke_nullary(&mut AutoCommit::new(), &ROOT, &chrome)
+            .invoke_nullary(
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &ROOT,
+                &chrome,
+            )
             .expect("invoked");
     }
     eventually("the menu event to reach the app", || {
-        calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&"clicked 1".to_string())
+        calls.lock_recover().contains(&"clicked 1".to_string())
     })
     .await;
 
-    tray.request(key, super::TrayRequest::Activate { x: 3, y: 4 })
+    tray.request(key, TrayRequest::Activate { x: 3, y: 4 })
         .expect("activate sent");
     eventually("activate to reach the app", || {
-        calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&"activate 3 4".to_string())
+        calls.lock_recover().contains(&"activate 3 4".to_string())
     })
     .await;
     assert!(
-        tray.request(key, super::TrayRequest::Menu { id: 5 })
-            .is_err(),
+        tray.request(key, TrayRequest::Menu { id: 5 }).is_err(),
         "a disabled entry cannot be chosen"
     );
 }

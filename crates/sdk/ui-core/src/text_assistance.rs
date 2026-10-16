@@ -1,4 +1,5 @@
-//! Process-local view of the shared spelling preferences.
+//! Process-local view of the shared spelling preferences: the per-user
+//! `text_assistance` section every app's text fields follow.
 //!
 //! Reading the JSON document on every keypress would turn a UX feature into an
 //! I/O hot path. We stat the settings file at most once every two seconds and
@@ -9,13 +10,17 @@ use crate::time::{Duration, Instant};
 use std::sync::{Mutex, OnceLock};
 
 pub const SETTINGS_SECTION: &str = "text_assistance";
-pub const CHECK_SPELLING_KEY: &str = "check_spelling";
-pub const AUTO_CORRECT_KEY: &str = "auto_correct";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
+)]
 pub struct TextAssistancePrefs {
     pub check_spelling: bool,
     pub auto_correct: bool,
+    /// The language words are checked in (`en_US`, `de_DE`); empty for the
+    /// session's own language.
+    #[serde(default)]
+    pub spelling_language: String,
 }
 
 impl Default for TextAssistancePrefs {
@@ -23,13 +28,22 @@ impl Default for TextAssistancePrefs {
         Self {
             check_spelling: true,
             auto_correct: true,
+            spelling_language: String::new(),
         }
     }
 }
 
+impl crate::storage::SettingsSchema for TextAssistancePrefs {
+    const SCOPE: crate::storage::Scope = crate::storage::Scope::Shared(SETTINGS_SECTION);
+}
+
+/// The section as a record the person edits by path.
+#[tilo_resource::resource(kind = "settings.text-assistance", label = "Spelling and text")]
+impl TextAssistancePrefs {}
+
 #[derive(Default)]
 struct CachedPrefs {
-    stamp: Option<settings_store::SettingsStamp>,
+    stamp: Option<crate::storage::SettingsRevision>,
     checked_at: Option<Instant>,
     loaded: bool,
     prefs: TextAssistancePrefs,
@@ -47,20 +61,15 @@ pub fn preferences() -> TextAssistancePrefs {
             .checked_at
             .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
     {
-        return cache.prefs;
+        return cache.prefs.clone();
     }
-    let stamp = settings_store::stamp();
+    let settings = crate::storage::Settings::<TextAssistancePrefs>::shared();
+    let stamp = Some(settings.revision());
     if !cache.loaded || cache.stamp != stamp {
-        let doc = settings_store::load();
-        cache.prefs = TextAssistancePrefs {
-            check_spelling: settings_store::bool_at(&doc, SETTINGS_SECTION, CHECK_SPELLING_KEY)
-                .unwrap_or(true),
-            auto_correct: settings_store::bool_at(&doc, SETTINGS_SECTION, AUTO_CORRECT_KEY)
-                .unwrap_or(true),
-        };
+        cache.prefs = settings.get();
         cache.stamp = stamp;
         cache.loaded = true;
     }
     cache.checked_at = Some(crate::time::now());
-    cache.prefs
+    cache.prefs.clone()
 }

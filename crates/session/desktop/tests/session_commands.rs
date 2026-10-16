@@ -1,10 +1,5 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -31,6 +26,7 @@ fn source() -> (DesktopTree, CommandSource) {
         active_tab: 31,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
         tabs: [30, 31, 32]
             .into_iter()
             .map(|id| Tab {

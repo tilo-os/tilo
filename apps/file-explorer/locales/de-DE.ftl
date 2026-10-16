@@ -7,16 +7,22 @@ files-time-unknown = unbekannter Zeitpunkt
 files-shortcuts-title = Tastaturkurzbefehle
 files-shortcuts-summary = Dateien-Steuerung mit der Tastaturkonvention des aktuellen Desktops
 files-shortcuts-primary = Primäre Modifikatortaste: Strg auf den meisten Desktops, Befehl unter macOS
-files-shortcuts-navigate = Auswahl bewegen: ↑ / ↓ · Bereich auswählen: Umschalt + ↑ / ↓
+files-shortcuts-navigate = Auswahl bewegen: ↑ und ↓
+files-shortcuts-range = Bereich auswählen: Umschalt + ↑ und ↓
 files-shortcuts-grid = Raster-Navigation: ← / → bewegen sich horizontal; ↑ / ↓ nach sichtbarer Zeile
-files-shortcuts-open = Auswahl öffnen: Eingabe · umbenennen: F2 · in Papierkorb verschieben: Entf
-files-shortcuts-location = Ort bearbeiten: Primär + L · aktualisieren: F5
+files-shortcuts-open = Auswahl öffnen: Eingabe
+files-shortcuts-rename = Umbenennen: F2
+files-shortcuts-trash = In den Papierkorb verschieben: Entf
+files-shortcuts-location = Ort bearbeiten: Primär + L
+files-shortcuts-refresh = Aktualisieren: F5
 files-shortcuts-new-folder = Neuer Ordner: Primär + Umschalt + N
 files-shortcuts-edit = Kopieren, ausschneiden, einfügen, Papierkorb rückgängig, alles auswählen: Primär + C / X / V / Z / A
 files-shortcuts-hidden = Versteckte Dateien zeigen oder ausblenden: Primär + H
-files-shortcuts-size = Elementgröße ändern: Primär + + / − · Größe zurücksetzen: Primär + 0
+files-shortcuts-size = Elementgröße ändern: Primär + + / −
+files-shortcuts-size-reset = Größe zurücksetzen: Primär + 0
 files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
-files-shortcuts-close = Diese Hilfe öffnen: ? oder F1 · Blätter und Menüs schließen: Esc
+files-shortcuts-close = Diese Hilfe öffnen: ? oder F1
+files-shortcuts-dismiss = Blätter und Menüs schließen: Esc
 
 ## Verfügbarkeit: Aktionen und Status
 files-opening-document = Dokument wird geöffnet…
@@ -121,10 +127,14 @@ files-transfer-verifying = wird verifiziert
 
 ## Freigaben
 files-search-collaborative-records = Kollaborative Dateien
-files-search-record-provenance = { $path } · Datensatz { $record }
+files-search-record-provenance = { $path }
 files-copy-one-time-link = Einmaligen Freigabelink kopieren
-files-share-composer-named = Für { $person } freigeben · { $permission } · { $expiry }
-files-share-composer-link = Link kopieren · { $permission } · { $expiry } · { $uses }
+files-import-once = Einmalig in lokalen Ordner importieren…
+files-import-once-downloads = Einmalig in Downloads importieren
+files-import-source-unavailable = Wähle einen Eintrag in einem eingehängten Dropbox- oder Google-Drive-Konto.
+files-import-local-destination = Ein einmaliger Import benötigt einen lokalen Zielordner, keinen synchronisierten Cloud-Ordner.
+files-share-composer-named = Für { $person } freigeben ({ $permission }, { $expiry })
+files-share-composer-link = Link kopieren ({ $permission }, { $expiry }, { $uses })
 files-share-choice-view = Ansehen
 files-share-choice-edit = Bearbeiten
 files-share-choice-day = läuft in 24 Stunden ab
@@ -160,10 +170,10 @@ files-grant-revoked = widerrufen
 files-grant-exhausted = aufgebraucht
 files-no-expiry = läuft nicht ab
 files-expires = läuft am { $time } ab
-files-share-grant-line = { $subject } · { $permission } · { $status } · { $expiry }
+files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
 files-sharing-title = Freigabe — { $name }
-files-certified-devices = { $person } · zertifizierte Geräte: { $devices }
-files-certified-device-detail = { $device } · Schlüssel { $fingerprint } · { $capabilities } · ausgestellt { $issued } · { $expiry }
+files-certified-devices = { $person }, zertifizierte Geräte: { $devices }
+files-certified-device-detail = { $device }, Schlüssel { $fingerprint }, { $capabilities }, ausgestellt { $issued }, { $expiry }
 files-device-cap-own = verwaltet Arbeitsbereiche
 files-device-cap-admit = lässt Geräte zu
 files-device-cap-host = vertrauenswürdiger Host
@@ -185,7 +195,7 @@ files-version-history = Versionsverlauf…
 files-restore-previous = Vorherige Version wiederherstellen
 files-resolve-keep-current = { $conflict } lösen — Aktuelle behalten
 files-resolve-use-other = { $conflict } lösen — Andere verwenden (Gerät { $device })
-files-history-version-line = { $action } · { $time } · von { $person } · Gerät { $device }
+files-history-version-line = { $action } { $time } von { $person } auf Gerät { $device }
 files-history-older = Ältere Versionen sind über den Verlaufsdienst verfügbar
 files-conflict-needs-review = Überprüfung erforderlich
 files-conflict-resolved-strategy = Gelöst: { $strategy }
@@ -194,10 +204,10 @@ files-strategy-keep-current = Aktuelle behalten
 files-strategy-use-other = Andere verwenden
 files-strategy-keep-both = Beide behalten
 files-strategy-merge = Zusammenführen
-files-conflict-line = Konflikt { $conflict } · { $count } { $count ->
+files-conflict-line = Konflikt { $conflict }: { $count } { $count ->
     [one] Version
    *[other] Versionen
-} · { $state }
+}, { $state }
 files-conflict-resolve-hint = Über das Kontextmenü lösen: Aktuelle behalten oder Andere verwenden
 files-conflict-unsupported-hint = Beide behalten und Zusammenführen sind nicht verfügbar, bis die signierten Abläufe unterstützt werden
 files-history-title = Versionsverlauf — { $name }
@@ -230,7 +240,6 @@ files-merge-review-guard = Tilo prüft die genaue Basis und beide Versionen unmi
 files-merge-review-undo = Die Zusammenführung erstellt einen signierten Verlaufseintrag. So können Sie eine frühere Version wiederherstellen, ohne spätere Arbeit rückgängig zu machen.
 files-merge-apply-safe = Sichere Zusammenführung anwenden
 files-merge-apply-safe-detail = Dies wird nur ausgeführt, wenn die deterministische Vorprüfung weiterhin beide Versionen sicher erhalten kann.
-files-conflict-workflow-required = Beide behalten und Zusammenführen benötigen einen eigenen sicheren Ablauf
 files-conflict-resolved-signed = Konflikt mit einem signierten Verlaufseintrag gelöst
 files-history-change-saved = Verlaufsänderung gespeichert
 files-history-action-created = Erstellt
@@ -241,8 +250,7 @@ files-history-action-deleted = Gelöscht
 files-history-action-conflict-resolved = Konflikt gelöst
 files-history-action-restored = Wiederhergestellt
 files-history-action-changed = Geändert
-files-history-current-version = { $action } · Aktuelle Version
-files-history-timeline-detail = { $person } · { $time }
+files-history-current-version = { $action } (aktuelle Version)
 files-history-preview-title = Ausgewählte Version
 files-history-compare-title = Mit aktueller Version vergleichen
 files-history-selected-action = Aktion: { $action }
@@ -261,8 +269,6 @@ files-history-compare = Mit aktueller Version vergleichen
 files-history-hide-compare = Versionsdetails anzeigen
 files-history-restore-selected = Diese Version wiederherstellen
 files-history-current-version-label = Aktuelle Version
-files-history-timeline-a11y = Versionszeitleiste
-files-history-timeline-a11y-item = { $action } von { $person }, { $time }
 
 ## Barrierefreier kollaborativer Status
 files-a11y-transfer-failed = Übertragung fehlgeschlagen
@@ -285,9 +291,7 @@ files-a11y-shared-recipients = Für { $count } { $count ->
 files-a11y-version-conflict = Hat einen Versionskonflikt
 
 ## Dienst- und Empfangsfehler/status
-files-history-encode-failed = Verlaufsanfrage konnte nicht kodiert werden
-files-history-request-too-large = Verlaufsanfrage überschreitet ihre Übertragungsgrenze
-files-history-restore-failed = Diese Version konnte nicht wiederhergestellt werden: { $error }
+files-open-terminal-failed = Terminal konnte nicht geöffnet werden: { $error }
 files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien noch nicht unterstützt
 files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
 files-conflict-request-too-large = Konfliktanfrage überschreitet ihre Übertragungsgrenze
@@ -304,7 +308,6 @@ files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitte
 files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
 files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-retry-refused = Empfangsdienst konnte die Wiederholung nicht ausführen ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
 files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze
@@ -326,6 +329,15 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
+files-selection-empty = Wählen Sie zuerst Dateien aus.
+files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wählen Sie sie vor dem Kopieren erneut aus.
+files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von der gespeicherten Auswahl. Wählen Sie es vor dem Kopieren erneut aus.
+files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
+files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
+files-clipboard-undone = Einfügen rückgängig gemacht.
+files-clipboard-partial = { $count } Elemente eingefügt. Einige Elemente konnten nicht eingefügt werden: { $error }
+files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
+files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
 files-forward = Vor
 files-up = Einen Ordner nach oben
@@ -335,11 +347,11 @@ files-sort-by = Sortieren nach
 files-view-options = Ansichtsoptionen
 files-path-placeholder = Pfad eingeben, z. B. ~/Dokumente
 files-place-home = Persönlicher Ordner
-files-place-favourites = Favoriten
 files-place-favorites = Favoriten
-files-place-system = System
+files-place-system = Orte
 files-place-root = Wurzelverzeichnis
 files-place-trash = Papierkorb
+files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
 files-place-documents = Dokumente
 files-place-downloads = Downloads
@@ -358,7 +370,7 @@ files-loading-title = Ordner wird geöffnet
 files-loading-detail = { $path } wird geladen
 files-directory-read-failed = Dieser Ordner konnte nicht geöffnet werden: { $error }
 files-load-error-title = Dieser Ordner konnte nicht geöffnet werden
-files-load-error-detail = { $error } · { $path }
+files-load-error-detail = { $path }: { $error }
 files-a11y-load-error = Ordner konnte nicht geladen werden: { $error }. Erneut versuchen ist verfügbar
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Zum Schließen Escape drücken
 files-a11y-dialog-close = { $summary }. Zum Schließen Escape drücken
@@ -368,7 +380,6 @@ files-a11y-places = Orte
 files-a11y-favourite = Favorit
 files-a11y-system-location = Systemort
 files-a11y-place-description = { $section }, { $path }
-files-a11y-breadcrumbs = Brotkrümelnavigation
 files-a11y-current-breadcrumb = Aktueller Ordner, { $path }. Zum Bearbeiten des Pfads Eingabe drücken
 files-a11y-open-folder = { $path } öffnen
 files-empty-trash = Der Papierkorb ist leer
@@ -377,7 +388,7 @@ files-item-count = { $count } { $count ->
     [one] Element
    *[other] Elemente
 }
-files-selected-count = { $base }  ·  { $count } ausgewählt
+files-selected-count = { $base }, { $count } ausgewählt
 files-a11y-list = Dateien
 files-a11y-folder = Ordner
 files-a11y-file = Datei, { $size }
@@ -451,7 +462,6 @@ files-menu-restore = Wiederherstellen
 files-menu-delete-permanently = Endgültig löschen
 files-menu-empty-trash = Papierkorb leeren
 files-menu-rename = Umbenennen
-files-action-rename-prompt = Neuer Name
 files-menu-cut = Ausschneiden
 files-menu-copy = Kopieren
 files-menu-properties = Eigenschaften…
@@ -567,4 +577,51 @@ files-place-recent = Zuletzt verwendet
 files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
+files-recent-action-unavailable = Dieser zuletzt verwendete Eintrag ist nicht mehr verfügbar. Öffnen Sie „Zuletzt verwendet“ und wählen Sie einen aktuellen Eintrag.
 files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
+
+## Cloud-Konten
+files-account-sign-in-title = Bei { $account } anmelden
+files-account-sign-in-needed = { $service } unter { $host } braucht eine neue Anmeldung, bevor dieser Ordner synchronisiert werden kann.
+files-account-sign-in-where = Das geht in den Einstellungen unter „Externe Konten“.
+files-account-service-at-host = { $service } unter { $host }
+files-account-folder = Ordner: { $path }
+files-account-check-again = Erneut prüfen
+files-account-check-again-detail = Liest den Zustand des Kontos neu und öffnet seinen Ordner, sobald er verfügbar ist.
+files-action-send-airdrop = An überprüften AirDrop-Laborempfänger senden…
+files-airdrop-unavailable = Eine überprüfte AirDrop-Laborübertragung ist auf diesem Gerät nicht verfügbar.
+files-airdrop-endpoint-invalid = Die IP-Adresse des Empfängers und einen TLS-Port von 1 bis 65535 eingeben.
+files-airdrop-source-unavailable = Diese Datei ist nicht mehr verfügbar.
+files-airdrop-file-only = Eine reguläre Datei für die AirDrop-Laborübertragung auswählen.
+files-airdrop-verifying = Empfängerüberprüfung und Erlaubnis zum Senden dieser Datei werden erwartet.
+files-airdrop-address = IP-Adresse des Empfängers
+files-airdrop-port = TLS-Port des Empfängers
+files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigungsdialog des Systems prüfen, bevor diese Datei einmal gesendet wird.
+
+files-nearby-status = Übertragungsstatus
+files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
+files-nearby-status-detail = Phase und bestätigte Byteanzahl dieser Übertragung anzeigen.
+
+files-clipboard-recovered = { $count } unterbrochene Übertragungen wiederhergestellt. Wiederherstellbare Kopien sind im Papierkorb.
+files-menu-recover-transfers = Unterbrochene Übertragungen wiederherstellen
+files-clipboard-redone = Einfügen wiederhergestellt.
+
+files-clipboard-cancelled = Dateiübertragung abgebrochen. Unterbrochene Übertragungen vor einem erneuten Versuch wiederherstellen.
+
+files-invalid-destination-name = Das Ziel muss ein einzelner Dateiname sein.
+
+files-native-restore-select-one = Wähle einen Eintrag im persönlichen Papierkorb zum Wiederherstellen. Andere Einträge bleiben unverändert.
+
+## History: what each change to Files did
+
+file-explorer-add-bookmark = { $place } zu den Favoriten hinzugefügt
+file-explorer-remove-bookmark = { $place } aus den Favoriten entfernt
+file-explorer-new-folder = Ordner { $name } erstellt
+file-explorer-rename = { $entry } in { $name } umbenannt
+file-explorer-trash = Dateien in den Papierkorb verschoben
+file-explorer-move = Dateien nach { $to } verschoben
+file-explorer-copy = Dateien nach { $to } kopiert
+file-explorer-revert = Eine Dateiänderung zurückgenommen
+
+files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
+files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.

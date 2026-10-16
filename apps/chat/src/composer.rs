@@ -1,85 +1,411 @@
 //! The composers: the SDK rich-text editor, embedded where chat draws it.
 //!
-//! A channel or thread composer edits that surface's shared draft (rich text
-//! in the document, written directly so collaborators see each keystroke and
-//! nothing lands in history); the message editor edits a local copy until it
-//! is saved. Enter sends and Shift+Enter breaks the line in both. What chat
+//! A channel or thread composer edits that surface's shared draft: rich text
+//! in the document, the record's `drafts` field under the composer's key,
+//! every edit of it a field edit at that path through the chat's dispatcher, so
+//! collaborators see each keystroke and a typed word is one undo step. The
+//! message editor edits a local copy until it is saved. Enter sends and Shift+Enter breaks the line in both. What chat
 //! needs beyond the editor — the plain text, the caret as an offset into it
 //! for presence, a peer's caret drawn at such an offset — is read from the
 //! editor's blocks here.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
 
 use automerge::AutoCommit;
+use tilo_actions::ActionError;
+use tilo_document::{RichText, RichTextAction, RichTextState};
 use tilo_rich_text::{
-    DirectField, Draft, FieldOutcome, RichTextSource, RichTextSurface, SubmitKey,
+    Draft, FieldOutcome, RichTextComposer, RichTextField, RichTextSource, RichTextSurface,
+    SubmitKey,
 };
-use ui::PresenceCtx;
+use ui::framework::Dispatcher;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockContent, BlockEditor, Embedded, Widget};
+use ui::tilo_resource::EditOp;
+use ui::widget::{BlockContent, BlockEditor, PresenceKeyFn, Widget};
+use ui::{LocalState, PresenceCtx};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::doc::ChatDoc;
+use crate::resource::Chat;
+
+/// The id the dispatcher addresses the draft stored under `key` by.
+pub fn draft_id(key: &str) -> String {
+    format!(
+        "{}/drafts/{key}",
+        <Chat as ui::tilo_resource::Resource>::KIND
+    )
+}
+
+/// The draft a channel or thread composer edits: the rich-text child of the
+/// chat record stored under its key, edited through the chat's dispatcher.
+pub struct DraftField {
+    key: String,
+    dispatch: Option<Dispatcher<Chat>>,
+    read_only: bool,
+    field: RichTextField,
+}
+
+impl DraftField {
+    fn new() -> Self {
+        Self {
+            key: String::new(),
+            dispatch: None,
+            read_only: false,
+            field: Self::field("", None),
+        }
+    }
+
+    fn field(key: &str, dispatch: Option<&Dispatcher<Chat>>) -> RichTextField {
+        let located = key.to_owned();
+        let locate = move |doc: &AutoCommit| crate::projection::draft(doc, &located);
+        match dispatch {
+            Some(dispatch) => {
+                let key = key.to_owned();
+                // Each edit of the draft is a field edit at its path.
+                let child = dispatch.child::<RichText>(&draft_id(&key), move |edit| {
+                    let edit = Chat::paths().drafts.key(key.clone()).edit(EditOp::Rich {
+                        rich: serde_json::to_value(&edit).unwrap_or_default(),
+                    });
+                    ui::tilo_resource::Stamped {
+                        operation: crate::record::ChatAction::FieldEdit(edit),
+                        now_ms: 0,
+                    }
+                });
+                RichTextField::new(child, locate)
+            }
+            None => RichTextField::view_only(locate),
+        }
+    }
+
+    fn retarget(&mut self) {
+        self.field = Self::field(&self.key, self.dispatch.as_ref());
+    }
+}
+
+impl RichTextSource for DraftField {
+    fn read_only(&self) -> bool {
+        self.read_only || self.field.read_only()
+    }
+
+    fn sync(&mut self, doc: &AutoCommit) {
+        self.field.sync(doc);
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.revision()
+    }
+
+    fn read_from(&mut self, doc: &AutoCommit) -> bool {
+        self.field.read_from(doc)
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        self.field.with_state(read)
+    }
+
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
+        if self.read_only {
+            return Err(ActionError::Refused(
+                "this conversation is open to view only".into(),
+            ));
+        }
+        self.field.apply(edits, edit)
+    }
+}
+
+/// The source behind Chat's one retained composer. Ordinary channels point
+/// at their shared document draft; a direct Agent conversation points at a
+/// peer-local draft keyed by the exact workspace and Agent. Switching never
+/// copies private text into the room document.
+pub struct ComposerSource {
+    shared: DraftField,
+    private: LocalState<HashMap<String, Draft>>,
+    private_selection: LocalState<HashMap<String, (usize, usize)>>,
+    private_key: Option<String>,
+    read_only: bool,
+    revision: u64,
+    observed: Option<u64>,
+}
+
+impl ComposerSource {
+    fn new() -> Self {
+        Self {
+            shared: DraftField::new(),
+            private: LocalState::new(HashMap::new()),
+            private_selection: LocalState::new(HashMap::new()),
+            private_key: None,
+            read_only: false,
+            revision: 0,
+            observed: None,
+        }
+    }
+
+    fn inner_revision(&self) -> Option<u64> {
+        match &self.private_key {
+            Some(key) => self.private.with(|drafts| {
+                drafts
+                    .get(key)
+                    .and_then(tilo_rich_text::RichTextSource::revision)
+            }),
+            None => self.shared.revision(),
+        }
+    }
+
+    fn observe(&mut self) {
+        let current = self.inner_revision();
+        if self.observed != current {
+            self.observed = current;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    fn use_private(&mut self, key: String) {
+        if self.private_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.private.update(|drafts| {
+            drafts.entry(key.clone()).or_insert_with(Draft::new);
+        });
+        self.private_key = Some(key);
+        self.observed = None;
+        self.observe();
+    }
+
+    fn use_shared(&mut self) {
+        if self.private_key.take().is_some() {
+            self.observed = None;
+            self.observe();
+        }
+    }
+
+    fn private_plain(&self) -> Option<String> {
+        let key = self.private_key.as_ref()?;
+        self.private
+            .with(|drafts| drafts.get(key).map(Draft::plain_text))
+    }
+}
+
+impl RichTextSource for ComposerSource {
+    fn read_only(&self) -> bool {
+        self.read_only || (self.private_key.is_none() && self.shared.read_only())
+    }
+
+    fn sync(&mut self, doc: &AutoCommit) {
+        if self.private_key.is_none() {
+            self.shared.sync(doc);
+        }
+        self.observe();
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.inner_revision().map(|_| self.revision)
+    }
+
+    fn read_from(&mut self, doc: &AutoCommit) -> bool {
+        let read = match &self.private_key {
+            Some(key) => self.private.with(|drafts| {
+                drafts
+                    .get(key)
+                    .is_some_and(|draft| draft.with_state(|_| ()).is_some())
+            }),
+            None => self.shared.read_from(doc),
+        };
+        self.observe();
+        read
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        match &self.private_key {
+            Some(key) => self
+                .private
+                .with(|drafts| drafts.get(key).and_then(|draft| draft.with_state(read))),
+            None => self.shared.with_state(read),
+        }
+    }
+
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
+        if self.read_only {
+            return Err(ActionError::Refused(
+                "this conversation is open to view only".into(),
+            ));
+        }
+        let result = match &self.private_key {
+            Some(key) => {
+                let mut result = Err(ActionError::Refused(
+                    "the private draft is not attached".into(),
+                ));
+                self.private.update(|drafts| {
+                    if let Some(draft) = drafts.get_mut(key) {
+                        result = draft.apply(edits, edit);
+                        draft.sync(edits);
+                    }
+                });
+                result
+            }
+            None => self.shared.apply(edits, edit),
+        };
+        self.observe();
+        result
+    }
+
+    fn presence_keys(&self) -> Option<PresenceKeyFn> {
+        self.private_key
+            .is_none()
+            .then(|| self.shared.presence_keys())
+            .flatten()
+    }
+}
+
+fn agent_draft_key(workspace: &str, agent: &str) -> String {
+    format!(
+        "agent:{}:{workspace}:{}:{agent}",
+        workspace.len(),
+        agent.len()
+    )
+}
 
 /// The SDK editor as a chat composer.
 pub struct Composer<S: RichTextSource + 'static> {
-    host: Embedded<RichTextSurface<S>>,
+    host: RichTextComposer<S>,
     /// What the mention colours were last built from.
     painted: Option<u64>,
-    /// The draft a shared composer edits.
-    key: Option<Rc<RefCell<String>>>,
+    pending_selection: Option<(usize, usize)>,
 }
 
 /// A channel or thread composer over its shared draft.
-pub type DraftComposer = Composer<DirectField>;
+pub type DraftComposer = Composer<ComposerSource>;
 /// The editor for a sent message, local until saved.
 pub type MessageEditor = Composer<Draft>;
 
 fn editor() -> BlockEditor {
-    tilo_rich_text::compact_editor().with_body_size(crate::render_chat::BODY_SIZE)
+    tilo_rich_text::compact_editor()
 }
 
 impl DraftComposer {
+    fn remember_private_selection(&mut self) {
+        let Some(key) = self.host.widget().source().private_key.clone() else {
+            return;
+        };
+        let selection = self.selection();
+        self.host
+            .widget_mut()
+            .source_mut()
+            .private_selection
+            .update(|selections| _ = selections.insert(key, selection));
+    }
+
     /// A composer over the draft named by its key ([`Self::set_key`]).
     pub fn shared() -> Self {
-        let key = Rc::new(RefCell::new(String::new()));
-        let located = Rc::clone(&key);
-        let source = DirectField::new(move |doc| ChatDoc::rich_draft(doc, &located.borrow()));
         Self {
-            host: Embedded::new(
-                RichTextSurface::over(source)
+            host: RichTextComposer::new(
+                RichTextSurface::over(ComposerSource::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
             ),
-            key: Some(key),
             painted: None,
+            pending_selection: None,
         }
+    }
+
+    /// Edit through `dispatcher` from now on.
+    pub fn attach(&mut self, dispatcher: Dispatcher<Chat>) {
+        let source = self.host.widget_mut().source_mut();
+        source.shared.dispatch = Some(dispatcher);
+        source.shared.retarget();
     }
 
     /// Edit the draft stored under `key` (a channel, or a thread).
     pub fn set_key(&mut self, key: &str) {
-        if let Some(cell) = &self.key
-            && *cell.borrow() != key
-        {
-            key.clone_into(&mut cell.borrow_mut());
+        self.remember_private_selection();
+        let source = self.host.widget_mut().source_mut();
+        source.use_shared();
+        if source.shared.key != key {
+            key.clone_into(&mut source.shared.key);
+            source.shared.retarget();
         }
-    }
-
-    /// The draft this composer edits.
-    pub fn key(&self) -> String {
-        self.key
-            .as_ref()
-            .map(|cell| cell.borrow().clone())
-            .unwrap_or_default()
     }
 
     /// Whether the participant may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
-        self.host.widget_mut().source_mut().set_read_only(read_only);
+        self.host.widget_mut().source_mut().read_only = read_only;
+    }
+
+    /// Edit the private draft for one authenticated direct-Agent route.
+    pub fn set_agent_draft(&mut self, workspace: &str, agent: &str) {
+        let key = agent_draft_key(workspace, agent);
+        if self.host.widget().source().private_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.remember_private_selection();
+        let selection = self
+            .host
+            .widget()
+            .source()
+            .private_selection
+            .with(|selections| selections.get(&key).copied())
+            .unwrap_or_default();
+        self.host.widget_mut().source_mut().use_private(key);
+        self.host.widget_mut().present_now();
+        self.pending_selection = Some(selection);
+    }
+
+    /// Plain text currently held by the attached private draft.
+    pub fn private_plain(&self) -> Option<String> {
+        self.host.widget().source().private_plain()
+    }
+
+    pub(crate) fn private_revision_for(&self, workspace: &str, agent: &str) -> Option<u64> {
+        let key = agent_draft_key(workspace, agent);
+        self.host.widget().source().private.with(|drafts| {
+            drafts
+                .get(&key)
+                .and_then(tilo_rich_text::RichTextSource::revision)
+        })
+    }
+
+    pub(crate) fn clear_private_for_revision(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+        expected: u64,
+    ) -> bool {
+        let key = agent_draft_key(workspace, agent);
+        let mut cleared = false;
+        self.host
+            .widget_mut()
+            .source_mut()
+            .private
+            .update(|drafts| {
+                let Some(draft) = drafts.get_mut(&key) else {
+                    return;
+                };
+                if tilo_rich_text::RichTextSource::revision(draft) == Some(expected) {
+                    draft.clear();
+                    cleared = true;
+                }
+            });
+        if cleared {
+            self.host.widget_mut().present_now();
+        }
+        cleared
+    }
+
+    pub(crate) fn share_private_store_from(&mut self, other: &Self) {
+        let private = other.host.widget().source().private.clone();
+        let private_selection = other.host.widget().source().private_selection.clone();
+        let source = self.host.widget_mut().source_mut();
+        source.private = private;
+        source.private_selection = private_selection;
     }
 }
 
@@ -87,13 +413,13 @@ impl MessageEditor {
     /// An editor for one sent message, empty until [`Self::load`].
     pub fn local() -> Self {
         Self {
-            host: Embedded::new(
+            host: RichTextComposer::new(
                 RichTextSurface::over(Draft::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
             ),
-            key: None,
             painted: None,
+            pending_selection: None,
         }
     }
 
@@ -118,7 +444,7 @@ impl MessageEditor {
     }
 
     /// What the edit holds, as an action carries paragraphs.
-    pub fn clips(&self) -> Vec<qdoc_rich_text::ClipBlock> {
+    pub fn clips(&self) -> Vec<tilo_document::ClipBlock> {
         self.host.widget().source().clip_blocks()
     }
 }
@@ -181,6 +507,21 @@ impl<S: RichTextSource + 'static> Composer<S> {
         Widget::is_focused(self.host.widget())
     }
 
+    /// Measure the canonical paragraphs before reserving the composer band.
+    pub fn measure(
+        &mut self,
+        width: f64,
+        max_height: f32,
+        theme: &Theme,
+        text: &mut TextRenderer,
+    ) -> f64 {
+        self.host.measure(width, max_height, theme, text)
+    }
+
+    pub fn measured_height(&self) -> f64 {
+        self.host.measured_height()
+    }
+
     /// Lay the editor out in `rect`; returns its height.
     pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
         self.host.layout(rect, theme, text)
@@ -197,6 +538,20 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.host.draw(scene, transform, text, theme, presence);
     }
 
+    /// The editor's floating parts (its menus, a link's popover), in the
+    /// window's top layer.
+    pub fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.host
+            .draw_overlay(scene, transform, text, theme, presence);
+    }
+
     /// Where the editor was last laid out.
     pub fn rect(&self) -> Rect {
         self.host.rect()
@@ -208,7 +563,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Show the draft as it is now first, so the edit is made against it.
         self.host.sync(doc, &automerge::ROOT);
@@ -231,8 +586,11 @@ impl<S: RichTextSource + 'static> Composer<S> {
     }
 
     /// Bring the editor up to date with the document.
-    pub fn sync(&mut self, doc: &mut AutoCommit) {
+    pub fn sync(&mut self, doc: &AutoCommit) {
         self.host.sync(doc, &automerge::ROOT);
+        if let Some((anchor, caret)) = self.pending_selection.take() {
+            self.select(anchor, caret);
+        }
     }
 
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -247,17 +605,17 @@ impl<S: RichTextSource + 'static> Composer<S> {
     pub fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
         self.host.sync(doc, path);
-        let done = Widget::perform_action(self.host.widget_mut(), action, doc, path);
+        let done = Widget::perform_action(self.host.widget_mut(), action, &[], doc, path);
         self.host.sync(doc, path);
         done
     }
 
     /// Put `text` at the caret, as typed.
-    pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    pub fn insert_text(&mut self, doc: &mut ui::widget::Edits<'_>, text: &str) {
         self.host.sync(doc, &automerge::ROOT);
         self.caret_somewhere();
         self.host.widget_mut().insert_text(doc, text);
@@ -268,7 +626,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     /// mention of `id` shown as `label`.
     pub fn complete_mention(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         query_len: usize,
         id: &str,
         label: &str,

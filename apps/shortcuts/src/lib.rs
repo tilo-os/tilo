@@ -17,21 +17,10 @@
     clippy::arithmetic_side_effects,
     reason = "app-local counters and indices; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod door;
 pub mod drafting;
 pub mod editor;
-pub mod grant;
 pub mod locales;
 pub mod model;
 mod samples;
@@ -47,26 +36,28 @@ pub const APP_ID: &str = tilo_automation::SHORTCUTS_APP_ID;
 /// The window and launcher title.
 pub const APP_TITLE: &str = "Shortcuts";
 
-fn install_catalog() {
-    locales::install();
-}
-
 /// The app.
 pub struct App;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<App>()
+    ui::built_in_definition!(App)
 }
 
 impl ResourceApp for App {
     type Resource = Workbench;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1180, 760);
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1180, 760)
+    }
 
     fn view(cx: &mut ViewCx<Workbench>) -> Element {
-        install_catalog();
         view::root(cx)
     }
 

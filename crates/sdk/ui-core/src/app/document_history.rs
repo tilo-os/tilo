@@ -2,10 +2,9 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
+use crate::search::request::SEARCH_OPERATION;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{
-    HISTORY_OPERATION, HistoryCommand, SEARCH_OPERATION, StandaloneHistoryHost,
-};
+use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
 #[derive(Clone, Debug)]
@@ -32,7 +31,7 @@ impl App {
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
-        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value == encoded))
+        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
         &mut self,
@@ -87,7 +86,7 @@ impl App {
         };
         let _ = self.history_local_resources();
         if layout.pane.is_some() != self.document_history.is_open() {
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
@@ -172,7 +171,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -184,8 +183,13 @@ impl App {
         history_handled
     }
 
-    pub(super) fn refresh_history_controls(&mut self) {
-        let allowed = self
+    /// Refresh the window's own History controls against the History door,
+    /// returning the door's addresses: a History control in the app's tree
+    /// (its header row) is bound to the same door.
+    pub(super) fn refresh_history_controls(
+        &mut self,
+    ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        let allowed: std::collections::HashSet<_> = self
             .history_local_resources()
             .into_iter()
             .flat_map(|resource| {
@@ -194,12 +198,11 @@ impl App {
                 })
             })
             .collect();
-        for button in self.document_history.in_window_controls_mut() {
-            crate::widget::controls::refresh_control_action_availability(button, &allowed);
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
-        }
+        self.document_history.refresh_control_availability(&allowed);
+        allowed
+            .into_iter()
+            .filter(|address| address.resource == crate::standalone_history_host::HISTORY_RESOURCE)
+            .collect()
     }
 
     pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
@@ -207,7 +210,7 @@ impl App {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
             if self.document_history.has_search() {
-                resources.push(crate::standalone_history_host::search_resource());
+                resources.push(crate::search::search_resource());
             }
             return resources;
         }
@@ -269,9 +272,9 @@ impl App {
             if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
             }
-            serde_json::from_slice::<()>(&encoded.payload)
+            let request = crate::search::SearchRequest::decode(&encoded.payload)
                 .map_err(|_| "Invalid Search operation")?;
-            self.open_action_palette();
+            self.open_search(request);
             return Ok(());
         }
         if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {
@@ -295,7 +298,7 @@ impl App {
                 &encoded.type_id,
                 &encoded.payload,
             ),
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         )?;
         if result.is_none() {
@@ -320,18 +323,6 @@ impl App {
         self.apply_confirmed_history_restore();
         self.fulfil_history_preview();
         self.history_changed(revision, open);
-    }
-
-    /// Let History preview a selected version with the app's own root: a
-    /// fresh read-only instance built by `factory`, never the live one.
-    #[must_use]
-    pub fn with_history_preview_root(
-        mut self,
-        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
-    ) -> Self {
-        self.document_history
-            .set_preview_root(std::rc::Rc::new(factory));
-        self
     }
 
     /// Build the preview root a selection asked for, inside this app's wake
@@ -404,19 +395,8 @@ impl App {
         if !self.history_chrome_enabled {
             return 0;
         }
-        let mut pending = Vec::new();
-        for button in self.document_history.in_window_controls_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
-                pending.push(intent);
-            }
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
-                pending.push(intent);
-            }
-        }
         let mut count = 0usize;
-        for intent in pending {
+        for intent in self.document_history.take_control_invocations() {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -425,20 +405,8 @@ impl App {
             let result = self
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
-            for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    button,
-                    &intent.address,
-                    &result,
-                );
-            }
-            if let Some(pane) = self.document_history.pane_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    pane,
-                    &intent.address,
-                    &result,
-                );
-            }
+            self.document_history
+                .report_control_result(&intent.address, &result);
             if result.is_ok() {
                 count = count.saturating_add(1);
             }
@@ -450,7 +418,7 @@ impl App {
     pub(super) fn build_history_presentation(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
-            dialog.sync(&mut self.state.doc, &self.state.root);
+            dialog.sync(&self.state.doc, &self.state.root);
             let root = dialog.build_layout(
                 &mut self.layout.taffy,
                 &self.theme,
@@ -473,7 +441,9 @@ impl App {
 
         let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
         self.refresh_framework_history(width);
-        let status = self.document_sync_status().map(str::to_owned);
+        let status = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
         crate::history_mode::embedded::refresh(
             self.root_widget.as_mut(),
             &self.state.doc,
@@ -521,6 +491,10 @@ impl App {
             }
             return;
         }
+        if self.history_chrome_enabled {
+            self.document_history
+                .place_in_app_header(self.root_widget.as_mut());
+        }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
             &self.theme,
@@ -546,7 +520,7 @@ impl App {
 
         let _ = self.history_local_resources();
         self.document_history
-            .sync(&mut self.state.doc, &self.state.root);
+            .sync(&self.state.doc, &self.state.root);
         let layout = self.document_history.build_layout(
             app,
             &mut self.layout.taffy,
@@ -658,7 +632,7 @@ impl App {
                             &mut crate::widget::EventCtx {
                                 scale_factor: scale,
                                 modifiers: &self.input.modifiers,
-                                state: doc,
+                                state: crate::widget::Edits::lend(doc),
                                 path,
                                 handled,
                                 focus_target: focus,
@@ -679,7 +653,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -697,7 +671,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -719,7 +693,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -738,7 +712,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -769,65 +743,20 @@ impl App {
     }
 
     pub(super) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        let mut binding = self
-            .focused_node
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding());
-        if binding.is_none() {
-            for node in self.layout.node_map.keys() {
-                let Some(candidate) = self.bindings.binding_for(*node) else {
-                    continue;
-                };
-                if binding
-                    .as_ref()
-                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
-                {
-                    return Err(HistoryError::Unavailable);
-                }
-                binding = Some(candidate);
-            }
-        }
-        if binding.is_none()
-            && self
-                .persistence
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active().is_none())
-        {
-            return Err(HistoryError::Unavailable);
-        }
-        Ok(binding.map_or_else(
-            || HistoryTarget::Legacy {
-                app_id: crate::collaboration::local_app_id(),
-                record: self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .and_then(|records| records.active())
-                    .cloned(),
-                document_identity: self.state.document_identity(),
-            },
-            |binding| HistoryTarget::Bound(Box::new(binding)),
-        ))
+        crate::standalone_history_host::capture_history_target(
+            self.focused_node
+                .and_then(|node| self.bindings.binding_for(node))
+                .or_else(|| self.root_widget.callback_binding()),
+            &self.bindings,
+            self.layout.node_map.keys().copied(),
+            self.persistence.records.as_ref(),
+            self.state.document_identity(),
+        )
     }
 
     pub(super) fn is_history_node(&self, node: taffy::NodeId) -> bool {
-        let Some(layout) = self.history_layout else {
-            return false;
-        };
-        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
-        pending.extend(layout.search);
-        pending.extend(layout.pane);
-        pending.extend(layout.preview);
-        while let Some(next) = pending.pop() {
-            if next == node {
-                return true;
-            }
-            if let Ok(children) = self.layout.taffy.children(next) {
-                pending.extend(children);
-            }
-        }
-        false
+        self.history_layout
+            .is_some_and(|layout| layout.contains(&self.layout.taffy, node))
     }
 
     pub(super) fn remember_history_content(&mut self) {
@@ -850,6 +779,9 @@ impl App {
     #[must_use]
     pub fn without_native_document_chrome(mut self) -> Self {
         self.native_document_chrome = false;
+        if let Some(history) = &mut self.history {
+            history.remove_open_button();
+        }
         self
     }
 
@@ -861,6 +793,13 @@ impl App {
     #[cfg(any(feature = "native", test))]
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
         if chrome.draws_in_window() {
+            // Native apps use their integrated header or the platform action
+            // door. Low-level embedded hosts retain their shared controls.
+            self.document_history.remove_fallback_bar();
+            if let Some(history) = &mut self.history {
+                history.remove_fallback_bar();
+                self.layout.request_rebuild();
+            }
             if self.native_document_chrome && self.history.is_none() {
                 self.enable_document_history_chrome();
             }
@@ -868,7 +807,7 @@ impl App {
         }
         if let Some(history) = &mut self.history {
             history.remove_open_button();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         } else if self.native_document_chrome {
             self.enable_document_history_chrome();
         }
@@ -883,26 +822,17 @@ impl App {
     /// A registered framework History serves the same History door as the
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
-        let history = self.history.as_ref()?;
-        Some(crate::standalone_history_host::history_resource(
-            true,
-            history.is_open(),
-        ))
+        Some(self.history.as_ref()?.door_resource())
     }
 
     fn invoke_framework_history(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        let history = self.history.as_mut().ok_or("History is unavailable")?;
-        match serde_json::from_slice(&encoded.payload) {
-            Ok(HistoryCommand::Open) if history.request_open() => {}
-            Ok(HistoryCommand::OpenAt { entry })
-                if crate::standalone_history_host::decode_entry(&entry)
-                    .is_ok_and(|entry| history.request_open_at(entry)) => {}
-            Ok(HistoryCommand::Hide) => history.request_close(),
-            _ => return Err("Unsupported History operation".into()),
-        }
+        self.history
+            .as_mut()
+            .ok_or("History is unavailable")?
+            .invoke_door(encoded)?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         Ok(())
@@ -911,6 +841,10 @@ impl App {
     /// Enable shared standalone services presentation without wrapping the app
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
+        if let Some(history) = &mut self.history {
+            history.remove_fallback_bar();
+            self.layout.request_rebuild();
+        }
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
         if self.history.is_some()
@@ -924,7 +858,7 @@ impl App {
         self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
 
@@ -932,8 +866,11 @@ impl App {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty |= open != self.document_history.is_open()
-                || self.document_history.take_structure_dirty();
+            if open != self.document_history.is_open()
+                || self.document_history.take_structure_dirty()
+            {
+                self.layout.request_rebuild();
+            }
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }
@@ -1130,7 +1067,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("login", "Log in", None)),
+                Box::new(crate::widget::Button::new("login", "Log in")),
             )
             .without_native_document_chrome();
             // Exercise the same preparation used before the live event loop.
@@ -1159,7 +1096,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
@@ -1170,7 +1107,18 @@ mod tests {
                 crate::standalone_history_host::HISTORY_RESOURCE,
                 "open",
             );
-            assert!(!app.action_ui_routes(&open).is_empty());
+            assert!(
+                app.action_ui_routes(&open).is_empty(),
+                "no generic in-window toolbar"
+            );
+            assert!(app.history_layout.unwrap().toolbar.is_none());
+            assert_eq!(
+                app.root_widget.get_rect().y0.total_cmp(&0.0),
+                std::cmp::Ordering::Equal
+            );
+            native_open_history(&mut app);
+            layout(&mut app, 1024);
+            assert!(app.document_history.is_open());
         }
 
         // Case `host_owned_chrome_draws_no_history_button_but_keeps_history`:
@@ -1181,7 +1129,7 @@ mod tests {
         ] {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(chrome);
             app.init_layout();
@@ -1222,14 +1170,13 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "document-control",
                     "Document control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "before").unwrap();
             app.state.commit_action(None, None);
             app.state.doc.put(ROOT, "title", "pending").unwrap();
             let pending = app.state.doc.pending_ops();
-            app.enable_document_history_chrome();
+            app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
             layout(&mut app, 1200);
             let original = std::ptr::from_ref(app.root_widget.as_ref());
@@ -1237,9 +1184,17 @@ mod tests {
                 crate::standalone_history_host::HISTORY_RESOURCE,
                 "open",
             );
+            assert!(app.action_ui_routes(&open).is_empty());
+            assert!(app.history_layout.unwrap().toolbar.is_none());
             assert!(
-                !app.action_ui_routes(&open).is_empty(),
-                "launcher is a visible canonical affordance"
+                app.history_local_resources().iter().any(|resource| {
+                    resource.id.as_str() == open.resource
+                        && resource
+                            .actions
+                            .iter()
+                            .any(|action| action.id == open.action)
+                }),
+                "the canonical History door remains available without an extra bar"
             );
             app.invoke_history_address_local(&open, None)
                 .expect("local History address")
@@ -1263,21 +1218,21 @@ mod tests {
                 .filter(|descriptor| {
                     descriptor.address.resource == super::super::history_actions::RESOURCE
                 })
-                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.kind))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            use tilo_actions::PermissionRequirement::{Read, Write};
+            use tilo_actions::ActionKind::{Read, Undoable};
             assert_eq!(
                 history,
                 [
-                    ("history.close", Write),
-                    ("history.compare", Write),
+                    ("history.close", Undoable),
+                    ("history.compare", Undoable),
                     ("history.list", Read),
                     ("history.open", Read),
-                    ("history.restore", Write),
-                    ("history.view_at", Write),
+                    ("history.restore", Undoable),
+                    ("history.view_at", Undoable),
                 ]
                 .into_iter()
-                .map(|(action, permission)| (action.to_owned(), permission))
+                .map(|(action, kind)| (action.to_owned(), kind))
                 .collect(),
                 "the broker gates each History action on the permission it declares"
             );
@@ -1304,7 +1259,6 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "private-app-control",
                     "Private app control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "history").unwrap();
@@ -1353,7 +1307,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("content", "Content", None)),
+                Box::new(crate::widget::Button::new("content", "Content")),
             );
             app.state.doc.put(ROOT, "title", "private").unwrap();
             app.state.commit_action(None, None);
@@ -1370,6 +1324,16 @@ mod tests {
             assert!(!app.document_history.is_open());
             assert!(app.history_layout.unwrap().app_visible);
         }
+    }
+
+    fn native_open_history(app: &mut App) {
+        let address = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        app.invoke_history_address_local(&address, None)
+            .expect("published History door")
+            .expect("admitted History open");
     }
 
     fn native_click(app: &mut App, id: &str) {
@@ -1389,20 +1353,9 @@ mod tests {
     }
     fn native_click_at(app: &mut App, point: vello::kurbo::Point) {
         let events = [
-            winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            },
+            crate::synthetic_input::cursor_moved(point.x, point.y),
+            crate::synthetic_input::mouse_press(),
+            crate::synthetic_input::mouse_release(),
         ];
         for event in events {
             let mut handled = false;
@@ -1434,7 +1387,7 @@ mod tests {
         let (state, writer) = crate::persist::open_in(store, "so.tilo.history-restore").unwrap();
         let mut app = App::new_with_controlled_inputs(
             state,
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         )
         .with_autosave(writer);
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
@@ -1477,7 +1430,7 @@ mod tests {
 
         let mut app = reopen(dir.path());
         assert_eq!(title(&app).as_deref(), Some("v3"));
-        native_click(&mut app, "standalone-history-open");
+        native_open_history(&mut app);
         layout(&mut app, 1200);
         app.select_document_history(&[versions[0]]).unwrap();
         layout(&mut app, 1200);
@@ -1495,10 +1448,13 @@ mod tests {
             .and_then(|change| change.message())
             .and_then(tilo_actions::ActionContext::from_change_message)
             .expect("restore carries its action context");
-        assert_eq!(
-            context.action_label,
-            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-        );
+        assert!(matches!(
+            context.what,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                ..
+            }))
+        ));
 
         // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
@@ -1506,7 +1462,7 @@ mod tests {
 
         // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
-        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
         // A review that the live document outgrows is refused, unwritten.
@@ -1536,20 +1492,17 @@ mod tests {
     fn native_history_restore_requires_write() {
         let mut app = App::new_with_controlled_inputs(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         );
         app.state.doc.put(ROOT, "title", "v1").unwrap();
         app.state.commit_action(None, None);
         app.state.doc.put(ROOT, "title", "v2").unwrap();
         app.state.commit_action(None, None);
         let app_id = crate::collaboration::local_app_id();
-        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("reader"),
-            vec![crate::permissions::CapOverride::grant(
-                crate::permissions::Subject::agent("reader"),
-                crate::permissions::Scope::App(app_id),
-                crate::permissions::Verb::Read,
-            )],
+        app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+            "reader",
+            &crate::permissions::TreePath::root().app(app_id),
+            crate::permissions::policy::KindSet::READ,
         );
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();
@@ -1578,11 +1531,10 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "app-write",
-                    "Write",
-                    Some("pressed"),
-                )),
+                Box::new(
+                    crate::widget::Button::new("app-write", "Write")
+                        .on_click(crate::testing::record_click("pressed")),
+                ),
             );
             app.state.doc.put(ROOT, "title", "committed").unwrap();
             app.state.commit_action(None, None);
@@ -1592,7 +1544,7 @@ mod tests {
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
             assert!(pending > 0);
-            native_click(&mut app, "standalone-history-open");
+            native_open_history(&mut app);
             assert!(app.document_history.is_open());
             assert_eq!(app.state.doc.pending_ops(), pending);
             layout(&mut app, 1200);
@@ -1621,37 +1573,33 @@ mod tests {
             layout(&mut app, 1200);
             app.open_document_history().unwrap();
             layout(&mut app, 1200);
-            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
-            app.set_focused_node(Some(toolbar));
+            let pane = app.history_layout.unwrap().pane.unwrap();
+            app.set_focused_node(Some(pane));
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
             let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
-            let event = winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: winit::event::KeyEvent::synthetic(
-                    winit::event::RawKeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                            winit::keyboard::NativeKeyCode::Unidentified,
-                        ),
-                        state: winit::event::ElementState::Pressed,
-                    },
-                    key.clone(),
-                    None,
-                    winit::keyboard::KeyLocation::Standard,
-                    false,
-                    None,
-                    key,
-                ),
-                is_synthetic: false,
-            };
+            let event = crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    ),
+                    state: winit::event::ElementState::Pressed,
+                },
+                key.clone(),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                key,
+            ));
             let mut handled = false;
             let mut focus = None;
             let history_handled =
                 app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
-            assert!(!handled, "toolbar leaves Tab to host navigation");
+            assert!(!handled, "History pane leaves Tab to host navigation");
             assert!(app.focus_tab(false));
             app.finalize_handled_native_event(&event, false, history_handled);
-            assert_ne!(app.focused_node, Some(toolbar));
+            assert_ne!(app.focused_node, Some(pane));
             assert_eq!(app.state.doc.pending_ops(), pending);
         }
 
@@ -1665,25 +1613,23 @@ mod tests {
             app.state.commit_action(None, None);
             app.enable_document_history_chrome();
             app.init_layout();
-            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
-            let admitted = app.layout.node_map[&toolbar];
+            native_open_history(&mut app);
+            layout(&mut app, 1200);
+            let pane = app.history_layout.unwrap().pane.unwrap();
+            let admitted = app.layout.node_map[&pane];
             let mut moved = Box::new(app);
-            let retained = std::ptr::from_mut(
-                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
-            );
+            let retained =
+                std::ptr::from_mut(moved.document_history.pane_mut().unwrap() as &mut dyn Widget);
             assert!(
                 std::ptr::addr_eq(admitted, retained),
-                "admitted pointer must still name the actual retained toolbar after App moves"
+                "admitted pointer must still name the actual retained pane after App moves"
             );
-            let handled = moved
-                .dispatch_node(toolbar, |widget, document, path| {
-                    widget.perform_action(&crate::a11y::Action::Activate, document, path)
-                })
-                .unwrap();
-            assert!(handled);
-            assert_eq!(moved.dispatch_history_controls(), 1);
-            assert!(moved.document_history.is_open());
-            // The open pane and its inline children must remain stable too.
+            native_click(&mut moved, "standalone-history-close");
+            assert!(
+                !moved.document_history.is_open(),
+                "retained pane handles a real pointer click"
+            );
+            native_open_history(&mut moved);
             moved.rebuild_structure();
             let pane = moved.history_layout.unwrap().pane.unwrap();
             let admitted_pane = moved.layout.node_map[&pane];
@@ -1716,17 +1662,6 @@ impl Widget for FrameworkPresentation<'_> {
         _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.layout_root
-    }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::text_render::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.roots.clone()

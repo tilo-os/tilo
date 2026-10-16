@@ -15,9 +15,10 @@ name = "tilo-desktop-scan"
 path = "src/bin/tilo-desktop-scan.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 thiserror = { workspace = true }
 url.workspace = true
-tilo-xdg-paths = { path = "../xdg-paths" }
+tilo-paths.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

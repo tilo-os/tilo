@@ -23,6 +23,9 @@ impl App {
             if !read.is_current() {
                 continue;
             }
+            // Changes apply only to an owner holding their base; one that
+            // does not makes the reader read the document whole.
+            let mut lacks_base = false;
             let result = read.with_mutation(|mutation| {
                 let room_route = self
                     .collaboration
@@ -46,6 +49,10 @@ impl App {
                     if room.document().pending_ops() != 0 {
                         return Ok(None);
                     }
+                    if !read.applies_to(room.document()) {
+                        lacks_base = true;
+                        return Ok(None);
+                    }
                     let before = room.document().base_heads();
                     match mutation {
                         collab_types::DocumentMutation::Snapshot(bytes) => {
@@ -64,7 +71,7 @@ impl App {
                 if let Some(entry) = self
                     .document_routes
                     .owners
-                    .iter()
+                    .iter_mut()
                     .find(|entry| entry.route == route)
                 {
                     let owner = entry
@@ -74,7 +81,60 @@ impl App {
                     if entry.owners.iter().any(|other| !owner.same_document(other)) {
                         return Err("committed document owner ambiguous".into());
                     }
-                    return owner.merge_remote(mutation).map_err(|e| e.to_string());
+                    let (store, checkout) = owner.store_checkout();
+                    // The document's heads before this merge, when it has no
+                    // unfinished edit.
+                    let before = match store.read_checked(&checkout.id, |doc| {
+                        read.applies_to(doc).then(|| {
+                            (doc.pending_ops() == 0)
+                                .then(|| crate::history_mode::sorted_heads(doc.base_heads()))
+                        })
+                    }) {
+                        Ok(Some(before)) => before,
+                        Ok(None) => {
+                            lacks_base = true;
+                            return Ok(None);
+                        }
+                        // Busy or not open yet: try again on the next pump.
+                        Err(_) => return Ok(None),
+                    };
+                    // The same record published as the primary document.
+                    let mut bound = self
+                        .actions
+                        .bound_record_sync
+                        .as_mut()
+                        .filter(|sync| sync.publishes(store, checkout));
+                    // Whether every local change was already published on a
+                    // route before this merge: then the merged frontier
+                    // counts as published there too, exactly as for a live
+                    // remote change.
+                    let route_sent = before
+                        .as_ref()
+                        .is_some_and(|before| !entry.needs_snapshot && *before == entry.sent_heads);
+                    let primary_sent = before.as_ref().is_some_and(|before| {
+                        bound
+                            .as_ref()
+                            .is_some_and(|sync| sync.published_through(before))
+                    });
+                    let applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
+                    // Committed history is already held by the owner that
+                    // served it; republishing it as this replica's
+                    // Incremental would be a pure echo, one more owner
+                    // commit per remote edit.
+                    if applied == Some(true)
+                        && (route_sent || primary_sent)
+                        && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
+                            crate::history_mode::sorted_heads(doc.base_heads())
+                        })
+                    {
+                        if primary_sent && let Some(sync) = bound.as_mut() {
+                            sync.observe_published(heads.clone());
+                        }
+                        if route_sent {
+                            entry.sent_heads = heads;
+                        }
+                    }
+                    return Ok(applied);
                 }
                 if self
                     .collaboration
@@ -90,6 +150,10 @@ impl App {
                             .is_some_and(|active| active.as_str() == record)
                     })
                 {
+                    if !read.applies_to(&self.state.doc) {
+                        lacks_base = true;
+                        return Ok(None);
+                    }
                     return self
                         .state
                         .merge_remote_committed(mutation)
@@ -97,6 +161,15 @@ impl App {
                 }
                 Ok(None)
             });
+            if lacks_base {
+                #[cfg(any(test, feature = "test-support"))]
+                tracing::warn!(
+                    ?route,
+                    "committed changes refused: the owner lacks their base"
+                );
+                read.refuse();
+                continue;
+            }
             match result {
                 Ok(Ok(Some(changed))) => {
                     read.applied();

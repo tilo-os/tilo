@@ -38,13 +38,13 @@ const WIDTH_F32: f32 = WIDTH as f32;
 const HEIGHT_F32: f32 = HEIGHT as f32;
 
 fn shoot(theme: &Theme, out: &Path, name: &str, prompt: PairingPrompt) -> Result<(), String> {
-    let mut state = State::new();
+    let state = State::new();
     let mut view = PairingPromptView::new(PairingRequest {
         device_path: "/org/bluez/hci0/dev_88_C9_E8_6F_B4_8B".into(),
         device_name: name.to_string(),
         prompt,
     });
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -65,14 +65,14 @@ fn shoot(theme: &Theme, out: &Path, name: &str, prompt: PairingPrompt) -> Result
         )
         .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
     view.apply_layout(&taffy, node, Point::ZERO);
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.base, out);
     println!("wrote {}", out.display());
     Ok(())
 }

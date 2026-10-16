@@ -7,10 +7,6 @@
 //! the UI thread is never blocked. On macOS the same feature publishes the
 //! player to the system's now-playing controls instead
 //! (`tilo_media::NowPlayingSession`), and other platforms start no session.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the D-Bus MPRIS service runs on its own thread"
-)]
 
 #[cfg(all(feature = "mpris", not(freedesktop)))]
 use std::sync::mpsc::Receiver;
@@ -569,7 +565,8 @@ mod imp {
     }
 }
 
-#[cfg(all(test, feature = "mpris"))]
+#[cfg(test)]
+#[cfg(feature = "mpris")]
 mod tests {
     use super::*;
     #[cfg(freedesktop)]

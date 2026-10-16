@@ -17,7 +17,7 @@ For examples that connect to an existing compositor, start it once with:
 ./scripts/headless-examples/spawn-headless.sh
 ```
 
-The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script refuses a socket a live compositor still answers on. It spawns `shell --backend headless` against a scratch profile — its own XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
+The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script refuses a socket a live compositor still answers on. It spawns `shell --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
 
 `TILO_HEADLESS_TIMEOUT` sets how long to wait for the socket, in seconds (default 60). `TILO_HEADLESS_PROFILE=DIR` keeps a scratch profile in `DIR` across runs instead of a fresh one each time.
 
@@ -44,14 +44,46 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
-Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
+The input examples use the Python standard library. Native protocol proofs below
+have their own explicit external prerequisites.
+
+## Native protocol journeys
+
+`airdrop-transfer-proof.py` boots its own isolated compositor, signed thin Files
+package and pinned OpenDrop loopback receiver. It exercises actual Files actions,
+trusted fingerprint entry, status/progress, cancellation and failure recovery.
+`cast-session-proof.py` drives the real prebuilt projector service, through its
+control socket, against a bounded TLS Cast receiver, checking media LOAD,
+tokenized HLS isolation and clean stop.
+
+These proofs have explicit prerequisites and fail when they cannot observe the
+subject. They never build, configure radios or use the user's desktop/accounts.
+See [continuity interoperability](../../docs/architecture/continuity-interop.md#native-journey-evidence-and-reproduction)
+for build inputs, pinned external dependencies and qualification limits.
+
+`native-pair-journey.py --state-proof` isolates signed native app-state composition
+without an audio server. It requires late app hydration, concurrent semantic edits
+and local presentation on both compositors. See [native app-state acceptance](../../docs/native-app-state-acceptance.md)
+for the remote command, qualification boundaries and installed-device recipe.
+
+`native-pair-journey.py` checks two certified native Chat peers with private
+synthetic audio. It currently fails at governed app creation and writes an
+explicitly unqualified receipt. See [native Chat pair acceptance](../../docs/native-chat-pair-acceptance.md)
+for remote build inputs, observed blockers and the steps that have not executed.
+
+`startup-frame-timeline.py` launches a synthetic native SDK payload through a
+private registered desktop action and the production net-off sandbox. It records
+SDK presentation events, compositor-painted frame observation bounds and a live
+frame trace. It does not measure a physical display or bypass ordinary OS
+enrollment. See [native first-frame measurements](../../docs/benchmarks/native-first-frame-2026-10-06.md)
+for the remote wrapper, build inputs, raw samples and cache limitations.
 
 ## `tilo-control` CLI
 
 Use `tilo-control` from the command line:
 
 ```bash
-cargo build -p shell --bin tilo-control
+cargo build -p tilo-control
 
 tilo-control list-targets                  # one row per addressable widget
 tilo-control click add_workspace           # click named

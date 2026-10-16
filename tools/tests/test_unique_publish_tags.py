@@ -64,9 +64,9 @@ class ShellPushTests(unittest.TestCase):
 
     def test_os_candidates_and_integration_children_are_unique(self):
         text = self.read("build-image.yml")
-        self.assertIn('$TILO_OS_REPOSITORY:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"', text)
-        self.assertIn('tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
-        self.assertIn('$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
+        self.assertIn('$TILO_OS_REPOSITORY:candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"', text)
+        self.assertIn('tilo:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
+        self.assertIn('$repository:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
         self.assertIn('"docker://registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
 
     def test_release_tools_child_and_indexes_are_unique(self):

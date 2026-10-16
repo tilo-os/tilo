@@ -272,10 +272,6 @@ pub fn reflink_range(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures use small, known sizes"
-)]
 mod tests {
     use super::*;
 

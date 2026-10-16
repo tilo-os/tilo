@@ -10,11 +10,12 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color};
 
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
+use ui::tokens::colors::PresenceHue;
 
 use crate::draw;
-use crate::geo::{self, Projection};
+use crate::geo::Projection;
 use crate::model::{Category, MapModel, Poi, TransitJourney, TransitMode};
 use crate::sample::{Area, AreaKind, Basemap, RoadClass};
 use crate::tiles::{self, TileLayer};
@@ -37,10 +38,14 @@ pub struct MapPalette {
     pub road_res_casing: Color,
     pub road_secondary: Color,
     pub road_primary: Color,
-    pub road_label: Color,
     pub route: Color,
     pub route_casing: Color,
     pub marker_ring: Color,
+    /// The soft ground shadow under pins and markers.
+    pub shadow: Color,
+    /// The halo plate behind a name drawn on the map, and its ink.
+    pub label_plate: Color,
+    pub label_ink: Color,
     /// Pre-tiles / first-run loading surface: a calm DARK neutral pulled from
     /// the theme (NOT the near-white cartographic `land`), so the map never
     /// flashes bright before imagery arrives. Only the loading substrate uses
@@ -78,14 +83,17 @@ impl MapPalette {
         }
     }
 
-    /// The light cartography: a warm near-white paper land, matching the OSM
+    /// The light cartography: a near-white paper land, matching the OSM
     /// Standard raster it underlays. Hues track the theme (water = info,
-    /// parks = success); the route/markers track the accent.
+    /// parks = success); the route is the person's own colour.
     fn light(theme: &Theme) -> Self {
-        let sem = &theme.tokens.colors.semantic;
-        let w = Color::WHITE;
-        let k = Color::BLACK;
-        let land = draw::mix(theme.tokens.colors.surfaces.base, w, 0.94);
+        let c = &theme.tokens.colors;
+        let sem = &c.semantic;
+        // The media pair is the same near-white and near-black in every
+        // theme: the cartography mixes toward them, never toward a widget ink.
+        let w = c.media.ink;
+        let k = c.media.letterbox;
+        let land = draw::mix(c.surfaces.content, w, 0.94);
         Self {
             land,
             building: draw::mix(land, k, 0.10),
@@ -97,10 +105,12 @@ impl MapPalette {
             road_res_casing: draw::mix(land, k, 0.16),
             road_secondary: draw::mix(w, sem.warning, 0.28),
             road_primary: draw::mix(w, sem.warning, 0.48),
-            road_label: draw::mix(w, k, 0.62),
-            route: theme.accent_primary,
-            route_casing: draw::mix(theme.accent_primary, w, 0.5),
+            route: c.intent.you,
+            route_casing: draw::mix(c.intent.you, w, 0.5),
             marker_ring: w,
+            shadow: c.surfaces.scrim,
+            label_plate: draw::alpha(land, 0.82),
+            label_ink: draw::mix(land, k, 0.86),
             // The loading substrate shares the land tone (a faint step darker for
             // the reference grid) so a first-run/mid-load view never seams.
             substrate: draw::mix(land, k, 0.05),
@@ -117,12 +127,13 @@ impl MapPalette {
     /// the OSM raster, with light-grey road ribbons and dark-tinted
     /// water/parks so the map reads coherently dark — not a light map dimmed.
     fn dark(theme: &Theme) -> Self {
-        let sem = &theme.tokens.colors.semantic;
-        let w = Color::WHITE;
-        let k = Color::BLACK;
-        // Deep land, nudged off the chrome surface toward black so the basemap is
-        // its own quiet ground beneath the chrome.
-        let land = draw::mix(theme.tokens.colors.surfaces.base, k, 0.28);
+        let c = &theme.tokens.colors;
+        let sem = &c.semantic;
+        let w = c.media.ink;
+        let k = c.media.letterbox;
+        // Deep land, nudged off the window ground toward black so the basemap
+        // is its own quiet ground beneath the floating chrome.
+        let land = draw::mix(c.surfaces.content, k, 0.28);
         Self {
             land,
             building: draw::mix(land, w, 0.07),
@@ -135,12 +146,14 @@ impl MapPalette {
             road_res_casing: draw::mix(land, k, 0.5),
             road_secondary: draw::mix(land, sem.warning, 0.34),
             road_primary: draw::mix(land, sem.warning, 0.52),
-            road_label: draw::mix(land, w, 0.72),
-            route: theme.accent_primary,
-            // A darker casing under the accent route so it reads on dark land.
-            route_casing: draw::mix(theme.accent_primary, k, 0.45),
+            route: c.intent.you,
+            // A darker casing under the route so it reads on dark land.
+            route_casing: draw::mix(c.intent.you, k, 0.45),
             // A near-white ring keeps pins crisp on the dark basemap.
             marker_ring: draw::mix(land, w, 0.9),
+            shadow: c.surfaces.scrim,
+            label_plate: draw::alpha(land, 0.82),
+            label_ink: draw::mix(land, w, 0.9),
             // Substrate shares the land tone, one faint step darker for the grid.
             substrate: draw::mix(land, k, 0.18),
             substrate_grid: draw::mix(land, w, 0.10),
@@ -165,20 +178,25 @@ pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Col
     }
 }
 
-/// Resolve a marker colour for a POI category from theme tokens.
+/// Resolve a marker colour for a POI category. Categories are content
+/// series, so they take hues from the presence palette (equal lightness and
+/// chroma, so no category shouts over another).
 pub fn category_color(theme: &Theme, cat: Category) -> Color {
     let c = &theme.tokens.colors;
-    match cat {
-        Category::Landmark | Category::Hospital => c.semantic.danger,
-        Category::Cafe | Category::Shop => c.semantic.warning,
-        Category::Restaurant => draw::mix(c.semantic.danger, c.semantic.warning, 0.5),
-        Category::Bar => c.accent[6],
-        Category::Museum => c.semantic.info,
-        Category::Park => c.semantic.success,
-        Category::Transit => c.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-        Category::Hotel => c.accent[7],
-        Category::Other => c.neutral[6],
-    }
+    let hue = match cat {
+        Category::Landmark => PresenceHue::Red,
+        Category::Hospital => PresenceHue::Pink,
+        Category::Cafe => PresenceHue::Amber,
+        Category::Shop => PresenceHue::Sky,
+        Category::Restaurant => PresenceHue::Orange,
+        Category::Bar => PresenceHue::Magenta,
+        Category::Museum => PresenceHue::Violet,
+        Category::Park => PresenceHue::Green,
+        Category::Transit => PresenceHue::Blue,
+        Category::Hotel => PresenceHue::Teal,
+        Category::Other => return theme.text_dim,
+    };
+    c.presence.hue(hue)
 }
 
 /// Marker draw priority for decluttering — a more salient category wins a
@@ -255,7 +273,6 @@ fn road_width(class: RoadClass, zoom: f64) -> f64 {
         RoadClass::Primary => 4.2 * k,
         RoadClass::Secondary => 3.0 * k,
         RoadClass::Residential => 1.6 * k,
-        RoadClass::Path => 1.0 * k,
     }
 }
 
@@ -463,7 +480,7 @@ pub fn draw_basemap(
         let color = match r.class {
             RoadClass::Primary => pal.road_primary,
             RoadClass::Secondary => pal.road_secondary,
-            _ => pal.road_res,
+            RoadClass::Residential => pal.road_res,
         };
         draw::polyline(scene, t, &pts, road_width(r.class, proj.zoom()), color);
     }
@@ -489,7 +506,8 @@ fn draw_area(
     }
 }
 
-/// Paint the active route: a casing + accent line with start/end pucks.
+/// Paint the active route: a casing + line in the person's colour with
+/// start/end pucks.
 pub fn draw_route(
     scene: &mut Scene,
     t: Affine,
@@ -512,6 +530,25 @@ pub fn draw_route(
     draw::stroke_circle(scene, t, start, 7.0, 3.0, pal.route);
     draw::fill_circle(scene, t, end, 7.0, pal.route);
     draw::stroke_circle(scene, t, end, 7.0, 2.5, pal.marker_ring);
+}
+
+/// One end of a route as the map draws it: the start a ring, the
+/// destination a filled puck. The Directions fields repeat it beside each
+/// field so the two read as the same places.
+pub fn draw_endpoint_marker(
+    scene: &mut Scene,
+    t: Affine,
+    center: Point,
+    pal: &MapPalette,
+    destination: bool,
+) {
+    if destination {
+        draw::fill_circle(scene, t, center, 6.0, pal.route);
+        draw::stroke_circle(scene, t, center, 6.0, 2.0, pal.marker_ring);
+    } else {
+        draw::fill_circle(scene, t, center, 6.0, pal.marker_ring);
+        draw::stroke_circle(scene, t, center, 6.0, 2.5, pal.route);
+    }
 }
 
 /// Paint the traffic overlay: each road segment as a dark casing under a
@@ -566,14 +603,15 @@ pub fn draw_traffic(
 /// hard-coded RGB). The fallback when a leg carries no authentic feed colour.
 pub fn transit_leg_color(theme: &Theme, mode: TransitMode) -> Color {
     let c = &theme.tokens.colors;
-    match mode {
-        TransitMode::Walk => c.text_dim,
-        TransitMode::Bus => c.semantic.info,
-        TransitMode::Tram => c.semantic.danger,
-        TransitMode::Subway => theme.accent_primary,
-        TransitMode::Rail => c.semantic.success,
-        TransitMode::Ferry => c.accent[6],
-    }
+    let hue = match mode {
+        TransitMode::Walk => return c.text_dim,
+        TransitMode::Bus => PresenceHue::Teal,
+        TransitMode::Tram => PresenceHue::Red,
+        TransitMode::Subway => PresenceHue::Blue,
+        TransitMode::Rail => PresenceHue::Green,
+        TransitMode::Ferry => PresenceHue::Cyan,
+    };
+    c.presence.hue(hue)
 }
 
 /// The colour to draw a transit leg in: the *authentic* GTFS line colour from
@@ -621,7 +659,13 @@ pub fn draw_transit(
             // Walking connector: a short dashed line, no casing.
             draw_dashed(scene, t, &pts, 3.0, draw::alpha(col, 0.9), 6.0, 5.0);
         } else {
-            draw::polyline(scene, t, &pts, 8.0, draw::mix(col, Color::BLACK, 0.45));
+            draw::polyline(
+                scene,
+                t,
+                &pts,
+                8.0,
+                draw::mix(col, theme.tokens.colors.media.letterbox, 0.45),
+            );
             draw::polyline(scene, t, &pts, 5.0, col);
         }
     }
@@ -688,30 +732,50 @@ fn draw_dashed(
 }
 
 /// What a map overlay layer paints against: the viewport projection, the
-/// themed map palette, and the visible map area it stays inside.
+/// themed map palette, the map area it stays inside, and the floating
+/// surfaces over the map.
 #[derive(Clone, Copy)]
 pub struct MapView<'a> {
     pub proj: &'a Projection,
     pub pal: &'a MapPalette,
     pub clip: Rect,
+    /// The floating surfaces over the map (the panel, the controls, the
+    /// cards, the footer), each grown by the gap a marker keeps from it. A
+    /// marker or a name plate that would reach under one is left out rather
+    /// than shown as a sliver at its edge.
+    pub chrome: &'a [Rect],
 }
 
-/// Draw all place markers; the selected one is enlarged and labelled.
-pub fn draw_markers(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    proj: &Projection,
-    model: &MapModel,
-    theme: &Theme,
-    pal: &MapPalette,
-    clip: Rect,
-) {
+impl MapView<'_> {
+    /// Whether a marker covering `bounds` stays clear of every floating
+    /// surface.
+    pub fn clear_of_chrome(&self, bounds: Rect) -> bool {
+        self.chrome
+            .iter()
+            .all(|surface| surface.intersect(bounds).area() <= 0.0)
+    }
+
+    /// Whether a name plate at `plate` shows whole: inside the map area and
+    /// clear of every floating surface.
+    pub fn shows_whole(&self, plate: Rect) -> bool {
+        plate.x0 >= self.clip.x0
+            && plate.x1 <= self.clip.x1
+            && plate.y0 >= self.clip.y0
+            && plate.y1 <= self.clip.y1
+            && self.clear_of_chrome(plate)
+    }
+}
+
+/// Draw all place markers; the selected one is enlarged and labelled. A
+/// marker that would reach under a floating surface or past the window's edge
+/// is left out.
+pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel) {
+    let MapView {
+        proj, pal, clip, ..
+    } = view;
+    let (t, theme) = (ctx.transform, ctx.theme);
     let selected = model.selected.clone();
-    // Clip the whole marker layer to the map area so pins and their labels never
-    // bleed out from under an overlay drawer (the caller passes the visible map
-    // region as `clip` when the narrow drawer is open).
-    scene.push_layer(
+    ctx.scene.push_layer(
         vello::peniko::Fill::NonZero,
         BlendMode::default(),
         1.0,
@@ -721,17 +785,14 @@ pub fn draw_markers(
     // Origin marker, if a route/origin is set.
     if let Some(o) = model.origin {
         let p = proj.project(o);
-        if clip.contains(p) {
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(p.x, p.y + 1.0),
-                6.5,
-                Color::from_rgba8(0, 0, 0, 60),
-            );
-            draw::fill_circle(scene, t, p, 6.0, theme.tokens.colors.surfaces.base);
-            draw::stroke_circle(scene, t, p, 6.0, 3.0, theme.accent_primary);
-            draw::fill_circle(scene, t, p, 2.2, theme.accent_primary);
+        // A 6 px ring with its 3 px stroke and shadow.
+        let bounds = Rect::from_center_size(p, (16.0, 16.0));
+        if view.shows_whole(bounds) {
+            let scene = &mut *ctx.scene;
+            draw::fill_circle(scene, t, Point::new(p.x, p.y + 1.0), 6.5, pal.shadow);
+            draw::fill_circle(scene, t, p, 6.0, pal.marker_ring);
+            draw::stroke_circle(scene, t, p, 6.0, 3.0, pal.route);
+            draw::fill_circle(scene, t, p, 2.2, pal.route);
         }
     }
 
@@ -741,11 +802,11 @@ pub fn draw_markers(
             continue;
         }
         let p = proj.project(place.pos);
-        if !clip.contains(p) {
+        if !view.shows_whole(pin_bounds(p, false)) {
             continue;
         }
         draw_pin(
-            scene,
+            ctx.scene,
             t,
             p,
             category_color(theme, place.category),
@@ -756,33 +817,49 @@ pub fn draw_markers(
 
     if let Some(sel) = model.selected_place() {
         let p = proj.project(sel.pos);
-        if clip.contains(p) {
-            draw_pin(scene, t, p, category_color(theme, sel.category), pal, true);
-            // Floating label above the selected pin.
+        let pin = pin_bounds(p, true);
+        if view.shows_whole(pin) {
+            draw_pin(
+                ctx.scene,
+                t,
+                p,
+                category_color(theme, sel.category),
+                pal,
+                true,
+            );
+            // The selected place's name, on a halo plate above its pin.
+            let style = theme.text(TextRole::Caption).strong();
             let label = &sel.name;
-            let pad = 7.0;
-            let tw = draw::measure_w(tr, label, 12.0);
-            let lw = tw + pad * 2.0;
-            let lh = 22.0;
-            let lx = p.x - lw / 2.0;
-            let ly = p.y - 56.0;
-            let rect = Rect::new(lx, ly, lx + lw, ly + lh);
-            // Only draw the label if it fits inside the map area — otherwise it
-            // would be sliced at the drawer/panel edge into an unreadable
-            // fragment. The pin still shows; the drawer already names the place.
-            if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
-                PaintCtx::new(scene, t, tr, theme).text(
+            let sp = &theme.tokens.spacing;
+            let pad = f64::from(sp.s2);
+            let tw = draw::measure_w(ctx.text, label, &style);
+            let lh = draw::line_h(ctx.text, &style) + f64::from(sp.s1);
+            let lx = p.x - tw / 2.0 - pad;
+            let (head_r, head_h) = pin_size(true);
+            let ly = p.y - head_h - head_r - f64::from(sp.s1) - lh;
+            let rect = Rect::new(lx, ly, lx + tw + 2.0 * pad, ly + lh);
+            // The name shows only whole; the pin still shows, and the panel
+            // already names the place.
+            if view.shows_whole(rect) {
+                draw::fill_round(
+                    ctx.scene,
+                    t,
+                    rect,
+                    f64::from(theme.tokens.radii.detail),
+                    pal.label_plate,
+                );
+                let top = draw::vmid(ctx.text, rect.y0, rect.height(), &style);
+                draw::text(
+                    ctx,
                     label,
-                    &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                    theme.text_primary,
-                    Point::new(lx + pad, ly + 4.0),
-                    None,
+                    Point::new(rect.x0 + pad, top),
+                    &style,
+                    pal.label_ink,
                 );
             }
         }
     }
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
 /// Draw the live POI marker layer (Overpass results) over the basemap — OUR
@@ -792,7 +869,7 @@ pub fn draw_markers(
 /// so a dense area never piles markers on top of one another. Far out, each POI
 /// is a small themed category dot; at [`POI_ICON_ZOOM`] and closer it upgrades to
 /// a larger disc bearing a white category pictogram and (past the label
-/// threshold) a name plate. The selected POI is enlarged with an accent halo and
+/// threshold) a name plate. The selected POI is enlarged with a halo and
 /// always labelled.
 pub fn draw_pois(
     ctx: &mut PaintCtx<'_>,
@@ -832,9 +909,10 @@ pub fn draw_pois(
 
 /// One POI marker at its projected position: a category dot, or past
 /// [`POI_ICON_ZOOM`] a pictogram disc, with a name plate when zoomed in far
-/// enough or `selected`.
+/// enough or `selected`. A marker that would reach under a floating surface
+/// is left out.
 fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: bool) {
-    let MapView { proj, pal, clip } = view;
+    let MapView { proj, pal, .. } = view;
     let (scene, t, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let p = proj.project(poi.pos);
     let icons = proj.zoom() >= POI_ICON_ZOOM;
@@ -846,13 +924,12 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         (false, true) => 8.5,
         (false, false) => 4.5,
     };
-    draw::fill_circle(
-        scene,
-        t,
-        Point::new(p.x, p.y + 0.9),
-        r + 1.3,
-        draw::alpha(Color::BLACK, 0.32),
-    );
+    // The selected halo rings the disc 4 px out.
+    let reach = r + if selected { 5.0 } else { 2.0 };
+    if !view.shows_whole(Rect::from_center_size(p, (2.0 * reach, 2.0 * reach))) {
+        return;
+    }
+    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.9), r + 1.3, pal.shadow);
     draw::fill_circle(scene, t, p, r, col);
     draw::stroke_circle(
         scene,
@@ -863,56 +940,42 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         pal.marker_ring,
     );
     if icons {
-        // White category pictogram on the disc; the disc colour shows through
-        // any cut-outs (train windows, etc.).
-        draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring, col);
+        // The category's icon, light on the disc.
+        draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring);
     }
     if selected {
         draw::stroke_circle(scene, t, p, r + 4.0, 2.0, draw::alpha(col, 0.5));
     }
     if label {
-        let size = if selected { 12.0 } else { 11.0 };
-        let tw = draw::measure_w(ctx.text, &poi.name, size);
-        let lx = p.x + r + 6.0;
-        let ly = p.y - f64::from(size) * 0.72;
-        let plate = Rect::new(
-            lx - 4.0,
-            ly - 1.0,
-            lx + tw + 6.0,
-            ly + f64::from(size) + 3.0,
-        );
-        // Only draw the name plate when it fits in the map area, so it is never
-        // sliced at the drawer / screen edge into an unreadable fragment. The
-        // marker still shows; the info card / list already carries the name.
-        if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
+        let style = if selected {
+            theme.text(TextRole::Caption).strong()
+        } else {
+            theme.text(TextRole::Caption)
+        };
+        let tw = draw::measure_w(ctx.text, &poi.name, &style);
+        let lh = draw::line_h(ctx.text, &style);
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let lx = p.x + r + f64::from(theme.tokens.spacing.s2);
+        let ly = p.y - lh / 2.0;
+        let plate = Rect::new(lx - s1, ly, lx + tw + s1, ly + lh);
+        // The name plate shows only whole — never sliced at the window edge
+        // or under a floating surface into a fragment. The marker still
+        // shows; the place card and the list carry the name.
+        if view.shows_whole(plate) {
             draw::fill_round(
                 ctx.scene,
                 t,
                 plate,
-                4.0,
-                draw::alpha(theme.tokens.colors.surfaces.base, 0.74),
+                f64::from(theme.tokens.radii.detail),
+                pal.label_plate,
             );
-            ctx.text(
-                &poi.name,
-                &TextStyle::new(size).with_weight(TextWeight::Medium),
-                theme.text_primary,
-                Point::new(lx, ly),
-                None,
-            );
+            draw::text(ctx, &poi.name, Point::new(lx, ly), &style, pal.label_ink);
         }
     }
 }
 
-/// Draw a compact white category pictogram centred at `c` on a disc of radius
-/// `r`. `fg` is the icon colour (the near-white marker ring); `bg` is the disc
-/// colour, used for cut-outs (e.g. train windows) so they read against the fill.
-/// Deliberately built from a handful of primitives — no icon-font dependency, so
-/// it renders identically headless and live and tracks the OS theme.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match arm per Category variant, each a short, self-contained icon built \
-              from a handful of primitives; splitting per-arm would only relocate the code"
-)]
+/// Draw the category's icon centred at `c` on a marker disc of radius `r`, in
+/// `fg` (the light marker ring), from the one icon set.
 pub fn draw_category_icon(
     scene: &mut Scene,
     t: Affine,
@@ -920,237 +983,16 @@ pub fn draw_category_icon(
     r: f64,
     cat: Category,
     fg: Color,
-    bg: Color,
 ) {
-    let s = r * 0.58;
-    let lw = (r * 0.16).max(1.4);
-    let ln = |scene: &mut Scene, ax: f64, ay: f64, bx: f64, by: f64, w: f64| {
-        draw::line(scene, t, Point::new(ax, ay), Point::new(bx, by), w, fg);
-    };
-    match cat {
-        Category::Hospital => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32),
-                1.5,
-                fg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s),
-                1.5,
-                fg,
-            );
-        }
-        Category::Landmark => {
-            let mut pts = Vec::with_capacity(10);
-            for k in 0..10 {
-                let ang = -std::f64::consts::FRAC_PI_2 + f64::from(k) * std::f64::consts::PI / 5.0;
-                let rad = if k % 2 == 0 { s } else { s * 0.45 };
-                pts.push(Point::new(c.x + rad * ang.cos(), c.y + rad * ang.sin()));
-            }
-            draw::polygon(scene, t, &pts, fg);
-        }
-        Category::Park => {
-            ln(scene, c.x, c.y + s * 0.1, c.x, c.y + s * 0.8, lw * 1.4);
-            draw::fill_circle(scene, t, Point::new(c.x, c.y - s * 0.2), s * 0.62, fg);
-        }
-        Category::Cafe => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.6,
-                    c.y - s * 0.35,
-                    c.x + s * 0.35,
-                    c.y + s * 0.45,
-                ),
-                2.0,
-                fg,
-            );
-            draw::stroke_circle(
-                scene,
-                t,
-                Point::new(c.x + s * 0.5, c.y + s * 0.02),
-                s * 0.3,
-                lw,
-                fg,
-            );
-            ln(
-                scene,
-                c.x - s * 0.8,
-                c.y + s * 0.68,
-                c.x + s * 0.6,
-                c.y + s * 0.68,
-                lw,
-            );
-        }
-        Category::Restaurant => {
-            // Fork (left): three short prongs onto a stem.
-            for dx in [-0.68, -0.45, -0.22] {
-                ln(
-                    scene,
-                    c.x + dx * s,
-                    c.y - s * 0.7,
-                    c.x + dx * s,
-                    c.y - s * 0.18,
-                    lw,
-                );
-            }
-            ln(
-                scene,
-                c.x - s * 0.45,
-                c.y - s * 0.18,
-                c.x - s * 0.45,
-                c.y + s * 0.82,
-                lw * 1.5,
-            );
-            // Knife (right): a single tapering blade+handle.
-            ln(
-                scene,
-                c.x + s * 0.5,
-                c.y - s * 0.7,
-                c.x + s * 0.5,
-                c.y + s * 0.82,
-                lw * 1.7,
-            );
-        }
-        Category::Bar => {
-            let bowl = [
-                Point::new(c.x - s * 0.72, c.y - s * 0.55),
-                Point::new(c.x + s * 0.72, c.y - s * 0.55),
-                Point::new(c.x, c.y + s * 0.18),
-            ];
-            draw::polygon(scene, t, &bowl, fg);
-            ln(scene, c.x, c.y + s * 0.18, c.x, c.y + s * 0.72, lw);
-            ln(
-                scene,
-                c.x - s * 0.4,
-                c.y + s * 0.72,
-                c.x + s * 0.4,
-                c.y + s * 0.72,
-                lw,
-            );
-        }
-        Category::Museum => {
-            let roof = [
-                Point::new(c.x - s * 0.82, c.y - s * 0.18),
-                Point::new(c.x + s * 0.82, c.y - s * 0.18),
-                Point::new(c.x, c.y - s * 0.78),
-            ];
-            draw::polygon(scene, t, &roof, fg);
-            for dx in [-0.45, 0.0, 0.45] {
-                ln(
-                    scene,
-                    c.x + dx * s,
-                    c.y - s * 0.12,
-                    c.x + dx * s,
-                    c.y + s * 0.55,
-                    lw * 1.2,
-                );
-            }
-            ln(
-                scene,
-                c.x - s * 0.78,
-                c.y + s * 0.66,
-                c.x + s * 0.78,
-                c.y + s * 0.66,
-                lw * 1.3,
-            );
-        }
-        Category::Transit => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5),
-                2.5,
-                fg,
-            );
-            // Two windows cut out of the body (disc colour).
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.42,
-                    c.y - s * 0.5,
-                    c.x - s * 0.06,
-                    c.y - s * 0.06,
-                ),
-                1.5,
-                bg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x + s * 0.06,
-                    c.y - s * 0.5,
-                    c.x + s * 0.42,
-                    c.y - s * 0.06,
-                ),
-                1.5,
-                bg,
-            );
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(c.x - s * 0.32, c.y + s * 0.62),
-                s * 0.16,
-                fg,
-            );
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(c.x + s * 0.32, c.y + s * 0.62),
-                s * 0.16,
-                fg,
-            );
-        }
-        Category::Hotel => {
-            ln(
-                scene,
-                c.x - s * 0.72,
-                c.y - s * 0.5,
-                c.x - s * 0.72,
-                c.y + s * 0.5,
-                lw * 1.4,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.72,
-                    c.y + s * 0.08,
-                    c.x + s * 0.78,
-                    c.y + s * 0.46,
-                ),
-                2.0,
-                fg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12),
-                2.0,
-                fg,
-            );
-        }
-        Category::Shop => {
-            draw::stroke_circle(scene, t, Point::new(c.x, c.y - s * 0.22), s * 0.32, lw, fg);
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72),
-                2.5,
-                fg,
-            );
-        }
-        Category::Other => {
-            draw::fill_circle(scene, t, c, s * 0.4, fg);
-        }
-    }
+    let side = r * 1.25;
+    let stroke = (r * 0.16).max(1.4);
+    cat.icon().draw_with_stroke(
+        scene,
+        t,
+        Rect::from_center_size(c, (side, side)),
+        fg,
+        stroke,
+    );
 }
 
 /// Build a crisp teardrop "map pin" path: a circular head of radius `head_r`
@@ -1178,9 +1020,27 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
     p
 }
 
+/// A pin's head radius and its height from the tip to the head's centre.
+fn pin_size(selected: bool) -> (f64, f64) {
+    if selected { (11.0, 30.0) } else { (8.0, 22.0) }
+}
+
+/// Everything a pin at `anchor` paints: its head and outline (with the
+/// selected halo), down to its ground shadow.
+fn pin_bounds(anchor: Point, selected: bool) -> Rect {
+    let (r, h) = pin_size(selected);
+    let reach = r + if selected { 6.0 } else { 2.0 };
+    Rect::new(
+        anchor.x - reach,
+        anchor.y - h - reach,
+        anchor.x + reach,
+        anchor.y + r * 0.24,
+    )
+}
+
 /// Draw a themed teardrop pin anchored at `anchor`: a soft ground shadow, a
 /// category-coloured drop with a crisp light outline (so it reads on any basemap
-/// tone), and a light "eye". The selected pin is larger and wears a soft accent
+/// tone), and a light "eye". The selected pin is larger and wears a soft
 /// halo. All colours come from the `Theme`-derived palette / category colour.
 fn draw_pin(
     scene: &mut Scene,
@@ -1190,22 +1050,15 @@ fn draw_pin(
     pal: &MapPalette,
     selected: bool,
 ) {
-    let r = if selected { 11.0 } else { 8.0 };
-    let h = if selected { 30.0 } else { 22.0 };
+    let (r, h) = pin_size(selected);
     let center = Point::new(anchor.x, anchor.y - h);
 
     // Soft ground shadow at the tip, so the pin stands on the map rather than
     // being pasted onto it.
     let shadow = vello::kurbo::Ellipse::new(anchor, (r * 0.62, r * 0.24), 0.0);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        t,
-        draw::alpha(Color::BLACK, 0.28),
-        None,
-        &shadow,
-    );
+    scene.fill(vello::peniko::Fill::NonZero, t, pal.shadow, None, &shadow);
 
-    // Selected: a soft accent halo behind the head.
+    // Selected: a soft halo of its own colour behind the head.
     if selected {
         draw::fill_circle(scene, t, center, r + 6.0, draw::alpha(color, 0.20));
     }
@@ -1227,111 +1080,12 @@ fn draw_pin(
     draw::fill_circle(scene, t, center, r * 0.20, draw::alpha(color, 0.9));
 }
 
-/// Draw the bottom-right scale bar into `clip`, its right end at `right_x`
-/// (kept left of the ⋯ overflow button). Returns the left edge of its backing
-/// pill, where [`draw_attribution`] ends.
-pub fn draw_scale_bar(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    clip: Rect,
-    right_x: f64,
-    model: &MapModel,
-    theme: &Theme,
-) -> f64 {
-    let (label, px) = geo::scale_bar(model.center, model.zoom, 110.0);
-    let y = clip.y1 - 26.0;
-    let x1 = right_x;
-    let x0 = x1 - px;
-    let bar_bg = draw::alpha(theme.tokens.colors.surfaces.base, 0.7);
-    draw::fill_round(
-        scene,
-        t,
-        Rect::new(x0 - 8.0, y - 4.0, x1 + 8.0, y + 14.0),
-        4.0,
-        bar_bg,
-    );
-    draw::line(
-        scene,
-        t,
-        Point::new(x0, y),
-        Point::new(x1, y),
-        2.0,
-        theme.text_primary,
-    );
-    draw::line(
-        scene,
-        t,
-        Point::new(x0, y - 3.0),
-        Point::new(x0, y + 3.0),
-        2.0,
-        theme.text_primary,
-    );
-    draw::line(
-        scene,
-        t,
-        Point::new(x1, y - 3.0),
-        Point::new(x1, y + 3.0),
-        2.0,
-        theme.text_primary,
-    );
-    draw::text_center(
-        &mut PaintCtx::new(scene, t, tr, theme),
-        &label,
-        Point::new((x0 + x1) / 2.0, y + 2.0),
-        10.0,
-        theme.text_dim,
-    );
-    x0 - 8.0
-}
-
-/// Draw the tile licence credit on the map: left of the scale bar on its row
-/// (the bar spans `scale_x0..scale_x1`), or right-aligned above the bar when
-/// the map is too narrow for both. The OSM tile policy requires it visible on
-/// the map itself, not behind a menu.
-pub fn draw_attribution(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    clip: Rect,
-    scale_x0: f64,
-    scale_x1: f64,
-    theme: &Theme,
-) {
-    let size = theme.tokens.typography.scale.xs;
-    let w = draw::measure_w(tr, crate::tiles::TILE_ATTRIBUTION, size);
-    let row_y = clip.y1 - 26.0;
-    let beside = scale_x0 - 14.0;
-    let (x1, y) = if beside - w - 8.0 >= clip.x0 + 8.0 {
-        (beside, row_y)
-    } else {
-        (scale_x1, row_y - 24.0)
-    };
-    let x0 = x1 - w;
-    draw::fill_round(
-        scene,
-        t,
-        Rect::new(x0 - 8.0, y - 4.0, x1 + 8.0, y + 14.0),
-        4.0,
-        draw::alpha(theme.tokens.colors.surfaces.base, 0.7),
-    );
-    draw::text_right(
-        scene,
-        tr,
-        t,
-        crate::tiles::TILE_ATTRIBUTION,
-        x1,
-        y + 1.0,
-        size,
-        theme.text_dim,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{LatLon, MapModel, Poi};
     use crate::tiles::TileLayer;
+    use ui::text_render::TextRenderer;
 
     fn poi_at(id: &str, cat: Category, lat: f64, lon: f64) -> Poi {
         Poi {
@@ -1574,21 +1328,40 @@ mod tests {
             };
             let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
             let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let mut scene = Scene::new();
-            draw_markers(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &proj,
-                &model,
-                &theme,
-                &pal,
-                clip,
-            );
+            let paths = |chrome: &[Rect], tr: &mut TextRenderer| {
+                let mut scene = Scene::new();
+                let view = MapView {
+                    proj: &proj,
+                    pal: &pal,
+                    clip,
+                    chrome,
+                };
+                draw_markers(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, tr, &theme),
+                    view,
+                    &model,
+                );
+                scene.encoding().n_paths
+            };
             // The selected place projects into the clip, so the pin path was emitted.
             assert!(
                 clip.contains(proj.project(model.center)),
                 "the marker is on screen"
+            );
+            let open = paths(&[], &mut tr);
+            let none = paths(&[clip], &mut tr);
+            assert!(open > none, "the pin and its name plate paint");
+            // A floating surface over the pin hides it whole, name and all,
+            // rather than leaving a sliver at the surface's edge.
+            let at = proj.project(model.center);
+            let over = Rect::new(at.x - 4.0, at.y - 4.0, at.x + 200.0, at.y + 4.0);
+            assert_eq!(paths(&[over], &mut tr), none, "a covered pin is left out");
+            // A surface over only the name plate keeps the pin.
+            let plate = Rect::new(at.x - 2.0, at.y - 80.0, at.x + 2.0, at.y - 52.0);
+            let covered = paths(&[plate], &mut tr);
+            assert!(
+                covered > none && covered < open,
+                "the pin shows without its name"
             );
         }
 

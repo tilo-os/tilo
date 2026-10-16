@@ -66,10 +66,15 @@ pub fn spawn() -> std::io::Result<ToolServiceHandle> {
             let room = crate::shell::state::RoomId::parse(&request.workspace_id)
                 .ok_or_else(|| "invalid workspace identity".to_string())?;
             request.intent.validate()?;
-            let pending = match &request.intent {
-                ToolIntent::WorkspaceSettings { .. } => &pending_workspace,
-                ToolIntent::IdentityBackup => &pending_identity_backup,
-                _ => {
+            let pending = match route(&request.intent) {
+                Route::WorkspaceSettings => &pending_workspace,
+                Route::IdentityBackup => &pending_identity_backup,
+                Route::TerminalCommand(argv) => {
+                    return crate::shell::launcher::launch_terminal_command(&argv, room)
+                        .map(|_| ())
+                        .map_err(|e| e.user_message());
+                }
+                Route::Package => {
                     return crate::shell::launcher::launch_tool_intent(&request.intent, room)
                         .map(|_| ())
                         .map_err(|e| e.user_message());
@@ -93,6 +98,29 @@ pub fn spawn() -> std::io::Result<ToolServiceHandle> {
         workspace_requests,
         identity_backup_requests,
     )
+}
+
+/// Where a validated intent is carried out.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// Workspace Settings chrome, on the compositor thread.
+    WorkspaceSettings,
+    /// The portable identity backup flow, on the compositor thread.
+    IdentityBackup,
+    /// A command run inside Terminal's confined guest.
+    TerminalCommand(Vec<String>),
+    /// The intent's installed package, given the intent as its context.
+    Package,
+}
+
+fn route(intent: &ToolIntent) -> Route {
+    match intent {
+        ToolIntent::WorkspaceSettings { .. } => Route::WorkspaceSettings,
+        ToolIntent::IdentityBackup => Route::IdentityBackup,
+        _ => intent
+            .terminal_argv()
+            .map_or(Route::Package, Route::TerminalCommand),
+    }
 }
 
 fn spawn_at(
@@ -289,24 +317,23 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use os_actions::{ToolIntent, VpnRoute, WorkspaceSettingsRoute};
+    use os_actions::{ContainerEngine, ToolIntent, VpnRoute, WorkspaceSettingsRoute};
 
     #[cfg(target_os = "linux")]
     #[test]
     fn idle_listener_sleeps_until_a_client_arrives() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tools.sock");
-        let (service, listener) =
-            crate::idle_thread_probe::spawned_thread("tilo-tool-inten", || {
-                spawn_at(
-                    path.clone(),
-                    Arc::new(|_| Ok(())),
-                    Arc::new(Mutex::new(Vec::new())),
-                    Arc::new(Mutex::new(Vec::new())),
-                )
-                .unwrap()
-            });
-        crate::idle_thread_probe::assert_stays_asleep(&listener, "tool-intent listener");
+        let (service, listener) = tilo_test_env::idle::spawned_thread("tilo-tool-inten", || {
+            spawn_at(
+                path.clone(),
+                Arc::new(|_| Ok(())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+            .unwrap()
+        });
+        tilo_test_env::idle::assert_stays_asleep(&listener, "tool-intent listener");
         UnixStream::connect(&path).expect("still accepts clients");
         let started = std::time::Instant::now();
         drop(service);
@@ -402,6 +429,52 @@ mod tests {
             let state = chrome.borrow();
             assert!(!state.overlays.ws_settings);
             assert_eq!(state.ws_settings_tab, WsTab::General);
+        }
+    }
+
+    #[test]
+    fn terminal_intents_run_their_command_in_terminal_or_open_it_plainly() {
+        // Phase `files_directory_runs_a_login_shell_there`.
+        {
+            let intent = ToolIntent::Terminal {
+                directory: Some("/home/u/Projects".into()),
+            };
+            let Route::TerminalCommand(argv) = route(&intent) else {
+                panic!("a directory runs a command in Terminal");
+            };
+            assert_eq!(argv.last().map(String::as_str), Some("/home/u/Projects"));
+        }
+        // Phase `container_shell_runs_the_engine_cli`.
+        {
+            let intent = ToolIntent::ContainerShell {
+                container: "web".into(),
+                engine: ContainerEngine::Distrobox,
+            };
+            assert_eq!(
+                route(&intent),
+                Route::TerminalCommand(vec!["distrobox".into(), "enter".into(), "web".into()])
+            );
+        }
+        // Phase `plain_terminal_and_tools_open_their_package`.
+        {
+            assert_eq!(
+                route(&ToolIntent::Terminal { directory: None }),
+                Route::Package
+            );
+            assert_eq!(
+                route(&ToolIntent::Vpn {
+                    route: VpnRoute::Overview,
+                    profile: None,
+                }),
+                Route::Package
+            );
+            assert_eq!(
+                route(&ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::General,
+                }),
+                Route::WorkspaceSettings
+            );
+            assert_eq!(route(&ToolIntent::IdentityBackup), Route::IdentityBackup);
         }
     }
 

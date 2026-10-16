@@ -1,4 +1,4 @@
-//! Composing a one-shot `--shots` capture, and fingerprinting what it composed.
+//! Fingerprinting what a one-shot `--shots` capture composed.
 //!
 //! A screenshot path that differs run to run cannot be diffed, and a picture
 //! nobody can diff is a picture nobody is checking — which is how a solid-black
@@ -28,92 +28,7 @@
 //! the fingerprint, where it is exact and where an app-level bug — a set
 //! iterated in hash order, an id freshly rolled each run — actually shows up.
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
-
-/// Build the scene of one frame of a standalone editor widget: sync, publish
-/// the history the transport strip draws from, lay out at `w`×`h`, and draw.
-///
-/// `--shots` itself composes on the framework host (`ui::framework::stage`
-/// then the host's frame, whose scene [`fingerprint`] reads through
-/// `FrameHarness::scene`); this is the same pass for benchmarks that drive
-/// the widget directly, without a host.
-///
-/// # Errors
-///
-/// When the layout tree cannot be built or laid out at `w`×`h`.
-pub fn compose(
-    widget: &mut dyn Widget,
-    (w, h): (u32, u32),
-    theme: &Theme,
-    state: &mut ui::State,
-    text_renderer: &mut TextRenderer,
-) -> anyhow::Result<Scene> {
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    widget.sync(&mut state.doc, &state.root);
-    // The host publishes the history's state every frame, and the transport
-    // strip's undo button is drawn from it. A capture that skipped this step
-    // would photograph that button permanently dead however much the scenario
-    // had actually done — the picture has to be of the real control, not of a
-    // control the capture path starved.
-    let status = state.undo_status(None);
-    ui::undo::set_undo_status(widget, &mut || status.clone());
-
-    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut *text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        &presence,
-        &permission,
-    );
-    Ok(scene)
-}
 
 /// A hash of everything the draw pass encoded: the path and draw streams, the
 /// transforms, the styles and the counts.
@@ -164,13 +79,10 @@ mod tests {
 
     /// Capture one scenario from scratch, the way `--shots --scenario`
     /// does: a fresh framework host, the scenario staged through it, one
-    /// frame composed. A whole independent build of the app, the record and
-    /// the scene, which is what a second process would do.
+    /// frame composed at `size`. A whole independent build of the app, the
+    /// record and the scene, which is what a second process would do.
     fn capture(scenario: Option<&str>, size: (u32, u32)) -> TestApp<VideoEditor> {
-        let mut app = TestApp::<VideoEditor>::new().expect("the editor launches");
-        app.harness().resize(size).expect("the viewport lays out");
-        app.stage(scenario).expect("the scenario stages");
-        app
+        TestApp::<VideoEditor>::capture_at(scenario, size).expect("the scenario stages")
     }
 
     fn print_of(scenario: Option<&str>, size: (u32, u32)) -> u64 {
@@ -354,6 +266,29 @@ mod tests {
         );
     }
 
+    /// A capture launched on a file imports it, places it on the timeline
+    /// and waits for its picture — and a file that never decodes still
+    /// settles, showing what the editor shows for it, instead of holding the
+    /// capture until it gives up.
+    #[test]
+    fn a_capture_launched_on_an_undecodable_clip_settles() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let clip = dir.path().join("Broken.mp4");
+        // Binary bytes no container parser recognises: imported as a video
+        // by its extension, then refused by every decoder.
+        let bytes: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        std::fs::write(&clip, bytes).expect("write the clip");
+        let path = clip.to_string_lossy().into_owned();
+        let app =
+            TestApp::<VideoEditor>::capture_launched(Some(crate::app::EMPTY_CAPTURE), &[&path])
+                .expect("the capture settles");
+        let project = app.state();
+        assert_eq!(project.media.len(), 1, "the launched file was imported");
+        assert_eq!(project.clips.len(), 1, "and placed on the timeline");
+    }
+
     /// The staged capture is of the scenario, not of a blank editor: the
     /// demo project went in through the host, as one attributed action.
     #[test]
@@ -363,7 +298,7 @@ mod tests {
         assert!(
             app.versions()
                 .iter()
-                .any(|version| version.summary().is_some()),
+                .any(|version| version.context.as_ref().is_some_and(|c| c.what.is_some())),
             "the load is an attributed version"
         );
     }

@@ -56,20 +56,11 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
     source_revision=${GITHUB_SHA:-$(git -C "$repo_root" rev-parse HEAD)}
     export SOURCE_DATE_EPOCH="$source_epoch" GITHUB_SHA="$source_revision"
-    signing_env=()
-    if [[ $distro == fedora-44 ]]; then
-        signing_env=(
-            --env TILO_RPM_SIGNING_ENABLED
-            --env TILO_RPM_SIGNING_KEY_ARTIFACT
-            --env TILO_RPM_SIGNING_KEY_B64
-            --env TILO_RPM_SIGNING_KEY_ID
-            --env TILO_RPM_SIGNING_FINGERPRINT
-        )
-    else
-        # Do not expose the RPM signing secret to unrelated target userspaces.
-        unset TILO_RPM_SIGNING_ENABLED TILO_RPM_SIGNING_KEY_ARTIFACT \
-            TILO_RPM_SIGNING_KEY_B64 TILO_RPM_SIGNING_KEY_ID TILO_RPM_SIGNING_FINGERPRINT
-    fi
+    # Signing is a separate protected-tag job. Never forward signing or OIDC
+    # credentials into any build/install-test userspace (including PRoot).
+    while IFS= read -r name; do
+        unset "$name"
+    done < <(compgen -e | grep -E '^(TILO_RPM_SIGNING_|ACTIONS_ID_TOKEN_REQUEST_)' || true)
     output=$repo_root/dist/ci-output/$distro-$arch
     [[ ! -e $output ]] || { echo "output path already exists: $output" >&2; exit 1; }
     mkdir -p "$output"
@@ -124,12 +115,12 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env TILO_DEB_REVISION="$revision" \
             --env SOURCE_DATE_EPOCH="$source_epoch" \
             --env GITHUB_SHA="$source_revision" \
+            --env TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_PROFILE_RELEASE_LTO=thin \
             --env CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
             --env CARGO_TERM_COLOR=never \
-            "${signing_env[@]}" \
             "${cache_env[@]}" \
             "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))
     else
@@ -320,6 +311,20 @@ record_failure() {
 }
 trap record_failure ERR
 
+# The outer helper copies /artifacts even when this userspace fails, before
+# removing its container. Keep diagnostic RPMs separate from install-tested
+# output; signing and release publication must never consume this directory.
+retain_failed_rpms() {
+    local status=$?
+    trap - EXIT
+    if (( status != 0 )) && [[ $distro == fedora-44 ]]; then
+        python3 dist/ci/retain-failed-rpms.py "$stage" "$status" || \
+            echo '::warning::failed RPMs could not be retained within the provenance/storage bounds' >&2
+    fi
+    exit "$status"
+}
+trap retain_failed_rpms EXIT
+
 stage=architecture-check
 dist/ci/assert-native-arch.sh "$execution_arch"
 
@@ -369,8 +374,8 @@ fedora-44)
     rpmlint_status=${PIPESTATUS[0]}
     set -e
     # Fedora permits no-signature for local and branch-validation artifacts.
-    # Protected desktop tags sign only after this install test, in this Fedora
-    # userspace, and immediately verify the result before artifact collection.
+    # Protected desktop tags sign the uploaded, install-tested RPMs in a
+    # separate isolated-broker job and retain this exact immutable payload.
     # Every package-content or policy error still fails.
     if grep ' E: ' "$rpmlint_log" \
         | grep -Ev ' (no-signature|no-packager-tag)( |$)' >/dev/null; then
@@ -385,16 +390,6 @@ fedora-44)
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/tilo-session-*.rpm
     stage=collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
-    if [[ ${TILO_RPM_SIGNING_ENABLED:-0} == 1 ]]; then
-        stage=sign-rpm
-        TILO_RPM_SIGNING_KEY_ARTIFACT=${TILO_RPM_SIGNING_KEY_ARTIFACT:-0} \
-            dist/rpm/sign-rpms.sh /artifacts
-        if [[ ${TILO_RPM_SIGNING_KEY_ARTIFACT:-0} == 1 ]]; then
-            dist/rpm/make-repo-file.sh "$(<dist/VERSION)" \
-                /artifacts/tilo-fedora-44.repo
-            (cd /artifacts && sha256sum tilo-fedora-44.repo > tilo-fedora-44.repo.sha256)
-        fi
-    fi
     stage=collect-os-desktop-payload
     case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
     dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
@@ -414,9 +409,22 @@ arch)
     fi
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
+    # Arch's rustup keeps toolchains per user, and the compiler cache turns
+    # auto-install off and probes rustc outside this checkout: install the
+    # pinned toolchain as the default for root and for the package builder.
+    useradd --create-home builder
+    toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+    rustup default "$toolchain"
+    su builder -c "cd /workspace && rustup toolchain install && rustup default '$toolchain'"
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
+    # The probe above started the cache server as root; makepkg compiles as
+    # the builder, which cannot read what a root server writes. Its first
+    # compile starts the builder's own server.
+    if [[ -n ${RUSTC_WRAPPER:-} ]]; then
+        "$RUSTC_WRAPPER" --stop-server >/dev/null
+    fi
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
@@ -424,7 +432,6 @@ arch)
     # in this userspace while retaining its portable Rust implementation.
     export TILO_BLAKE3_PURE=1
     stage=prepare-arch-builder
-    useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'

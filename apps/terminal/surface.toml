@@ -1,0 +1,118 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "terminal.session"
+label = "Terminal"
+version = 1
+fields = [
+  { path = "target", type = "Option<Atom>", readonly = true },
+  { path = "relay_session", type = "Option<Atom>", readonly = true },
+  { path = "pane", type = "Option<Atom>", readonly = true },
+  { path = "runs", type = "Collection<Run>", readonly = true, stored = "collection" },
+  { path = "runs.*.command", type = "Atom", label = true },
+  { path = "runs.*.cwd", type = "Atom" },
+  { path = "runs.*.environment", type = "Option<Atom>" },
+  { path = "runs.*.actor", type = "Atom" },
+  { path = "runs.*.for_person", type = "Option<Atom>" },
+  { path = "runs.*.started_ms", type = "i64" },
+  { path = "runs.*.ended_ms", type = "i64" },
+  { path = "runs.*.exit", type = "i32" },
+  { path = "runs.*.output", type = "Bytes" },
+  { path = "runs.*.truncated", type = "bool" },
+  { path = "runs.*.tool", type = "Atom" },
+  { path = "runs.*.items", type = "Vec<RunItem>" },
+  { path = "requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "run"
+kind = "outside"
+params = [
+  { name = "command", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rerun"
+kind = "outside"
+params = [
+  { name = "runs", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rerun-test"
+kind = "outside"
+params = [
+  { name = "runs", required = true, schema = { type = "string" } },
+  { name = "test", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-run"
+kind = "undoable"
+params = [
+  { name = "command", required = true, schema = { type = "string" } },
+  { name = "cwd", required = true, schema = { type = "string" } },
+  { name = "started_ms", required = true, schema = { type = "integer" } },
+  { name = "ended_ms", required = true, schema = { type = "integer" } },
+  { name = "exit", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "output", required = false, schema = { type = ["string", "null"] } },
+  { name = "output_len", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "truncated", required = true, schema = { type = "boolean" } },
+  { name = "tool", required = true, schema = { type = "string" } },
+  { name = "items", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
+  { name = "request", required = false, schema = { type = ["string", "null"] } },
+  { name = "run", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-target"
+kind = "undoable"
+params = [
+  { name = "target", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-relay-session"
+kind = "undoable"
+params = [
+  { name = "session", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "claim-pane"
+kind = "undoable"
+params = [
+  { name = "pane", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "terminal.history"
+label = "Command history"
+version = 1
+person = true
+fields = [
+  { path = "runs", type = "Collection<Remembered>", readonly = true, stored = "collection" },
+  { path = "runs.*.command", type = "Atom", label = true },
+  { path = "runs.*.cwd", type = "Atom" },
+  { path = "runs.*.environment", type = "Option<Atom>" },
+  { path = "runs.*.exit", type = "i32" },
+  { path = "runs.*.ended_ms", type = "i64" },
+  { path = "runs.*.actor", type = "Atom" },
+  { path = "runs.*.session", type = "Atom" },
+  { path = "runs.*.run", type = "Id" },
+]
+
+[[resources.verbs]]
+id = "remember"
+kind = "undoable"
+params = [
+  { name = "command", required = true, schema = { type = "string" } },
+  { name = "cwd", required = true, schema = { type = "string" } },
+  { name = "environment", required = false, schema = { type = ["string", "null"] } },
+  { name = "exit", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "ended_ms", required = true, schema = { type = "integer" } },
+  { name = "actor", required = true, schema = { type = "string" } },
+  { name = "session", required = true, schema = { type = "string" } },
+  { name = "run", required = true, schema = { type = "string" } },
+]
+

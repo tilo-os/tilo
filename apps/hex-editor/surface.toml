@@ -1,0 +1,45 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "hex-editor.document"
+label = "Hex document"
+version = 1
+fields = [
+  { path = "name", type = "Option<Atom>", readonly = true },
+  { path = "opened", type = "u64", readonly = true },
+  { path = "bytes", type = "ByteBuffer", ops = "sha256:2fa6b0850e7a3ef9" },
+]
+
+[[resources.verbs]]
+id = "load"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "bytes", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "insert-bytes"
+kind = "undoable"
+params = [
+  { name = "offset", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "bytes", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "overwrite-bytes"
+kind = "undoable"
+params = [
+  { name = "offset", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "bytes", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-bytes"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "offset", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "len", required = true, schema = { type = "integer", minimum = 0 } },
+]
+

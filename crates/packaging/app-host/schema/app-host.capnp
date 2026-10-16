@@ -24,6 +24,8 @@ enum FlatpakAction {
 enum RemoteAction {
     add    @0;
     remove @1;
+    enable @2;
+    disable @3;
 }
 
 struct PackageEntry {
@@ -85,4 +87,37 @@ interface AppHost {
     launchDesktop @9 (desktopId :Text) -> (status :Text);
     flatpak    @10 (action :FlatpakAction, appId :Text, reference :Data) -> (status :Text);
     remote     @11 (action :RemoteAction, name :Text, url :Text) -> (status :Text);
+    # The app repositories this person configured, as `app repo list --json`
+    # reports them: the one list `app`, `tilo update` and the Store share.
+    repositories @12 () -> (json :Text);
+    # Fixed read-only host probes. The confined Store never executes host tools.
+    flatpakStatus @13 () -> (available :Bool, installed :Text, remotes :Text);
+    # Resolve the chosen identity against this device's signed catalogue, then
+    # use the shared installer, including thin payload and exact runtime setup.
+    installOffer @14 (registry :Text, appId :Text, version :Text,
+                      expectedRoot :Data, expectedPublisher :Data,
+                      expectedSizeBytes :UInt64) -> (id :Data);
+    # Cached AppStream rows from one configured repository, isolated from failures
+    # in other remotes. Queries have fixed arguments and bounded output/time.
+    flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
+    # Install only from an existing repository in this account's Flatpak scope.
+    flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
+    # Verified entries from one enabled host-configured Tilo repository. The
+    # host owns durable rollback checkpoints; callers cannot supply keys/URLs.
+    registryCatalogue @17 (registry :Text) -> (entries :Text);
+
+    # Review using this person's existing scoped attestors and revocations.
+    # No caller publisher, trust key, host path or download source is accepted.
+    reviewLocal @18 (tappBytes :Data) -> (reviewJson :Text);
+    # Exact archive/root from review, reverified against current host trust.
+    installLocal @19 (tappBytes :Data, reviewedRoot :Text,
+                      reviewedArchiveHash :Text) -> (id :Data);
+
+    # The catalogue the host last accepted from one enabled repository, read
+    # without the network so a slow or unreachable repository still describes
+    # what it listed. The stored snapshot is verified again against the pinned
+    # owner key, the rollback checkpoint and its expiry; fails when none does.
+    lastVerifiedCatalogue @20 (registry :Text) -> (entries :Text);
+    # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
+    runtimeOffer @21 (registry :Text, runtime :Text) -> (offer :Text);
 }

@@ -5,17 +5,21 @@ use std::{
 };
 use ui::{
     LocalState,
+    icons::Icon,
+    text_render::TextKind,
+    tokens::TextRole,
     webview::{
         CredentialAccount, CredentialAction, CredentialForm, CredentialReply, CredentialRequest,
         SharedEngine, WebViewCommand,
     },
-    widget::{Button, Column, Container, ScrollAxis, Scrollable, Text, Widget},
+    widget::{
+        Actions, Button, ButtonRole, Column, Container, ListRow, Row, ScrollAxis, Scrollable,
+        Section, SectionHeader, Spacer, Text, Widget,
+    },
 };
 
 #[derive(Clone, Debug)]
 enum Action {
-    Open,
-    Addresses,
     FillAddress,
     Close,
     Refresh,
@@ -50,24 +54,15 @@ pub(crate) struct Credentials {
     delete: Option<String>,
     notice: String,
     action: LocalState<Option<Action>>,
+    opening: LocalState<Option<bool>>,
 }
 impl Credentials {
     pub fn new(private: bool) -> Self {
-        Self::with_address_path(
-            private,
-            if private {
-                None
-            } else {
-                crate::storage::config_dir().map(|p| p.join("addresses.json"))
-            },
-        )
-    }
-    pub fn with_address_path(private: bool, path: Option<std::path::PathBuf>) -> Self {
         Self {
             open: false,
             private,
             address_mode: false,
-            addresses: crate::address_controls::AddressControls::new(private, path),
+            addresses: crate::address_controls::AddressControls::new(private),
             origin: None,
             document: String::new(),
             sequence: 0,
@@ -80,6 +75,7 @@ impl Credentials {
             delete: None,
             notice: String::new(),
             action: LocalState::new(None),
+            opening: LocalState::new(None),
         }
     }
     fn request(&mut self, action: CredentialAction) -> Vec<CredentialRequest> {
@@ -112,6 +108,60 @@ impl Credentials {
             action,
         }]
     }
+    /// Fill forms from, and edit, the person's address book.
+    pub fn attach_address_book(
+        &mut self,
+        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        self.addresses.attach(book);
+    }
+
+    pub(crate) fn stage_for_review(&mut self, addresses: bool, origin: &str) {
+        self.origin = crate::site_controls::origin(origin);
+        self.address_mode = addresses;
+        self.open = true;
+        self.notice.clear();
+        self.document = "1".into();
+        self.forms = if addresses {
+            vec![CredentialForm {
+                id: "1".into(),
+                username: String::new(),
+                kind: "address".into(),
+            }]
+        } else {
+            vec![
+                CredentialForm {
+                    id: "1".into(),
+                    username: String::new(),
+                    kind: "login".into(),
+                },
+                CredentialForm {
+                    id: "2".into(),
+                    username: String::new(),
+                    kind: "new-password".into(),
+                },
+            ]
+        };
+        self.form = Some("1".into());
+        self.accounts = vec![
+            CredentialAccount {
+                id: "a".into(),
+                username: "alex@example.com".into(),
+            },
+            CredentialAccount {
+                id: "b".into(),
+                username: "alex.morgan".into(),
+            },
+        ];
+        self.account = Some("a".into());
+        if addresses {
+            self.addresses.stage_for_review();
+        }
+    }
+    pub fn addresses_open(&self) -> bool {
+        self.address_mode
+    }
+
     pub fn close(&mut self) -> Vec<CredentialRequest> {
         let requests = if self.open {
             self.request(CredentialAction::Cancel)
@@ -135,10 +185,6 @@ impl Credentials {
         let requests = self.close();
         self.origin = crate::site_controls::origin(uri).filter(|s| s.starts_with("https://"));
         requests
-    }
-    fn open_addresses(&mut self, supported: bool) -> Vec<CredentialRequest> {
-        self.address_mode = true;
-        self.open(supported)
     }
     fn open(&mut self, supported: bool) -> Vec<CredentialRequest> {
         let mut requests = self.close();
@@ -296,17 +342,24 @@ impl Credentials {
             engine.send(WebViewCommand::Credentials(request));
         }
     }
+    pub fn open_request(&self) -> LocalState<Option<bool>> {
+        self.opening.clone()
+    }
+
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
-        let mut dirty = false;
+        let mut dirty = if let Some(addresses) = self.opening.get() {
+            self.opening.set(None);
+            self.address_mode = addresses;
+            let requests = self.open(engine.supports_native_filtering());
+            Self::send(engine, requests);
+            true
+        } else {
+            false
+        };
         if let Some(action) = self.action.get() {
             self.action.set(None);
             dirty = true;
             let requests = match action {
-                Action::Open => {
-                    self.address_mode = false;
-                    self.open(engine.supports_native_filtering())
-                }
-                Action::Addresses => self.open_addresses(engine.supports_native_filtering()),
                 Action::Refresh => self.open(engine.supports_native_filtering()),
                 other => self.act(other),
             };
@@ -337,40 +390,78 @@ impl Credentials {
             .min()
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
+        Button::new(id, label).on_effect(self.command(action))
+    }
+    fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
-        Button::new(id, label, None)
-            .with_size(210.0, 32.0)
-            .on_effect(move || pending.set(Some(action.clone())))
+        move || pending.set(Some(action.clone()))
     }
-    pub fn launcher(&self) -> Button {
-        self.button("browser.credentials.open", "Passwords", Action::Open)
+    /// One choice among a few (a form, an account): the chosen row is lifted.
+    fn choice(
+        &self,
+        id: String,
+        title: &str,
+        detail: Option<&str>,
+        chosen: bool,
+        action: Action,
+    ) -> ListRow {
+        let mut row = ListRow::new(id, title)
+            .selected(chosen)
+            .on_activate(self.command(action));
+        if let Some(detail) = detail {
+            row = row.secondary(detail);
+        }
+        row
     }
-    pub fn address_launcher(&self) -> Button {
-        self.button(
-            "browser.address.open",
-            "Address autofill",
-            Action::Addresses,
-        )
-    }
-    pub fn panel(&self, width: f32, height: f32) -> Box<dyn Widget> {
+    /// The panel's content, `width` wide. It is as tall as it needs to be up
+    /// to `max_height`, then scrolls.
+    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
         let ready = self.pending.is_empty() && !self.document.is_empty();
-        let mut column = Column::new()
-            .with_intrinsic_height()
+        let refresh = (!self.private && self.origin.is_some() && !self.addresses.is_editing())
+            .then(|| {
+                if self.address_mode {
+                    Button::icon_only("browser.address.refresh", Icon::Refresh, "Refresh forms")
+                        .on_effect(self.command(Action::Refresh))
+                } else {
+                    Button::icon_only(
+                        "browser.credentials.refresh",
+                        Icon::Refresh,
+                        "Refresh forms and accounts",
+                    )
+                    .on_effect(self.command(Action::Refresh))
+                }
+            });
+        let mut header = Row::new()
+            .no_wrap()
             .push(Box::new(
                 Text::new(if self.address_mode {
                     "Address autofill"
                 } else {
                     "Passwords"
                 })
-                .with_size(18.0),
+                .with_role(TextRole::Title),
             ))
-            .push(Box::new(self.button(
+            .push(Box::new(Spacer::new()));
+        if let Some(refresh) = refresh {
+            header = header.push(Box::new(refresh));
+        }
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(header.push(Box::new(self.button(
                 "browser.credentials.close",
                 "Done",
                 Action::Close,
-            )))
-            .push(line(self.origin.as_deref().unwrap_or("No secure page")))
-            .push(line(&self.notice));
+            )))))
+            .push(Box::new(
+                Text::new(self.origin.as_deref().unwrap_or("No secure page"))
+                    .with_role(TextRole::Caption)
+                    .with_kind(TextKind::Url)
+                    .dimmed(),
+            ));
+        if !self.notice.is_empty() {
+            column = column.push(line(&self.notice));
+        }
         column = if self.address_mode {
             self.address_controls(column, ready)
         } else if !self.private && self.origin.is_some() {
@@ -382,185 +473,205 @@ impl Credentials {
             Container::new()
                 .with_focus_trap()
                 .with_no_padding()
-                .with_background()
                 .with_width(width)
-                .with_height(height)
                 .with_child(Box::new(
                     Scrollable::new(ScrollAxis::Vertical)
                         .with_focus_reveal()
-                        .with_height(height)
+                        .with_max_height(max_height)
                         .with_child(Box::new(column)),
                 )),
         )
     }
     fn address_controls(&self, mut column: Column, ready: bool) -> Column {
         column = column.push(self.addresses.panel());
-        if !self.private && self.origin.is_some() {
-            column = column.push(Box::new(
-                self.button("browser.address.refresh", "Refresh forms", Action::Refresh)
-                    .with_enabled(!self.addresses.is_editing()),
-            ));
-            for (index, form) in self.forms.iter().enumerate() {
-                let label = format!(
-                    "{}Address form {}",
-                    if self.form.as_ref() == Some(&form.id) {
-                        "✓ "
-                    } else {
-                        ""
-                    },
-                    index + 1
-                );
-                column = column.push(Box::new(self.button(
-                    &format!("browser.address.form.{index}"),
-                    &label,
-                    Action::Form(form.id.clone()),
-                )));
-            }
-            if self.forms.is_empty() {
+        if !self.private && self.origin.is_some() && !self.addresses.is_editing() {
+            let bases = vec!["Address form"; self.forms.len()];
+            let forms: Vec<Box<dyn Widget>> = self
+                .forms
+                .iter()
+                .enumerate()
+                .map(|(index, form)| {
+                    Box::new(self.choice(
+                        format!("browser.address.form.{index}"),
+                        &form_title(&bases, index),
+                        None,
+                        self.form.as_ref() == Some(&form.id),
+                        Action::Form(form.id.clone()),
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+            if forms.is_empty() {
                 column = column.push(line("No supported address form found on this page."));
+            } else {
+                column = column.push(Box::new(
+                    Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
+                ));
             }
-            column = column.push(Box::new(
+            column = column.push(Box::new(Actions::new(
                 self.button(
                     "browser.address.fill",
                     "Fill selected address",
                     Action::FillAddress,
                 )
+                .role(ButtonRole::Primary)
                 .with_enabled(ready && self.form.is_some() && self.addresses.has_selection()),
-            ));
+            )));
         }
         column
     }
 
     fn password_controls(&self, mut column: Column, ready: bool) -> Column {
-        column = column.push(Box::new(self.button(
-            "browser.credentials.refresh",
-            "Refresh forms and accounts",
-            Action::Refresh,
-        )));
-        if !self.document.is_empty() {
-            column = column.push(line("Choose the form on this page:"));
-            if self.forms.is_empty() {
-                column = column.push(line("No supported login form found."));
-            }
-            for (index, form) in self.forms.iter().enumerate() {
-                let label = format!(
-                    "{}Form {} · {}",
-                    if self.form.as_ref() == Some(&form.id) {
-                        "✓ "
-                    } else {
-                        ""
-                    },
-                    index + 1,
-                    if form.kind == "new-password" {
-                        "new password"
-                    } else {
-                        "sign in"
-                    }
-                );
-                column = column.push(Box::new(self.button(
-                    &format!("browser.credentials.form.{index}"),
-                    &label,
-                    Action::Form(form.id.clone()),
-                )));
-            }
-            column = column.push(line("Choose a saved account:"));
-            if self.accounts.is_empty() {
-                column = column.push(line("No saved accounts for this site."));
-            }
-            for (index, account) in self.accounts.iter().enumerate() {
-                let label = format!(
-                    "{}{}",
-                    if self.account.as_ref() == Some(&account.id) {
-                        "✓ "
-                    } else {
-                        ""
-                    },
-                    if account.username.is_empty() {
-                        "Unnamed account"
-                    } else {
-                        &account.username
-                    }
-                );
-                column = column.push(Box::new(self.button(
-                    &format!("browser.credentials.account.{index}"),
-                    &label,
-                    Action::Account(account.id.clone()),
-                )));
-            }
-            column = self.password_actions(column, ready);
+        if self.document.is_empty() {
+            return column;
         }
-        column
+        if self.forms.is_empty() {
+            column = column.push(line("No supported login form found."));
+        } else {
+            let bases: Vec<&str> = self
+                .forms
+                .iter()
+                .map(|form| {
+                    if form.kind == "new-password" {
+                        "Create account form"
+                    } else {
+                        "Sign-in form"
+                    }
+                })
+                .collect();
+            let forms: Vec<Box<dyn Widget>> = self
+                .forms
+                .iter()
+                .enumerate()
+                .map(|(index, form)| {
+                    Box::new(self.choice(
+                        format!("browser.credentials.form.{index}"),
+                        &form_title(&bases, index),
+                        None,
+                        self.form.as_ref() == Some(&form.id),
+                        Action::Form(form.id.clone()),
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+            column = column.push(Box::new(
+                Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
+            ));
+        }
+        if self.accounts.is_empty() {
+            column = column.push(line("No saved accounts for this site."));
+        } else {
+            let accounts: Vec<Box<dyn Widget>> = self
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(index, account)| {
+                    Box::new(self.choice(
+                        format!("browser.credentials.account.{index}"),
+                        if account.username.is_empty() {
+                            "Unnamed account"
+                        } else {
+                            &account.username
+                        },
+                        None,
+                        self.account.as_ref() == Some(&account.id),
+                        Action::Account(account.id.clone()),
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+            column = column.push(Box::new(
+                Section::new(accounts).with_header(SectionHeader::group("Saved accounts")),
+            ));
+        }
+        self.password_actions(column, ready)
     }
 
     fn password_actions(&self, mut column: Column, ready: bool) -> Column {
-        column = column
-            .push(Box::new(
-                self.button(
-                    "browser.credentials.fill",
-                    "Fill selected account",
-                    Action::Fill,
-                )
+        // Everything done to the chosen account sits in one trailing group;
+        // the destructive command asks for confirmation below.
+        let mut actions = Actions::new(
+            self.button("browser.credentials.fill", "Fill login", Action::Fill)
+                .role(ButtonRole::Primary)
                 .with_enabled(ready && self.form.is_some() && self.account.is_some()),
-            ))
-            .push(Box::new(
-                self.button(
-                    "browser.credentials.capture",
-                    "Read login from selected form",
-                    Action::Capture,
-                )
-                .with_enabled(ready && self.form.is_some()),
-            ));
+        )
+        .secondary(
+            self.button(
+                "browser.credentials.capture",
+                "Save login from form",
+                Action::Capture,
+            )
+            .with_enabled(ready && self.form.is_some()),
+        );
+        if self.delete.is_none() {
+            actions = actions.secondary(
+                self.button("browser.credentials.delete", "Delete login", Action::Delete)
+                    .role(ButtonRole::Destructive)
+                    .with_enabled(ready && self.account.is_some()),
+            );
+        }
+        column = column.push(Box::new(actions));
         if let Some((_, username, _)) = &self.capture {
             column = column
-                .push(line(&format!("Save login for {username}?")))
+                .push(Box::new(
+                    Text::new(&format!("Save login for {username}?"))
+                        .with_role(TextRole::Subheading),
+                ))
                 .push(line(
-                    "The password stays in the native browser and macOS Keychain.",
+                    "The password is kept in this device’s password store.",
                 ))
                 .push(Box::new(
-                    self.button("browser.credentials.save", "Save new account", Action::Save)
-                        .with_enabled(ready),
-                ))
-                .push(Box::new(
-                    self.button(
-                        "browser.credentials.update",
-                        "Update selected account",
-                        Action::Update,
+                    Actions::new(
+                        self.button("browser.credentials.save", "Save new account", Action::Save)
+                            .with_enabled(ready),
                     )
-                    .with_enabled(ready && self.account.is_some()),
+                    .secondary(
+                        self.button(
+                            "browser.credentials.update",
+                            "Update selected account",
+                            Action::Update,
+                        )
+                        .with_enabled(ready && self.account.is_some()),
+                    ),
                 ));
         }
         if self.delete.is_some() {
-            column = column
-                .push(line("Delete the selected saved account from Keychain?"))
-                .push(Box::new(
+            column = column.push(line("Delete this saved login?")).push(Box::new(
+                Actions::new(
                     self.button(
                         "browser.credentials.delete.confirm",
-                        "Confirm delete",
+                        "Delete account",
                         Action::ConfirmDelete,
                     )
+                    .role(ButtonRole::Destructive)
                     .with_enabled(ready),
-                ))
-                .push(Box::new(self.button(
+                )
+                .secondary(self.button(
                     "browser.credentials.delete.cancel",
                     "Keep account",
                     Action::CancelDelete,
-                )));
-        } else {
-            column = column.push(Box::new(
-                self.button(
-                    "browser.credentials.delete",
-                    "Delete selected account…",
-                    Action::Delete,
-                )
-                .with_enabled(ready && self.account.is_some()),
+                )),
             ));
         }
         column
     }
 }
 
+/// A form's name in the list: what kind of form it is, numbered only when
+/// several share the name.
+fn form_title(bases: &[&str], index: usize) -> String {
+    let base = bases.get(index).copied().unwrap_or("Form");
+    if bases.iter().filter(|other| **other == base).count() > 1 {
+        let ordinal = bases
+            .iter()
+            .take(index.saturating_add(1))
+            .filter(|other| **other == base)
+            .count();
+        format!("{base} {ordinal}")
+    } else {
+        base.to_owned()
+    }
+}
+
 fn line(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_size(13.0))
+    Box::new(Text::new(text).with_role(TextRole::Body))
 }
 
 #[cfg(test)]
@@ -586,13 +697,12 @@ mod tests {
     fn credential_discovery_is_scoped_to_safe_current_documents() {
         // Phase `address_mode_discovers_forms_without_keychain_account_requests`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let mut model = Credentials::with_address_path(
-                false,
-                Some(directory.path().join("addresses.json")),
-            );
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut model = Credentials::new(false);
+            model.attach_address_book(book);
             model.navigation("https://example.com");
-            let status = model.open_addresses(true).remove(0);
+            model.address_mode = true;
+            let status = model.open(true).remove(0);
             let requests = model.apply(reply(&status, "1"));
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].action, CredentialAction::DiscoverAddresses);
@@ -637,10 +747,6 @@ mod tests {
 
     /// Account selection, deletion confirmation and capture lifetime.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn credential_selection_and_capture_require_explicit_fresh_choices() {
         // Phase `multiple_accounts_require_selection_and_delete_confirmation`.
         {

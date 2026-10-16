@@ -39,19 +39,6 @@
 //! AND the publisher signature embedded in the tapp must validate
 //! against the entry's publisher. Any mismatch aborts the fetch.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod config;
 pub mod http_blobs;
 pub mod index;
@@ -66,6 +53,6 @@ pub use http_blobs::HttpBlobs;
 pub use index::{HostProfile, IndexEntry, IndexError, RegistryIndex, RuntimeRef};
 pub use publish::{PublishReceipt, build_entry, publish_to_dir};
 pub use resolve::{FetchOutcome, fetch_tapp, resolve_and_fetch};
-pub use tapp::{TappMeta, validate_payload_shape, verify_bytes};
+pub use tapp::{TappMeta, validate_payload_shape, validate_payload_shape_with, verify_bytes};
 pub use tilo_app_package::{MAX_APP_TAPP_BYTES, tapp_size_allowed};
 pub use transport::{BlobNode, ProviderBlobs, client_endpoint, fetch_blob};

@@ -3,15 +3,19 @@
 //! The displayed keycaps are the control: click them, or focus them and press
 //! Enter/Space, then type the replacement chord. Escape cancels. A reset
 //! affordance is present only while the value differs from its default.
+//!
+//! The chord shown is a [`crate::LocalState`]; a recorded chord is offered to
+//! the action the recorder is bound to ([`ShortcutRecorder::on_action`]),
+//! which decides whether it is taken — the state then shows what was stored.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::binding::{BoxedBinding, Pulled};
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -20,20 +24,19 @@ use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
-
-const HEIGHT: f64 = 34.0;
-const RESET_SIZE: f64 = 26.0;
 
 pub struct ShortcutRecorder {
     id: String,
-    /// The chord text, as a document key.
+    /// The chord shown.
     stored: BoxedBinding<String>,
-    /// Whether the model rejected the chord (`<key>.error`).
-    rejected: BoxedBinding<bool>,
+    /// Whether the chord shown was refused.
+    rejected: Option<BoxedBinding<bool>>,
+    /// Where a recorded chord goes.
+    action: Option<ActionEmitter<String>>,
     default: String,
     value: String,
     invalid: bool,
@@ -43,16 +46,29 @@ pub struct ShortcutRecorder {
     capturing: bool,
     platform: PlatformConventions,
     interaction: InteractionEnvironment,
+    /// The width of the keycaps, or of the capture prompt while capturing,
+    /// measured with the text renderer.
+    keys_width: f64,
+    /// The geometry of the latest theme: the control's height, the reset
+    /// button's edge and the gap before it.
+    height: f64,
+    reset_edge: f64,
+    gap: f64,
+    /// The theme of the latest layout, for measuring the keycaps.
+    layout_theme: Option<Theme>,
 }
 
 impl ShortcutRecorder {
-    pub fn new(id: &str, path: &str, value: &str, default: &str) -> Self {
+    /// A recorder showing `state`'s chord, whose default is `default`.
+    pub fn new(id: &str, state: &crate::LocalState<String>, default: &str) -> Self {
+        let (value, stored) = super::binding::local(state);
         Self {
             id: id.into(),
-            stored: crate::doc_binding::str_key(path),
-            rejected: crate::doc_binding::bool_key(&format!("{path}.error")),
+            stored,
+            rejected: None,
+            action: None,
             default: default.into(),
-            value: value.into(),
+            value,
             invalid: false,
             rect: Rect::ZERO,
             pointer: None,
@@ -60,37 +76,92 @@ impl ShortcutRecorder {
             capturing: false,
             platform: PlatformConventions::default(),
             interaction: InteractionEnvironment::default(),
+            keys_width: 0.0,
+            height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            reset_edge: f64::from(crate::tokens::Metrics::BASE.bar_control_height),
+            gap: f64::from(crate::tokens::Spacing::BASE.s2),
+            layout_theme: None,
         }
+    }
+
+    /// The keycaps start on the control's leading edge, as an
+    /// [`InputHint`]'s do in the rows around it.
+    fn chord_rect(&self) -> Rect {
+        let x1 = (self.rect.x0 + self.keys_width).min(self.rect.x1);
+        Rect::new(self.rect.x0, self.rect.y0, x1, self.rect.y1)
+    }
+
+    /// The reset button, after the keycaps, while the value differs from
+    /// its default.
+    /// Offer every recorded chord, and a reset to the default, to `binding`.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self
     }
 
     fn reset_rect(&self) -> Option<Rect> {
         (self.value != self.default).then(|| {
+            let x0 = self.chord_rect().x1 + self.gap;
+            let cy = self.rect.center().y;
             Rect::new(
-                self.rect.x1 - RESET_SIZE,
-                self.rect.center().y - RESET_SIZE / 2.0,
-                self.rect.x1,
-                self.rect.center().y + RESET_SIZE / 2.0,
+                x0,
+                cy - self.reset_edge / 2.0,
+                x0 + self.reset_edge,
+                cy + self.reset_edge / 2.0,
             )
         })
     }
 
-    fn chord_rect(&self) -> Rect {
-        let right = self.reset_rect().map_or(self.rect.x1, |r| r.x0 - 6.0);
-        Rect::new(self.rect.x0, self.rect.y0, right, self.rect.y1)
+    /// The control's width: the keycaps (or the capture prompt), and the
+    /// reset button when it shows.
+    fn content_width(&self) -> f64 {
+        let reset = if self.value == self.default {
+            0.0
+        } else {
+            self.gap + self.reset_edge
+        };
+        self.keys_width + reset
+    }
+
+    fn measure_keys(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let keys = InputHint::measure_width(
+            &InputBinding::Keyboard(self.binding()),
+            LegendConventions::new(self.platform, &self.interaction),
+            text,
+            theme,
+        );
+        let prompt = f64::from(
+            text.measure_style(CAPTURE_PROMPT, None, &theme.text(TextRole::Label))
+                .0,
+        );
+        // The control is as wide as what it shows: its keycaps, or the
+        // prompt while it captures. Room kept for the prompt beside short
+        // chords would leave their caps short of the column's edge.
+        self.keys_width = if self.capturing { prompt } else { keys }.ceil();
     }
 
     fn binding(&self) -> KeyboardBinding {
         binding_from_text(&self.value)
     }
 
-    fn write(&mut self, state: &mut AppModel, root: &ModelPath, value: String) {
-        self.stored.push(state, root, &value);
+    fn write(&mut self, _state: &AppModel, _root: &ModelPath, value: String) {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(value.clone());
+        } else {
+            self.stored.publish(&value);
+        }
         self.value = value;
         self.capturing = false;
     }
 }
 
+/// Shown in place of the keycaps while a new chord is being recorded.
+const CAPTURE_PROMPT: &str = "Type a shortcut";
+
 impl Widget for ShortcutRecorder {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.interaction.keyboard_family =
@@ -105,41 +176,62 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Pulled::Value(value) = self.stored.pull(state, root) {
             self.value = value;
         }
-        self.invalid = matches!(self.rejected.pull(state, root), Pulled::Value(true));
+        if let Some(rejected) = &mut self.rejected
+            && let Pulled::Value(invalid) = rejected.pull(state, root)
+        {
+            self.invalid = invalid;
+        }
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(230.0),
-                height: Dimension::length(crate::num::f32_of_f64(HEIGHT)),
-            },
+        self.height = crate::widget::ControlSize::Regular.height(theme);
+        self.reset_edge = crate::widget::ControlSize::Small.height(theme);
+        self.gap = f64::from(theme.tokens.spacing.s2);
+        self.layout_theme = Some(theme.clone());
+        let style = Style {
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(self.content_width()),
+                crate::num::f32_of_f64(self.height),
+            ),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let Some(theme) = self.layout_theme.take() else {
+            return false;
+        };
+        self.measure_keys(text, &theme);
+        self.layout_theme = Some(theme);
+        let Ok(current) = tree.style(node) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size.width = Dimension::length(crate::num::f32_of_f64(self.content_width()));
+        if style == *current {
+            return false;
+        }
+        tree.set_style(node, style).is_ok()
     }
+
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -149,94 +241,86 @@ impl Widget for ShortcutRecorder {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.measure_keys(text, theme);
         let chord = self.chord_rect();
-        let hovered = self.pointer.is_some_and(|p| chord.contains(p));
+        let keycap = InputHint::keycap_height(theme);
+        let top = chord.center().y - keycap / 2.0;
+        // The keycaps sit where an InputHint's would; hover, focus and
+        // capture draw their ring outward, round them.
+        let ring = chord
+            .with_origin(Point::new(chord.x0, top))
+            .with_size((chord.width(), keycap))
+            .inflate(
+                f64::from(theme.tokens.spacing.s1),
+                f64::from(theme.tokens.spacing.s1),
+            );
+        let hovered = self.pointer.is_some_and(|p| ring.contains(p));
         if hovered || self.focused || self.capturing || self.invalid {
+            let ink = if self.invalid {
+                theme.tokens.colors.semantic.danger
+            } else if self.focused || self.capturing {
+                theme.tokens.colors.intent.you
+            } else {
+                crate::surface::edge_on(theme.tokens.colors.surfaces.content)
+            };
             scene.stroke(
                 &Stroke::new(if self.capturing { 2.0 } else { 1.0 }),
                 transform,
-                if self.invalid {
-                    theme.tokens.colors.semantic.danger
-                } else {
-                    theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-                },
+                ink,
                 None,
-                &RoundedRect::from_rect(chord, 7.0),
+                &RoundedRect::from_rect(ring, f64::from(theme.tokens.radii.item)),
             );
         }
         if self.capturing {
-            let label = "…";
-            let (w, h) = text.measure(
-                label,
-                renderer_type_size(text, theme.tokens.typography.scale.sm),
-                None,
-            );
-            text.draw_text_weighted(
+            let style = theme.text(TextRole::Label);
+            let (_, h) = text.measure_style(CAPTURE_PROMPT, None, &style);
+            text.draw_style(
                 scene,
-                label,
-                renderer_type_size(text, theme.tokens.typography.scale.sm),
-                theme.tokens.colors.text_primary,
-                transform.pre_translate(
-                    (
-                        chord.center().x - f64::from(w) / 2.0,
-                        chord.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
+                CAPTURE_PROMPT,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((chord.x0, chord.center().y - f64::from(h) / 2.0).into()),
                 None,
-                TextWeight::Semibold,
+                &style,
             );
         } else {
             InputHint::paint_at(
                 &mut crate::paint::PaintCtx::new(scene, transform, text, theme),
-                Point::new(
-                    chord.x0 + 5.0,
-                    chord.center().y - crate::widget::input_hint::HEIGHT / 2.0,
-                ),
+                Point::new(chord.x0, top),
                 &InputBinding::Keyboard(self.binding()),
                 LegendConventions::new(self.platform, &self.interaction),
             );
-            if self.invalid {
-                text.draw_text_weighted(
-                    scene,
-                    "!",
-                    renderer_type_size(text, theme.tokens.typography.scale.sm),
-                    theme.tokens.colors.semantic.danger,
-                    transform.pre_translate((chord.x1 - 14.0, chord.y0 + 7.0).into()),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
         }
         if let Some(reset) = self.reset_rect() {
             let hovered = self.pointer.is_some_and(|p| reset.contains(p));
-            if hovered {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.bg_hover,
-                    None,
-                    &RoundedRect::from_rect(reset, 6.0),
-                );
-            }
-            let (w, h) = text.measure(
-                "↶",
-                renderer_type_size(text, theme.tokens.typography.scale.base),
-                None,
-            );
-            text.draw_text(
+            crate::widget::Button::paint(
                 scene,
-                "↶",
-                renderer_type_size(text, theme.tokens.typography.scale.base),
-                theme.tokens.colors.text_primary,
-                transform.pre_translate(
-                    (
-                        reset.center().x - f64::from(w) / 2.0,
-                        reset.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
+                transform,
+                text,
+                theme,
+                &crate::widget::ButtonFace::icon_only(
+                    reset,
+                    crate::icons::Icon::RotateCcw,
+                    "Reset to default",
+                )
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(hovered),
+            );
+        }
+        if self.invalid && !self.capturing {
+            let edge = f64::from(theme.tokens.metrics.icon_sm);
+            let x0 = self.reset_rect().map_or(chord.x1, |r| r.x1) + self.gap;
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    x0,
+                    chord.center().y - edge / 2.0,
+                    x0 + edge,
+                    chord.center().y + edge / 2.0,
                 ),
-                None,
+                crate::icons::Icon::TriangleAlert,
+                theme.tokens.colors.semantic.danger,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
     }
@@ -244,10 +328,7 @@ impl Widget for ShortcutRecorder {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.pointer = Some(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -257,7 +338,7 @@ impl Widget for ShortcutRecorder {
                 let Some(point) = self.pointer else { return };
                 if let Some(reset) = self.reset_rect().filter(|r| r.contains(point)) {
                     let _ = reset;
-                    self.write(ctx.state, ctx.path, self.default.clone());
+                    self.write(ctx.state.doc(), ctx.path, self.default.clone());
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if self.chord_rect().contains(point) {
@@ -274,7 +355,7 @@ impl Widget for ShortcutRecorder {
                         self.capturing = false;
                     } else if let Some(value) = chord_from_event(&event.logical_key, *ctx.modifiers)
                     {
-                        self.write(ctx.state, ctx.path, value);
+                        self.write(ctx.state.doc(), ctx.path, value);
                     }
                     *ctx.handled = true;
                 } else if matches!(
@@ -294,9 +375,6 @@ impl Widget for ShortcutRecorder {
     }
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.rect
@@ -335,7 +413,8 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {
@@ -417,23 +496,40 @@ fn chord_from_event(key: &Key, modifiers: winit::event::Modifiers) -> Option<Str
     Some(parts.join("+"))
 }
 
+impl crate::widget::controls::ActionControls for ShortcutRecorder {
+    crate::widget::controls::optional_emitter_controls!();
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        match &self.action {
+            Some(action) => vec![action.metadata(&self.id)],
+            None => vec![ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::SemanticAction(self.id.clone()),
+            }],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recorder(value: &str, default: &str) -> ShortcutRecorder {
+        ShortcutRecorder::new("x", &crate::LocalState::new(value.to_owned()), default)
+    }
 
     #[test]
     fn binding_display_names_keys_and_offers_reset_only_when_changed() {
         // Case `reset_exists_only_for_a_changed_binding`.
         {
-            let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
+            let unchanged = recorder("Super+Left", "Super+Left");
             assert!(unchanged.reset_rect().is_none());
-            let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
+            let changed = recorder("Super+H", "Super+Left");
             assert!(changed.reset_rect().is_some());
         }
 
         // Case `visual_binding_uses_readable_named_keys`.
         {
-            let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
+            let recorder = recorder("Super+Down", "Super+Left");
             assert_eq!(
                 recorder
                     .binding()

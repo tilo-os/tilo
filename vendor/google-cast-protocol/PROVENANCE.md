@@ -6,7 +6,8 @@
 - Repository: `https://gitlab.futo.org/videostreaming/fcast`
 - Upstream revision: `50e59efdea9fab7cce5ec1e107a2a3bd089a7444`
 - Upstream package path: `crates/google-cast-protocol`
-- License: MIT
+- License: MIT. The published archive carries no licence text; `LICENSE` is
+  the repository root's file at the upstream revision, byte for byte.
 
 Local patch: the published crate compiles `src/googlecast.proto` in its build
 script with `protox` and `prost-build`, which puts a protobuf compiler, its

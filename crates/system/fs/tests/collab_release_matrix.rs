@@ -179,7 +179,7 @@ fn spawn_fs(
 ) -> MountProcess {
     std::fs::create_dir_all(cache).unwrap();
     std::fs::set_permissions(cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    let authority_sockets = cache.join("authority-sockets");
+    let authority_sockets = authority_sockets(cache);
     std::fs::create_dir_all(&authority_sockets).unwrap();
     let mut command = Command::new(binary);
     command
@@ -210,6 +210,17 @@ fn spawn_fs(
         logs,
         mount: mount.into(),
     }
+}
+
+/// The authority socket directory of the daemon caching in `cache`: a short
+/// sibling, because the socket path (this directory plus
+/// `workspace-authority-<uuid>.sock`) must stay under `SUN_LEN` wherever the
+/// temporary directory is.
+fn authority_sockets(cache: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cache.hash(&mut hasher);
+    cache.with_file_name(format!("s{:04x}", hasher.finish() & 0xffff))
 }
 
 fn export_home_peer_bundle(
@@ -248,15 +259,9 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env(
             "TILO_AUTHORITY_SOCKET_DIR",
-            workspace_cache.join("authority-sockets"),
+            authority_sockets(workspace_cache),
         )
-        .args([
-            "publish-authority",
-            "--cache-dir",
-            workspace_cache.to_str().unwrap(),
-            "--acl",
-            acl.to_str().unwrap(),
-        ])
+        .args(["publish-authority", "--acl", acl.to_str().unwrap()])
         .status()
         .unwrap();
     assert!(status.success(), "authority publication failed: {status}");
@@ -389,15 +394,15 @@ fn hash(byte: u8) -> Hash {
 }
 
 type StructuralProjection = Vec<(
-    collab_types::FileRecordId,
-    Option<(collab_types::FileRecordId, Vec<u8>)>,
+    fs_protocol::FileRecordId,
+    Option<(fs_protocol::FileRecordId, Vec<u8>)>,
 )>;
 
 fn structural_projection(
     namespace: &mut Namespace,
-    records: &[collab_types::FileRecordId],
+    records: &[fs_protocol::FileRecordId],
 ) -> StructuralProjection {
-    let actor = collab_types::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey([0x91; 32]),
         device: collab_types::Ed25519PublicKey([0x92; 32]),
     };
@@ -440,7 +445,7 @@ fn structural_projection(
 fn converge_structural_partition(
     left: &[u8],
     right: &[u8],
-    records: &[collab_types::FileRecordId],
+    records: &[fs_protocol::FileRecordId],
 ) -> (Namespace, Namespace) {
     let mut left_peer = Namespace::from_bytes("structural-left-restart", left).unwrap();
     let mut right_peer = Namespace::from_bytes("structural-right-restart", right).unwrap();
@@ -599,8 +604,8 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 
     let left_path = temp.path().join("left.automerge");
     let right_path = temp.path().join("right.automerge");
-    atomic_file::write(&left_path, &left.save()).unwrap();
-    atomic_file::write(&right_path, &right.save()).unwrap();
+    tilo_files::native::atomic::write(&left_path, &left.save()).unwrap();
+    tilo_files::native::atomic::write(&right_path, &right.save()).unwrap();
     drop(left);
     drop(right);
 
@@ -673,22 +678,26 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Write,
+            collab_types::caps::Access::Write,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
     ];
-    std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+    std::fs::write(
+        &acl,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 
     let host_mount = temp.path().join("host-mount");
     let peer_mount = temp.path().join("peer-mount");
@@ -826,7 +835,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
 
     assert_eq!(gate(&host_gate, "reconnect"), "connected\n");
     assert_eq!(gate(&peer_gate, "reconnect"), "connected\n");
-    let converged = |mount: &Path| -> Option<(Vec<u8>, fs::HistoryProjectionV1)> {
+    let converged = |mount: &Path| -> Option<(Vec<u8>, fs_protocol::HistoryProjectionV1)> {
         let entries = std::fs::read_dir(mount)
             .ok()?
             .collect::<Result<Vec<_>, _>>()
@@ -839,11 +848,12 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             .find(|entry| entry.file_name() == "contended.txt")?
             .path();
         let content = std::fs::read(&path).ok()?;
-        let history =
-            fs::HistoryProjectionV1::parse_xattr(&get_xattr(&path, fs::HISTORY_XATTR).ok()?)
-                .ok()?;
+        let history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &get_xattr(&path, fs_protocol::HISTORY_XATTR).ok()?,
+        )
+        .ok()?;
         let conflict = history.conflicts.iter().find(|conflict| {
-            conflict.status == collab_types::ConflictStatus::Open && conflict.versions.len() == 2
+            conflict.status == fs_protocol::ConflictStatus::Open && conflict.versions.len() == 2
         })?;
         let mut heads = history.heads.clone();
         heads.sort();
@@ -956,28 +966,32 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
+        )
+        .unwrap();
         let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
         let owner_mount = temp.path().join("owner-mount");
         std::fs::create_dir(&owner_mount).unwrap();
@@ -1003,7 +1017,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
             get_xattr(
                 &owner_mount.join("deleted.txt"),
-                fs::syncstate::CONTENT_HASH_XATTR,
+                fs_protocol::CONTENT_HASH_XATTR,
             )
             .ok()
         })
@@ -1012,7 +1026,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let deleted_manifest = Hash::from(deleted_manifest_bytes);
         let original_survivor_manifest: [u8; 32] = get_xattr(
             &owner_mount.join("survivor.txt"),
-            fs::syncstate::CONTENT_HASH_XATTR,
+            fs_protocol::CONTENT_HASH_XATTR,
         )
         .unwrap()
         .try_into()
@@ -1042,7 +1056,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
             let manifest: [u8; 32] = get_xattr(
                 &owner_mount.join("survivor.txt"),
-                fs::syncstate::CONTENT_HASH_XATTR,
+                fs_protocol::CONTENT_HASH_XATTR,
             )
             .ok()?
             .try_into()
@@ -1097,7 +1111,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         reader_process.wait_line("Mounting QuickFS");
         let reader_file = reader_mount.join("survivor.txt");
         let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
-            get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
+            get_xattr(&reader_file, fs_protocol::CONTENT_HASH_XATTR)
                 .ok()?
                 .try_into()
                 .ok()
@@ -1125,22 +1139,26 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+        std::fs::write(
+            &revoked_acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(revoked_caps.clone())).unwrap(),
+        )
+        .unwrap();
         publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())
@@ -1257,16 +1275,18 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
 )]
 #[test]
 fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
-    use collab_types::{
-        ContentHash, ContentRevisionV1, Ed25519PublicKey, FileActor, FileInviteSpec,
-        FileInviteSubject, FilePermission, FileRecordId, FileVersionId,
-    };
+    use collab_types::Ed25519PublicKey;
     use fs::availability::{
         EvictionBlocker, EvictionDecision, EvictionRequirements, RecordAvailability, RecordKind,
     };
     use fs::{
         AuthenticatedFsPeer, AvailabilityRegistry, ReplicaAckError, ReplicaAckRequestV1,
-        ReplicaAckV1, ShareAuthority, ShareGrantStatus,
+        ReplicaAckV1, ShareAuthority,
+    };
+    use fs_protocol::ShareGrantStatus;
+    use fs_protocol::{
+        ContentHash, ContentRevisionV1, FileActor, FileInviteSpec, FileInviteSubject,
+        FilePermission, FileRecordId, FileVersionId,
     };
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -1291,7 +1311,7 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
         cert,
     };
     let revision = ContentRevisionV1 {
-        schema_version: collab_types::CONTENT_REVISION_VERSION,
+        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
         record_id: FileRecordId::new(),
         version_id: FileVersionId::new(),
         content_hash: Some(ContentHash([7; 32])),
@@ -1377,7 +1397,7 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     let temp = tempfile::tempdir().unwrap();
     let (issuer_key, issuer) = collab_types::generate_keypair();
     let (_, person) = collab_types::generate_keypair();
-    let invite = collab_types::mint_file_invite(
+    let invite = fs_protocol::mint_file_invite(
         FileInviteSpec {
             workspace_id: uuid::Uuid::new_v4(),
             record_id: FileRecordId::new(),

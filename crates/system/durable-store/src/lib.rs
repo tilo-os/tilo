@@ -11,17 +11,6 @@
 //! or view envelopes. Callers decide what a key's bytes mean; the store only
 //! promises ordering, single ownership and honest durability.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::any::Any;
 use std::fmt;
 use std::path::PathBuf;
@@ -200,6 +189,10 @@ pub enum StoreError {
     SourceChanged(String),
     #[error("{0} has writes its host has not yet committed")]
     Pending(String),
+    /// [`DurableStore::prepare_shared`]: the store's own thread is still
+    /// opening the key.
+    #[error("{0} is still being opened")]
+    Opening(String),
     #[error("revision {0} is not awaiting acknowledgement")]
     UnknownRevision(u64),
     #[error("{context}: {message}")]
@@ -208,6 +201,10 @@ pub enum StoreError {
 
 /// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
+
+/// Called, from any thread, when work a caller declined to wait for is done
+/// (see [`DurableStore::prepare_shared`]).
+pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// A non-exclusive claim on one key, for documents several processes may
 /// write at once because readers merge what each appends. `primary` is true
@@ -261,6 +258,25 @@ pub trait DurableStore {
     /// Reports the latest failed write, or writes still awaiting their host.
     fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError>;
 
+    /// [`Self::flush`] for a caller that must not wait on storage (a UI
+    /// thread): start making everything read from or accepted for `key`
+    /// durable and return at once. `Ok` when it already is; otherwise
+    /// [`StoreError::Pending`], the work left to the store's own thread, and
+    /// [`Self::is_settled`] turns true when it has finished. A store with no
+    /// thread of its own waits, as [`Self::flush`] does.
+    ///
+    /// # Errors
+    /// The latest failed write, or [`StoreError::Pending`].
+    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), StoreError> {
+        self.flush(Some(key))
+    }
+
+    /// Whether everything read from or accepted for `key` is on stable
+    /// storage now. Does not wait where the store has a thread of its own.
+    fn is_settled(&self, key: &StorageKey) -> bool {
+        self.flush(Some(key)).is_ok()
+    }
+
     /// Become the key's only writer until the returned lease is dropped.
     ///
     /// # Errors
@@ -275,6 +291,22 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
+    /// For a caller that must not wait on storage (a UI thread): make sure a
+    /// [`Self::lease_shared`] of `key`, and the reads that follow it, create
+    /// nothing and find what they read already fetched. `Ok` when that is
+    /// so; otherwise [`StoreError::Opening`], the work left to the store's
+    /// own thread, which calls `ready` once it is done (a later call then
+    /// returns `Ok`, or the error the work met). A store with no thread of
+    /// its own returns `Ok`, and its lease waits as it always did.
+    ///
+    /// # Errors
+    /// [`StoreError::Opening`] while the work runs; an invalid key; the
+    /// failure the work met.
+    fn prepare_shared(&self, key: &StorageKey, ready: &ReadyWake) -> Result<(), StoreError> {
+        let _ = (key, ready);
+        Ok(())
+    }
+
     /// Grant custody of `key` to exactly one `claimant`, durably: the first
     /// claim wins, and the same claimant may claim again (to resume after a
     /// crash). Used to let exactly one successor adopt a room record under a
@@ -285,9 +317,41 @@ pub trait DurableStore {
     /// A key the store cannot claim, or a failure recording the claim.
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
 
+    /// The `record` component of every [`StorageKey::Record`] of `package`
+    /// in `workspace` that holds stored bytes, sorted. Lets a host find
+    /// records it can no longer name: an app that used to keep a record per
+    /// window and now keeps one per room adopts its windows' records. A
+    /// store that cannot enumerate its keys answers with none.
+    ///
+    /// # Errors
+    /// Invalid identifiers or a failure reading the backing storage.
+    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        let _ = (package, workspace);
+        Ok(Vec::new())
+    }
+
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {
+        None
+    }
+
+    /// Keep `hint` beside the key's value on this device: bytes a caller
+    /// derived from a value it wrote, to make the next read of that value
+    /// cheaper to use. A hint is never part of the value, never leaves the
+    /// device and may be dropped at any time, so the caller must recognise
+    /// the value it was made for itself; a store that keeps none drops it.
+    /// The key must be leased, as for [`Self::write`].
+    ///
+    /// # Errors
+    /// An unleased key, or a failure writing the hint.
+    fn write_hint(&self, _key: &StorageKey, _hint: &[u8]) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// The hint last kept beside the key by [`Self::write_hint`], if the
+    /// store still has one.
+    fn read_hint(&self, _key: &StorageKey) -> Option<Vec<u8>> {
         None
     }
 }

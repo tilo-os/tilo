@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::permissions::UserId;
 use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 
@@ -182,7 +172,6 @@ fn peer_carets_and_selections_paint_into_scenes() {
 
     // Case `text_input_renders_peer_caret_when_presence_ctx_has_caret`.
     {
-        use tilo_ui::permissions::PermissionContext;
         use tilo_ui::text_render::TextRenderer;
         use tilo_ui::widget::TextInput;
         use tilo_ui::widget::Widget;
@@ -197,16 +186,8 @@ fn peer_carets_and_selections_paint_into_scenes() {
         let mut scene = Scene::new();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let perms = PermissionContext::permissive();
 
-        input.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
+        input.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         assert!(
             !scene.encoding().is_empty(),
             "peer caret should produce scene geometry"

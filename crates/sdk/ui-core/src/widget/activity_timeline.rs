@@ -15,11 +15,12 @@
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -28,21 +29,20 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time, hue_to_rgb,
-    op_class_glyph,
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
 use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
 };
 use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 
-use collab_types::OpClass;
+use crate::tokens::TextRole;
+use crate::widget::EntryKind;
 
 /// 40px: a 600px pane fits ~15 rows without scrolling.
 pub const ROW_HEIGHT: f64 = 40.0;
@@ -94,35 +94,14 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// A nesting depth, row count or dot count, widened for pixel-space layout
-/// math. Lossless in practice — none of these ever approach `u32::MAX` — but
-/// `usize -> f64` cannot express that to the compiler, so this goes through
-/// `u32` (exactly representable in `f64`) with a saturating fallback rather
-/// than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
-/// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
-/// regardless of operand magnitude — centralised here rather than repeating
-/// the exemption at every text transform composed in this module.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
-    transform * Affine::translate(offset)
-}
-
 /// Top edge that centres one line of `size`-px text on `center_y`. The line
 /// box the renderer paints is `line_height × size` — a quarter taller than
 /// the font size at the default 1.25 — and it carries the accessibility text
 /// scale, so centring on the *measured* height (never on `size / 2`) is what
 /// keeps a row's text on the same centre line as its avatar dot at every
 /// type scale.
-fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
-    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
+fn text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure_style("Ag", None, style).1) / 2.0
 }
 
 /// Ordered left-to-right so a flat `[i]` lookup matches the visual.
@@ -168,14 +147,14 @@ impl ChipKind {
 
     /// `All` is empty because "no op-class filter" is how [`HistoryFilter`]
     /// expresses "show everything".
-    pub fn op_classes(&self) -> Vec<OpClass> {
+    pub fn entry_kinds(&self) -> Vec<EntryKind> {
         match self {
             ChipKind::All => Vec::new(),
             // Tombstone/Restore live in "Deletes" instead.
-            ChipKind::Edits => vec![OpClass::Splice, OpClass::Move, OpClass::EditMeta],
-            ChipKind::Comments => vec![OpClass::Comment],
-            ChipKind::Governance => vec![OpClass::Govern],
-            ChipKind::Deletes => vec![OpClass::Tombstone, OpClass::Restore],
+            ChipKind::Edits => vec![EntryKind::Text, EntryKind::Move, EntryKind::Details],
+            ChipKind::Comments => vec![EntryKind::Comment],
+            ChipKind::Governance => vec![EntryKind::Access],
+            ChipKind::Deletes => vec![EntryKind::Delete, EntryKind::Restore],
         }
     }
 }
@@ -254,6 +233,8 @@ struct RowGroup {
     authors: Vec<HistoryAuthor>,
     expanded: bool,
     restorable: bool,
+    /// Calendar heading (Today / Yesterday / …), not a collapsible band.
+    is_section: bool,
 }
 
 /// A band header's hover chips, in the order they are laid out.
@@ -349,6 +330,8 @@ pub struct ActivityTimeline {
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
+    /// Calendar Today/Yesterday/This week/Earlier headings above bands.
+    show_day_headings: bool,
     /// `Rect::ZERO` whenever the filtered-to-nothing empty state is not on
     /// screen, so a stale click cannot trip `[Clear filters]`.
     clear_chip_rect: Rect,
@@ -406,6 +389,7 @@ impl ActivityTimeline {
             author_pill_rect: Rect::ZERO,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             show_author_pill: true,
+            show_day_headings: false,
             clear_chip_rect: Rect::ZERO,
             name_selection_rect: Rect::ZERO,
             clear_selection_rect: Rect::ZERO,
@@ -480,13 +464,6 @@ impl ActivityTimeline {
 
     pub fn named_ranges(&self) -> &[NamedRange] {
         &self.named
-    }
-
-    pub fn set_grouping(&mut self, cfg: GroupingConfig) {
-        if self.grouping != cfg {
-            self.grouping = cfg;
-            self.regroup();
-        }
     }
 
     /// For a streaming producer. Call [`Self::refresh`] after mutating it.
@@ -593,7 +570,7 @@ impl ActivityTimeline {
         self.active_chip != ChipKind::All
             || !self.author_query.trim().is_empty()
             || !self.filter.authors.is_empty()
-            || !self.filter.op_classes.is_empty()
+            || !self.filter.entry_kinds.is_empty()
             || self.filter.time_range.is_some()
     }
 
@@ -603,14 +580,14 @@ impl ActivityTimeline {
         if self.active_chip != ChipKind::All {
             parts.push(self.active_chip.label());
         }
-        let chip_classes = self.active_chip.op_classes();
+        let chip_classes = self.active_chip.entry_kinds();
         for op in self
             .filter
-            .op_classes
+            .entry_kinds
             .iter()
             .filter(|op| !chip_classes.contains(op))
         {
-            let label = crate::history_source::op_class_label(*op);
+            let label = (*op).label();
             if !parts.contains(&label) {
                 parts.push(label);
             }
@@ -649,12 +626,6 @@ impl ActivityTimeline {
         )
     }
 
-    /// `Rect::ZERO` when the filtered-to-nothing empty state is not on
-    /// screen.
-    pub fn clear_filters_chip_rect(&self) -> Rect {
-        self.clear_chip_rect
-    }
-
     pub fn author_pill_rect(&self) -> Rect {
         self.author_pill_rect
     }
@@ -674,6 +645,14 @@ impl ActivityTimeline {
         self.show_author_pill
     }
 
+    /// Insert Today / Yesterday / This week / Earlier headings above bands.
+    pub fn set_show_day_headings(&mut self, show: bool) {
+        if self.show_day_headings != show {
+            self.show_day_headings = show;
+            self.rebuild_rows();
+        }
+    }
+
     // ---------- groups: expansion, naming, selection ----------
 
     pub fn row_count(&self) -> usize {
@@ -688,6 +667,13 @@ impl ActivityTimeline {
                 Some((rg.key.as_str(), rg.expanded))
             }
             VisualRow::Entry(..) => None,
+        }
+    }
+
+    pub fn is_day_heading_at(&self, i: usize) -> bool {
+        match self.rows.get(i) {
+            Some(VisualRow::Group(g)) => self.row_groups.get(*g).is_some_and(|rg| rg.is_section),
+            _ => false,
         }
     }
 
@@ -741,13 +727,16 @@ impl ActivityTimeline {
         let Some(VisualRow::Group(g)) = self.rows.get(i).copied() else {
             return false;
         };
-        let Some((key, expanded)) = self
+        let Some((key, expanded, is_section)) = self
             .row_groups
             .get(g)
-            .map(|rg| (rg.key.clone(), rg.expanded))
+            .map(|rg| (rg.key.clone(), rg.expanded, rg.is_section))
         else {
             return false;
         };
+        if is_section {
+            return false;
+        }
         self.set_group_expanded(&key, !expanded);
         true
     }
@@ -1229,7 +1218,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1251,7 +1240,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1279,11 +1268,11 @@ impl ActivityTimeline {
         self.now_override.unwrap_or_else(crate::time::wall)
     }
 
-    fn passes(&self, e: &HistoryEntry, chip_ops: &[OpClass], needle: &str) -> bool {
+    fn passes(&self, e: &HistoryEntry, chip_ops: &[EntryKind], needle: &str) -> bool {
         if !self.filter.matches(e) {
             return false;
         }
-        if !chip_ops.is_empty() && !chip_ops.contains(&e.op_class) {
+        if !chip_ops.is_empty() && !chip_ops.contains(&e.entry_kind) {
             return false;
         }
         if !needle.is_empty() && !e.author.name.to_lowercase().contains(needle) {
@@ -1435,7 +1424,7 @@ impl ActivityTimeline {
     }
 
     fn rebuild(&mut self) {
-        let chip_ops = self.active_chip.op_classes();
+        let chip_ops = self.active_chip.entry_kinds();
         let needle = self.author_query.trim().to_lowercase();
         // Walked in the same order the lines are, so a count and a position
         // mean the same thing in both.
@@ -1466,16 +1455,26 @@ impl ActivityTimeline {
     }
 
     fn rebuild_rows(&mut self) {
-        let chip_ops = self.active_chip.op_classes();
+        let chip_ops = self.active_chip.entry_kinds();
         let needle = self.author_query.trim().to_lowercase();
         let mut rows: Vec<VisualRow> = Vec::new();
         let mut row_groups: Vec<RowGroup> = Vec::new();
         let mut budget = AUTO_EXPAND_BUDGET;
 
+        let now = self.now();
+        let mut last_section = None;
         for gi in self.group_order.clone() {
             let Some(g) = self.groups.get(gi) else {
                 continue;
             };
+            if self.show_day_headings
+                && let Some(section) = self.group_day_section(g, &chip_ops, &needle, now)
+            {
+                if last_section != Some(section) {
+                    Self::emit_day_section(section, &mut rows, &mut row_groups);
+                    last_section = Some(section);
+                }
+            }
             self.emit_group(
                 g,
                 &chip_ops,
@@ -1522,7 +1521,7 @@ impl ActivityTimeline {
     fn emit_group(
         &self,
         g: &HistoryGroup,
-        chip_ops: &[OpClass],
+        chip_ops: &[EntryKind],
         needle: &str,
         rows: &mut Vec<VisualRow>,
         row_groups: &mut Vec<RowGroup>,
@@ -1589,6 +1588,7 @@ impl ActivityTimeline {
             authors: g.authors.clone(),
             expanded,
             restorable,
+            is_section: false,
         });
         rows.push(VisualRow::Group(gi));
         if !expanded {
@@ -1682,7 +1682,7 @@ fn draw_chip(
     if rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let radius = f64::from(theme.tokens.radii.sm);
+    let radius = f64::from(theme.tokens.radii.detail);
     let shape = RoundedRect::from_rect(rect, radius);
     let colors = &theme.tokens.colors;
     // Accent chip: the face is its own contrast step, no edge (HIG §9.5
@@ -1692,36 +1692,36 @@ fn draw_chip(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &shape,
         );
     } else {
         crate::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
     }
-    let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
-    let shown = fit_text(tr, label, size, rect.width() - 8.0);
-    let (lw, lh) = tr.measure(&shown, size, None);
+    let size = theme.text(TextRole::Caption);
+    let shown = fit_text(tr, label, &size, rect.width() - 8.0);
+    let (lw, lh) = tr.measure_style(&shown, None, &size);
     // Ink chosen against the face it sits on: `text_primary` is near-black
     // on the light preset and vanished on its blue accent.
     let ink = if accent {
-        colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+        colors.intent.on_inverted
     } else {
         colors.text_primary
     };
-    tr.draw_text(
+    tr.draw_style(
         scene,
         &shown,
-        size,
         ink,
-        translated(
-            transform,
+        transform.pre_translate(
             (
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
                 rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            ),
+            )
+                .into(),
         ),
         None,
+        &size,
     );
 }
 
@@ -1736,7 +1736,7 @@ impl RowSlot {
     /// The band less its depth's indent: where the row's own content sits.
     fn indented(self) -> Rect {
         Rect::new(
-            self.rect.x0 + px(self.depth) * INDENT,
+            self.rect.x0 + f64_of_usize(self.depth) * INDENT,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
@@ -1758,7 +1758,7 @@ struct EntryRowLayout {
     row: Rect,
     /// The row's centre line.
     cy: f64,
-    text_size: f32,
+    text_style: TextStyle,
     author_slot_w: f64,
     /// The pointer is over a revertible entry and a host handles reverts.
     offers_revert: bool,
@@ -1772,18 +1772,15 @@ struct BandHeader<'a> {
     /// The inset header row.
     row: Rect,
     title_x: f64,
-    title_size: f32,
+    title_style: TextStyle,
 }
 
 /// The filter strip's frame-wide paint inputs, shared by its chip row and
-/// its author pill: chip text size and the selected / idle chip colours.
+/// its author pill.
 struct FilterStripPaint {
     strip: Rect,
-    text_size: f32,
-    active_fill: Color,
-    idle_fill: Color,
-    active_text: Color,
-    idle_text: Color,
+    /// The chip height, never taller than the strip.
+    chip_h: f64,
 }
 
 /// When a row's change was made; empty for the genesis, which no one made
@@ -1796,7 +1793,111 @@ fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
     }
 }
 
+/// Calendar bucket for a timeline heading. Days are UTC civil days so a
+/// pinned `now` in tests matches production without a timezone table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DaySection {
+    Today,
+    Yesterday,
+    ThisWeek,
+    Earlier,
+}
+
+impl DaySection {
+    fn of(ts: SystemTime, now: SystemTime) -> Self {
+        let today = civil_day(now);
+        let day = civil_day(ts);
+        if day == today {
+            return Self::Today;
+        }
+        if day == today.saturating_sub(1) {
+            return Self::Yesterday;
+        }
+        let week_start = today.saturating_sub(monday_offset(today));
+        if day >= week_start {
+            return Self::ThisWeek;
+        }
+        Self::Earlier
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Today => "day:today",
+            Self::Yesterday => "day:yesterday",
+            Self::ThisWeek => "day:this-week",
+            Self::Earlier => "day:earlier",
+        }
+    }
+
+    fn title(self) -> String {
+        crate::i18n::widget_format(
+            match self {
+                Self::Today => "day-today",
+                Self::Yesterday => "day-yesterday",
+                Self::ThisWeek => "history-day-this-week",
+                Self::Earlier => "history-day-earlier",
+            },
+            &[],
+        )
+    }
+}
+
+fn civil_day(ts: SystemTime) -> i64 {
+    const DAY: u64 = 86_400;
+    match ts.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(delta) => i64::try_from(delta.as_secs() / DAY).unwrap_or(i64::MAX),
+        Err(err) => -i64::try_from(err.duration().as_secs() / DAY).unwrap_or(i64::MAX),
+    }
+}
+
+/// Days since Monday of the week that contains `day`. `weekday` is
+/// 0 = Sunday … 6 = Saturday.
+fn monday_offset(day: i64) -> i64 {
+    i64::from((crate::date::weekday(day) + 6) % 7)
+}
+
 impl ActivityTimeline {
+    fn group_day_section(
+        &self,
+        g: &HistoryGroup,
+        chip_ops: &[EntryKind],
+        needle: &str,
+        now: SystemTime,
+    ) -> Option<DaySection> {
+        (g.start..g.end)
+            .filter_map(|i| self.entries.get(i))
+            .filter(|entry| self.passes(entry, chip_ops, needle))
+            .map(|entry| entry.timestamp)
+            .max()
+            .map(|ts| DaySection::of(ts, now))
+    }
+
+    fn emit_day_section(
+        section: DaySection,
+        rows: &mut Vec<VisualRow>,
+        row_groups: &mut Vec<RowGroup>,
+    ) {
+        let gi = row_groups.len();
+        row_groups.push(RowGroup {
+            key: section.key().to_string(),
+            title: section.title(),
+            subtitle: String::new(),
+            scope_label: None,
+            name: None,
+            record_id: None,
+            open: false,
+            depth: 0,
+            first_entry: HistoryEntryId([0; 16]),
+            last_entry: HistoryEntryId([0; 16]),
+            last_time: SystemTime::UNIX_EPOCH,
+            authors: Vec::new(),
+            expanded: true,
+            restorable: false,
+            is_section: true,
+        });
+        rows.push(VisualRow::Group(gi));
+    }
+
     fn draw_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1822,10 +1923,10 @@ impl ActivityTimeline {
         let layout = EntryRowLayout {
             row,
             cy,
-            text_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+            text_style: ctx.theme.text(TextRole::Caption),
             // The indent comes out of the author cluster, not the summary —
             // the summary is what the reader is here for.
-            author_slot_w: (self.author_slot_w() - px(slot.depth) * INDENT).max(72.0),
+            author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
             offers_revert,
             chip_reserve: if offers_revert {
                 self.revert_chip_w() + 6.0
@@ -1849,17 +1950,24 @@ impl ActivityTimeline {
         cy: f64,
         entry: &HistoryEntry,
     ) -> f64 {
-        let (r, g, b) = hue_to_rgb(entry.author.avatar_hue);
+        let (r, g, b) = entry.author.rgb();
         let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
-        let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            dot_color,
-            None,
-            &dot,
-        );
+        // A person is a filled dot in their colour; software acting for
+        // someone (an agent, a Shortcut, an app) is a ring.
+        if entry.author.relation == crate::widget::history::AuthorRelation::Software {
+            let ring = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0 - 0.75);
+            scene.stroke(&Stroke::new(1.5), transform, dot_color, None, &ring);
+        } else {
+            let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                dot_color,
+                None,
+                &dot,
+            );
+        }
         dot_x
     }
 
@@ -1886,7 +1994,7 @@ impl ActivityTimeline {
         // to the bands above them rather than just starting further right.
         let surface = theme.tokens.colors.surfaces.raised;
         for level in 1..=depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -1901,7 +2009,7 @@ impl ActivityTimeline {
             // pale end of the accent ramp behind primary text is unreadable.
             // The raise is the top step of the pane's own ramp under a
             // derived edge, so it reads on a light pane as well as a dark one.
-            let radius = f64::from(theme.tokens.radii.sm);
+            let radius = f64::from(theme.tokens.radii.detail);
             let lift = row.inflate(0.0, -ROW_LIFT_INSET);
             let shape = RoundedRect::from_rect(lift, radius);
             scene.fill(
@@ -1925,14 +2033,14 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[4],
+                theme.tokens.colors.intent.inverted_hover,
                 None,
                 &edge,
             );
         } else if is_hovered {
             let shape = RoundedRect::from_rect(
                 row.inflate(0.0, -ROW_LIFT_INSET),
-                f64::from(theme.tokens.radii.sm),
+                f64::from(theme.tokens.radii.detail),
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1944,7 +2052,7 @@ impl ActivityTimeline {
         }
         if is_focused {
             let shape =
-                RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0);
+                RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.detail) + 1.0);
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -1973,7 +2081,7 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             author_slot_w,
             ..
         } = layout;
@@ -1982,17 +2090,23 @@ impl ActivityTimeline {
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
-            text_size,
+            text_style,
             (slot_end - x).max(24.0),
         );
-        let name_top = text_top(text_renderer, text_size, cy);
-        text_renderer.draw_text(
+        let name_top = text_top(text_renderer, text_style, cy);
+        // The reader's own changes read quieter than other people's.
+        let colour = if entry.author.relation == crate::widget::history::AuthorRelation::Reader {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        text_renderer.draw_style(
             scene,
             &name,
-            text_size,
-            theme.tokens.colors.text_primary,
-            translated(transform, (x, name_top)),
+            colour,
+            transform.pre_translate((x, name_top).into()),
             None,
+            text_style,
         );
     }
 
@@ -2014,21 +2128,21 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             author_slot_w,
             chip_reserve,
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
-        let glyph = op_class_glyph(entry.op_class);
-        let line_top = text_top(text_renderer, text_size, cy);
-        text_renderer.draw_text(
+        let glyph = entry.entry_kind.glyph();
+        let line_top = text_top(text_renderer, text_style, cy);
+        text_renderer.draw_style(
             scene,
             glyph,
-            text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (glyph_x, line_top)),
+            transform.pre_translate((glyph_x, line_top).into()),
             None,
+            text_style,
         );
 
         let summary_x = glyph_x + 24.0;
@@ -2055,7 +2169,7 @@ impl ActivityTimeline {
         let drawn_summary = fit_text(
             text_renderer,
             summary,
-            text_size,
+            text_style,
             (summary_x_end - summary_x).max(0.0),
         );
         let summary_color = if is_redacted_row {
@@ -2063,18 +2177,18 @@ impl ActivityTimeline {
         } else {
             theme.tokens.colors.text_primary
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &drawn_summary,
-            text_size,
             summary_color,
-            translated(transform, (summary_x, line_top)),
+            transform.pre_translate((summary_x, line_top).into()),
             None,
+            text_style,
         );
         // Drawn after the text so a regression that forgets to gate on
         // `is_redacted_row` paints a visible mark.
         if is_redacted_row {
-            let (dw, _) = text_renderer.measure(&drawn_summary, text_size, None);
+            let (dw, _) = text_renderer.measure_style(&drawn_summary, None, text_style);
             let strike = Line::new(
                 Point::new(summary_x, cy),
                 Point::new(summary_x + f64::from(dw), cy),
@@ -2106,7 +2220,7 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             offers_revert,
             chip_reserve,
             ..
@@ -2114,18 +2228,18 @@ impl ActivityTimeline {
         let rel = fit_text(
             text_renderer,
             &row_time(entry, now),
-            text_size,
+            text_style,
             self.time_slot_w(),
         );
-        let (tw, th) = text_renderer.measure(&rel, text_size, None);
+        let (tw, th) = text_renderer.measure_style(&rel, None, text_style);
         let time_x = row.x1 - chip_reserve - TRAILING_INSET - f64::from(tw);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &rel,
-            text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (time_x, cy - f64::from(th) / 2.0)),
+            transform.pre_translate((time_x, cy - f64::from(th) / 2.0).into()),
             None,
+            text_style,
         );
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
@@ -2168,7 +2282,7 @@ impl ActivityTimeline {
             .map(|n| &n.field);
         let is_hovered = emphasis.hovered;
         let row = Rect::new(
-            full_row.x0 + px(rg.depth) * INDENT,
+            full_row.x0 + f64_of_usize(rg.depth) * INDENT,
             full_row.y0 + 2.0,
             full_row.x1,
             full_row.y1 - 2.0,
@@ -2179,10 +2293,13 @@ impl ActivityTimeline {
             rg,
             row,
             title_x: row.x0 + 26.0,
-            title_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+            title_style: ctx.theme.text(TextRole::Label),
         };
         let chips = self.group_chip_rects_local(row, rg);
         self.draw_group_row_title(ctx, &band, is_hovered, naming);
+        if rg.is_section {
+            return;
+        }
 
         // Line two: who and how much, plus — right-aligned — when. Stacked
         // under the title's *measured* line box (top pad + line + gap; 27 px
@@ -2190,7 +2307,7 @@ impl ActivityTimeline {
         // two lines apart. The group row itself is still a fixed
         // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
         // the row height has to follow the text scale for that (F5).
-        let (_, title_h) = ctx.text.measure("Ag", band.title_size, None);
+        let (_, title_h) = ctx.text.measure_style("Ag", None, &band.title_style);
         let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
         Self::draw_group_row_meta(ctx, &band, now, meta_y);
 
@@ -2245,7 +2362,7 @@ impl ActivityTimeline {
         let colors = &theme.tokens.colors;
         let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -2258,7 +2375,7 @@ impl ActivityTimeline {
         // The band's backdrop is a step of the pane's own ramp under an edge
         // derived from the pane, so a band reads as a band on a light pane
         // too — the white veneers it replaces were one colour per theme.
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(row, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2287,8 +2404,14 @@ impl ActivityTimeline {
                 transform,
                 colors.border_focus,
                 None,
-                &RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0),
+                &RoundedRect::from_rect(
+                    row.inset(-1.0),
+                    f64::from(theme.tokens.radii.detail) + 1.0,
+                ),
             );
+        }
+        if rg.is_section {
+            return;
         }
         // A named band gets an accent spine: the visual difference between
         // "someone decided this is a thing" and an automatic chunk.
@@ -2300,7 +2423,7 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.accent[5],
+                colors.intent.inverted,
                 None,
                 &spine,
             );
@@ -2347,7 +2470,7 @@ impl ActivityTimeline {
             rg,
             row,
             title_x,
-            title_size,
+            ref title_style,
         } = band;
         let chip_x0 = if self.preview_selection {
             row.x1 + 8.0
@@ -2372,27 +2495,27 @@ impl ActivityTimeline {
                 (row.x1 - actions_w).max(title_x + 40.0),
                 row.y0 + 24.0,
             );
-            field.draw(scene, transform, tr, theme, box_rect, title_size);
+            field.draw(scene, transform, tr, theme, box_rect, title_style);
         } else {
-            let title = fit_text(tr, &rg.title, title_size, title_budget);
-            tr.draw_text(
+            let title = fit_text(tr, &rg.title, title_style, title_budget);
+            tr.draw_style(
                 scene,
                 &title,
-                title_size,
                 colors.text_primary,
-                translated(transform, (title_x, title_y)),
+                transform.pre_translate((title_x, title_y).into()),
                 None,
+                title_style,
             );
             if rg.open {
                 // "Still open" has to read as live, not as a label — and sit
                 // on the title's measured centre line, not the font size's.
-                let (w, h) = tr.measure(&title, title_size, None);
+                let (w, h) = tr.measure_style(&title, None, title_style);
                 let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        colors.accent[4],
+                        colors.intent.inverted_hover,
                         None,
                         &Circle::new(Point::new(dot_x, title_y + f64::from(h) / 2.0), 3.0),
                     );
@@ -2416,18 +2539,19 @@ impl ActivityTimeline {
             theme,
         } = ctx.reborrow();
         let &BandHeader {
-            rg,
-            row,
-            title_x,
-            title_size,
+            rg, row, title_x, ..
         } = band;
         let colors = &theme.tokens.colors;
-        let meta_size = (title_size - 2.0).max(10.0);
+        let meta_style = theme.text(TextRole::Caption);
         let rel = format_relative_time(rg.last_time, now);
-        let (rel_w, rel_h) = tr.measure(&rel, meta_size, None);
+        let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
-        let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
+        let dots_w = if dots > 0 {
+            f64_of_usize(dots) * 10.0 + 6.0
+        } else {
+            0.0
+        };
         let sub_budget =
             (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
         let subtitle = if rg.expanded {
@@ -2438,34 +2562,31 @@ impl ActivityTimeline {
                 |scope| format!("{scope} · {}", rg.subtitle),
             )
         };
-        let sub = fit_text(tr, &subtitle, meta_size, sub_budget);
-        tr.draw_text(
+        let sub = fit_text(tr, &subtitle, &meta_style, sub_budget);
+        tr.draw_style(
             scene,
             &sub,
-            meta_size,
             colors.text_dim,
-            translated(transform, (title_x, meta_y)),
+            transform.pre_translate((title_x, meta_y).into()),
             None,
+            &meta_style,
         );
         // Right-aligned to the same gutter as the rows' time column, so the
-        // band header's "2 h ago" and the rows' "1 h ago" share one edge.
-        tr.draw_text(
+        // band header's "2 hr ago" and the rows' "1 hr ago" share one edge.
+        tr.draw_style(
             scene,
             &rel,
-            meta_size,
             colors.text_dim,
-            translated(
-                transform,
-                (row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y),
-            ),
+            transform.pre_translate((row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y).into()),
             None,
+            &meta_style,
         );
 
         // Author dots, packed tight, on the meta line's measured centre.
         let dot_cy = meta_y + f64::from(rel_h) / 2.0;
         let mut dx = row.x1 - TRAILING_INSET - 8.0 - f64::from(rel_w);
         for a in rg.authors.iter().take(3) {
-            let (r, g, b) = hue_to_rgb(a.avatar_hue);
+            let (r, g, b) = a.rgb();
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -2496,6 +2617,13 @@ impl ActivityTimeline {
         let name_w = if narrow { 46.0 } else { 54.0 };
         let mut x1 = row.x1 - 6.0;
         let chip = |x1: f64, w: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
+        if rg.is_section {
+            return GroupChips {
+                name: Rect::ZERO,
+                undo: None,
+                restore: None,
+            };
+        }
         let restore = if self.on_revert.is_some() && rg.restorable {
             let r = chip(x1, restore_w);
             x1 -= restore_w + 5.0;
@@ -2534,24 +2662,20 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
-
-        // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
-        // where the chip is painted); selected: solid accent with ink chosen
-        // against it, no edge.
+        // The filter chips are the shared chip: quiet at rest, a lift when
+        // chosen (HIG §9.5).
         let paint = FilterStripPaint {
             strip,
-            text_size: chip_text_size,
-            active_fill: crate::surface::chip_colors(theme, true).0,
-            idle_fill: crate::surface::chip_colors(theme, false).0,
-            active_text: theme
-                .tokens
-                .colors
-                .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
-            idle_text: theme.tokens.colors.text_dim,
+            chip_h: crate::widget::ChipFace::height(theme).min(strip.height()),
+        };
+        let chip_width = |tr: &mut TextRenderer, label: &str| {
+            crate::widget::ChipFace::intrinsic_width(
+                label,
+                crate::widget::ChipLead::None,
+                false,
+                tr,
+                theme,
+            )
         };
 
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
@@ -2566,8 +2690,7 @@ impl ActivityTimeline {
             format!("author:{}", self.author_query)
         };
         let author_full_w = if self.show_author_pill {
-            (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0) + 16.0)
-                .min(strip.width() * 0.45)
+            chip_width(text_renderer, &author_label).min(strip.width() * 0.45)
         } else {
             0.0
         };
@@ -2585,7 +2708,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(&l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
+                total += chip_width(tr, &l) + CHIP_GAP;
             }
             total
         };
@@ -2613,16 +2736,9 @@ impl ActivityTimeline {
             scene,
             transform,
             text: text_renderer,
-            ..
+            theme,
         } = ctx.reborrow();
-        let &FilterStripPaint {
-            strip,
-            text_size: chip_text_size,
-            active_fill,
-            idle_fill,
-            active_text,
-            idle_text,
-        } = paint;
+        let &FilterStripPaint { strip, chip_h } = paint;
         let mut x = strip.x0;
         for chip in ChipKind::ALL {
             let label = if use_short {
@@ -2630,9 +2746,13 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure(&label, chip_text_size, None);
-            let chip_w = f64::from(w) + 16.0;
-            let chip_h = (strip.height() - 8.0).max(20.0);
+            let chip_w = crate::widget::ChipFace::intrinsic_width(
+                &label,
+                crate::widget::ChipLead::None,
+                false,
+                text_renderer,
+                theme,
+            );
             let cy = f64::midpoint(strip.y0, strip.y1);
             // Stop rather than paint a chip half-under the author pill; an
             // unpainted chip is not in `chip_rects`, so it cannot be clicked.
@@ -2642,26 +2762,9 @@ impl ActivityTimeline {
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             self.chip_rects
                 .push((chip, self.hit_rect_within(chip_rect, strip)));
-            let active = self.active_chip == chip;
-            let body = if active { active_fill } else { idle_fill };
-            let text_color = if active { active_text } else { idle_text };
-            let edge = (!active).then(|| crate::surface::edge_on(body));
-            crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure(&label, chip_text_size, None);
-            text_renderer.draw_text(
-                scene,
-                &label,
-                chip_text_size,
-                text_color,
-                translated(
-                    transform,
-                    (
-                        chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
-                    ),
-                ),
-                None,
-            );
+            crate::widget::ChipFace::new(chip_rect, &label)
+                .selected(self.active_chip == chip)
+                .paint(scene, transform, text_renderer, theme);
             x += chip_w + CHIP_GAP;
         }
     }
@@ -2678,58 +2781,17 @@ impl ActivityTimeline {
             scene,
             transform,
             text: text_renderer,
-            ..
+            theme,
         } = ctx.reborrow();
-        let &FilterStripPaint {
-            strip,
-            text_size: chip_text_size,
-            active_fill,
-            idle_fill,
-            active_text,
-            idle_text,
-        } = paint;
+        let &FilterStripPaint { strip, chip_h } = paint;
         let cy = f64::midpoint(strip.y0, strip.y1);
-        let chip_h = (strip.height() - 8.0).max(20.0);
         let arx1 = strip.x1;
         let arx0 = arx1 - author_full_w;
         let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
         self.author_pill_rect = self.hit_rect_within(chip_rect, strip);
-        let drawn_author = fit_text(
-            text_renderer,
-            author_label,
-            chip_text_size,
-            chip_rect.width() - 12.0,
-        );
-        let body = if self.author_query.is_empty() {
-            idle_fill
-        } else {
-            active_fill
-        };
-        let text_color = if self.author_query.is_empty() {
-            idle_text
-        } else {
-            active_text
-        };
-        let edge = self
-            .author_query
-            .is_empty()
-            .then(|| crate::surface::edge_on(body));
-        crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-        let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
-        text_renderer.draw_text(
-            scene,
-            &drawn_author,
-            chip_text_size,
-            text_color,
-            translated(
-                transform,
-                (
-                    chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
-                    chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
-                ),
-            ),
-            None,
-        );
+        crate::widget::ChipFace::new(chip_rect, author_label)
+            .selected(!self.author_query.is_empty())
+            .paint(scene, transform, text_renderer, theme);
     }
 
     fn draw_selection_bar(
@@ -2756,11 +2818,11 @@ impl ActivityTimeline {
             scene,
             transform,
             bar,
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
             colors.surfaces.overlay,
         );
 
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         // `selection` is normalised so `b >= a` (see `set_selection`).
         let n = b.saturating_sub(a).saturating_add(1);
         let naming = matches!(
@@ -2771,7 +2833,7 @@ impl ActivityTimeline {
         let clear_label = crate::i18n!("history-selection-clear");
         let name_label = crate::i18n!("history-selection-name");
         let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
-            (f64::from(tr.measure(label, size, None).0) + 20.0).max(min)
+            (f64::from(tr.measure_style(label, None, &style).0) + 20.0).max(min)
         };
         let clear_w = chip_w(tr, &clear_label, 54.0);
         let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
@@ -2790,19 +2852,20 @@ impl ActivityTimeline {
 
         let label = crate::i18n!("history-selection-count", "count" => n);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
-        let shown = fit_text(tr, &label, size, label_budget);
-        let label_top = text_top(tr, size, bar.center().y);
-        tr.draw_text(
+        let shown = fit_text(tr, &label, &style, label_budget);
+        let label_top = text_top(tr, &style, bar.center().y);
+        tr.draw_style(
             scene,
             &shown,
-            size,
             colors.text_primary,
-            translated(transform, (bar.x0 + 10.0, label_top)),
+            transform.pre_translate((bar.x0 + 10.0, label_top).into()),
             None,
+            &style,
         );
 
         if naming {
-            let field_x0 = bar.x0 + 10.0 + f64::from(tr.measure(&shown, size, None).0) + 12.0;
+            let field_x0 =
+                bar.x0 + 10.0 + f64::from(tr.measure_style(&shown, None, &style).0) + 12.0;
             let field = Rect::new(
                 field_x0,
                 bar.center().y - 12.0,
@@ -2812,7 +2875,7 @@ impl ActivityTimeline {
             if field.width() > 40.0
                 && let Some(state) = self.naming.as_ref()
             {
-                state.field.draw(scene, transform, tr, theme, field, size);
+                state.field.draw(scene, transform, tr, theme, field, &style);
             }
         } else if self.on_name_group.is_some() {
             let action = Rect::new(
@@ -2836,26 +2899,12 @@ impl Widget for ActivityTimeline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -2933,6 +2982,15 @@ impl Widget for ActivityTimeline {
                 );
                 if !*ctx.handled {
                     self.handle_author_typeahead_key(logical_key, ctx.handled);
+                }
+            }
+            // An input method's text types into the author filter as keys do.
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) if self.naming.is_none() => {
+                let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                if !text.is_empty() {
+                    self.author_query.push_str(&text);
+                    self.rebuild();
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -3014,13 +3072,15 @@ impl Widget for ActivityTimeline {
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(item.depth.saturating_add(1))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused_row.as_ref()
-                                        == Some(&FocusedRow::Group(item.key.clone())),
-                                    expanded: Some(item.expanded),
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(
+                                            self.focused_row.as_ref()
+                                                == Some(&FocusedRow::Group(item.key.clone())),
+                                        )
+                                        .expanded(item.expanded),
+                                ),
                         )
                     }
                     VisualRow::Entry(entry, depth) => {
@@ -3041,7 +3101,7 @@ impl Widget for ActivityTimeline {
                                 .with_name(name)
                                 .with_description(
                                     [
-                                        op_class_glyph(item.op_class).to_owned(),
+                                        item.entry_kind.glyph().to_owned(),
                                         row_time(item, self.now()),
                                     ]
                                     .into_iter()
@@ -3052,15 +3112,17 @@ impl Widget for ActivityTimeline {
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(depth.saturating_add(1))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused_row.as_ref()
-                                        == Some(&FocusedRow::Entry(item.id)),
-                                    selected: self.selection.is_some_and(|(start, end)| {
-                                        *entry >= start && *entry <= end
-                                    }),
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(
+                                            self.focused_row.as_ref()
+                                                == Some(&FocusedRow::Entry(item.id)),
+                                        )
+                                        .selected(self.selection.is_some_and(|(start, end)| {
+                                            *entry >= start && *entry <= end
+                                        })),
+                                ),
                         )
                     }
                 }
@@ -3070,11 +3132,11 @@ impl Widget for ActivityTimeline {
             AccessNode::new(Role::List)
                 .with_name("History entries")
                 .with_description(description)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.has_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.has_focus),
+                )
                 .with_children(children),
         )
     }
@@ -3083,7 +3145,7 @@ impl Widget for ActivityTimeline {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -3157,17 +3219,21 @@ impl Widget for ActivityTimeline {
             .and_then(|naming| naming.field.ime_cursor_rect())
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let naming = self.naming.as_ref()?;
+        let scope = format!("{:?}:{:?}", naming.target, self.selection);
+        Some(crate::ime::scoped_fingerprint(
+            scope.as_bytes(),
+            naming.field.ime_edit_fingerprint(key)?,
+            key,
+        ))
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }
 
 impl ActivityTimeline {
@@ -3181,7 +3247,7 @@ impl ActivityTimeline {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.raised,
         );
     }
@@ -3196,47 +3262,47 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let (title, detail) = self.empty_state_lines();
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let small = (size - 1.0).max(10.0);
+        let style = theme.text(TextRole::Body);
+        let small = theme.text(TextRole::Caption);
         let rows_top = self.rows_top();
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = (rows_top + self.rect.y1 - PADDING) / 2.0;
         let budget = (self.rect.width() - 2.0 * PADDING - 16.0).max(0.0);
 
-        let title = fit_text(text_renderer, &title, size, budget);
-        let (w, h) = text_renderer.measure(&title, size, None);
+        let title = fit_text(text_renderer, &title, &style, budget);
+        let (w, h) = text_renderer.measure_style(&title, None, &style);
         let title_y = if detail.is_some() {
             cy - f64::from(h) - 14.0
         } else {
             cy - f64::from(h) / 2.0
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            size,
             theme.tokens.colors.text_dim,
-            translated(transform, (cx - f64::from(w) / 2.0, title_y)),
+            transform.pre_translate((cx - f64::from(w) / 2.0, title_y).into()),
             None,
+            &style,
         );
 
         self.clear_chip_rect = Rect::ZERO;
         if let Some(detail) = detail {
-            let detail = fit_text(text_renderer, &detail, small, budget);
-            let (dw, dh) = text_renderer.measure(&detail, small, None);
+            let detail = fit_text(text_renderer, &detail, &small, budget);
+            let (dw, dh) = text_renderer.measure_style(&detail, None, &small);
             let detail_y = title_y + f64::from(h) + 8.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                small,
                 theme.tokens.colors.text_dim,
-                translated(transform, (cx - f64::from(dw) / 2.0, detail_y)),
+                transform.pre_translate((cx - f64::from(dw) / 2.0, detail_y).into()),
                 None,
+                &small,
             );
 
             // `[Clear filters]` — the way back out. Without it the user has
             // to remember which chip they pressed to get here.
             let label = "Clear filters";
-            let (lw, lh) = text_renderer.measure(label, small, None);
+            let (lw, lh) = text_renderer.measure_style(label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
             let chip_h = f64::from(lh) + 10.0;
             let chip_y0 = detail_y + f64::from(dh) + 12.0;
@@ -3457,7 +3523,7 @@ impl ActivityTimeline {
                 *handled = true;
             }
             Key::Named(NamedKey::Backspace) => {
-                if self.author_query.pop().is_some() {
+                if crate::text_edit::delete_last_grapheme(&mut self.author_query) {
                     self.rebuild();
                     *handled = true;
                 }
@@ -3601,6 +3667,10 @@ impl ActivityTimeline {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
     ) {
+        if self.row_groups.get(g).is_some_and(|rg| rg.is_section) {
+            *handled = true;
+            return;
+        }
         // Undo hit-tested before restore: a click on Undo
         // must never fall through to the destructive Restore.
         if let Some(u) = self.group_undo_chip_rect(i)
@@ -3679,13 +3749,14 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press};
+    use crate::testing::dispatch;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
@@ -3717,7 +3788,7 @@ mod tests {
         let entries: Vec<HistoryEntry> = (0..8u8)
             .map(|i| {
                 let who = if i < 5 { "Alice" } else { "Bob" };
-                entry(OpClass::Splice, who, 1_000 + u64::from(i) * 30, i)
+                entry(EntryKind::Text, who, 1_000 + u64::from(i) * 30, i)
             })
             .collect();
         let mut t = ActivityTimeline::with_entries(entries);
@@ -3762,7 +3833,7 @@ mod tests {
                         (pw as u32, ph as u32),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");
@@ -3789,7 +3860,8 @@ mod tests {
                     clippy::cast_sign_loss,
                     reason = "a small test surface"
                 )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                    .render(&scene, theme.tokens.colors.surfaces.content);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -3845,15 +3917,15 @@ mod tests {
 
         fn provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows() {
             use tilo_actions::ActionContext;
-            let mut files = entry(OpClass::Splice, "Alice", 10, 1);
+            let mut files = entry(EntryKind::Text, "Alice", 10, 1);
             files.context = Some(
-                ActionContext::for_resource("Rename", "files:brief", "files.entry", "brief.md")
+                ActionContext::for_resource("files:brief", "files.entry", "brief.md")
                     .with_app("org.tilo.Files", "Files")
                     .with_group("workspace:a", "Alpha", "workspace"),
             );
-            let mut notes = entry(OpClass::Splice, "Alice", 11, 2);
+            let mut notes = entry(EntryKind::Text, "Alice", 11, 2);
             notes.context = Some(
-                ActionContext::for_resource("Edit", "notes:plan", "notes.document", "plan")
+                ActionContext::for_resource("notes:plan", "notes.document", "plan")
                     .with_app("org.tilo.Notes", "Notes")
                     .with_group("workspace:a", "Beta", "workspace"),
             );
@@ -3888,13 +3960,13 @@ mod tests {
         host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
     }
 
-    fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
+    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
         id_bytes[0] = id;
         HistoryEntry {
             id: HistoryEntryId(id_bytes),
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(ts))
@@ -3930,13 +4002,13 @@ mod tests {
     #[test]
     fn a_genesis_row_names_no_author_and_no_time() {
         use crate::a11y::Role;
-        let mut genesis = entry(OpClass::EditMeta, "Unknown participant", 0, 1);
+        let mut genesis = entry(EntryKind::Details, "Unknown participant", 0, 1);
         genesis.summary = "Created".into();
         genesis.context = Some(tilo_actions::ActionContext {
             facets: vec![crate::widget::history::genesis_facet()],
             ..tilo_actions::ActionContext::default()
         });
-        let entries = vec![genesis, entry(OpClass::Splice, "Alice", 10, 2)];
+        let entries = vec![genesis, entry(EntryKind::Text, "Alice", 10, 2)];
         let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
         let semantics = Widget::accessibility(&t).expect("timeline semantics");
         let rows: Vec<_> = semantics
@@ -3949,7 +4021,7 @@ mod tests {
             rows[0],
             (
                 Some("Created".to_owned()),
-                Some(op_class_glyph(OpClass::EditMeta).to_owned())
+                Some(EntryKind::Details.glyph().to_owned())
             ),
             "the version the document was created as, by no one at no time"
         );
@@ -3967,8 +4039,8 @@ mod tests {
         fn accessibility_reports_list_role_name_and_count() {
             use crate::a11y::Role;
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 10, 1),
-                entry(OpClass::Splice, "Bob", 20, 2),
+                entry(EntryKind::Text, "Alice", 10, 1),
+                entry(EntryKind::Text, "Bob", 20, 2),
             ];
             let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
             let node = Widget::accessibility(&t).expect("timeline is not presentational");
@@ -3981,7 +4053,7 @@ mod tests {
             use crate::a11y::{Action, Role};
             let activated = Rc::new(RefCell::new(Vec::new()));
             let received = activated.clone();
-            let entries = vec![entry(OpClass::Splice, "Alice", 10, 1)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 10, 1)];
             let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries)
                 .on_activate_entry(move |id| received.borrow_mut().push(*id));
             let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
@@ -3997,7 +4069,7 @@ mod tests {
                 &mut timeline,
                 &target,
                 &Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -4010,7 +4082,7 @@ mod tests {
                 &mut timeline,
                 &target,
                 &Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(timeline.selection(), Some((0, 0)));
@@ -4024,8 +4096,8 @@ mod tests {
 
         fn keyboard_navigation_moves_focus_and_selects_individual_rows() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 10, 1),
-                entry(OpClass::Splice, "Alice", 11, 2),
+                entry(EntryKind::Text, "Alice", 10, 1),
+                entry(EntryKind::Text, "Alice", 11, 2),
             ];
             let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
             timeline.set_all_expanded(true);
@@ -4040,9 +4112,9 @@ mod tests {
 
         fn hover_row_tracks_cursor_y() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Alice", 2, 2),
-                entry(OpClass::Splice, "Alice", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Alice", 2, 2),
+                entry(EntryKind::Text, "Alice", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             let row1 = t.row_rect(1).unwrap();
@@ -4064,64 +4136,13 @@ mod tests {
         hover_row_tracks_cursor_y();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    /// Build a `KeyEvent` over a zeroed buffer — winit 0.30's `KeyEventExtra`
-    /// is `pub(crate)`, so a struct literal is not available. Only the pub
-    /// fields the widget reads are overwritten.
+    /// Only the pub fields the widget reads are overwritten.
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an
-        // `Option` whose niche-optimised `None` is all-zero.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]
@@ -4146,8 +4167,8 @@ mod tests {
             let mut t = timeline_at(
                 Rect::new(0.0, 0.0, 400.0, 300.0),
                 vec![
-                    entry(OpClass::Splice, "Alice", 1, 1),
-                    entry(OpClass::Splice, "Bob", 2, 2),
+                    entry(EntryKind::Text, "Alice", 1, 1),
+                    entry(EntryKind::Text, "Bob", 2, 2),
                 ],
             );
             t.set_active_chip(ChipKind::Comments);
@@ -4168,7 +4189,7 @@ mod tests {
             // so the host labels it.
             let mut t = timeline_at(
                 Rect::new(0.0, 0.0, 400.0, 300.0),
-                vec![entry(OpClass::Splice, "Alice", 1, 1)],
+                vec![entry(EntryKind::Text, "Alice", 1, 1)],
             );
             t.set_filter(HistoryFilter {
                 time_range: Some((
@@ -4197,20 +4218,20 @@ mod tests {
     }
 
     #[test]
-    fn filters_narrow_by_op_class_and_author_and_clear() {
-        fn filter_by_op_class_hides_other_rows() {
+    fn filters_narrow_by_entry_kind_and_author_and_clear() {
+        fn filter_by_entry_kind_hides_other_rows() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
-                entry(OpClass::Move, "Carol", 3, 3),
-                entry(OpClass::Comment, "Dave", 4, 4),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
+                entry(EntryKind::Move, "Carol", 3, 3),
+                entry(EntryKind::Comment, "Dave", 4, 4),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             assert_eq!(t.visible_len(), 4);
             t.set_active_chip(ChipKind::Comments);
             assert_eq!(t.visible_len(), 2);
             for i in 0..t.visible_len() {
-                assert_eq!(t.visible_entry(i).unwrap().op_class, OpClass::Comment);
+                assert_eq!(t.visible_entry(i).unwrap().entry_kind, EntryKind::Comment);
             }
         }
 
@@ -4220,8 +4241,8 @@ mod tests {
             t.set_active_chip(ChipKind::Governance);
             assert_eq!(t.active_chip(), ChipKind::Governance);
             let entries = vec![
-                entry(OpClass::Comment, "Alice", 1, 1),
-                entry(OpClass::Govern, "Bob", 2, 2),
+                entry(EntryKind::Comment, "Alice", 1, 1),
+                entry(EntryKind::Access, "Bob", 2, 2),
             ];
             t.set_entries(entries);
             assert_eq!(t.visible_len(), 1, "Governance chip narrows to govern row");
@@ -4233,9 +4254,9 @@ mod tests {
             // No real paint pass, so seed chip_rects directly: five 60x24 chips
             // packed horizontally, matching what draw_filter_strip would produce.
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
-                entry(OpClass::Govern, "Carol", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
+                entry(EntryKind::Access, "Carol", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
 
@@ -4278,8 +4299,8 @@ mod tests {
 
         fn clear_filters_resets_the_widget_and_tells_the_host() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
             ];
             let cleared = Rc::new(RefCell::new(0usize));
             let c = cleared.clone();
@@ -4304,9 +4325,9 @@ mod tests {
 
         fn filter_by_author_typeahead_narrows_list() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Alicia", 2, 2),
-                entry(OpClass::Splice, "Bob", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Alicia", 2, 2),
+                entry(EntryKind::Text, "Bob", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_author_query("ali");
@@ -4317,8 +4338,8 @@ mod tests {
 
         fn typing_narrows_by_author_and_escape_or_backspace_widens_again() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Bob", 2, 2),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Bob", 2, 2),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), entries);
             dispatch(
@@ -4345,9 +4366,22 @@ mod tests {
             );
             assert_eq!(t.author_query(), "");
             assert_eq!(t.visible_len(), 2);
+
+            // An input method's commit types too, and Backspace takes back a
+            // whole accented letter, not half of it.
+            dispatch(
+                &mut t,
+                &WindowEvent::Ime(winit::event::Ime::Commit("bo\u{301}".into())),
+            );
+            assert_eq!(t.author_query(), "bo\u{301}");
+            dispatch(
+                &mut t,
+                &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
+            );
+            assert_eq!(t.author_query(), "b");
         }
 
-        filter_by_op_class_hides_other_rows();
+        filter_by_entry_kind_hides_other_rows();
         chip_strip_active_state_round_trips();
         chip_strip_click_toggles_active_chip();
         clear_filters_resets_the_widget_and_tells_the_host();
@@ -4358,7 +4392,7 @@ mod tests {
     #[test]
     fn revert_chip_fires_only_for_revertible_ops() {
         fn revert_callback_fires_on_chip_click() {
-            let entries = vec![entry(OpClass::Splice, "Alice", 1, 42)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 1, 42)];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 200.0), entries);
             let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -4378,11 +4412,11 @@ mod tests {
             assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
         }
 
-        fn non_revertible_op_classes_hide_chip() {
+        fn non_revertible_entry_kinds_hide_chip() {
             let entries = vec![
-                entry(OpClass::Comment, "Alice", 1, 1),
-                entry(OpClass::Govern, "Bob", 2, 2),
-                entry(OpClass::Splice, "Carol", 3, 3),
+                entry(EntryKind::Comment, "Alice", 1, 1),
+                entry(EntryKind::Access, "Bob", 2, 2),
+                entry(EntryKind::Text, "Carol", 3, 3),
             ];
             let t = editable_timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             assert!(t.revert_chip_rect(0).is_none(), "Comment must hide chip");
@@ -4394,7 +4428,7 @@ mod tests {
         }
 
         revert_callback_fires_on_chip_click();
-        non_revertible_op_classes_hide_chip();
+        non_revertible_entry_kinds_hide_chip();
     }
 
     #[test]
@@ -4403,7 +4437,7 @@ mod tests {
             // Automerge stamps in whole seconds, so a burst ties; newest-first
             // must fall back to causal order, not input order.
             let entries: Vec<HistoryEntry> = (0u8..5)
-                .map(|i| entry(OpClass::Splice, "Alice", 100, i))
+                .map(|i| entry(EntryKind::Text, "Alice", 100, i))
                 .collect();
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_newest_first(true);
@@ -4425,9 +4459,9 @@ mod tests {
 
         fn newest_first_reverses_chronological_order() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 100, 1),
-                entry(OpClass::Splice, "Alice", 200, 2),
-                entry(OpClass::Splice, "Alice", 300, 3),
+                entry(EntryKind::Text, "Alice", 100, 1),
+                entry(EntryKind::Text, "Alice", 200, 2),
+                entry(EntryKind::Text, "Alice", 300, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_newest_first(true);
@@ -4457,7 +4491,7 @@ mod tests {
             let entries: Vec<HistoryEntry> = (0u32..10_000)
                 .map(|i| {
                     entry(
-                        OpClass::Splice,
+                        EntryKind::Text,
                         "Alice",
                         u64::from(i),
                         u8::try_from(i % 251).unwrap_or(u8::MAX),
@@ -4500,7 +4534,7 @@ mod tests {
             // with `row_rect` one pixel either side of a seam between two rows
             // of *different* heights.
             let entries: Vec<HistoryEntry> = (0u8..40)
-                .map(|i| entry(OpClass::Splice, "Alice", u64::from(i), i))
+                .map(|i| entry(EntryKind::Text, "Alice", u64::from(i), i))
                 .collect();
             let mut t = timeline_at(Rect::new(0.0, 0.0, 500.0, 500.0), entries);
             // Forty changes by one author in forty seconds is one band, and it
@@ -4534,7 +4568,7 @@ mod tests {
         fn narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them() {
             // On a narrow pane the revert chip must still sit inside the row and
             // leave the summary somewhere to go.
-            let entries = vec![entry(OpClass::Splice, "Alice", 1, 1)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 1, 1)];
             let wide = editable_timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
             let narrow = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
 
@@ -4566,10 +4600,10 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
-    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4577,13 +4611,13 @@ mod group_tests {
 
     const NOW: u64 = 2_000_000;
 
-    fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
+    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
         id_bytes[0] = id;
         HistoryEntry {
             id: HistoryEntryId(id_bytes),
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(ts))
@@ -4670,7 +4704,7 @@ mod group_tests {
             let entries: Vec<HistoryEntry> = (0..6)
                 .map(|i| {
                     entry(
-                        OpClass::Govern,
+                        EntryKind::Access,
                         "Alice",
                         1_000_000u64.saturating_add(u64::from(i)),
                         i,
@@ -4715,66 +4749,16 @@ mod group_tests {
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an `Option`
-        // whose niche-optimised `None` is all-zero. winit 0.30 keeps
-        // `KeyEventExtra` crate-private, so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        dispatch_mod(t, event, Modifiers::default());
-    }
-
-    fn dispatch_mod(t: &mut ActivityTimeline, event: &WindowEvent, m: Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     /// Shift held down, built the same way winit reports it.
@@ -4805,7 +4789,7 @@ mod group_tests {
         (0..n)
             .map(|i| {
                 entry(
-                    OpClass::Splice,
+                    EntryKind::Text,
                     "Alice",
                     1_000_000u64.saturating_add(u64::from(i)),
                     i,
@@ -4844,10 +4828,10 @@ mod group_tests {
             // The flat list is the degenerate case, not a second mode: four changes
             // by four people are four groups of one, and a group of one is a row.
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1_000_000, 0),
-                entry(OpClass::Splice, "Bob", 1_000_001, 1),
-                entry(OpClass::Splice, "Carol", 1_000_002, 2),
-                entry(OpClass::Splice, "Dave", 1_000_003, 3),
+                entry(EntryKind::Text, "Alice", 1_000_000, 0),
+                entry(EntryKind::Text, "Bob", 1_000_001, 1),
+                entry(EntryKind::Text, "Carol", 1_000_002, 2),
+                entry(EntryKind::Text, "Dave", 1_000_003, 3),
             ];
             let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
             assert_eq!(t.row_count(), 4);
@@ -4875,7 +4859,7 @@ mod group_tests {
             // A new change lands while the reader is looking at it. The band must
             // absorb it and the count must move.
             let mut grown = entries;
-            grown.push(entry(OpClass::Splice, "Alice", 1_000_400, 99));
+            grown.push(entry(EntryKind::Text, "Alice", 1_000_400, 99));
             t.set_entries(grown);
             let sub = t.group_subtitle_at_row(0).unwrap();
             assert!(sub.contains("21 changes"), "got {sub:?}");
@@ -4895,7 +4879,7 @@ mod group_tests {
             let key = t.group_at_row(0).unwrap().0.to_string();
 
             let mut grown = typing_run(20);
-            grown.push(entry(OpClass::Splice, "Alice", 1_000_020, 99));
+            grown.push(entry(EntryKind::Text, "Alice", 1_000_020, 99));
             t.set_entries(grown);
             assert_eq!(t.group_at_row(0).unwrap().0, key, "same band, same key");
             assert!(
@@ -5229,7 +5213,7 @@ mod group_tests {
             let mut tr = TextRenderer::new();
             let theme = Theme::dark();
             let budget = name.x0 - (row.x0 + 26.0) - 8.0;
-            let shown = fit_text(&mut tr, &long, theme.tokens.typography.scale.sm, budget);
+            let shown = fit_text(&mut tr, &long, &theme.text(TextRole::Label), budget);
             assert!(
                 shown.chars().count() < long.chars().count(),
                 "the header's own budget must actually truncate this name"
@@ -5348,21 +5332,22 @@ mod group_tests {
 
         fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
             let theme = Theme::dark();
-            let size = theme.tokens.typography.scale.sm;
+            let style = theme.text(TextRole::Caption);
             for scale in [1.0_f32, 2.0] {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let cy = 40.0;
-                let top = text_top(&mut tr, size, cy);
-                let (_, h) = tr.measure("Alice", size, None);
+                let top = text_top(&mut tr, &style, cy);
+                let (_, h) = tr.measure_style("Alice", None, &style);
                 assert!(
                     (top + f64::from(h) / 2.0 - cy).abs() < 1e-6,
                     "at {scale}x: top {top} + half of {h} misses the row centre {cy}"
                 );
                 assert!(
-                    f64::from(h) > f64::from(size) * f64::from(scale),
-                    "the line box {h} is taller than the bare size {size} × {scale}; centring on \
-                 size/2 would sit the text low"
+                    f64::from(h) > f64::from(style.size),
+                    "the line box {h} is taller than the bare size {}; centring on \
+                 size/2 would sit the text low",
+                    style.size
                 );
             }
         }
@@ -5411,7 +5396,9 @@ mod group_tests {
 
             let r4 = t.row_rect(4).unwrap();
             dispatch(&mut t, &cursor_moved(r4.x0 + 40.0, r4.center().y));
-            dispatch_mod(&mut t, &mouse_press(), shift());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut t, &mouse_press());
             assert_eq!(t.selection(), Some((16, 19)), "shift-click extends the run");
 
             // Paint so the bar's action rect is where the click handler will look.
@@ -5441,16 +5428,16 @@ mod group_tests {
             let mut timeline = timeline_at(
                 Rect::new(0.0, 0.0, 620.0, 600.0),
                 vec![
-                    entry(OpClass::Splice, "Ada", 1, 1),
-                    entry(OpClass::Splice, "Ada", 3, 3),
+                    entry(EntryKind::Text, "Ada", 1, 1),
+                    entry(EntryKind::Text, "Ada", 3, 3),
                 ],
             );
             let selected_id = timeline.entries()[1].id;
             timeline.set_selection(Some((1, 1)));
             timeline.set_entries(vec![
-                entry(OpClass::Splice, "Ada", 1, 1),
-                entry(OpClass::Splice, "Ada", 2, 2),
-                entry(OpClass::Splice, "Ada", 3, 3),
+                entry(EntryKind::Text, "Ada", 1, 1),
+                entry(EntryKind::Text, "Ada", 2, 2),
+                entry(EntryKind::Text, "Ada", 3, 3),
             ]);
             assert_eq!(timeline.selection(), Some((2, 2)));
             assert_eq!(timeline.entries()[2].id, selected_id);
@@ -5460,8 +5447,8 @@ mod group_tests {
             let mut timeline = timeline_at(
                 Rect::new(0.0, 0.0, 620.0, 600.0),
                 vec![
-                    entry(OpClass::Splice, "Ada", 1, 1),
-                    entry(OpClass::Splice, "Maren", 2, 2),
+                    entry(EntryKind::Text, "Ada", 1, 1),
+                    entry(EntryKind::Text, "Maren", 2, 2),
                 ],
             );
             timeline.set_selection(Some((0, 0)));
@@ -5471,8 +5458,8 @@ mod group_tests {
 
         fn a_filter_that_hides_part_of_a_band_says_how_much_it_is_showing() {
             let mut entries = typing_run(10);
-            entries[3].op_class = OpClass::Comment;
-            entries[4].op_class = OpClass::Comment;
+            entries[3].entry_kind = EntryKind::Comment;
+            entries[4].entry_kind = EntryKind::Comment;
             // Comments split the band automatically, so name the whole run to force
             // one band that a filter can then cut into.
             let ids = (entries[0].id, entries[9].id);
@@ -5514,7 +5501,7 @@ mod group_tests {
             let entries: Vec<HistoryEntry> = (0u32..2000)
                 .map(|i| {
                     entry(
-                        OpClass::Splice,
+                        EntryKind::Text,
                         &format!("Person {}", i / 2),
                         1_000_000u64.saturating_add(u64::from(i)),
                         u8::try_from(i % 251).unwrap_or(u8::MAX),
@@ -5606,12 +5593,12 @@ mod group_tests {
             let mut entries: Vec<HistoryEntry> = Vec::new();
             // Local session, recent.
             for i in 0..4 {
-                entries.push(entry(OpClass::Splice, "Alice", NOW - 60 + u64::from(i), i));
+                entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
             }
             // Peer session, merged after but stamped days earlier.
             for i in 0..3 {
                 entries.push(entry(
-                    OpClass::Splice,
+                    EntryKind::Text,
                     "Ada",
                     NOW - 5 * day + u64::from(i),
                     10 + i,
@@ -5667,5 +5654,44 @@ mod group_tests {
         the_selection_bar_takes_its_space_out_of_the_scrollable_list();
         bands_are_ordered_by_their_clock_but_never_broken_apart();
         the_accessible_description_counts_bands_as_well_as_changes();
+    }
+
+    #[test]
+    fn day_headings_bucket_changes_into_today_yesterday_this_week_and_earlier() {
+        // 1970-01-01 was Thursday. Day 8 is Friday 1970-01-09; that week's
+        // Monday is day 4. Today / yesterday / mid-week / previous week.
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(8 * 86_400 + 12 * 3_600))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let secs = |day: u64, hour: u64| day * 86_400 + hour * 3_600;
+        let entries = vec![
+            entry(EntryKind::Text, "Ada", secs(8, 10), 1),
+            entry(EntryKind::Text, "Maren", secs(7, 16), 2),
+            entry(EntryKind::Text, "Quinten", secs(5, 9), 3),
+            entry(EntryKind::Text, "Xaver", secs(2, 11), 4),
+        ];
+        let mut t = ActivityTimeline::with_entries(entries);
+        t.set_now_for_test(now);
+        t.set_newest_first(true);
+        t.set_all_expanded(true);
+        t.set_show_day_headings(true);
+        let headings: Vec<String> = (0..t.row_count())
+            .filter_map(|i| t.group_title_at_row(i).map(str::to_string))
+            .filter(|title| {
+                matches!(
+                    title.as_str(),
+                    "Today" | "Yesterday" | "This week" | "Earlier"
+                )
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            vec!["Today", "Yesterday", "This week", "Earlier"],
+            "newest-first calendar headings, not work-band titles"
+        );
+        assert!(
+            (0..t.row_count()).any(|i| t.row_entry(i).is_some_and(|e| e.author.name == "Ada")),
+            "Today still lists today's change"
+        );
     }
 }

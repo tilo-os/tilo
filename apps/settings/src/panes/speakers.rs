@@ -7,66 +7,204 @@
 //! be calibrated with any microphone, and the result is a before/after
 //! proposal that changes nothing until it is applied.
 //!
-//! Every effect goes to the compositor through [`SpeakerService`] on a
-//! worker thread, and every effect is also a typed `settings.speaker-*`
-//! action, so agents and automation use the same door as the buttons.
+//! The steps are [`SpeakerFlow`] views; what reaches the compositor is a
+//! [`SpeakerEffect`], run through [`SpeakerService`] on a worker thread,
+//! so agents and automation use the same door as the buttons.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use ui::time::{Duration, Instant};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::collaboration::{
     CalibrationMemberState, CalibrationMicrophoneState, CalibrationPhaseInfo, SpeakerCommand,
-    SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+    SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
-use ui::doc::read_bool;
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::theme::Theme;
+use ui::tilo_resource::{self, Effect};
+use ui::time::{Duration, Instant};
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::actions::{LocalOperationStatus, SPEAKER_OPERATION_TYPE, SpeakerOperation};
+use crate::effects::SettingsEffect;
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::speaker_setup::{
     Arrangement, BrokerSpeakers, ROOM_EXTENT_MM, SpeakerService, SpeakerSetup, Step,
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
-    setting_row, setting_row_described, value_row,
+    Item, SettingsSection, StatusTone, block, card, cards, note, row, rows, semantic_status_pill,
+    setting_row, setting_row_described, slider_row, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-const BEGIN_KEY: &str = "speakers.begin.edit";
-const BACK_KEY: &str = "speakers.back.edit";
-const NEXT_KEY: &str = "speakers.next.edit";
-const PLAY_KEY: &str = "speakers.play.edit";
-const SKIP_KEY: &str = "speakers.skip.edit";
-const SAVE_KEY: &str = "speakers.save.edit";
-const CALIBRATE_KEY: &str = "speakers.calibrate.edit";
-const APPLY_KEY: &str = "speakers.apply.edit";
-const REVERT_KEY: &str = "speakers.revert.edit";
-const DISMISS_KEY: &str = "speakers.dismiss.edit";
-const CANCEL_KEY: &str = "speakers.cancel.edit";
-const DONE_KEY: &str = "speakers.done.edit";
-
-fn role_key(role: SpeakerRoleSpec) -> String {
-    format!("speakers.role.{}.edit", role_slug(role))
+/// What reaches the compositor's speaker sets.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum SpeakerEffect {
+    /// Save a speaker set; the other devices are asked to join.
+    #[effect(job, label = "Create speaker set")]
+    CreateSpeakerSet {
+        #[param("The set's name")]
+        name: String,
+        #[param("Each speaker: its device, output and role")]
+        members: Vec<SpeakerMemberSpec>,
+    },
+    /// Play a short sound on one output, to tell which speaker it is.
+    #[effect(job, label = "Play a sound")]
+    IdentifySpeaker {
+        #[param("The device the output is on")]
+        device: String,
+        #[param("The output's selector")]
+        output: String,
+    },
+    /// Measure a set with the offered microphones: the one at `listening`
+    /// (where the person sits), and every other except `excluded`.
+    #[effect(job, row, label = "Calibrate")]
+    CalibrateSpeakerSet {
+        #[param("The speaker set's id")]
+        group: String,
+        #[param("Devices whose microphones are not used")]
+        excluded: Vec<String>,
+        #[param("The device whose microphone is where the person sits")]
+        listening: Option<String>,
+    },
+    /// Stop measuring a set.
+    #[effect(job, row, label = "Cancel calibration")]
+    CancelCalibration {
+        #[param("The speaker set's id")]
+        group: String,
+    },
+    /// Apply a measured proposal.
+    #[effect(job, row, label = "Apply calibration")]
+    ApplyCalibration {
+        #[param("The speaker set's id")]
+        group: String,
+    },
+    /// Go back to how the set sounded before the last calibration.
+    #[effect(job, row, label = "Revert calibration")]
+    RevertCalibration {
+        #[param("The speaker set's id")]
+        group: String,
+    },
+    /// Discard a measured proposal.
+    #[effect(job, row, label = "Discard calibration")]
+    DismissCalibration {
+        #[param("The speaker set's id")]
+        group: String,
+    },
+    /// Delete a speaker set; its devices play on their own again.
+    #[effect(job, row, destructive, label = "Delete speaker set")]
+    DeleteSpeakerSet {
+        #[param("The speaker set's id")]
+        group: String,
+    },
 }
 
-fn group_key(action: &str, group: &str) -> String {
-    format!("speakers.group.{group}.{action}.edit")
+impl SpeakerEffect {
+    /// The shell command this effect asks for.
+    fn command(&self) -> SpeakerCommand {
+        match self.clone() {
+            Self::CreateSpeakerSet { name, members } => SpeakerCommand::Create { name, members },
+            Self::IdentifySpeaker { device, output } => SpeakerCommand::Identify { device, output },
+            Self::CalibrateSpeakerSet {
+                group,
+                excluded,
+                listening,
+            } => SpeakerCommand::StartCalibration {
+                group,
+                excluded,
+                listening,
+            },
+            Self::CancelCalibration { group } => SpeakerCommand::CancelCalibration { group },
+            Self::ApplyCalibration { group } => SpeakerCommand::ApplyCalibration { group },
+            Self::RevertCalibration { group } => SpeakerCommand::RevertCalibration { group },
+            Self::DismissCalibration { group } => SpeakerCommand::DismissCalibration { group },
+            Self::DeleteSpeakerSet { group } => SpeakerCommand::Delete { group },
+        }
+    }
 }
 
-fn speaker_play_key(index: usize) -> String {
-    format!("speakers.layout.{index}.play.edit")
+/// The steps of setting up and calibrating a speaker set.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum SpeakerFlow {
+    /// Start setting up a new speaker set.
+    #[effect(view)]
+    BeginSpeakerSetup,
+    /// Go back one step.
+    #[effect(view)]
+    SpeakerSetupBack,
+    /// Go on to the next step with what is chosen.
+    #[effect(view)]
+    ContinueSpeakerSetup,
+    /// Play the sound of the speaker being identified.
+    #[effect(view)]
+    PlayIdentifySound,
+    /// Play a sound on one chosen speaker, by its place in the list.
+    #[effect(view)]
+    PlaySpeaker { speaker: usize },
+    /// Leave the speaker being identified without a role.
+    #[effect(view)]
+    SkipSpeaker,
+    /// Say which speaker played: `left`, `right`, `center`, `lfe`,
+    /// `surround-left` or `surround-right`.
+    #[effect(view)]
+    AssignSpeakerRole { role: String },
+    /// Save the set as named.
+    #[effect(view)]
+    SaveSpeakerSet,
+    /// Calibrate the set shown with the microphones chosen.
+    #[effect(view)]
+    StartCalibration,
+    /// Open a saved set's calibration.
+    #[effect(view)]
+    OpenCalibration { group: String },
+    /// Close the flow and show the saved sets.
+    #[effect(view)]
+    CloseSpeakerSetup,
+}
+
+/// Run `effect` through the speaker service; `cx` is told how it ends.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: SpeakerEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    if !effect.command().valid() {
+        return Err(
+            "that speaker request is incomplete: check the names, members and ids".to_owned(),
+        );
+    }
+    let reply = cx.reply();
+    app.speakers()
+        .model()
+        .borrow_mut()
+        .start(effect, Some(reply));
+    Ok(Effected::Pending)
+}
+
+/// Take a step of the flow; a step that reaches the compositor invokes its
+/// [`SpeakerEffect`].
+pub(crate) fn answer_flow(
+    app: &SettingsApp,
+    step: SpeakerFlow,
+    _cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let job = app.speakers().model().borrow_mut().flow(step)?;
+    if let Some(job) = job {
+        app.host().invoke(job);
+    }
+    Ok(Effected::done())
 }
 
 const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
@@ -82,7 +220,10 @@ const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
 }
 
 fn trim_summary(trim: &SpeakerTrimInfo) -> String {
-    format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
+    format!(
+        "{:.1} ms delay, {:+.1} dB gain",
+        trim.delay_ms, trim.gain_db
+    )
 }
 
 /// Metres sound travels per millisecond at room temperature.
@@ -115,7 +256,7 @@ fn measured_text(
             &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
         ));
     }
-    parts.join(" · ")
+    parts.join("\n")
 }
 
 fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
@@ -139,14 +280,23 @@ fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
     }
 }
 
+fn role_from_slug(slug: &str) -> Option<SpeakerRoleSpec> {
+    [
+        SpeakerRoleSpec::Left,
+        SpeakerRoleSpec::Right,
+        SpeakerRoleSpec::Center,
+        SpeakerRoleSpec::Lfe,
+        SpeakerRoleSpec::SurroundLeft,
+        SpeakerRoleSpec::SurroundRight,
+    ]
+    .into_iter()
+    .find(|role| role_slug(*role) == slug)
+}
+
 /// What a finished background call was for.
-#[derive(Clone, Debug)]
 enum Purpose {
     Refresh,
-    /// A typed action whose admission token must be completed.
-    Operation(SpeakerOperation),
-    /// A button in the flow.
-    Flow(SpeakerOperation),
+    Effect(SpeakerEffect),
 }
 
 struct Finished {
@@ -154,15 +304,89 @@ struct Finished {
     result: Result<SpeakerReply, String>,
 }
 
-pub struct SpeakersPane {
+/// What the speakers area keeps for the window: the model, asked for the
+/// sets when first needed.
+pub struct SpeakersArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<SpeakersModel>>,
+}
+
+impl SpeakersArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The model, over the compositor, or over sample sets for a
+    /// screenshot.
+    pub fn model(&self) -> &Shared<SpeakersModel> {
+        self.model.get_or_init(|| {
+            let service: Arc<dyn SpeakerService> = if self.cx.reaches_devices() {
+                Arc::new(BrokerSpeakers)
+            } else {
+                Arc::new(SampleSpeakers)
+            };
+            Rc::new(std::cell::RefCell::new(SpeakersModel::new(
+                self.cx.clone(),
+                service,
+                !self.cx.reaches_devices(),
+            )))
+        })
+    }
+
+    /// Take in finished calls, if the model exists. Only an open pane
+    /// keeps asking for the sets again.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_finished();
+        }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per set this device leads, offering its calibration and
+    /// deletion.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        model
+            .setup
+            .groups()
+            .iter()
+            .filter(|group| group.led_here)
+            .map(|group| {
+                LiveRow::new(
+                    format!("settings.speaker-group:{}", group.id),
+                    "settings.speaker-group",
+                    group.name.clone(),
+                )
+                .operation(
+                    SettingsEffect::from(SpeakerEffect::DeleteSpeakerSet {
+                        group: group.id.clone(),
+                    })
+                    .bound(),
+                )
+            })
+            .collect()
+    }
+}
+
+pub struct SpeakersModel {
+    cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
+    sample: bool,
     finished_tx: Sender<Finished>,
     finished_rx: Receiver<Finished>,
     in_flight: usize,
     refreshing: bool,
     next_refresh: Instant,
-    delete_armed: HashSet<String>,
     arrangement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
     listening_state: ui::LocalState<String>,
@@ -171,37 +395,23 @@ pub struct SpeakersPane {
     room_points: ui::LocalState<Vec<(i32, i32)>>,
     placement_states: Vec<(ui::LocalState<f64>, ui::LocalState<f64>)>,
     last_room_points: Vec<(i32, i32)>,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    command_state: Option<ui::LocalState<Option<SpeakerOperation>>>,
-    operation_status: Option<ui::LocalState<LocalOperationStatus>>,
+    replies: Replies,
+    changed: bool,
 }
 
-impl Default for SpeakersPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SpeakersPane {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_service(Arc::new(BrokerSpeakers))
-    }
-
-    #[must_use]
-    pub fn with_service(service: Arc<dyn SpeakerService>) -> Self {
+impl SpeakersModel {
+    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
         let (finished_tx, finished_rx) = channel();
-        let mut pane = Self {
+        let mut model = Self {
+            cx,
             setup: SpeakerSetup::default(),
             service,
+            sample,
             finished_tx,
             finished_rx,
             in_flight: 0,
             refreshing: false,
             next_refresh: ui::time::now(),
-            delete_armed: HashSet::new(),
             arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
             name_state: ui::LocalState::new(t("speakers-default-name")),
             listening_state: ui::LocalState::new(String::new()),
@@ -210,26 +420,14 @@ impl SpeakersPane {
             room_points: ui::LocalState::new(Vec::new()),
             placement_states: Vec::new(),
             last_room_points: Vec::new(),
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
-            command_state: None,
-            operation_status: None,
+            replies: Replies::default(),
+            changed: false,
         };
-        pane.refresh();
-        pane
-    }
-
-    #[must_use]
-    pub fn with_command_state(mut self, state: &ui::LocalState<Option<SpeakerOperation>>) -> Self {
-        self.command_state = Some(state.clone());
-        self
-    }
-
-    #[must_use]
-    pub fn with_operation_status(mut self, status: &ui::LocalState<LocalOperationStatus>) -> Self {
-        self.operation_status = Some(status.clone());
-        self
+        model.refresh();
+        if sample {
+            model.poll_finished();
+        }
+        model
     }
 
     /// The flow state (tests read this).
@@ -242,6 +440,15 @@ impl SpeakersPane {
         let service = Arc::clone(&self.service);
         let finished = self.finished_tx.clone();
         self.in_flight = self.in_flight.saturating_add(1);
+        // Only the in-memory screenshot/test service runs here. Real broker
+        // calls keep their worker so device I/O never blocks the UI thread.
+        if self.sample {
+            let _ = finished.send(Finished {
+                purpose,
+                result: service.call(command),
+            });
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name("settings-speakers".into())
             .spawn(move || {
@@ -254,7 +461,7 @@ impl SpeakersPane {
                 "speakers-service-unreachable",
                 &[("error", error.to_string().into())],
             )));
-            self.structure_dirty = true;
+            self.changed = true;
         }
     }
 
@@ -266,35 +473,118 @@ impl SpeakersPane {
         self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
     }
 
-    fn run(&mut self, operation: SpeakerOperation, typed: bool) {
-        let command = operation.command();
-        self.call(
-            if typed {
-                Purpose::Operation(operation)
-            } else {
-                Purpose::Flow(operation)
-            },
-            command,
-        );
+    /// Ask the compositor for `effect`; `reply` is told how it ends.
+    fn start(&mut self, effect: SpeakerEffect, reply: Option<EffectReply>) {
+        if let Some(reply) = reply {
+            self.replies.wait(effect.id(), reply);
+        }
+        let command = effect.command();
+        self.call(Purpose::Effect(effect), command);
     }
 
-    fn finish_operation(&self, operation: &SpeakerOperation, result: Result<String, String>) {
-        let Some(status) = &self.operation_status else {
-            return;
+    /// Take `step`; the effect it starts, if it reaches the compositor.
+    fn flow(&mut self, step: SpeakerFlow) -> Result<Option<SpeakerEffect>, String> {
+        self.changed = true;
+        let job = match step {
+            SpeakerFlow::BeginSpeakerSetup => {
+                self.setup.begin();
+                self.arrangement_state.set(Arrangement::Stereo.label());
+                self.name_state.set(self.setup.name().to_string());
+                self.chosen_states.clear();
+                None
+            }
+            SpeakerFlow::SpeakerSetupBack => {
+                self.setup.back();
+                None
+            }
+            SpeakerFlow::CloseSpeakerSetup => {
+                self.setup.close();
+                None
+            }
+            SpeakerFlow::ContinueSpeakerSetup => {
+                match self.setup.step() {
+                    Step::ChooseOutputs => {
+                        let problem = self.setup.confirm_outputs().err();
+                        self.setup.set_message(problem);
+                    }
+                    Step::Layout => self.setup.finish_layout(),
+                    _ => {}
+                }
+                None
+            }
+            SpeakerFlow::PlayIdentifySound => match self.setup.identify_command() {
+                Some(SpeakerCommand::Identify { device, output }) => {
+                    Some(SpeakerEffect::IdentifySpeaker { device, output })
+                }
+                _ => None,
+            },
+            SpeakerFlow::PlaySpeaker { speaker } => {
+                let candidate = self
+                    .setup
+                    .chosen()
+                    .get(speaker)
+                    .cloned()
+                    .ok_or_else(|| format!("there is no speaker {speaker}"))?;
+                Some(SpeakerEffect::IdentifySpeaker {
+                    device: candidate.device,
+                    output: candidate.output,
+                })
+            }
+            SpeakerFlow::SkipSpeaker => {
+                self.setup.skip_identify();
+                None
+            }
+            SpeakerFlow::AssignSpeakerRole { role } => {
+                let role =
+                    role_from_slug(&role).ok_or_else(|| format!("`{role}` is not a role"))?;
+                let problem = self.setup.assign(role).err();
+                self.setup.set_message(problem);
+                None
+            }
+            SpeakerFlow::SaveSpeakerSet => match self.setup.save_command() {
+                Ok(SpeakerCommand::Create { name, members }) => {
+                    Some(SpeakerEffect::CreateSpeakerSet { name, members })
+                }
+                Ok(_) => None,
+                Err(problem) => {
+                    self.setup.set_message(Some(problem.clone()));
+                    return Err(problem);
+                }
+            },
+            SpeakerFlow::StartCalibration => {
+                let Step::Calibrate { group } = self.setup.step().clone() else {
+                    return Err("no speaker set is being calibrated".into());
+                };
+                match self.setup.calibrate_command(&group) {
+                    Ok(SpeakerCommand::StartCalibration {
+                        group,
+                        excluded,
+                        listening,
+                    }) => Some(SpeakerEffect::CalibrateSpeakerSet {
+                        group,
+                        excluded,
+                        listening,
+                    }),
+                    Ok(_) => None,
+                    Err(problem) => {
+                        self.setup.set_message(Some(problem.clone()));
+                        return Err(problem);
+                    }
+                }
+            }
+            SpeakerFlow::OpenCalibration { group } => {
+                self.setup.open_calibration(&group);
+                None
+            }
         };
-        let token = crate::actions::local_operation_token_for(SPEAKER_OPERATION_TYPE, operation);
-        status.set(match result {
-            Ok(message) => LocalOperationStatus::Succeeded { token, message },
-            Err(message) => LocalOperationStatus::Failed { token, message },
-        });
+        Ok(job)
     }
 
     fn adopt(&mut self, snapshot: SpeakerSnapshot) {
-        crate::speaker_setup::remember_snapshot(&snapshot);
         let before = self.setup.snapshot().clone();
         self.setup.update(snapshot);
         if self.setup.snapshot() != &before {
-            self.structure_dirty = true;
+            self.changed = true;
         }
     }
 
@@ -308,32 +598,28 @@ impl SpeakersPane {
                         Ok(SpeakerReply::Snapshot { snapshot }) => self.adopt(snapshot),
                         Ok(SpeakerReply::Rejected { reason }) | Err(reason) => {
                             self.setup.set_message(Some(reason));
-                            self.structure_dirty = true;
+                            self.changed = true;
                         }
                         Ok(SpeakerReply::Done { .. }) => {}
                     }
                 }
-                Purpose::Operation(operation) | Purpose::Flow(operation) => {
+                Purpose::Effect(effect) => {
                     let outcome = match finished.result {
                         Ok(SpeakerReply::Done { group }) => Ok(group),
                         Ok(SpeakerReply::Rejected { reason }) | Err(reason) => Err(reason),
                         Ok(SpeakerReply::Snapshot { .. }) => Err(t("speakers-service-unexpected")),
                     };
-                    self.after_operation(&operation, &outcome);
+                    self.after_effect(&effect, &outcome);
                     self.refresh();
                 }
             }
         }
     }
 
-    fn after_operation(
-        &mut self,
-        operation: &SpeakerOperation,
-        outcome: &Result<Option<String>, String>,
-    ) {
-        let message = match (outcome, operation) {
+    fn after_effect(&mut self, effect: &SpeakerEffect, outcome: &Result<Option<String>, String>) {
+        let message = match (outcome, effect) {
             (Err(reason), _) => Err(reason.clone()),
-            (Ok(group), SpeakerOperation::Create { name, .. }) => {
+            (Ok(group), SpeakerEffect::CreateSpeakerSet { name, .. }) => {
                 if let Some(group) = group {
                     self.setup.saved(group.clone());
                 }
@@ -342,25 +628,25 @@ impl SpeakersPane {
                     &[("name", name.as_str().into())],
                 ))
             }
-            (Ok(_), SpeakerOperation::Identify { .. }) => Ok(t("speakers-done-identify")),
-            (Ok(_), SpeakerOperation::Calibrate { .. }) => Ok(t("speakers-done-calibrate")),
-            (Ok(_), SpeakerOperation::CancelCalibration { .. }) => {
+            (Ok(_), SpeakerEffect::IdentifySpeaker { .. }) => Ok(t("speakers-done-identify")),
+            (Ok(_), SpeakerEffect::CalibrateSpeakerSet { .. }) => Ok(t("speakers-done-calibrate")),
+            (Ok(_), SpeakerEffect::CancelCalibration { .. }) => {
                 Ok(t("speakers-calibration-cancelled"))
             }
-            (Ok(_), SpeakerOperation::ApplyCalibration { .. }) => Ok(t("speakers-done-apply")),
-            (Ok(_), SpeakerOperation::RevertCalibration { .. }) => Ok(t("speakers-done-revert")),
-            (Ok(_), SpeakerOperation::DismissCalibration { .. }) => Ok(t("speakers-done-dismiss")),
-            (Ok(_), SpeakerOperation::Delete { .. }) => Ok(t("speakers-done-delete")),
+            (Ok(_), SpeakerEffect::ApplyCalibration { .. }) => Ok(t("speakers-done-apply")),
+            (Ok(_), SpeakerEffect::RevertCalibration { .. }) => Ok(t("speakers-done-revert")),
+            (Ok(_), SpeakerEffect::DismissCalibration { .. }) => Ok(t("speakers-done-dismiss")),
+            (Ok(_), SpeakerEffect::DeleteSpeakerSet { .. }) => Ok(t("speakers-done-delete")),
         };
         match &message {
             Err(reason) => self.setup.set_message(Some(reason.clone())),
-            Ok(_) if !matches!(operation, SpeakerOperation::Create { .. }) => {
+            Ok(_) if !matches!(effect, SpeakerEffect::CreateSpeakerSet { .. }) => {
                 self.setup.set_message(None);
             }
             Ok(_) => {}
         }
-        self.finish_operation(operation, message);
-        self.structure_dirty = true;
+        self.replies.finish(effect.id(), message);
+        self.changed = true;
     }
 
     /// Reflect flow state into the widget-bound local states, so a rebuilt
@@ -387,7 +673,7 @@ impl SpeakersPane {
                     )
                 })
                 .collect();
-            self.structure_dirty = true;
+            self.changed = true;
         }
         let calibrating = match self.setup.step() {
             Step::Calibrate { group } => Some(group.clone()),
@@ -416,7 +702,7 @@ impl SpeakersPane {
                     )
                 })
                 .collect();
-            self.structure_dirty = true;
+            self.changed = true;
         }
         if let Some(listening) = calibrating
             .as_deref()
@@ -424,7 +710,7 @@ impl SpeakersPane {
             && self.listening_state.with(Clone::clone) != listening.label
         {
             self.listening_state.set(listening.label);
-            self.structure_dirty = true;
+            self.changed = true;
         }
         let points = self.setup.room_points();
         if points != self.last_room_points {
@@ -449,7 +735,7 @@ impl SpeakersPane {
             && arrangement != self.setup.arrangement()
         {
             self.setup.set_arrangement(arrangement);
-            self.structure_dirty = true;
+            self.changed = true;
         }
         let name = self.name_state.with(Clone::clone);
         if name != self.setup.name() {
@@ -464,7 +750,7 @@ impl SpeakersPane {
                 && self.setup.is_chosen(candidate) != wanted
             {
                 self.setup.toggle(candidate);
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
         if let Step::Calibrate { group } = self.setup.step().clone() {
@@ -480,7 +766,7 @@ impl SpeakersPane {
                     .is_none_or(|listening| listening.device != microphone.device)
             {
                 self.setup.set_listening(&microphone.device);
-                self.structure_dirty = true;
+                self.changed = true;
             }
             let extras = self.setup.extra_microphones(&group);
             for (device, state) in &self.microphone_states {
@@ -491,7 +777,7 @@ impl SpeakersPane {
                     && self.setup.also_listens(microphone) != wanted
                 {
                     self.setup.set_also_listens(device, wanted);
-                    self.structure_dirty = true;
+                    self.changed = true;
                 }
             }
         }
@@ -512,13 +798,13 @@ impl SpeakersPane {
                 }
             }
             if self.setup.room_points() != self.last_room_points {
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
     }
 
     /// "Where you sit" and "Also listen with" for the calibrate step.
-    fn microphone_rows(&self, group: &str) -> Vec<Box<dyn Widget>> {
+    fn microphone_rows(&self, group: &str) -> Vec<Item> {
         let mut body = Vec::new();
         let choices = self.setup.listening_choices(group);
         let Some(listening) = self.setup.listening(group) else {
@@ -534,14 +820,14 @@ impl SpeakersPane {
         .with_id("speakers.listening")
         .with_accessible_name(t("speakers-listening-title"))
         .with_placeholder(&listening.label);
-        body.push(choice_row_described(
+        body.push(setting_row_described(
             &t("speakers-listening-title"),
             &t("speakers-listening-description"),
             Box::new(chooser),
         ));
         let extras = self.setup.extra_microphones(group);
         if !extras.is_empty() {
-            body.push(caption(&t("speakers-also-listen-caption")));
+            body.push(note(&t("speakers-also-listen-caption")));
         }
         for microphone in &extras {
             let title = if microphone.local {
@@ -578,202 +864,38 @@ impl SpeakersPane {
         body
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass consumes every latch of the flow in step order"
-    )]
-    fn read_latches(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let mut take = |key: &str| {
-            let pressed = read_bool(state, root, key) == Some(true);
-            if pressed {
-                let _ = state.put(root, key, false);
-            }
-            pressed
-        };
-        if take(BEGIN_KEY) {
-            self.setup.begin();
-            self.arrangement_state.set(Arrangement::Stereo.label());
-            self.name_state.set(self.setup.name().to_string());
-            self.chosen_states.clear();
-            self.structure_dirty = true;
-        }
-        if take(BACK_KEY) {
-            self.setup.back();
-            self.structure_dirty = true;
-        }
-        if take(DONE_KEY) {
-            self.setup.close();
-            self.structure_dirty = true;
-        }
-        if take(NEXT_KEY) {
-            match self.setup.step() {
-                Step::ChooseOutputs => {
-                    if let Err(problem) = self.setup.confirm_outputs() {
-                        self.setup.set_message(Some(problem));
-                    } else {
-                        self.setup.set_message(None);
-                    }
-                }
-                Step::Layout => self.setup.finish_layout(),
-                _ => {}
-            }
-            self.structure_dirty = true;
-        }
-        if take(PLAY_KEY)
-            && let Some(SpeakerCommand::Identify { device, output }) = self.setup.identify_command()
-        {
-            self.run(SpeakerOperation::Identify { device, output }, false);
-            self.structure_dirty = true;
-        }
-        if take(SKIP_KEY) {
-            self.setup.skip_identify();
-            self.structure_dirty = true;
-        }
-        for role in [
-            SpeakerRoleSpec::Left,
-            SpeakerRoleSpec::Right,
-            SpeakerRoleSpec::Center,
-            SpeakerRoleSpec::Lfe,
-            SpeakerRoleSpec::SurroundLeft,
-            SpeakerRoleSpec::SurroundRight,
-        ] {
-            if take(&role_key(role)) {
-                if let Err(problem) = self.setup.assign(role) {
-                    self.setup.set_message(Some(problem));
-                } else {
-                    self.setup.set_message(None);
-                }
-                self.structure_dirty = true;
-            }
-        }
-        for index in 0..self.setup.chosen().len() {
-            if take(&speaker_play_key(index))
-                && let Some(candidate) = self.setup.chosen().get(index).cloned()
-            {
-                self.run(
-                    SpeakerOperation::Identify {
-                        device: candidate.device,
-                        output: candidate.output,
-                    },
-                    false,
-                );
-            }
-        }
-        if take(SAVE_KEY) {
-            match self.setup.save_command() {
-                Ok(SpeakerCommand::Create { name, members }) => {
-                    self.run(SpeakerOperation::Create { name, members }, false);
-                }
-                Ok(_) => {}
-                Err(problem) => self.setup.set_message(Some(problem)),
-            }
-            self.structure_dirty = true;
-        }
-        let calibrating = match self.setup.step() {
-            Step::Calibrate { group } => Some(group.clone()),
-            _ => None,
-        };
-        if let Some(group) = calibrating {
-            if take(CALIBRATE_KEY) {
-                match self.setup.calibrate_command(&group) {
-                    Ok(SpeakerCommand::StartCalibration {
-                        group,
-                        excluded,
-                        listening,
-                    }) => self.run(
-                        SpeakerOperation::Calibrate {
-                            group,
-                            excluded,
-                            listening,
-                        },
-                        false,
-                    ),
-                    Ok(_) => {}
-                    Err(problem) => self.setup.set_message(Some(problem)),
-                }
-                self.structure_dirty = true;
-            }
-            for (key, operation) in [
-                (
-                    APPLY_KEY,
-                    SpeakerOperation::ApplyCalibration {
-                        group: group.clone(),
-                    },
-                ),
-                (
-                    REVERT_KEY,
-                    SpeakerOperation::RevertCalibration {
-                        group: group.clone(),
-                    },
-                ),
-                (
-                    CANCEL_KEY,
-                    SpeakerOperation::CancelCalibration {
-                        group: group.clone(),
-                    },
-                ),
-                (DISMISS_KEY, SpeakerOperation::DismissCalibration { group }),
-            ] {
-                if take(key) {
-                    self.run(operation, false);
-                }
-            }
-        }
-        for group in self.setup.groups().to_vec() {
-            if take(&group_key("calibrate", &group.id)) {
-                self.setup.open_calibration(&group.id);
-                self.structure_dirty = true;
-            }
-            if take(&group_key("delete", &group.id)) {
-                if self.delete_armed.remove(&group.id) {
-                    self.run(
-                        SpeakerOperation::Delete {
-                            group: group.id.clone(),
-                        },
-                        false,
-                    );
-                } else {
-                    self.delete_armed.insert(group.id.clone());
-                }
-                self.structure_dirty = true;
-            }
-            if take(&group_key("keep", &group.id)) {
-                self.delete_armed.remove(&group.id);
-                self.structure_dirty = true;
-            }
-        }
-    }
-
-    fn nav_buttons(back: bool, next: Option<(&str, &str, bool)>) -> Box<dyn Widget> {
-        let mut row = ui::widget::Row::new();
+    fn nav_buttons(&self, back: bool, next: Option<(&str, &str, bool)>) -> Item {
+        let mut buttons = ui::widget::Row::new();
         if back {
-            row = row.push(Box::new(Button::new(
-                "speakers.back",
-                &t("speakers-back"),
-                Some(BACK_KEY),
+            buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                Button::new("speakers.back", &t("speakers-back")),
+                SpeakerFlow::SpeakerSetupBack,
             )));
         }
-        row = row.push(Box::new(ui::widget::Spacer::new()));
+        buttons = buttons.push(Box::new(ui::widget::Spacer::new()));
         if let Some((id, label, enabled)) = next {
-            let key = match id {
-                "speakers.save" => SAVE_KEY,
-                _ => NEXT_KEY,
+            let step = match id {
+                "speakers.save" => SpeakerFlow::SaveSpeakerSet,
+                _ => SpeakerFlow::ContinueSpeakerSetup,
             };
-            row = row.push(Box::new(
-                Button::new(id, label, Some(key))
-                    .primary()
-                    .with_enabled(enabled),
+            buttons = buttons.push(Box::new(
+                self.cx.bind_invocation(
+                    Button::new(id, label)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(enabled),
+                    step,
+                ),
             ));
         }
-        Box::new(row)
+        row(Box::new(buttons))
     }
 
-    fn message_rows(&self) -> Vec<Box<dyn Widget>> {
-        self.setup.message().map(caption).into_iter().collect()
+    fn message_rows(&self) -> Vec<Item> {
+        self.setup.message().map(note).into_iter().collect()
     }
 
     /// One saved set: its members, readiness, playback and actions.
-    fn group_row(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Box<dyn Widget> {
+    fn group_row(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Item {
         let ready = group
             .members
             .iter()
@@ -821,31 +943,28 @@ impl SpeakersPane {
             ));
         }
         if group.led_here {
-            let calibrate = group_key("calibrate", &group.id);
-            actions = actions.push(Box::new(Button::new(
-                &calibrate,
-                &t("speakers-calibrate-button"),
-                Some(&calibrate),
-            )));
-            let delete = group_key("delete", &group.id);
-            if self.delete_armed.contains(&group.id) {
-                let keep = group_key("keep", &group.id);
-                actions = actions
-                    .push(Box::new(Button::new(
-                        &keep,
-                        &t("speakers-keep"),
-                        Some(&keep),
-                    )))
-                    .push(Box::new(
-                        Button::new(&delete, &t("speakers-delete"), Some(&delete)).danger(),
-                    ));
-            } else {
-                actions = actions.push(Box::new(Button::new(
-                    &delete,
-                    &t("speakers-delete-arm"),
-                    Some(&delete),
-                )));
-            }
+            actions = actions
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("speakers.group.{}.calibrate", group.id),
+                        &t("speakers-calibrate-button"),
+                    ),
+                    SpeakerFlow::OpenCalibration {
+                        group: group.id.clone(),
+                    },
+                )))
+                .push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("speakers.group.{}.delete", group.id),
+                            &t("speakers-delete"),
+                        )
+                        .role(ui::widget::ButtonRole::Destructive),
+                        SpeakerEffect::DeleteSpeakerSet {
+                            group: group.id.clone(),
+                        },
+                    ),
+                ));
         }
         let mut description = if group.led_here {
             summary
@@ -872,10 +991,10 @@ impl SpeakersPane {
         setting_row_described(&group.name, &description, Box::new(actions))
     }
 
-    fn build_overview(&self) -> Vec<Box<dyn Widget>> {
+    fn build_overview(&self) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         let group_rows = if self.setup.groups().is_empty() {
-            vec![caption(&t("speakers-overview-empty"))]
+            vec![note(&t("speakers-overview-empty"))]
         } else {
             self.setup
                 .groups()
@@ -885,18 +1004,22 @@ impl SpeakersPane {
         };
         let mut body = group_rows;
         body.extend(self.message_rows());
-        body.push(Box::new(
+        body.push(row(Box::new(
             ui::widget::Row::new()
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(Box::new(
-                    Button::new("speakers.begin", &t("speakers-begin"), Some(BEGIN_KEY)).primary(),
+                    self.cx.bind_invocation(
+                        Button::new("speakers.begin", &t("speakers-begin"))
+                            .role(ui::widget::ButtonRole::Primary),
+                        SpeakerFlow::BeginSpeakerSetup,
+                    ),
                 )),
-        ));
+        )));
         sections.push(card(&t("speakers-overview-title"), rows(body)));
         sections
     }
 
-    fn build_choose(&self) -> Vec<Box<dyn Widget>> {
+    fn build_choose(&self) -> Vec<SettingsSection> {
         let arrangement = Dropdown::from_state(
             Arrangement::ALL
                 .iter()
@@ -907,13 +1030,13 @@ impl SpeakersPane {
         .with_id("speakers.arrangement")
         .with_accessible_name(t("speakers-arrangement"));
         let candidates = self.setup.candidates();
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-arrangement"),
             &self.setup.arrangement().description(),
             Box::new(arrangement),
         )];
         if candidates.is_empty() {
-            body.push(caption(&t("speakers-no-outputs")));
+            body.push(note(&t("speakers-no-outputs")));
         }
         for (candidate, (_, _, state)) in candidates.iter().zip(&self.chosen_states) {
             body.push(setting_row_described(
@@ -937,10 +1060,10 @@ impl SpeakersPane {
             ));
         }
         if let Some(problem) = self.setup.outputs_problem() {
-            body.push(caption(&problem));
+            body.push(note(&problem));
         }
         body.extend(self.message_rows());
-        body.push(Self::nav_buttons(
+        body.push(self.nav_buttons(
             true,
             Some((
                 "speakers.next",
@@ -951,49 +1074,56 @@ impl SpeakersPane {
         vec![card(&t("speakers-choose-title"), rows(body))]
     }
 
-    fn build_identify(&self, index: usize, played: bool) -> Vec<Box<dyn Widget>> {
+    fn build_identify(&self, index: usize, played: bool) -> Vec<SettingsSection> {
         let count = self.setup.chosen().len();
-        let mut body = vec![caption(&t_args(
+        let mut body = vec![note(&t_args(
             "speakers-identify-intro",
             &[
                 ("index", index.saturating_add(1).to_string().into()),
                 ("count", count.to_string().into()),
             ],
         ))];
-        body.push(Box::new(
-            ui::widget::Row::new()
-                .push(Box::new(
-                    Button::new("speakers.play", &t("speakers-play-sound"), Some(PLAY_KEY))
+        body.push(row(Box::new(
+            ui::widget::Row::new().push(Box::new(
+                self.cx.bind_invocation(
+                    Button::new("speakers.play", &t("speakers-play-sound"))
                         .with_icon(ui::icons::Icon::Volume2),
-                ))
-                .push(Box::new(ui::widget::Spacer::new())),
-        ));
+                    SpeakerFlow::PlayIdentifySound,
+                ),
+            )),
+        )));
         if self.setup.arrangement() == Arrangement::Room {
-            body.push(caption(&t("speakers-identify-room-next")));
-            body.push(Self::nav_buttons(true, None));
-            body.push(Box::new(
+            body.push(note(&t("speakers-identify-room-next")));
+            body.push(self.nav_buttons(true, None));
+            body.push(row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(
-                        Button::new("speakers.skip", &t("speakers-next-speaker"), Some(SKIP_KEY))
-                            .primary(),
+                        self.cx.bind_invocation(
+                            Button::new("speakers.skip", &t("speakers-next-speaker"))
+                                .role(ui::widget::ButtonRole::Primary),
+                            SpeakerFlow::SkipSpeaker,
+                        ),
                     )),
-            ));
+            )));
         } else {
             let mut answers = ui::widget::Row::new();
             for role in self.setup.remaining_roles() {
-                let key = role_key(role);
                 answers = answers.push(Box::new(
-                    Button::new(
-                        &format!("speakers.role.{}", role_slug(role)),
-                        &role_answer(role),
-                        Some(&key),
-                    )
-                    .with_enabled(played)
-                    .with_accessible_name(&t_args(
-                        "speakers-identify-answer",
-                        &[("role", role_text(role).into())],
-                    )),
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("speakers.role.{}", role_slug(role)),
+                            &role_answer(role),
+                        )
+                        .with_enabled(played)
+                        .with_accessible_name(&t_args(
+                            "speakers-identify-answer",
+                            &[("role", role_text(role).into())],
+                        )),
+                        SpeakerFlow::AssignSpeakerRole {
+                            role: role_slug(role).to_owned(),
+                        },
+                    ),
                 ));
             }
             body.push(setting_row(
@@ -1001,15 +1131,15 @@ impl SpeakersPane {
                 Box::new(answers),
             ));
             if !played {
-                body.push(caption(&t("speakers-identify-play-first")));
+                body.push(note(&t("speakers-identify-play-first")));
             }
             body.extend(self.message_rows());
-            body.push(Self::nav_buttons(true, None));
+            body.push(self.nav_buttons(true, None));
         }
         vec![card(&t("speakers-identify-title"), rows(body))]
     }
 
-    fn build_layout(&self) -> Vec<Box<dyn Widget>> {
+    fn build_layout(&self) -> Vec<SettingsSection> {
         let labels = self
             .setup
             .chosen()
@@ -1017,12 +1147,14 @@ impl SpeakersPane {
             .map(|candidate| candidate.device_label.clone())
             .collect::<Vec<_>>();
         let mut body = vec![
-            caption(&t("speakers-layout-intro")),
-            Box::new(RoomCanvas::new(self.room_points.clone(), labels.clone())),
+            note(&t("speakers-layout-intro")),
+            block(Box::new(RoomCanvas::new(
+                self.room_points.clone(),
+                labels.clone(),
+            ))),
         ];
         for (index, ((x, y), label)) in self.placement_states.iter().zip(&labels).enumerate() {
-            let play = speaker_play_key(index);
-            body.push(setting_row(
+            body.push(slider_row(
                 label,
                 Box::new(
                     ui::widget::Row::new()
@@ -1043,19 +1175,25 @@ impl SpeakersPane {
                                 )),
                         ))
                         .push(Box::new(
-                            Button::new(&play, &t("speakers-layout-play"), Some(&play))
+                            self.cx.bind_invocation(
+                                Button::new(
+                                    &format!("speakers.layout.{index}.play"),
+                                    &t("speakers-layout-play"),
+                                )
                                 .with_accessible_name(&t_args(
                                     "speakers-layout-play-on",
                                     &[("label", label.as_str().into())],
                                 )),
+                                SpeakerFlow::PlaySpeaker { speaker: index },
+                            ),
                         )),
                 ),
             ));
         }
         if let Some(problem) = self.setup.layout_problem() {
-            body.push(caption(&problem));
+            body.push(note(&problem));
         }
-        body.push(Self::nav_buttons(
+        body.push(self.nav_buttons(
             true,
             Some((
                 "speakers.next",
@@ -1066,12 +1204,12 @@ impl SpeakersPane {
         vec![card(&t("speakers-layout-title"), rows(body))]
     }
 
-    fn build_name(&self) -> Vec<Box<dyn Widget>> {
+    fn build_name(&self) -> Vec<SettingsSection> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_placeholder(t("speakers-name-placeholder"))
             .with_accessible_name(t("speakers-name"));
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-name"),
             &t("speakers-name-description"),
             Box::new(name),
@@ -1082,9 +1220,9 @@ impl SpeakersPane {
                 &role.map_or_else(|| "—".to_string(), role_text),
             ));
         }
-        body.push(caption(&t("speakers-name-join-note")));
+        body.push(note(&t("speakers-name-join-note")));
         body.extend(self.message_rows());
-        body.push(Self::nav_buttons(
+        body.push(self.nav_buttons(
             true,
             Some(("speakers.save", &t("speakers-save"), self.in_flight == 0)),
         ));
@@ -1095,19 +1233,18 @@ impl SpeakersPane {
         clippy::too_many_lines,
         reason = "one card lists members, measurement progress and the proposal actions together"
     )]
-    fn build_calibrate(&self, group: &str) -> Vec<Box<dyn Widget>> {
+    fn build_calibrate(&self, group: &str) -> Vec<SettingsSection> {
         let Some(known) = self.setup.group(group) else {
             let mut body = self.message_rows();
-            body.push(caption(&t("speakers-saving")));
-            body.push(Box::new(
+            body.push(note(&t("speakers-saving")));
+            body.push(row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
-                    .push(Box::new(Button::new(
-                        "speakers.done",
-                        &t("speakers-done"),
-                        Some(DONE_KEY),
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new("speakers.done", &t("speakers-done")),
+                        SpeakerFlow::CloseSpeakerSetup,
                     ))),
-            ));
+            )));
             return vec![card(&t("speakers-saved-title"), rows(body))];
         };
         let mut body = Vec::new();
@@ -1145,7 +1282,7 @@ impl SpeakersPane {
         }
         if let Some(run) = run {
             if let Some(label) = &run.listening_label {
-                body.push(caption(&t_args(
+                body.push(note(&t_args(
                     "speakers-run-aligned-for",
                     &[("label", label.as_str().into())],
                 )));
@@ -1188,68 +1325,77 @@ impl SpeakersPane {
                 body.push(value_row(&label, &microphone_run_text(&microphone.state)));
             }
             if run.phase == CalibrationPhaseInfo::WaitingForMicrophones {
-                body.push(caption(&t("speakers-run-waiting-for-microphones")));
+                body.push(note(&t("speakers-run-waiting-for-microphones")));
             }
             if let Some(message) = &run.message {
-                body.push(caption(message));
+                body.push(note(message));
             }
         }
         body.extend(self.message_rows());
         let mut actions = ui::widget::Row::new()
-            .push(Box::new(Button::new(
-                "speakers.done",
-                &t("speakers-done"),
-                Some(DONE_KEY),
+            .push(Box::new(self.cx.bind_invocation(
+                Button::new("speakers.done", &t("speakers-done")),
+                SpeakerFlow::CloseSpeakerSetup,
             )))
             .push(Box::new(ui::widget::Spacer::new()));
         match phase {
             Some(CalibrationPhaseInfo::Proposed) => {
                 actions = actions
-                    .push(Box::new(Button::new(
-                        "speakers.dismiss",
-                        &t("speakers-discard"),
-                        Some(DISMISS_KEY),
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new("speakers.dismiss", &t("speakers-discard")),
+                        SpeakerEffect::DismissCalibration {
+                            group: group.to_owned(),
+                        },
                     )))
                     .push(Box::new(
-                        Button::new("speakers.apply", &t("speakers-apply"), Some(APPLY_KEY))
-                            .primary(),
+                        self.cx.bind_invocation(
+                            Button::new("speakers.apply", &t("speakers-apply"))
+                                .role(ui::widget::ButtonRole::Primary),
+                            SpeakerEffect::ApplyCalibration {
+                                group: group.to_owned(),
+                            },
+                        ),
                     ));
             }
             Some(CalibrationPhaseInfo::Applied) => {
-                actions = actions.push(Box::new(Button::new(
-                    "speakers.revert",
-                    &t("speakers-revert"),
-                    Some(REVERT_KEY),
+                actions = actions.push(Box::new(self.cx.bind_invocation(
+                    Button::new("speakers.revert", &t("speakers-revert")),
+                    SpeakerEffect::RevertCalibration {
+                        group: group.to_owned(),
+                    },
                 )));
             }
             Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones) => {
-                actions = actions.push(Box::new(Button::new(
-                    "speakers.cancel",
-                    &t("speakers-calibration-cancel"),
-                    Some(CANCEL_KEY),
+                actions = actions.push(Box::new(self.cx.bind_invocation(
+                    Button::new("speakers.cancel", &t("speakers-calibration-cancel")),
+                    SpeakerEffect::CancelCalibration {
+                        group: group.to_owned(),
+                    },
                 )));
             }
             Some(CalibrationPhaseInfo::Failed) | None => {
                 let problem = self.setup.calibration_problem(group);
                 if let Some(problem) = &problem {
-                    body.push(caption(problem));
+                    body.push(note(problem));
                 }
                 actions = actions.push(Box::new(
-                    Button::new(
-                        "speakers.calibrate",
-                        &t(if phase.is_some() {
-                            "speakers-try-again"
-                        } else {
-                            "speakers-calibrate-button"
-                        }),
-                        Some(CALIBRATE_KEY),
-                    )
-                    .primary()
-                    .with_enabled(problem.is_none()),
+                    self.cx.bind_invocation(
+                        Button::new(
+                            "speakers.calibrate",
+                            &t(if phase.is_some() {
+                                "speakers-try-again"
+                            } else {
+                                "speakers-calibrate-button"
+                            }),
+                        )
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(problem.is_none()),
+                        SpeakerFlow::StartCalibration,
+                    ),
                 ));
             }
         }
-        body.push(Box::new(actions));
+        body.push(row(Box::new(actions)));
         vec![card(
             &t_args(
                 "speakers-calibrate-title",
@@ -1263,7 +1409,7 @@ impl SpeakersPane {
         if !self.setup.snapshot().media_enabled && !self.refreshing {
             return cards(vec![card(
                 &t("speakers-overview-title"),
-                rows(vec![caption(&t("speakers-media-off"))]),
+                rows(vec![note(&t("speakers-media-off"))]),
             )]);
         }
         cards(match self.setup.step().clone() {
@@ -1292,130 +1438,91 @@ fn from_unit(unit: f64) -> i32 {
     ((unit.clamp(0.0, 1.0) - 0.5) * 2.0 * f64::from(ROOM_EXTENT_MM)).round() as i32
 }
 
-impl Widget for SpeakersPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+impl PaneModel for SpeakersModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
+    }
+
+    fn poll(&mut self) -> bool {
         self.poll_finished();
-        if let Some(command_state) = &self.command_state
-            && let Some(operation) = command_state.get()
-        {
-            command_state.set(None);
-            self.run(operation, true);
-        }
         self.read_controls();
-        self.read_latches(state, root);
         self.sync_bound_states();
         if ui::time::now() >= self.next_refresh {
             self.refresh();
         }
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, root);
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            composed.apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        own || self
-            .composed
-            .as_mut()
-            .is_some_and(|composed| composed.take_structure_dirty())
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.in_flight > 0 {
-            Some(ui::time::now() + POLL_INTERVAL)
-        } else {
-            Some(self.next_refresh)
-        }
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
         "SpeakersPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn busy(&self) -> bool {
+        self.in_flight > 0
+    }
+
+    fn next_wake(&self) -> Option<Instant> {
+        Some(self.next_refresh)
+    }
+}
+
+/// The speaker sets a screenshot and the crate's tests show: one stereo
+/// pair led here, and two devices that could join. Every command succeeds.
+struct SampleSpeakers;
+
+impl SpeakerService for SampleSpeakers {
+    fn call(&self, command: SpeakerCommand) -> Result<SpeakerReply, String> {
+        use ui::collaboration::{
+            SpeakerDeviceInfo, SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo,
+            SpeakerMemberStatus,
+        };
+        let device = |id: &str, local: bool| SpeakerDeviceInfo {
+            id: id.into(),
+            label: id.into(),
+            online: true,
+            local,
+            can_join: true,
+            outputs: vec![SpeakerEndpointInfo {
+                selector: "0a".repeat(16),
+                label: "Speakers".into(),
+                is_default: true,
+            }],
+            microphones: Vec::new(),
+        };
+        let member = |device: &str, role| SpeakerMemberInfo {
+            device: device.into(),
+            device_label: device.into(),
+            output: "0a".repeat(16),
+            output_label: None,
+            role,
+            status: SpeakerMemberStatus::Ready,
+            trim: SpeakerTrimInfo::default(),
+        };
+        Ok(match command {
+            SpeakerCommand::Snapshot => SpeakerReply::Snapshot {
+                snapshot: SpeakerSnapshot {
+                    media_enabled: true,
+                    devices: vec![device("Desk", true), device("Shelf", false)],
+                    groups: vec![SpeakerGroupInfo {
+                        id: "cd".repeat(16),
+                        name: "Living room".into(),
+                        leader_label: "Desk".into(),
+                        led_here: true,
+                        members: vec![
+                            member("Desk", SpeakerRoleSpec::Left),
+                            member("Shelf", SpeakerRoleSpec::Right),
+                        ],
+                        playback: None,
+                        microphones: Vec::new(),
+                    }],
+                    calibrations: Vec::new(),
+                },
+            },
+            SpeakerCommand::Create { .. } => SpeakerReply::Done {
+                group: Some("ab".repeat(16)),
+            },
+            _ => SpeakerReply::Done { group: None },
+        })
     }
 }
 
@@ -1428,10 +1535,8 @@ struct RoomCanvas {
     rect: Rect,
     cursor: Point,
     dragging: Option<usize>,
+    marker_radius: f64,
 }
-
-const CANVAS_HEIGHT: f32 = 260.0; // floor-plan height, not a spacing token
-const DOT_RADIUS: f64 = 11.0; // speaker marker size on the floor plan
 
 impl RoomCanvas {
     fn new(points: ui::LocalState<Vec<(i32, i32)>>, labels: Vec<String>) -> Self {
@@ -1441,6 +1546,7 @@ impl RoomCanvas {
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             dragging: None,
+            marker_radius: f64::from(ui::tokens::Metrics::BASE.icon_md) / 2.0,
         }
     }
 
@@ -1449,7 +1555,7 @@ impl RoomCanvas {
         let half = (self.rect.width() / 2.0)
             .min(self.rect.height() / 2.0)
             .max(1.0);
-        f64::from(ROOM_EXTENT_MM) / (half - DOT_RADIUS).max(1.0)
+        f64::from(ROOM_EXTENT_MM) / (half - self.marker_radius).max(1.0)
     }
 
     fn origin(&self) -> Point {
@@ -1488,16 +1594,18 @@ impl Widget for RoomCanvas {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.marker_radius = f64::from(theme.tokens.metrics.icon_md) / 2.0;
         let node = ui::widget::TaffyTreeExt::leaf_node(
             taffy,
             taffy::Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(CANVAS_HEIGHT),
+                    height: taffy::Dimension::auto(),
                 },
+                aspect_ratio: Some(16.0 / 13.0),
                 ..Default::default()
             },
         );
@@ -1505,15 +1613,7 @@ impl Widget for RoomCanvas {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1524,21 +1624,8 @@ impl Widget for RoomCanvas {
         _presence: &ui::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.overlay_subtle,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
+        let radius = f64::from(theme.tokens.radii.panel);
+        ui::surface::card(scene, transform, self.rect, radius, colors.overlay_subtle);
         let origin = self.origin();
         for ring in [1_000, 2_000, 3_000, 4_000] {
             let ring_radius = f64::from(ring) / self.scale();
@@ -1567,24 +1654,24 @@ impl Widget for RoomCanvas {
             None,
             &Circle::new(origin, 5.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("speakers-room-you"),
-            theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
             None,
+            &theme.text(ui::TextRole::Caption),
         );
         let points = self.points.with(Clone::clone);
         for (index, point) in points.iter().enumerate() {
             let center = self.to_screen(*point);
-            let fill = colors.categorical(index);
+            let fill = colors.presence.series(index);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 fill,
                 None,
-                &Circle::new(center, DOT_RADIUS),
+                &Circle::new(center, self.marker_radius),
             );
             if self.dragging == Some(index) {
                 scene.stroke(
@@ -1592,17 +1679,19 @@ impl Widget for RoomCanvas {
                     transform,
                     colors.border_focus,
                     None,
-                    &Circle::new(center, DOT_RADIUS + 3.0),
+                    &Circle::new(center, self.marker_radius + 3.0),
                 );
             }
             if let Some(label) = self.labels.get(index) {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     label,
-                    theme.tokens.typography.scale.xs,
                     colors.text_primary,
-                    transform.pre_translate((center.x + DOT_RADIUS + 4.0, center.y - 7.0).into()),
-                    Some(140.0),
+                    transform.pre_translate(
+                        (center.x + self.marker_radius + 4.0, center.y - 7.0).into(),
+                    ),
+                    Some(theme.tokens.metrics.chooser_width),
+                    &theme.text(ui::TextRole::Caption),
                 );
             }
         }
@@ -1611,8 +1700,7 @@ impl Widget for RoomCanvas {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(index) = self.dragging {
                     let moved = self.to_room(self.cursor);
                     self.points.update(|points| {
@@ -1633,7 +1721,7 @@ impl Widget for RoomCanvas {
                     .iter()
                     .enumerate()
                     .map(|(index, point)| (index, self.to_screen(*point).distance(self.cursor)))
-                    .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
+                    .filter(|(_, distance)| *distance <= self.marker_radius * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
                 *ctx.handled |= self.dragging.is_some();
@@ -1656,10 +1744,6 @@ impl Widget for RoomCanvas {
     fn test_id(&self) -> Option<&str> {
         Some("speakers.room")
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -1672,6 +1756,23 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = SpeakersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            1,
+            "the speaker group publishes on the first read"
+        );
+        let model = area.model().borrow();
+        assert_eq!(
+            model.in_flight, 0,
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.setup.groups().len(), 1);
+    }
 
     /// Answers from a fixed snapshot and records every command.
     struct FakeService {
@@ -1748,12 +1849,21 @@ mod tests {
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: Duration = Duration::from_secs(30);
 
-    /// Run sync passes until the pane has no call in flight.
-    fn settle(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
+    fn model(service: Arc<FakeService>) -> SpeakersModel {
+        let profile = tempfile::tempdir().unwrap();
+        SpeakersModel::new(
+            PaneCx::in_file(profile.path().join("settings.json")),
+            service,
+            false,
+        )
+    }
+
+    /// Run passes until the model has no call in flight.
+    fn settle(model: &mut SpeakersModel) {
         let deadline = ui::time::now() + HANG_BOUND;
         while ui::time::now() < deadline {
-            pane.sync(doc, &automerge::ROOT);
-            if pane.in_flight == 0 {
+            let _ = model.poll();
+            if model.in_flight == 0 {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -1761,30 +1871,33 @@ mod tests {
         panic!("speaker calls did not settle");
     }
 
-    fn press(pane: &mut SpeakersPane, doc: &mut AutoCommit, key: &str) {
-        doc.put(automerge::ROOT, key, true).unwrap();
-        settle(pane, doc);
+    /// Take `step` as its button does: the effect it starts runs too.
+    fn press(model: &mut SpeakersModel, step: SpeakerFlow) {
+        if let Some(job) = model.flow(step).unwrap() {
+            model.start(job, None);
+        }
+        settle(model);
     }
 
     #[test]
     fn the_buttons_walk_a_stereo_pair_from_choice_to_saved() {
         let service = fake();
-        let mut pane = SpeakersPane::with_service(service.clone());
-        let mut doc = AutoCommit::new();
-        settle(&mut pane, &mut doc);
+        let mut pane = model(service.clone());
+        settle(&mut pane);
         assert_eq!(pane.setup().groups().len(), 1);
-        press(&mut pane, &mut doc, BEGIN_KEY);
+        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
         assert_eq!(pane.setup().step(), &Step::ChooseOutputs);
-        settle(&mut pane, &mut doc);
+        settle(&mut pane);
         for (_, _, state) in &pane.chosen_states {
             state.set(true);
         }
-        press(&mut pane, &mut doc, NEXT_KEY);
+        settle(&mut pane);
+        press(&mut pane, SpeakerFlow::ContinueSpeakerSetup);
         assert!(matches!(
             pane.setup().step(),
             Step::Identify { index: 0, .. }
         ));
-        press(&mut pane, &mut doc, PLAY_KEY);
+        press(&mut pane, SpeakerFlow::PlayIdentifySound);
         assert!(
             service
                 .commands
@@ -1796,10 +1909,16 @@ mod tests {
                     SpeakerCommand::Identify { device, .. } if device == "desk"
                 ))
         );
-        press(&mut pane, &mut doc, &role_key(SpeakerRoleSpec::Left));
+        press(
+            &mut pane,
+            SpeakerFlow::AssignSpeakerRole {
+                role: "left".into(),
+            },
+        );
         assert_eq!(pane.setup().step(), &Step::Name);
         pane.name_state.set("Living room".into());
-        press(&mut pane, &mut doc, SAVE_KEY);
+        settle(&mut pane);
+        press(&mut pane, SpeakerFlow::SaveSpeakerSet);
         let created = service
             .commands
             .lock()
@@ -1821,21 +1940,23 @@ mod tests {
         );
     }
 
+    /// A refused effect reports the compositor's reason; deleting a set
+    /// asks first.
     #[test]
-    fn a_typed_action_runs_through_the_same_service_and_reports_its_outcome() {
+    fn effects_report_the_compositors_answer() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
         let service = fake();
-        let commands = ui::LocalState::new(None);
-        let status = ui::LocalState::new(LocalOperationStatus::Idle);
-        let mut pane = SpeakersPane::with_service(service.clone())
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        settle(&mut pane, &mut doc);
-        let operation = SpeakerOperation::Delete {
-            group: "cd".repeat(16),
-        };
-        commands.set(Some(operation.clone()));
-        settle(&mut pane, &mut doc);
+        let mut pane = model(service.clone());
+        settle(&mut pane);
+        pane.start(
+            SpeakerEffect::DeleteSpeakerSet {
+                group: "cd".repeat(16),
+            },
+            None,
+        );
+        settle(&mut pane);
         assert!(
             service
                 .commands
@@ -1845,46 +1966,28 @@ mod tests {
                     group: "cd".repeat(16)
                 })
         );
-        assert_eq!(
-            status.with(Clone::clone),
-            LocalOperationStatus::Failed {
-                token: crate::actions::local_operation_token_for(
-                    SPEAKER_OPERATION_TYPE,
-                    &operation
-                ),
-                message: "that speaker set is gone".into(),
-            }
-        );
+        assert_eq!(pane.setup().message(), Some("that speaker set is gone"));
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let group = "cd".repeat(16);
+        app.harness().wait_until(HANG_BOUND, |harness| {
+            has_speaker_group(&harness.resources())
+        });
+        app.effect_on(
+            &format!("settings.speaker-group:{group}"),
+            &SettingsEffect::from(SpeakerEffect::DeleteSpeakerSet { group }),
+        )
+        .expect_err("deleting a set asks first");
     }
 
-    #[test]
-    fn deleting_from_the_overview_asks_for_confirmation_first() {
-        let service = fake();
-        let mut pane = SpeakersPane::with_service(service.clone());
-        let mut doc = AutoCommit::new();
-        settle(&mut pane, &mut doc);
-        let delete = group_key("delete", &"cd".repeat(16));
-        press(&mut pane, &mut doc, &delete);
-        assert!(
-            !service
-                .commands
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|command| matches!(command, SpeakerCommand::Delete { .. }))
-        );
-        press(&mut pane, &mut doc, &delete);
-        assert!(
-            service
-                .commands
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|command| matches!(command, SpeakerCommand::Delete { .. }))
-        );
+    fn has_speaker_group(resources: &[ui::tilo_actions::Resource]) -> bool {
+        resources.iter().any(|resource| {
+            resource.id.as_str().starts_with("settings.speaker-group:")
+                || has_speaker_group(&resource.children)
+        })
     }
 
-    fn microphone_switch(pane: &SpeakersPane, device: &str) -> ui::LocalState<bool> {
+    fn microphone_switch(pane: &SpeakersModel, device: &str) -> ui::LocalState<bool> {
         pane.microphone_states
             .iter()
             .find(|(known, _)| known == device)
@@ -1894,16 +1997,26 @@ mod tests {
 
     /// The set's own shelf listens too by default; the phone is switched on,
     /// the listening position moves to it, and the shelf is switched off.
-    fn sit_at_the_phone_without_the_shelf(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
+    fn sit_at_the_phone_without_the_shelf(pane: &mut SpeakersModel) {
         let phone = microphone_switch(pane, "phone");
         assert!(!phone.with(|on| *on));
         assert!(microphone_switch(pane, "shelf").with(|on| *on));
         phone.set(true);
-        settle(pane, doc);
-        pane.listening_state.set("phone · Microphone".into());
-        settle(pane, doc);
+        settle(pane);
+        let Step::Calibrate { group } = pane.setup.step() else {
+            panic!("the speaker set must be ready to calibrate");
+        };
+        let phone_label = pane
+            .setup
+            .listening_choices(group)
+            .into_iter()
+            .find(|microphone| microphone.device == "phone")
+            .expect("the phone microphone is available")
+            .label;
+        pane.listening_state.set(phone_label);
+        settle(pane);
         microphone_switch(pane, "shelf").set(false);
-        settle(pane, doc);
+        settle(pane);
     }
 
     #[test]
@@ -1924,19 +2037,24 @@ mod tests {
                     });
             }
         }
-        let mut pane = SpeakersPane::with_service(service.clone());
-        let mut doc = AutoCommit::new();
-        settle(&mut pane, &mut doc);
+        let mut pane = model(service.clone());
+        settle(&mut pane);
         let group = "cd".repeat(16);
-        press(&mut pane, &mut doc, &group_key("calibrate", &group));
+        press(
+            &mut pane,
+            SpeakerFlow::OpenCalibration {
+                group: group.clone(),
+            },
+        );
+        settle(&mut pane);
         assert_eq!(
             pane.setup().step(),
             &Step::Calibrate {
                 group: group.clone()
             }
         );
-        sit_at_the_phone_without_the_shelf(&mut pane, &mut doc);
-        press(&mut pane, &mut doc, CALIBRATE_KEY);
+        sit_at_the_phone_without_the_shelf(&mut pane);
+        press(&mut pane, SpeakerFlow::StartCalibration);
         assert!(
             service
                 .commands
@@ -1978,7 +2096,7 @@ mod tests {
                 message: None,
             });
         pane.refresh();
-        settle(&mut pane, &mut doc);
+        settle(&mut pane);
         assert!(
             !service
                 .commands
@@ -1988,7 +2106,13 @@ mod tests {
                 .any(|command| matches!(command, SpeakerCommand::ApplyCalibration { .. })),
             "a proposal is never applied implicitly"
         );
-        press(&mut pane, &mut doc, APPLY_KEY);
+        pane.start(
+            SpeakerEffect::ApplyCalibration {
+                group: group.clone(),
+            },
+            None,
+        );
+        settle(&mut pane);
         assert!(
             service
                 .commands

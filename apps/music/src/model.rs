@@ -1,14 +1,16 @@
 //! Pure data model for the Music app.
 //!
 //! The catalog (artists / albums / tracks) and user-authored playlists are
-//! collaborative plain structs mirrored by [`crate::doc`] into Automerge.
+//! the collaborative [`Library`] record: `#[derive(Model)]` is its whole
+//! storage contract.
 //! Cache/download and live playback values share these render types, but are
 //! authoritative only on the current device; widgets overlay them after a
 //! shared-library refresh rather than syncing them to peers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
 
 /// Stable identifiers. We use short string ids (not UUIDs) for the seeded
 /// sample catalog so the document is readable and the ids are stable across
@@ -19,9 +21,11 @@ pub type TrackId = String;
 pub type PlaylistId = String;
 
 /// One artist in the catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Artist {
     pub id: ArtistId,
+    /// Name
+    #[model(label)]
     pub name: String,
     /// Free-text genre tag, shown on the artist detail header.
     pub genre: String,
@@ -30,20 +34,25 @@ pub struct Artist {
 }
 
 /// One album (or single/EP) in the catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Album {
     pub id: AlbumId,
+    /// Title
+    #[model(label)]
     pub title: String,
     pub artist_id: ArtistId,
     pub year: u32,
 }
 
-/// One track. `yt_id` is the YouTube-Music video id used to resolve a
+/// One track. The historical `yt_id` field holds a source key: a `YouTube`
+/// video id or a namespaced Spotify URI. `YouTube` keys resolve a
 /// streamable audio URL via the [`crate::backend`] worker; for the offline
 /// sample library it is a synthetic id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Track {
     pub id: TrackId,
+    /// Title
+    #[model(label)]
     pub title: String,
     pub album_id: AlbumId,
     pub artist_id: ArtistId,
@@ -51,7 +60,7 @@ pub struct Track {
     pub track_no: u32,
     /// Duration in whole seconds.
     pub duration_s: u32,
-    /// YouTube-Music video id (streaming source key).
+    /// Source key: a `YouTube` video id or a namespaced Spotify URI.
     pub yt_id: String,
     /// Play count, used by "most played" sorting and stats.
     pub plays: u64,
@@ -63,68 +72,86 @@ impl Track {
     }
 }
 
-/// A user-curated playlist: an ordered list of track ids.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A track from the streaming catalogue (a search hit, a chart entry, an
+/// album page) with the album and artist it belongs to: what the library
+/// imports once the track is played.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CatalogueTrack {
+    pub track: Track,
+    pub album: Album,
+    pub artist: Artist,
+}
+
+/// A user-curated playlist: an ordered list of the library's tracks, each
+/// at most once. Its tracks are items keyed by the track id, so adding,
+/// removing and moving one merges with what others do to the rest.
+#[derive(Clone, Debug, PartialEq, Model)]
+#[model(check = Playlist::valid)]
 pub struct Playlist {
+    /// The playlist's id: its item in the library.
+    #[model(readonly)]
     pub id: PlaylistId,
+    /// Name
+    #[model(label)]
     pub name: String,
+    /// Description
     pub description: String,
-    pub track_ids: Vec<TrackId>,
-    /// Stable sparse order keys for each membership. The rendered
-    /// `track_ids` vector is sorted from these keys; keeping them in the
-    /// projection lets UI and resource actions author an absolute move rather
-    /// than replaying a fragile pair of list indices.
-    #[serde(default)]
-    pub track_ranks: BTreeMap<TrackId, i64>,
-    /// Optional portable playlist cover: an HTTPS URL or a bounded embedded PNG
-    /// data URL normalized from the file portal. Empty ⇒ procedural placeholder.
-    #[serde(default)]
+    /// Tracks, in order, as items keyed by track id. Taking a song off a
+    /// playlist asks nothing: it stays in the library.
+    #[model(remove = "quiet")]
+    pub tracks: Collection<TrackId>,
+    /// Cover: an HTTPS URL or a bounded embedded PNG data URL; empty for
+    /// the procedural placeholder.
     pub cover: String,
 }
 
 impl Playlist {
-    const ORDER_STEP: i64 = 1_048_576;
-
-    /// Absolute sparse rank for appending a new membership.
-    pub fn append_rank(&self) -> i64 {
-        self.track_ranks
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(-Self::ORDER_STEP)
-            .saturating_add(Self::ORDER_STEP)
+    /// An empty playlist named `name`, stored as the item `id`.
+    pub fn named(id: &str, name: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            description: String::new(),
+            tracks: Collection::new(),
+            cover: String::new(),
+        }
     }
 
-    /// Absolute sparse rank that moves `track` to `to` in the visible order.
-    /// Ties are resolved by stable track id by the document projection, so
-    /// even exhausted gaps remain deterministic across replicas.
-    pub fn rank_for_move(&self, track: &str, to: usize) -> Option<i64> {
-        let mut remaining = self
-            .track_ids
-            .iter()
-            .filter(|id| id.as_str() != track)
-            .collect::<Vec<_>>();
-        let insert = to.min(remaining.len());
-        let previous = insert.checked_sub(1).and_then(|index| {
-            remaining
-                .get(index)
-                .and_then(|id| self.track_ranks.get(id.as_str()))
-                .copied()
-        });
-        let next = remaining
-            .get(insert)
-            .and_then(|id| self.track_ranks.get(id.as_str()))
-            .copied();
-        remaining.clear();
-        Some(match (previous, next) {
-            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
-                previous + (next - previous) / 2
-            }
-            (Some(previous), Some(_) | None) => previous.saturating_add(1),
-            (None, Some(next)) => next.saturating_sub(Self::ORDER_STEP),
-            (None, None) if self.track_ids.iter().any(|id| id == track) => 0,
-            (None, None) => return None,
-        })
+    /// The track ids, in order.
+    pub fn track_ids(&self) -> Vec<TrackId> {
+        self.tracks.values().cloned().collect()
+    }
+
+    /// How many tracks it holds.
+    pub fn len(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// Whether it holds no track.
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty()
+    }
+
+    /// Whether it holds `track`.
+    pub fn contains(&self, track: &str) -> bool {
+        self.tracks.contains(&Id::from_raw(track))
+    }
+
+    /// Append `track`, unless it holds it already.
+    pub fn push(&mut self, track: &str) {
+        if !self.contains(track) {
+            self.tracks.push(Id::from_raw(track), track.to_owned());
+        }
+    }
+
+    /// A cover is one peers can show.
+    fn valid(&self) -> Result<(), Refusal> {
+        if !crate::actions::portable_cover_value(&self.cover) {
+            return Err(Refusal::new(
+                "playlist covers must be HTTPS URLs or bounded embedded PNG data",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -167,13 +194,6 @@ impl RepeatMode {
             RepeatMode::One => "one",
         }
     }
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "all" => RepeatMode::All,
-            "one" => RepeatMode::One,
-            _ => RepeatMode::Off,
-        }
-    }
 }
 
 /// Live playback state for this device. Audio output, queue, shuffle/repeat
@@ -212,28 +232,32 @@ impl Default for Playback {
     }
 }
 
-/// Stable id of the synthetic "Liked Songs" playlist surfaced in the UI. It
-/// is not a stored [`Playlist`] — it is a virtual projection of [`Library::liked`]
-/// so it always reflects the like set without a second source of truth.
-pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
-
-/// The complete in-memory catalog + user data. The app holds one of these
-/// as a render snapshot, refreshed from the CRDT each `sync`.
-#[derive(Clone, Debug, Default)]
+/// The music library: the catalog the person brought in, their playlists,
+/// likes, saved albums, followed artists and recommendation feedback.
+/// Playback, downloaded bytes and credentials are this device's and never
+/// enter it.
+#[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = Library::valid)]
 pub struct Library {
+    /// Recommendation feedback, governed by this library's sharing permissions.
+    pub recommendations: crate::recommendations::Preferences,
+    /// Artists, by id. Only importing a track adds one.
+    #[model(readonly)]
     pub artists: BTreeMap<ArtistId, Artist>,
+    /// Albums, by id. Only importing a track adds one.
+    #[model(readonly)]
     pub albums: BTreeMap<AlbumId, Album>,
+    /// Songs, by id. Only importing a track adds one.
+    #[model(readonly)]
     pub tracks: BTreeMap<TrackId, Track>,
-    pub playlists: Vec<Playlist>,
-    pub cache: BTreeMap<TrackId, CacheState>,
-    /// Track ids the user has liked ("Liked Songs"). Ordered set so the
-    /// virtual Liked playlist is stable across devices.
-    pub liked: BTreeSet<TrackId>,
-    /// Album ids the user has saved to their library ("Add to library" on an
-    /// album card/header).
-    pub saved_albums: BTreeSet<AlbumId>,
-    /// Artist ids (channel ids) the user follows ("Follow" on an artist page).
-    pub followed_artists: BTreeSet<ArtistId>,
+    /// Playlists
+    pub playlists: Collection<Playlist>,
+    /// Liked songs, by track id.
+    pub liked: Set<TrackId>,
+    /// Albums saved to the library, by album id.
+    pub saved_albums: Set<AlbumId>,
+    /// Followed artists, by artist id.
+    pub followed_artists: Set<ArtistId>,
 }
 
 impl Library {
@@ -255,9 +279,6 @@ impl Library {
         self.albums
             .get(id)
             .map_or("Unknown Album", |a| a.title.as_str())
-    }
-    pub fn cache_state(&self, id: &str) -> CacheState {
-        self.cache.get(id).copied().unwrap_or_default()
     }
 
     /// Tracks of an album, ordered by track number.
@@ -322,17 +343,6 @@ impl Library {
         v.into_iter().take(n).collect()
     }
 
-    /// Cached (offline) tracks.
-    pub fn downloaded_tracks(&self) -> Vec<&Track> {
-        let mut v: Vec<&Track> = self
-            .tracks
-            .values()
-            .filter(|t| matches!(self.cache_state(&t.id), CacheState::Cached))
-            .collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
-    }
-
     /// Case-insensitive substring search across tracks, albums and artists.
     pub fn search(&self, q: &str) -> SearchResults {
         let needle = q.trim().to_lowercase();
@@ -386,7 +396,63 @@ impl Library {
     }
 
     pub fn playlist(&self, id: &str) -> Option<&Playlist> {
-        self.playlists.iter().find(|p| p.id == id)
+        self.playlists.get(&Id::from_raw(id))
+    }
+
+    /// Every playlist, in the order they were made.
+    pub fn playlists(&self) -> impl Iterator<Item = &Playlist> {
+        self.playlists.values()
+    }
+
+    /// What the library refers to is in it: a liked song, a saved album, a
+    /// followed or preferred artist, a dismissed suggestion and every track
+    /// of a playlist. Spotify artists are followed at Spotify.
+    fn valid(&self) -> Result<(), Refusal> {
+        let refused = |what: &str| Err(Refusal::new(format!("{what} is not in the library")));
+        if self.liked.iter().any(|id| !self.tracks.contains_key(id)) {
+            return refused("a liked song");
+        }
+        if self
+            .saved_albums
+            .iter()
+            .any(|id| !self.albums.contains_key(id))
+        {
+            return refused("a saved album");
+        }
+        if self
+            .followed_artists
+            .iter()
+            .any(|id| id.starts_with("spotify:artist:"))
+        {
+            return Err(Refusal::new(
+                "Spotify following requires a provider-authorized effect",
+            ));
+        }
+        if self
+            .followed_artists
+            .iter()
+            .chain(self.recommendations.preferred_artists.iter())
+            .any(|id| !self.artists.contains_key(id))
+        {
+            return refused("an artist");
+        }
+        if self
+            .recommendations
+            .dismissed
+            .iter()
+            .any(|id| !self.tracks.contains_key(id))
+        {
+            return refused("a dismissed song");
+        }
+        if self
+            .playlists
+            .values()
+            .flat_map(|playlist| playlist.tracks.values())
+            .any(|id| !self.tracks.contains_key(id))
+        {
+            return refused("a playlist's track");
+        }
+        Ok(())
     }
 
     pub fn total_tracks(&self) -> usize {
@@ -395,17 +461,17 @@ impl Library {
 
     /// Whether a track is in "Liked Songs".
     pub fn is_liked(&self, id: &str) -> bool {
-        self.liked.contains(id)
+        self.liked.contains(&id.to_owned())
     }
 
     /// Whether an album is saved to the library.
     pub fn is_album_saved(&self, id: &str) -> bool {
-        self.saved_albums.contains(id)
+        self.saved_albums.contains(&id.to_owned())
     }
 
     /// Whether the user follows an artist.
     pub fn is_artist_followed(&self, id: &str) -> bool {
-        self.followed_artists.contains(id)
+        self.followed_artists.contains(&id.to_owned())
     }
 
     /// Liked tracks ordered by artist / album / track number (a virtual
@@ -457,10 +523,6 @@ mod tests {
     use crate::seed;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn sample_library_orders_albums_searches_and_cycles_repeat() {
         // Phase `sample_library_is_populated`.
         {

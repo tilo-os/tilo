@@ -28,10 +28,6 @@ pub enum SettingScope {
     Derived,
 }
 
-/// Backwards-compatible name for consumers that only ask the continuity
-/// question. New code should use [`SettingScope`].
-pub type ContinuityClass = SettingScope;
-
 /// One reviewed leaf in the shared settings schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinuityPolicy {
@@ -54,6 +50,9 @@ policies! {
         "tilo.accessibility.cursor_size",
         "tilo.accessibility.screen_reader",
         "tilo.accessibility.on_screen_keyboard",
+        // Recognition language describes the person, not a microphone or grant.
+        "tilo.accessibility.dictation_language",
+        "tilo.accessibility.dictation_literal",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
         "tilo.accessibility.bounce_keys",
@@ -72,7 +71,11 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
+        "tilo.appearance.mode",
+        "tilo.appearance.dark_theme",
+        "tilo.appearance.light_theme",
+        "tilo.appearance.custom_themes",
+        "tilo.appearance.density",
         "tilo.appearance.schedule",
         "tilo.appearance.sunrise",
         "tilo.appearance.sunset",
@@ -82,7 +85,11 @@ policies! {
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
         "tilo.appearance.ui_scale",
+        "tilo.appearance.reduce_transparency",
+        "tilo.appearance.forced_colors",
+        "tilo.appearance.workspace_temperatures",
         "tilo.appearance.studio",
+        "tilo.identity.colour",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -97,7 +104,6 @@ policies! {
         "tilo.notifications.show_badges",
         "tilo.notifications.focus",
         "tilo.notifications.per_app",
-        "tilo.input.natural_scroll",
         "tilo.input.touchpad_natural_scroll",
         "tilo.input.mouse_natural_scroll",
         "tilo.input.tap_to_click",
@@ -128,11 +134,19 @@ policies! {
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
+        // Where each of the person's displays sits across their devices.
+        // Each device's own modes and screen layout stay device-local.
+        "tilo.display.arrangement",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
+        "tilo.default_apps.handlers",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
+        "tilo.text_assistance.spelling_language",
+        // Hosted providers name no device: an endpoint on the internet and a
+        // reference to the key, never the key itself.
+        "tilo.agent_providers.hosted",
     ],
     DeviceLocal => [
         "tilo.audio.output_device",
@@ -142,6 +156,14 @@ policies! {
         "tilo.input.tablets",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Physical model and explicit inspection choices stay with this device.
+        // Assignments identify physical devices on this host, unlike personal source order.
+        "tilo.input.keyboard_assignments",
+        "tilo.input.keyboard_model",
+        "tilo.input.keyboard_preview",
+        "tilo.input.keyboard_preview_extra_levels",
+        "tilo.input.keyboard_preview_level",
+        "tilo.input.keyboard_inspected_key",
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",
@@ -158,8 +180,8 @@ policies! {
         "tilo.power.critical_battery_percent",
         "tilo.power.critical_action",
         "tilo.updates.auto",
-        "tilo.updates.channel",
         "tilo.appearance.wallpaper_path",
+        "tilo.appearance.distribution_defaults",
         "tilo.device.name",
         "tilo.display.hardware.edid",
         "tilo.network.interface.mac",
@@ -170,6 +192,7 @@ policies! {
         "tilo.continuity.wifi_settings",
         "tilo.continuity.media",
         "tilo.continuity.display_input",
+        "tilo.continuity.automatic_display_input",
         "tilo.continuity.file_transfer",
         "tilo.continuity.realtime_sessions",
         "tilo.continuity.typed_gamepad",
@@ -184,17 +207,8 @@ policies! {
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
         "tilo.display_transaction.message",
-        // Local portal grants and physical-key bindings must not escape the
-        // device on which they were granted/configured.
-        "tilo.ebook_local_library.books",
-        "tilo.ebook_local_library.watched_folders",
-        "tilo.ebook_local_library.shortcuts",
-        "tilo.video_player.autoplay",
-        "tilo.video_player.loop_enabled",
-        "tilo.video_player.recent_history",
-        // Provider records can name loopback endpoints and device-vault
-        // locators. The secret bytes live elsewhere, but this aggregate
-        // cannot safely roam until it is split into portable/local records.
+        // Providers on this device or its network, and which one this device
+        // uses by default.
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
@@ -210,6 +224,48 @@ policies! {
         "tilo.continuity.audit",
         "tilo.history.seen_frontiers",
     ],
+}
+
+/// The section holding every app's [`SettingScope::Personal`] preferences,
+/// one object per app id. An app's typed settings declare their scope, and
+/// only those declared personal are written here, so each entry is a
+/// reviewed leaf: `tilo.app_personal.<app id>` roams as one value.
+pub const APP_PERSONAL_SECTION: &str = "app_personal";
+
+/// The section holding every app's [`SettingScope::DeviceLocal`]
+/// preferences, one object per app id. They never leave the device.
+pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
+
+/// The largest serialized personal value the device fabric carries. An app's
+/// personal section is one value, so its whole object must fit.
+pub const MAX_PERSONAL_VALUE_BYTES: usize = 64 * 1024;
+
+/// The scope of an app's settings section leaf (`tilo.<section>.<app id>`),
+/// when `key` names one.
+fn app_section_scope(key: &str) -> Option<SettingScope> {
+    let rest = key.strip_prefix("tilo.")?;
+    let (section, app) = rest.split_once('.')?;
+    if !valid_app_id(app) {
+        return None;
+    }
+    match section {
+        APP_PERSONAL_SECTION => Some(SettingScope::Personal),
+        APP_DEVICE_LOCAL_SECTION => Some(SettingScope::DeviceLocal),
+        _ => None,
+    }
+}
+
+/// A reverse-DNS app id: dot-separated, non-empty labels of ASCII letters,
+/// digits, `-` and `_`.
+fn valid_app_id(app: &str) -> bool {
+    app.len() <= 200
+        && app.contains('.')
+        && app.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
 }
 
 /// A reviewed, typed settings leaf. Construction succeeds only for registry
@@ -238,10 +294,15 @@ pub fn registered(key: &str) -> Option<SettingKey> {
         .map(SettingKey)
 }
 
-/// Return the reviewed continuity class for an exact settings leaf.
+/// Return the reviewed continuity class for an exact settings leaf: a
+/// registry entry, or an app's section in [`APP_PERSONAL_SECTION`] or
+/// [`APP_DEVICE_LOCAL_SECTION`], whose scope the app declared by writing it
+/// there.
 #[must_use]
 pub fn classify(key: &str) -> Option<SettingScope> {
-    registered(key).map(SettingKey::scope)
+    registered(key)
+        .map(SettingKey::scope)
+        .or_else(|| app_section_scope(key))
 }
 
 /// Whether an exact settings leaf may use the ordinary roaming channel.
@@ -265,7 +326,7 @@ pub fn personal_values(
         };
         for (leaf, value) in leaves {
             let canonical = format!("tilo.{section}.{leaf}");
-            if registered(&canonical).is_some_and(|key| key.scope() == SettingScope::Personal) {
+            if classify(&canonical) == Some(SettingScope::Personal) {
                 projected.insert(canonical, value.clone());
             }
         }
@@ -348,16 +409,17 @@ mod tests {
                 "tilo.continuity.wifi_settings",
                 "tilo.continuity.media",
                 "tilo.continuity.display_input",
+                "tilo.continuity.automatic_display_input",
                 "tilo.continuity.file_transfer",
                 "tilo.continuity.realtime_sessions",
                 "tilo.continuity.typed_gamepad",
                 "tilo.continuity.app_continuations",
             ] {
-                assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+                assert_eq!(classify(key), Some(SettingScope::DeviceLocal), "{key}");
             }
             assert_eq!(
                 classify("tilo.continuity.audit"),
-                Some(ContinuityClass::Derived)
+                Some(SettingScope::Derived)
             );
         }
         // Phase `unknown_settings_fail_closed`.
@@ -368,12 +430,46 @@ mod tests {
     }
 
     #[test]
+    fn app_sections_roam_only_when_declared_personal() {
+        let document = serde_json::json!({
+            "app_personal": {
+                "so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000},
+                "not-an-app-id": {"x": 1}
+            },
+            "app_device_local": {"so.tilo.monitor": {"last_window": [0, 0]}},
+            "so.tilo.monitor": {"stray": true}
+        });
+        let document = document.as_object().unwrap();
+        assert_eq!(
+            personal_values(document),
+            std::collections::BTreeMap::from([(
+                "tilo.app_personal.so.tilo.monitor".to_string(),
+                serde_json::json!({"confirm_kill": false, "interval_ms": 2000})
+            )])
+        );
+        assert_eq!(
+            classify("tilo.app_device_local.so.tilo.monitor"),
+            Some(SettingScope::DeviceLocal)
+        );
+        assert_eq!(classify("tilo.app_personal.not-an-app-id"), None);
+        assert_eq!(classify("tilo.app_personal."), None);
+        assert_eq!(classify("tilo.so.tilo.monitor.stray"), None);
+        assert_eq!(
+            unclassified_leaves(document),
+            vec![
+                "tilo.app_personal.not-an-app-id".to_string(),
+                "tilo.so.tilo.monitor.stray".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn the_typed_registry_reviews_every_writer_and_ownership_boundary() {
         // Phase `typed_registry_projects_only_reviewed_personal_values`.
         {
             let document = serde_json::json!({
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "wallpaper_path": "/home/me/private.png",
                     "future_value": "must stay local"
                 },
@@ -385,8 +481,8 @@ mod tests {
             assert_eq!(
                 projected,
                 std::collections::BTreeMap::from([(
-                    "tilo.appearance.theme".to_string(),
-                    serde_json::json!("Nord")
+                    "tilo.appearance.mode".to_string(),
+                    serde_json::json!("light")
                 )])
             );
         }
@@ -425,11 +521,9 @@ mod tests {
                     "app_continuations": false,
                     "audit": []
                 },
-                "agent_providers": {"config": {}},
+                "agent_providers": {"config": {}, "hosted": {}},
                 "collaboration": {"status_sharing": "automatic", "manual_status": null},
-                "history": {"seen_frontiers": {}},
-                "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},
-                "video_player": {"autoplay": true, "loop_enabled": false, "recent_history": []}
+                "history": {"seen_frontiers": {}}
             });
             assert_eq!(
                 unclassified_leaves(document.as_object().unwrap()),

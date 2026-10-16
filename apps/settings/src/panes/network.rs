@@ -1,128 +1,417 @@
-#![allow(
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    reason = "network commands are closed typed values and remain beside their validation and dispatch"
-)]
-
-//! Network pane — Wi-Fi radio toggle, scanned network list, refresh
-//! button, connection-status row.
+//! Network — Wi-Fi, wired, VPN, hotspot, mobile broadband and the saved
+//! connection profiles of this device, as `NetworkManager` reports them.
 //!
-//! Plumbs `os_actions::network::{get_wifi, set_wifi,
-//! list_wifi_networks, connect_wifi}`. Every `NetworkManager` query runs
-//! on the app runtime's blocking pool, never on the UI thread: the pane
-//! appears in a pending state, reads one snapshot on construction and
-//! another when the user clicks `Refresh` (or a connection changes), and
-//! applies each when it arrives through the wake.
-//
-// CRDT keys:
-//   `network.wifi_enabled` — bool, wifi toggle
-//   `network.refresh`      — bool, click sets true; pane resets on
-//                             sync after rescan
-//   `network.connect.<ssid>` — bool, click sets true; pane resets on
-//                             sync after dispatch
+//! Every read and change may block on `nmcli` or the system bus for
+//! seconds, so none runs on the UI thread: the model reads a snapshot in the
+//! background when it is first needed and again after each change, and every
+//! change is a [`NetworkEffect`] that runs on a worker and reports what
+//! happened. Passwords and PINs live in process-local buffers that are
+//! zeroed once used; they never reach a document.
+//!
+//! A radio the device does not have is not offered: Wi-Fi and the hotspot
+//! without a Wi-Fi radio, mobile broadband without a modem, airplane mode
+//! with neither ([`NetworkArea::statuses`]).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use ui::doc::{read_bool, read_str_or_text};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{
     ConnectivityState, Dispatcher, EnterpriseWifiConfiguration, HotspotBand, HotspotConfiguration,
     IpConfiguration, SavedNetworkProfile, ToolIntent, VpnRoute, WifiNetworkInfo, WiredInfo,
 };
-use taffy::{NodeId, TaffyTree};
 use tracing::warn;
-use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, Text, TextInput, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::LocalState;
+use ui::collaboration::{NetworkWakeStatus, WifiContinuityCommand, WifiContinuityReply};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
+use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::tokens::Rhythm;
+use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, TextInput, Toggle, Widget};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::effects::{SettingsEffect, effect};
+use crate::host::PaneCx;
+use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, rows, setting_row, value_row,
+    El, Item, SettingsSection, block, card, card_with_action, error_caption, error_row, field_row,
+    note, row, rows, setting_row, setting_row_described, value_row,
 };
 
-pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
-pub const WIRED_ENABLED_KEY: &str = "network.wired_enabled";
-pub const REFRESH_KEY: &str = "network.refresh";
-pub const AIRPLANE_KEY: &str = "network.airplane_mode";
-pub const HOTSPOT_KEY: &str = "network.hotspot";
-pub const MOBILE_KEY: &str = "network.mobile_broadband";
-pub const HOTSPOT_APPLY_KEY: &str = "network.hotspot.apply";
-pub const HOTSPOT_QR_KEY: &str = "network.hotspot.qr";
-pub const HOTSPOT_SSID_KEY: &str = "network.hotspot.ssid";
-pub const HOTSPOT_BAND_KEY: &str = "network.hotspot.band";
-pub const IPV4_AUTOMATIC_KEY: &str = "network.ipv4.automatic";
-pub const IPV4_ADDRESS_KEY: &str = "network.ipv4.address";
-pub const IPV4_GATEWAY_KEY: &str = "network.ipv4.gateway";
-pub const IPV4_DNS_KEY: &str = "network.ipv4.dns";
-pub const IPV4_APPLY_KEY: &str = "network.ipv4.apply";
-pub const MOBILE_PROFILE_KEY: &str = "network.mobile.profile";
-pub const MOBILE_APN_KEY: &str = "network.mobile.apn";
-pub const MOBILE_CREATE_KEY: &str = "network.mobile.create";
-pub const MOBILE_UNLOCK_KEY: &str = "network.mobile.unlock";
-pub const ENTERPRISE_PROFILE_KEY: &str = "network.enterprise.profile";
-pub const ENTERPRISE_SSID_KEY: &str = "network.enterprise.ssid";
-pub const ENTERPRISE_IDENTITY_KEY: &str = "network.enterprise.identity";
-pub const ENTERPRISE_ANONYMOUS_KEY: &str = "network.enterprise.anonymous";
-pub const ENTERPRISE_CA_KEY: &str = "network.enterprise.ca";
-pub const ENTERPRISE_CONNECT_KEY: &str = "network.enterprise.connect";
-/// Opens or closes the task-focused enterprise network setup surface.
-pub const ENTERPRISE_EDITOR_KEY: &str = "network.enterprise.editor";
-pub const ENTERPRISE_CA_CHOOSE_KEY: &str = "network.enterprise.ca.choose";
-pub const ENTERPRISE_METHOD_KEY: &str = "network.enterprise.method";
-pub const ENTERPRISE_PHASE2_KEY: &str = "network.enterprise.phase2";
-pub const ENTERPRISE_CLIENT_CERT_KEY: &str = "network.enterprise.client_cert";
-pub const ENTERPRISE_PRIVATE_KEY: &str = "network.enterprise.private_key";
-pub const MOBILE_SIM_KEY: &str = "network.mobile.sim";
-pub const DIAGNOSTICS_KEY: &str = "network.diagnostics.run";
-pub const ADVANCED_KEY: &str = "network.advanced";
-pub const ADVANCED_PROFILE_KEY: &str = "network.advanced.profile";
-pub const WIRED_PROFILE_KEY: &str = "network.ipv4.profile";
-pub const CAPTIVE_PORTAL_KEY: &str = "network.captive_portal.open";
-const MOBILE_PIN_BUFFER: &str = "__mobile_pin";
-const ENTERPRISE_PASSWORD_BUFFER: &str = "__enterprise_password";
-/// CRDT key holding the SSID whose inline password prompt is expanded
-/// (empty string = none). Kept in the document, not a pane field, so the
-/// expansion survives the host's structure rebuilds (which reconstruct the
-/// pane from scratch).
-pub const EXPANDED_KEY: &str = "network.expanded";
-
-/// Build the per-SSID "connect" CRDT key. A click on a network's primary
-/// button writes this `true`; the pane reads it in `sync` and either
-/// connects directly (open network) or expands an inline password prompt
-/// (secure network).
-fn connect_key(ssid: &str) -> String {
-    format!("network.connect.{ssid}")
+// Ask the authenticated host: this app intentionally has an isolated network
+// namespace and cannot inspect the host's nl80211 interface by spawning iw.
+fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
+    match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
+        profile_uuid: profile.into(),
+        enabled,
+    })? {
+        WifiContinuityReply::NetworkWake { status } => Ok(status),
+        WifiContinuityReply::Rejected { reason } => Err(reason),
+        _ => Err("the host returned an invalid network wake reply".into()),
+    }
 }
 
-/// Per-SSID "join with password" CRDT key — written `true` by the Join
-/// button in the inline password prompt.
-fn join_key(ssid: &str) -> String {
-    format!("network.join.{ssid}")
+fn wake_description(status: &NetworkWakeStatus) -> &'static str {
+    if status.problem.is_some() {
+        if status.configured {
+            "net-wake-pending"
+        } else {
+            "net-wake-unavailable"
+        }
+    } else if status.configured && status.applied == Some(true) {
+        "net-wake-unverified"
+    } else if status.interface.is_none() {
+        "net-wake-connect-first"
+    } else if status.supported == Some(false) {
+        "net-wake-unsupported"
+    } else if status.supported.is_none() {
+        "net-wake-unavailable"
+    } else {
+        "net-wake-disabled"
+    }
 }
 
-fn profile_autoconnect_key(uuid: &str) -> String {
-    format!("network.profile.autoconnect.{uuid}")
+/// The bands a hotspot can use.
+const HOTSPOT_BANDS: &[&str] = &["Automatic", "2.4 GHz", "5 GHz"];
+/// Whether a connection's data counts against a limit.
+const METERED_POLICIES: &[&str] = &["Automatic", "Metered", "Unmetered"];
+/// Which hardware address a Wi-Fi connection shows.
+const MAC_POLICIES: &[&str] = &[
+    "Stable per network",
+    "Random each connection",
+    "Permanent hardware address",
+];
+/// What a new hotspot is called until the person names it.
+const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
+
+/// What Network changes on this device.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum NetworkEffect {
+    /// Read the adopted network state, pending work and labels this pane shows.
+    #[effect(
+        view,
+        returns,
+        device_only,
+        kind = "read",
+        label = "Inspect network state"
+    )]
+    InspectNetworkState,
+    /// Scan for Wi-Fi networks and read this device's connections again.
+    #[effect(job, idempotent, label = "Refresh networks")]
+    RefreshNetworks,
+    /// Turn Wi-Fi on or off.
+    #[effect(job, idempotent, label = "Wi-Fi")]
+    SetWifi { on: bool },
+    /// Turn the wired connection on or off.
+    #[effect(job, idempotent, label = "Wired connection")]
+    SetWired { on: bool },
+    /// Turn every radio off, or back on.
+    #[effect(job, idempotent, label = "Airplane mode")]
+    SetAirplaneMode { on: bool },
+    /// Share this device's connection as a Wi-Fi hotspot, or stop.
+    #[effect(job, idempotent, label = "Hotspot")]
+    SetHotspot { on: bool },
+    /// Use mobile broadband, or stop.
+    #[effect(job, idempotent, label = "Mobile broadband")]
+    SetMobileBroadband { on: bool },
+    /// Connect to a Wi-Fi network. Without a password a secure network uses
+    /// one the person's devices share, else asks for it; while its password
+    /// prompt is open, the password typed there.
+    #[effect(job, row, label = "Connect")]
+    ConnectNetwork {
+        #[param("The network's name (SSID)")]
+        ssid: String,
+        #[param(secret, "The network's password")]
+        password: Option<String>,
+    },
+    /// Close a network's password prompt.
+    #[effect(view, row, label = "Cancel")]
+    CancelConnect {
+        #[param("The network's name (SSID)")]
+        ssid: String,
+    },
+    /// Join a saved network by itself whenever it is in range, or not.
+    #[effect(job, row, idempotent, label = "Connect automatically")]
+    SetAutoconnect {
+        #[param("The saved network's id")]
+        profile: String,
+        on: bool,
+    },
+    /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
+    #[effect(job, row, idempotent, label = "Wake over network")]
+    SetNetworkWake {
+        #[param("The saved network's id")]
+        profile: String,
+        on: bool,
+    },
+    /// Forget a saved network and its password.
+    #[effect(job, row, destructive, label = "Forget network")]
+    ForgetNetwork {
+        #[param("The saved network's id")]
+        profile: String,
+    },
+    /// Seal a saved Wi-Fi network's password for the person's other
+    /// devices, so they join it too.
+    #[effect(job, row, label = "Share with my devices")]
+    ShareNetwork {
+        #[param("The saved network's id")]
+        profile: String,
+    },
+    /// Connect or disconnect a VPN.
+    #[effect(job, row, idempotent, label = "VPN")]
+    SetVpn {
+        #[param("The VPN's name")]
+        vpn: String,
+        on: bool,
+    },
+    /// Open VPN Studio, at one VPN or at its overview.
+    #[effect(label = "Open VPN Studio")]
+    OpenVpnStudio {
+        #[param("The VPN's name; the overview when omitted")]
+        vpn: Option<String>,
+    },
+    /// Check the connection, its address, gateway and name servers.
+    #[effect(job, idempotent, label = "Run network diagnostics")]
+    RunDiagnostics,
+    /// Open the sign-in page of a network that asks for one.
+    #[effect(job, label = "Open network sign-in")]
+    OpenNetworkSignIn,
+    /// Start the hotspot; what is omitted is what the hotspot form holds.
+    #[effect(job, label = "Start hotspot")]
+    StartHotspot {
+        #[param("The hotspot's network name")]
+        name: Option<String>,
+        #[param(secret, "The hotspot's password, at least 8 characters")]
+        password: Option<String>,
+        #[param("The band", choices = HOTSPOT_BANDS.iter().copied())]
+        band: Option<String>,
+    },
+    /// Show or hide the QR code others scan to join the hotspot.
+    #[effect(view, label = "Share hotspot QR code")]
+    ShowHotspotCode,
+    /// Set a wired profile's IPv4 settings; what is omitted is what its
+    /// form holds.
+    #[effect(job, label = "Apply IP settings")]
+    SetIpv4 {
+        #[param("The wired profile's id")]
+        profile: String,
+        #[param("Take the address from the network")]
+        automatic: Option<bool>,
+        #[param("Addresses with their prefix, comma-separated: 192.168.1.20/24")]
+        addresses: Option<String>,
+        gateway: Option<String>,
+        #[param("Name servers, comma-separated")]
+        dns: Option<String>,
+    },
+    /// Show or hide the saved Wi-Fi networks' connection policy.
+    #[effect(view, label = "Connection policy")]
+    ShowConnectionPolicy,
+    /// Set a saved Wi-Fi network's policy; what is omitted is what its
+    /// form holds.
+    #[effect(job, label = "Apply connection policy")]
+    SetConnectionPolicy {
+        #[param("The saved network's id")]
+        profile: String,
+        #[param("Whether data counts against a limit", choices = METERED_POLICIES.iter().copied())]
+        metered: Option<String>,
+        #[param("The hardware address it shows", choices = MAC_POLICIES.iter().copied())]
+        mac: Option<String>,
+        #[param("A proxy auto-configuration URL")]
+        proxy: Option<String>,
+    },
+    /// Create a mobile broadband profile; what is omitted is what the form
+    /// holds.
+    #[effect(job, label = "Create mobile profile")]
+    CreateMobileProfile {
+        name: Option<String>,
+        #[param("The access point name")]
+        apn: Option<String>,
+    },
+    /// Unlock a SIM with its PIN; what is omitted is what the form holds.
+    #[effect(job, label = "Unlock SIM")]
+    UnlockSim {
+        #[param("The SIM, as listed")]
+        sim: Option<String>,
+        #[param(secret, "The SIM's PIN")]
+        pin: Option<String>,
+    },
+    /// Show or hide the enterprise (802.1X) network setup.
+    #[effect(view, label = "Enterprise network setup")]
+    ShowEnterpriseSetup,
+    /// Choose the organization's CA certificate file.
+    #[effect(label = "Choose CA certificate")]
+    ChooseCaCertificate,
+    /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
+    /// omitted is what the setup form holds.
+    #[effect(job, label = "Save and connect")]
+    ConnectEnterpriseNetwork {
+        #[param("The profile's name")]
+        profile: Option<String>,
+        #[param("The network's name (SSID)")]
+        ssid: Option<String>,
+        identity: Option<String>,
+        anonymous_identity: Option<String>,
+        #[param("The CA certificate's path")]
+        ca_certificate: Option<String>,
+        #[param("PEAP, TTLS or TLS")]
+        method: Option<String>,
+        #[param("MSCHAPv2, PAP or CHAP")]
+        inner_auth: Option<String>,
+        client_certificate: Option<String>,
+        private_key: Option<String>,
+        #[param(secret, "The password")]
+        password: Option<String>,
+    },
 }
 
-fn profile_forget_key(uuid: &str) -> String {
-    format!("network.profile.forget.{uuid}")
+/// Answer `effect`: a change starts on a worker and reports when it lands.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: NetworkEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    if effect == NetworkEffect::InspectNetworkState {
+        return app.network().inspection().map(Effected::value);
+    }
+    if effect == NetworkEffect::RefreshNetworks {
+        // A dongle plugged in a moment ago is seen without waiting.
+        app.host().radios().look_again();
+    }
+    let begun = app.network().model().borrow_mut().begin(effect)?;
+    Ok(match begun {
+        Begun::Done => Effected::done(),
+        Begun::Work(work) => cx.thread(
+            move |_| work(),
+            |app: &mut SettingsApp, landed: Landed, _| {
+                app.network().model().borrow_mut().land(landed)
+            },
+        ),
+    })
 }
 
-fn profile_share_key(uuid: &str) -> String {
-    format!("network.profile.share.{uuid}")
+fn connectivity_shown(state: ConnectivityState) -> String {
+    t(match state {
+        ConnectivityState::Unknown => "net-connectivity-unknown",
+        ConnectivityState::Offline => "net-connectivity-offline",
+        ConnectivityState::Portal => "net-connectivity-portal",
+        ConnectivityState::Limited => "net-connectivity-limited",
+        ConnectivityState::Full => "net-connectivity-full",
+    })
 }
 
-fn ipv4_key(uuid: &str, field: &str) -> String {
-    format!("network.ipv4.{field}.{uuid}")
+fn band_shown(id: &str) -> String {
+    t(match id {
+        "2.4 GHz" => "net-band-24",
+        "5 GHz" => "net-band-5",
+        _ => "net-band-auto",
+    })
 }
+
+fn band_from_label(label: &str) -> HotspotBand {
+    if label == "2.4 GHz" || label == t("net-band-24") {
+        HotspotBand::TwoPointFourGhz
+    } else if label == "5 GHz" || label == t("net-band-5") {
+        HotspotBand::FiveGhz
+    } else {
+        HotspotBand::Automatic
+    }
+}
+
+fn metered_id(policy: os_actions::MeteredPolicy) -> &'static str {
+    match policy {
+        os_actions::MeteredPolicy::Automatic => "Automatic",
+        os_actions::MeteredPolicy::Metered => "Metered",
+        os_actions::MeteredPolicy::Unmetered => "Unmetered",
+    }
+}
+
+fn metered_shown(id: &str) -> String {
+    t(match id {
+        "Metered" => "net-metered-yes",
+        "Unmetered" => "net-metered-no",
+        _ => "net-metered-auto",
+    })
+}
+
+fn metered_from_label(label: &str) -> Option<os_actions::MeteredPolicy> {
+    if label == "Metered" || label == t("net-metered-yes") {
+        Some(os_actions::MeteredPolicy::Metered)
+    } else if label == "Unmetered" || label == t("net-metered-no") {
+        Some(os_actions::MeteredPolicy::Unmetered)
+    } else if label == "Automatic" || label == t("net-metered-auto") {
+        Some(os_actions::MeteredPolicy::Automatic)
+    } else {
+        None
+    }
+}
+
+fn mac_id(policy: os_actions::MacPolicy) -> &'static str {
+    match policy {
+        os_actions::MacPolicy::Stable => "Stable per network",
+        os_actions::MacPolicy::Random => "Random each connection",
+        os_actions::MacPolicy::Permanent => "Permanent hardware address",
+    }
+}
+
+fn mac_shown(id: &str) -> String {
+    t(match id {
+        "Random each connection" => "net-mac-random",
+        "Permanent hardware address" => "net-mac-permanent",
+        _ => "net-mac-stable",
+    })
+}
+
+fn mac_from_label(label: &str) -> Option<os_actions::MacPolicy> {
+    if label == "Random each connection" || label == t("net-mac-random") {
+        Some(os_actions::MacPolicy::Random)
+    } else if label == "Permanent hardware address" || label == t("net-mac-permanent") {
+        Some(os_actions::MacPolicy::Permanent)
+    } else if label == "Stable per network" || label == t("net-mac-stable") {
+        Some(os_actions::MacPolicy::Stable)
+    } else {
+        None
+    }
+}
+
+fn radio_shown(radio: Radio) -> String {
+    t(match radio {
+        Radio::Airplane => "net-radio-airplane",
+        Radio::Hotspot => "net-radio-hotspot",
+        Radio::Mobile => "net-radio-mobile",
+    })
+}
+
 fn profile_label(profile: &SavedNetworkProfile) -> String {
     let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} · {}", profile.name, short_uuid)
+    format!("{} ({})", profile.name, short_uuid)
+}
+
+/// A comma-separated list, trimmed, at most 17 entries.
+fn list_of(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .take(17)
+        .map(str::to_string)
+        .collect()
+}
+
+/// `Some(value)` unless it is blank.
+fn non_blank(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+/// What a secret buffer holds, leaving it zeroed.
+fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
+    buffer.lock().map_or_else(
+        |_| Zeroizing::new(String::new()),
+        |mut value| Zeroizing::new(std::mem::take(&mut *value)),
+    )
 }
 
 fn load_profile_settings(
@@ -153,37 +442,11 @@ fn wifi_signal_glyph(signal: u8) -> &'static str {
     }
 }
 
-/// Network-list provider — the prod impl shells out to nmcli, tests
-/// supply a stub closure. Boxed so the pane holds it as a trait object;
-/// the box satisfies `Send + Sync` because the closure captures nothing
-/// (or only thread-safe state).
-type NetworkLister = Arc<dyn Fn() -> Result<Vec<WifiNetworkInfo>, String> + Send + Sync>;
-
 /// A configured VPN / `WireGuard` connection and whether it is currently up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnInfo {
     pub name: String,
     pub active: bool,
-}
-
-/// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
-type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
-type ToolOpener = Arc<dyn Fn(ToolIntent) -> Result<(), String> + Send + Sync>;
-
-#[derive(Debug)]
-enum NetworkJob {
-    Wifi(String),
-    ShareProfile,
-    MobileProfile,
-    SimUnlock,
-    EnterpriseWifi,
-}
-
-enum NetworkJobSuccess {
-    Connected { continuity_notice: Option<String> },
-    PasswordRequired { continuity_warning: Option<String> },
-    ProfileShared { ssid: String },
-    OperationCompleted { notice: String },
 }
 
 fn portable_security(
@@ -196,185 +459,162 @@ fn portable_security(
     }
 }
 
-trait WifiContinuityClient: Send + Sync {
-    fn command(
-        &self,
-        command: ui::collaboration::WifiContinuityCommand,
-    ) -> Result<ui::collaboration::WifiContinuityReply, String>;
-}
+/// One part of a snapshot: `None` when it was not read (the model keeps what
+/// it has), otherwise the value or why it could not be read.
+type Part<T> = Option<Result<T, String>>;
 
-struct ProductionWifiContinuityClient;
-
-impl WifiContinuityClient for ProductionWifiContinuityClient {
-    fn command(
-        &self,
-        command: ui::collaboration::WifiContinuityCommand,
-    ) -> Result<ui::collaboration::WifiContinuityReply, String> {
-        ui::collaboration::wifi_continuity_command(command)
-    }
-}
-
-struct EmptyWifiContinuityClient;
-
-impl WifiContinuityClient for EmptyWifiContinuityClient {
-    fn command(
-        &self,
-        command: ui::collaboration::WifiContinuityCommand,
-    ) -> Result<ui::collaboration::WifiContinuityReply, String> {
-        match command {
-            ui::collaboration::WifiContinuityCommand::Lookup { .. } => {
-                Ok(ui::collaboration::WifiContinuityReply::NotFound)
-            }
-            _ => Ok(ui::collaboration::WifiContinuityReply::Rejected {
-                reason: "not configured in this test".into(),
-            }),
-        }
-    }
-}
-
-fn initial_secret_buffers() -> HashMap<String, Arc<Mutex<String>>> {
-    [MOBILE_PIN_BUFFER, ENTERPRISE_PASSWORD_BUFFER]
-        .into_iter()
-        .map(|key| (key.to_string(), Arc::new(Mutex::new(String::new()))))
-        .collect()
-}
-
-/// Read the configured VPN connections from `NetworkManager`. Two `nmcli`
-/// calls: every connection (to find the VPN/WireGuard ones) and the active
-/// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
-/// missing.
-fn read_vpn_connections() -> Vec<VpnInfo> {
-    os_actions::list_vpn_connections()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|v| VpnInfo {
-            name: v.name,
-            active: v.active,
-        })
-        .collect()
-}
-
-/// Everything the pane shows from `NetworkManager`, read in one pass on the
-/// app runtime's blocking pool. `None` means the value was not read and the
-/// pane keeps what it has.
-struct NetworkSnapshot {
+/// Everything Network shows from `NetworkManager`, read in one pass off the
+/// UI thread. Each part keeps its own failure, so one unreadable value is
+/// shown as unreadable instead of as a device state.
+pub(crate) struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
-    /// Read only for the first snapshot, which seeds the pane's controls.
-    wifi_enabled: Option<bool>,
+    wifi_enabled: Part<bool>,
     /// Read only for the first snapshot.
-    sims: Option<Vec<os_actions::SimInfo>>,
-    wired: Option<WiredInfo>,
-    radios: Option<os_actions::RadioState>,
-    connectivity: Option<ConnectivityState>,
-    profiles: Option<Vec<SavedNetworkProfile>>,
+    sims: Part<Vec<os_actions::SimInfo>>,
+    wired: Part<WiredInfo>,
+    radios: Part<os_actions::RadioState>,
+    connectivity: Part<ConnectivityState>,
+    profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
-    hotspot_clients: Option<Vec<os_actions::HotspotClient>>,
-    vpns: Option<Vec<VpnInfo>>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
+    hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
+    vpns: Part<Vec<VpnInfo>>,
 }
 
 impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
-    fn read(lister: &NetworkLister, vpn_lister: &VpnLister, initial: bool) -> Self {
-        let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+    fn read(initial: bool) -> Self {
+        let profiles = os_actions::list_saved_network_profiles();
+        let radios = os_actions::get_radio_state();
         Self {
-            networks: lister(),
-            wifi_enabled: initial.then(|| os_actions::get_wifi().unwrap_or(true)),
-            sims: initial.then(|| os_actions::list_mobile_sims().unwrap_or_default()),
-            wired: os_actions::get_wired().ok(),
-            radios: os_actions::get_radio_state().ok(),
-            connectivity: Some(os_actions::get_connectivity().unwrap_or_default()),
-            profile_settings: load_profile_settings(&profiles),
+            networks: os_actions::list_wifi_networks(),
+            wifi_enabled: Some(wifi_enabled_from(&radios)),
+            sims: initial.then(os_actions::list_mobile_sims),
+            wired: Some(os_actions::get_wired()),
+            radios: Some(radios),
+            connectivity: Some(os_actions::get_connectivity()),
+            wake_settings: profiles
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|profile| {
+                    matches!(profile.kind.as_str(), "802-11-wireless" | "802-3-ethernet")
+                })
+                .map(|profile| (profile.uuid.clone(), host_network_wake(&profile.uuid, None)))
+                .collect(),
+            profile_settings: profiles
+                .as_deref()
+                .map(load_profile_settings)
+                .unwrap_or_default(),
             profiles: Some(profiles),
-            hotspot_clients: Some(os_actions::list_hotspot_clients().unwrap_or_default()),
-            vpns: Some(vpn_lister()),
+            hotspot_clients: Some(os_actions::list_hotspot_clients()),
+            vpns: Some(os_actions::list_vpn_connections().map(|vpns| {
+                vpns.into_iter()
+                    .map(|v| VpnInfo {
+                        name: v.name,
+                        active: v.active,
+                    })
+                    .collect()
+            })),
         }
     }
 
-    /// A query that stopped before reporting anything.
-    fn failed(error: String) -> Self {
+    /// Only `networks`, with every other part read and empty.
+    fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
-            networks: Err(error),
-            wifi_enabled: None,
-            sims: None,
-            wired: None,
-            radios: None,
-            connectivity: None,
-            profiles: None,
+            networks: Ok(networks),
+            wifi_enabled: Some(Ok(true)),
+            sims: Some(Ok(Vec::new())),
+            wired: Some(Ok(WiredInfo::default())),
+            radios: Some(Ok(os_actions::RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..os_actions::RadioState::default()
+            })),
+            connectivity: Some(Ok(ConnectivityState::Full)),
+            profiles: Some(Ok(Vec::new())),
             profile_settings: HashMap::new(),
-            hotspot_clients: None,
-            vpns: None,
+            wake_settings: HashMap::new(),
+            hotspot_clients: Some(Ok(Vec::new())),
+            vpns: Some(Ok(Vec::new())),
         }
     }
 }
 
-/// A radio the pane switches through the dispatcher.
-#[derive(Clone, Copy, Debug)]
-enum Radio {
+/// The parts of the last snapshot that could not be read, each with the
+/// reason. A part listed here is shown as unreadable, never as a state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct NetworkReadErrors {
+    networks: Option<String>,
+    wifi_enabled: Option<String>,
+    sims: Option<String>,
+    wired: Option<String>,
+    radios: Option<String>,
+    connectivity: Option<String>,
+    profiles: Option<String>,
+    hotspot_clients: Option<String>,
+    vpns: Option<String>,
+}
+
+/// The Wi-Fi switch position from the radio state. A machine without a Wi-Fi
+/// adapter has its Wi-Fi off — a state the Wi-Fi card names — and only a radio
+/// state that could not be read is an error.
+fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<bool, String> {
+    radios
+        .as_ref()
+        .map(|radios| radios.wifi_available && radios.wifi_enabled)
+        .map_err(Clone::clone)
+}
+
+/// Keep `value` on success and record why it failed otherwise. `None` (the
+/// part was not read this time) leaves both as they were.
+fn adopt<T>(part: Part<T>, error: &mut Option<String>) -> Option<T> {
+    match part? {
+        Ok(value) => {
+            *error = None;
+            Some(value)
+        }
+        Err(reason) => {
+            warn!(target: "tilo::settings", %reason, "network read failed");
+            *error = Some(reason);
+            None
+        }
+    }
+}
+
+/// A radio Network switches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Radio {
     Airplane,
     Hotspot,
     Mobile,
 }
 
-impl Radio {
-    const fn key(self) -> &'static str {
-        match self {
-            Self::Airplane => AIRPLANE_KEY,
-            Self::Hotspot => HOTSPOT_KEY,
-            Self::Mobile => MOBILE_KEY,
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Airplane => "airplane",
-            Self::Hotspot => "hotspot",
-            Self::Mobile => "mobile",
-        }
-    }
-
-    const fn operation(self, enabled: bool) -> crate::actions::NetworkOperation {
-        match self {
-            Self::Airplane => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
-            Self::Hotspot => crate::actions::NetworkOperation::SetHotspot { enabled },
-            Self::Mobile => crate::actions::NetworkOperation::SetMobileBroadband { enabled },
-        }
-    }
-}
-
-/// A finished change and its result, or why it stopped before reporting.
-type ActionOutcome = Result<(NetworkAction, Result<(), String>), String>;
-
-/// A `NetworkManager` change requested from the pane. Every one may block
-/// on `nmcli` or the system bus for seconds, so they run on the app
-/// runtime's blocking pool, one at a time in the order they were asked for.
-enum NetworkAction {
-    Wifi {
-        enabled: bool,
-    },
-    Wired {
-        enabled: bool,
-    },
-    Radio {
-        radio: Radio,
-        enabled: bool,
-    },
+/// A change to this device's networking, carried out off the UI thread.
+/// Secrets are zeroed when it is dropped.
+pub(crate) enum NetworkChange {
+    Wifi(bool),
+    Wired(bool),
+    Radio(Radio, bool),
     Vpn {
         name: String,
-        enabled: bool,
+        on: bool,
     },
     Autoconnect {
         uuid: String,
         name: String,
-        enabled: bool,
+        on: bool,
+    },
+    Wake {
+        uuid: String,
+        on: bool,
     },
     Forget {
         uuid: String,
         name: String,
     },
-    Hotspot {
-        config: HotspotConfiguration,
-    },
+    Hotspot(HotspotConfiguration),
     Ipv4 {
         uuid: String,
         name: String,
@@ -385,165 +625,590 @@ enum NetworkAction {
         name: String,
         patch: os_actions::ConnectionPolicyPatch,
     },
+    Connect {
+        ssid: String,
+        password: Option<Zeroizing<String>>,
+    },
+    MobileProfile {
+        name: String,
+        apn: String,
+    },
+    UnlockSim {
+        sim: String,
+        pin: Zeroizing<String>,
+    },
+    Enterprise {
+        config: EnterpriseWifiConfiguration,
+        password: Zeroizing<String>,
+    },
 }
 
-impl NetworkAction {
-    /// Carry out the change. Never called on the UI thread.
-    fn run(&self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
-        match self {
-            Self::Wifi { enabled } => dispatcher.set_wifi(*enabled),
-            Self::Wired { enabled } => dispatcher.set_wired(*enabled),
-            Self::Radio { radio, enabled } => match radio {
-                Radio::Airplane => dispatcher.set_airplane_mode(*enabled),
-                Radio::Hotspot => dispatcher.set_hotspot(*enabled),
-                Radio::Mobile => dispatcher.set_mobile_broadband(*enabled),
-            },
-            Self::Vpn { name, enabled } => dispatcher.set_vpn_connection(name, *enabled),
-            Self::Autoconnect { uuid, enabled, .. } => {
-                os_actions::set_network_autoconnect(uuid, *enabled)
-            }
-            Self::Forget { uuid, .. } => os_actions::forget_network_profile(uuid),
-            Self::Hotspot { config } => os_actions::configure_hotspot(config),
-            Self::Ipv4 { uuid, config, .. } => os_actions::configure_ipv4(uuid, config),
-            Self::Policy { uuid, patch, .. } => {
-                os_actions::configure_connection_policy_patch(uuid, patch)
-            }
-        }
-    }
-}
-
-impl Drop for NetworkAction {
+impl Drop for NetworkChange {
     fn drop(&mut self) {
-        if let Self::Hotspot { config } = self {
+        if let Self::Hotspot(config) = self {
             config.password.zeroize();
         }
     }
 }
 
-/// Parse the two `nmcli -t` outputs into [`VpnInfo`]s. `all` lines are
-/// `NAME:TYPE`; a connection is a VPN when its type is `vpn` or
-/// `wireguard`. `active` lines are bare `NAME`s of up connections.
-pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
-    let active_names: Vec<&str> = active
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let mut out = Vec::new();
-    for line in all.lines() {
-        // NAME may itself contain no colon in practice; split on the LAST
-        // colon so a name is preserved even if it had one (nmcli escapes it,
-        // but be defensive).
-        let Some((name, ty)) = line.rsplit_once(':') else {
-            continue;
-        };
-        let ty = ty.trim();
-        if ty != "vpn" && ty != "wireguard" {
-            continue;
-        }
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        let active = active_names.contains(&name.as_str());
-        out.push(VpnInfo { name, active });
+/// What carries out Network's reads and changes: `NetworkManager` on a
+/// device, a fixed sample in a screenshot or test.
+pub(crate) trait NetworkService: Send + Sync {
+    /// Read everything Network shows; `initial` also reads the SIMs.
+    /// Connectivity is the last verdict; this never probes the internet,
+    /// and the networks are those last seen: it never waits for a scan.
+    fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Scan for Wi-Fi networks and return once the scan has finished, so the
+    /// snapshot that follows lists what the radio sees now. Only the
+    /// explicit refresh does this: a scan takes as long as the hardware
+    /// needs, and no reading may wait for it.
+    ///
+    /// # Errors
+    /// Why the device could not scan.
+    fn scan(&self) -> Result<(), String> {
+        Ok(())
     }
-    out
+    /// Ask the device to check internet connectivity again, so the next
+    /// snapshot carries a fresh verdict. Only the explicit refresh does this.
+    fn recheck_connectivity(&self) {}
+    /// Carry out `change`.
+    ///
+    /// # Errors
+    /// Why the device refused or failed it.
+    fn change(&self, change: &NetworkChange) -> Result<(), String>;
+    /// Ask the person's Wi-Fi continuity service.
+    ///
+    /// # Errors
+    /// Why the service could not be asked.
+    fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String>;
+    /// Diagnose the connection.
+    ///
+    /// # Errors
+    /// Why it could not be diagnosed.
+    fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String>;
+    /// The captive portal's sign-in page.
+    ///
+    /// # Errors
+    /// Why there is none to open.
+    fn sign_in_page(&self) -> Result<String, String>;
+    /// Open a system tool.
+    ///
+    /// # Errors
+    /// Why it could not be opened.
+    fn open_tool(&self, intent: ToolIntent) -> Result<(), String>;
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent UI/lifecycle flag (advanced-open, seed-pending, QR-visible, structure-dirty), not a combinatorial state machine"
-)]
-pub struct NetworkPane {
+/// This device's `NetworkManager`, its radios switched through the
+/// dispatcher.
+struct DeviceNetwork {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-    lister: NetworkLister,
-    /// Cached current network list — refreshed at construction and on
-    /// `Refresh` button press.
+}
+
+impl NetworkService for DeviceNetwork {
+    fn snapshot(&self, initial: bool) -> NetworkSnapshot {
+        NetworkSnapshot::read(initial)
+    }
+
+    fn recheck_connectivity(&self) {
+        // A refused or failed recheck still leaves the last verdict, which
+        // the snapshot that follows reads and reports.
+        let _ = os_actions::check_connectivity_now();
+    }
+
+    fn scan(&self) -> Result<(), String> {
+        os_actions::scan_wifi()
+    }
+
+    fn change(&self, change: &NetworkChange) -> Result<(), String> {
+        let dispatcher = &self.dispatcher;
+        match change {
+            NetworkChange::Wifi(on) => dispatcher.set_wifi(*on),
+            NetworkChange::Wired(on) => dispatcher.set_wired(*on),
+            NetworkChange::Radio(Radio::Airplane, on) => dispatcher.set_airplane_mode(*on),
+            NetworkChange::Radio(Radio::Hotspot, on) => dispatcher.set_hotspot(*on),
+            NetworkChange::Radio(Radio::Mobile, on) => dispatcher.set_mobile_broadband(*on),
+            NetworkChange::Vpn { name, on } => dispatcher.set_vpn_connection(name, *on),
+            NetworkChange::Autoconnect { uuid, on, .. } => {
+                os_actions::set_network_autoconnect(uuid, *on)
+            }
+            NetworkChange::Wake { uuid, on } => {
+                let status = host_network_wake(uuid, Some(*on))?;
+                status.problem.map_or(Ok(()), Err)
+            }
+            NetworkChange::Forget { uuid, .. } => os_actions::forget_network_profile(uuid),
+            NetworkChange::Hotspot(config) => os_actions::configure_hotspot(config),
+            NetworkChange::Ipv4 { uuid, config, .. } => os_actions::configure_ipv4(uuid, config),
+            NetworkChange::Policy { uuid, patch, .. } => {
+                os_actions::configure_connection_policy_patch(uuid, patch)
+            }
+            NetworkChange::Connect { ssid, password } => {
+                dispatcher.connect_wifi(ssid, password.as_deref().map(String::as_str))
+            }
+            NetworkChange::MobileProfile { name, apn } => {
+                os_actions::create_mobile_profile(name, apn)
+            }
+            NetworkChange::UnlockSim { sim, pin } => os_actions::unlock_mobile_sim_on(sim, pin),
+            NetworkChange::Enterprise { config, password } => {
+                os_actions::connect_enterprise_wifi(config, password)
+            }
+        }
+    }
+
+    fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String> {
+        ui::collaboration::wifi_continuity_command(command)
+    }
+
+    fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+        os_actions::connection_diagnostics()
+    }
+
+    fn sign_in_page(&self) -> Result<String, String> {
+        os_actions::captive_portal_uri()
+    }
+
+    fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        os_actions::open_tool(intent)
+    }
+}
+
+/// A few nearby networks and a wired link, for a screenshot: every change
+/// is accepted and reaches nothing.
+struct SampleNetwork;
+
+impl SampleNetwork {
+    fn networks() -> Vec<WifiNetworkInfo> {
+        vec![
+            WifiNetworkInfo {
+                ssid: "Home_Network".into(),
+                signal: 4,
+                secure: true,
+                security: os_actions::WifiSecurity::Wpa3,
+                connected: true,
+            },
+            WifiNetworkInfo {
+                ssid: "Cafe_Guest".into(),
+                signal: 3,
+                secure: false,
+                security: os_actions::WifiSecurity::Open,
+                connected: false,
+            },
+            WifiNetworkInfo {
+                ssid: "Office_5G".into(),
+                signal: 2,
+                secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
+                connected: false,
+            },
+        ]
+    }
+}
+
+impl NetworkService for SampleNetwork {
+    fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+        let mut snapshot = NetworkSnapshot::of_networks(Self::networks());
+        snapshot.wired = Some(Ok(WiredInfo {
+            connected: true,
+            device: Some("enp3s0".into()),
+            speed: Some("1000 Mb/s".into()),
+            ipv4: Some("192.168.1.42".into()),
+        }));
+        snapshot
+    }
+
+    fn change(&self, _change: &NetworkChange) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String> {
+        Ok(match command {
+            WifiContinuityCommand::Lookup { .. } => WifiContinuityReply::NotFound,
+            _ => WifiContinuityReply::Rejected {
+                reason: "a sample shares nothing".into(),
+            },
+        })
+    }
+
+    fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+        Err("a sample has no connection to diagnose".into())
+    }
+
+    fn sign_in_page(&self) -> Result<String, String> {
+        Err("a sample has no sign-in page".into())
+    }
+
+    fn open_tool(&self, _intent: ToolIntent) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// How an effect began: finished at once, or work for a worker.
+pub(crate) enum Begun {
+    Done,
+    Work(Box<dyn FnOnce() -> Landed + Send>),
+}
+
+impl Begun {
+    fn work(work: impl FnOnce() -> Landed + Send + 'static) -> Self {
+        Self::Work(Box::new(work))
+    }
+}
+
+/// How a connection attempt ended.
+pub(crate) enum Joined {
+    Connected { continuity_notice: Option<String> },
+    PasswordRequired { continuity_warning: Option<String> },
+}
+
+/// Work that finished on a worker, for the model to take in.
+pub(crate) enum Landed {
+    Refreshed {
+        snapshot: NetworkSnapshot,
+        scan: Result<(), String>,
+    },
+    Changed(NetworkChange, Result<(), String>),
+    Connected {
+        ssid: String,
+        result: Result<Joined, String>,
+    },
+    Shared(Result<String, String>),
+    Diagnosed(Result<os_actions::ConnectionDiagnostics, String>),
+    SignedIn(Result<(), String>),
+}
+
+/// The fields of one saved Wi-Fi network's policy form.
+struct PolicyForm {
+    metered: LocalState<String>,
+    mac: LocalState<String>,
+    proxy: LocalState<String>,
+}
+
+/// The fields of one wired profile's IPv4 form.
+struct Ipv4Form {
+    automatic: LocalState<bool>,
+    addresses: LocalState<String>,
+    gateway: LocalState<String>,
+    dns: LocalState<String>,
+}
+
+/// What an enterprise connection was given; the setup form fills the rest.
+struct EnterpriseGiven {
+    profile: Option<String>,
+    ssid: Option<String>,
+    identity: Option<String>,
+    anonymous_identity: Option<String>,
+    ca_certificate: Option<String>,
+    method: Option<String>,
+    inner_auth: Option<String>,
+    client_certificate: Option<String>,
+    private_key: Option<String>,
+    password: Option<String>,
+}
+
+/// The enterprise network setup form.
+struct EnterpriseForm {
+    profile: LocalState<String>,
+    ssid: LocalState<String>,
+    identity: LocalState<String>,
+    anonymous: LocalState<String>,
+    ca: LocalState<String>,
+    client_certificate: LocalState<String>,
+    private_key: LocalState<String>,
+    method: LocalState<String>,
+    inner_auth: LocalState<String>,
+    password: Arc<Mutex<String>>,
+}
+
+impl EnterpriseForm {
+    fn new() -> Self {
+        Self {
+            profile: LocalState::new(String::new()),
+            ssid: LocalState::new(String::new()),
+            identity: LocalState::new(String::new()),
+            anonymous: LocalState::new(String::new()),
+            ca: LocalState::new(String::new()),
+            client_certificate: LocalState::new(String::new()),
+            private_key: LocalState::new(String::new()),
+            method: LocalState::new("PEAP".into()),
+            inner_auth: LocalState::new("MSCHAPv2".into()),
+            password: Arc::new(Mutex::new(String::new())),
+        }
+    }
+}
+
+/// Which radios Network can switch, each as the kernel lists it or
+/// `NetworkManager` reported it: either one seeing a radio is enough, so a
+/// dongle plugged in counts at once and a modem only `NetworkManager` knows
+/// still counts. `None` while neither has said.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct NetworkRadios {
+    wifi: Option<bool>,
+    wwan: Option<bool>,
+}
+
+impl NetworkRadios {
+    fn of(cx: &PaneCx, reported: Option<&os_actions::RadioState>) -> Self {
+        let listed = cx.radios().now();
+        let either = |listed: Option<bool>, reported: Option<bool>| match (listed, reported) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (None, None) => None,
+            _ => Some(false),
+        };
+        Self {
+            wifi: either(
+                listed.map(|radios| radios.wifi),
+                reported.map(|radios| radios.wifi_available),
+            ),
+            wwan: either(
+                listed.map(|radios| radios.wwan),
+                reported.map(|radios| radios.wwan_available),
+            ),
+        }
+    }
+}
+
+/// What the Network area keeps for the window: the model, read when first
+/// needed.
+pub struct NetworkArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<NetworkModel>>,
+}
+
+impl NetworkArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The model over this device's networks, or over sample networks for a
+    /// screenshot.
+    pub fn model(&self) -> &Shared<NetworkModel> {
+        self.model.get_or_init(|| {
+            let model = if self.cx.reaches_devices() {
+                NetworkModel::of_device(self.cx.clone())
+            } else {
+                NetworkModel::sample(self.cx.clone())
+            };
+            Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Observe the already mounted model; reading never starts or polls a scan.
+    fn inspection(&self) -> Result<serde_json::Value, String> {
+        match self.model.get() {
+            Some(model) => model.borrow().inspection(),
+            None => Ok(
+                serde_json::json!({"state":"unopened", "loaded":false, "networks":[],
+                "source": if self.cx.reaches_devices() { "device" } else { "preview" }}),
+            ),
+        }
+    }
+
+    /// What this device cannot do with its networks now: Wi-Fi and a
+    /// hotspot without a Wi-Fi radio, mobile broadband without a modem,
+    /// airplane mode with neither. Reads nothing itself: only what the
+    /// radios and the area's model have read, so it never opens the area.
+    pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
+        let reported = self.model.get().and_then(|model| {
+            let model = model.try_borrow().ok()?;
+            model.reported_radios().cloned()
+        });
+        let radios = NetworkRadios::of(&self.cx, reported.as_ref());
+        let mut statuses = Vec::new();
+        let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
+            statuses.extend(effects.iter().map(|&id| {
+                EffectStatus::unavailable(
+                    ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                    code,
+                    reason,
+                )
+            }));
+        };
+        let wifi = radios.wifi == Some(false);
+        let wwan = radios.wwan == Some(false);
+        if wifi {
+            unavailable(
+                &[
+                    NetworkEffect::SET_WIFI.id,
+                    NetworkEffect::SET_HOTSPOT.id,
+                    NetworkEffect::START_HOTSPOT.id,
+                ],
+                "no_adapter",
+                &t("net-no-wifi-adapter"),
+            );
+        }
+        if wwan {
+            unavailable(
+                &[NetworkEffect::SET_MOBILE_BROADBAND.id],
+                "no_modem",
+                &t("net-no-modem"),
+            );
+        }
+        if wifi && wwan {
+            unavailable(
+                &[NetworkEffect::SET_AIRPLANE_MODE.id],
+                "no_radio",
+                &t("net-no-radio"),
+            );
+        }
+        statuses
+    }
+
+    /// Take in background results, if the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_background();
+        }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per nearby network, saved network and VPN, each offering
+    /// what can be done with it.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
+        let mut rows: Vec<LiveRow> = model
+            .networks
+            .iter()
+            .map(|network| {
+                let row = LiveRow::new(
+                    network_row_id(network),
+                    "settings.network",
+                    network.ssid.clone(),
+                );
+                if network.connected {
+                    row
+                } else {
+                    row.operation(offer(NetworkEffect::ConnectNetwork {
+                        ssid: network.ssid.clone(),
+                        password: None,
+                    }))
+                }
+            })
+            .collect();
+        rows.extend(model.profiles.iter().map(|profile| {
+            let mut row = LiveRow::new(
+                format!("settings.network-profile:{}", profile.uuid),
+                "settings.network-profile",
+                profile.name.clone(),
+            )
+            .operation(offer(NetworkEffect::SetAutoconnect {
+                profile: profile.uuid.clone(),
+                on: !profile.autoconnect,
+            }))
+            .operation(offer(NetworkEffect::ForgetNetwork {
+                profile: profile.uuid.clone(),
+            }));
+            if profile.kind == "802-11-wireless" {
+                row = row.operation(offer(NetworkEffect::ShareNetwork {
+                    profile: profile.uuid.clone(),
+                }));
+            }
+            if let Some(Ok(wake)) = model.wake_settings.get(&profile.uuid) {
+                row = row.presentation(ui::tilo_actions::ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(t(wake_description(wake))),
+                });
+                if wake.configured || wake.supported == Some(true) {
+                    row = row.operation(offer(NetworkEffect::SetNetworkWake {
+                        profile: profile.uuid.clone(),
+                        on: !wake.configured,
+                    }));
+                }
+            }
+            row
+        }));
+        rows.extend(model.vpns.iter().map(|vpn| {
+            LiveRow::new(
+                format!("settings.vpn:{}", vpn.name),
+                "settings.vpn",
+                vpn.name.clone(),
+            )
+            .operation(offer(NetworkEffect::SetVpn {
+                vpn: vpn.name.clone(),
+                on: !vpn.active,
+            }))
+        }));
+        rows
+    }
+}
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent disclosure or read state of the pane"
+)]
+pub struct NetworkModel {
+    cx: PaneCx,
+    service: Arc<dyn NetworkService>,
+    /// False until the first snapshot arrives; until then the pane shows a
+    /// pending view.
+    loaded: bool,
+    snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
-    /// Cached wired-connection snapshot, sampled at construction and on
-    /// refresh.
+    wifi_enabled: bool,
+    /// The radios the kernel listed when the model last looked.
+    listed: Option<crate::radios::Present>,
     wired: WiredInfo,
     radios: os_actions::RadioState,
     connectivity: ConnectivityState,
     profiles: Vec<SavedNetworkProfile>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
-    selected_wifi_profile: Option<String>,
-    selected_wired_profile: Option<String>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
     sims: Vec<os_actions::SimInfo>,
-    diagnostics: Option<os_actions::ConnectionDiagnostics>,
-    advanced_open: bool,
-    enterprise_editor_open: bool,
-    /// Configured VPN connections (read-only status), sampled at
-    /// construction and on refresh.
-    vpns: Vec<VpnInfo>,
-    vpn_lister: VpnLister,
-    tool_opener: ToolOpener,
-    initial_wifi_enabled: bool,
-    last_wifi_enabled: bool,
-    /// Shared only with the Settings operation host; it is process-local and
-    /// never written to the CRDT alongside the radio latches below.
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    require_operation_token: bool,
-    needs_seed: bool,
-    /// Track which `network.join.<ssid>` keys we already dispatched
-    /// for, so a single button press doesn't re-fire on every frame.
-    dispatched_connects: Vec<String>,
-    connection_tx: std::sync::mpsc::Sender<(NetworkJob, Result<NetworkJobSuccess, String>)>,
-    connection_rx: std::sync::mpsc::Receiver<(NetworkJob, Result<NetworkJobSuccess, String>)>,
-    wifi_continuity: Arc<dyn WifiContinuityClient>,
-    connection_notice: Option<String>,
-    ca_picker_rx: Option<ui::portal::PortalChannel>,
-    /// Opening the network sign-in page, run on the app runtime.
-    captive_portal: ui::LatestRequest<Result<(), String>>,
-    /// A diagnostics read from `NetworkManager`, run on the app runtime.
-    diagnostics_request: ui::LatestRequest<Result<os_actions::ConnectionDiagnostics, String>>,
-    /// The `NetworkManager` snapshot being read on the app runtime.
-    snapshot_request: ui::LatestRequest<NetworkSnapshot>,
-    /// False until the first snapshot arrives. Until then the pane shows a
-    /// pending view and acts on none of its controls.
-    loaded: bool,
-    /// A Refresh operation waiting for the next snapshot.
-    refresh_pending: bool,
-    /// Requested changes not yet started, oldest first.
-    actions: std::collections::VecDeque<NetworkAction>,
-    /// The change running on the app runtime, with its outcome.
-    action_request: ui::LatestRequest<ActionOutcome>,
-    hotspot_password: Arc<Mutex<String>>,
-    hotspot_ssid: String,
-    hotspot_band: String,
-    hotspot_qr_visible: bool,
     hotspot_clients: Vec<os_actions::HotspotClient>,
-    /// Passwords never enter the Settings CRDT. Each expanded row gets a
-    /// process-local buffer which is zeroed immediately after dispatch.
-    secret_buffers: HashMap<String, Arc<Mutex<String>>>,
-    /// The secure SSID whose inline password prompt is currently expanded,
-    /// if any. Mirrors [`EXPANDED_KEY`] in the document; clicking "Connect"
-    /// on a secure network opens it; clicking it again, "Join", or a
-    /// successful connect closes it.
-    expanded_ssid: Option<String>,
-    /// Set when `expanded_ssid` changed this `sync`, so the host re-runs
-    /// `build_layout` and the inline password prompt appears/disappears.
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    vpns: Vec<VpnInfo>,
+    diagnostics: Option<os_actions::ConnectionDiagnostics>,
+    /// Why each part of the last snapshot could not be read.
+    read_errors: NetworkReadErrors,
+    /// Changes running; a snapshot taken meanwhile does not overrule what
+    /// they show.
+    in_flight: usize,
+    /// Explicit refresh operations whose worker result has not landed.
+    refreshes_pending: usize,
+    /// Networks being joined.
+    connecting: Vec<String>,
+    notice: Option<String>,
+    /// The secure network whose password prompt is open.
+    expanded: Option<String>,
+    /// The password typed into each open prompt.
+    join_passwords: HashMap<String, Arc<Mutex<String>>>,
+    policy_open: bool,
+    enterprise_open: bool,
+    hotspot_code_shown: bool,
+    /// The saved Wi-Fi and wired profile being edited, by label.
+    wifi_profile: LocalState<String>,
+    wired_profile: LocalState<String>,
+    seen_selection: (String, String),
+    hotspot_name: LocalState<String>,
+    hotspot_password: Arc<Mutex<String>>,
+    hotspot_band: LocalState<String>,
+    policy_forms: HashMap<String, PolicyForm>,
+    ipv4_forms: HashMap<String, Ipv4Form>,
+    mobile_name: LocalState<String>,
+    mobile_apn: LocalState<String>,
+    mobile_sim: LocalState<String>,
+    sim_pin: Arc<Mutex<String>>,
+    enterprise: EnterpriseForm,
+    ca_picker: Option<ui::portal::PortalChannel>,
+    changed: bool,
 }
 
-impl Default for NetworkPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for NetworkPane {
+impl Drop for NetworkModel {
     fn drop(&mut self) {
-        if let Ok(mut password) = self.hotspot_password.lock() {
-            password.zeroize();
-        }
-        for buffer in self.secret_buffers.values() {
+        let secrets = [
+            &self.hotspot_password,
+            &self.sim_pin,
+            &self.enterprise.password,
+        ];
+        for buffer in secrets.into_iter().chain(self.join_passwords.values()) {
             if let Ok(mut secret) = buffer.lock() {
                 secret.zeroize();
             }
@@ -551,684 +1216,1148 @@ impl Drop for NetworkPane {
     }
 }
 
-impl NetworkPane {
-    /// The production pane. It appears at once in a pending state; the
-    /// `NetworkManager` snapshot is read on the app runtime and applied when
-    /// it arrives through the wake.
-    pub fn new() -> Self {
-        let mut pane = Self::from_parts(
-            dispatcher_or_real(None),
-            Arc::new(os_actions::list_wifi_networks),
-            Arc::new(read_vpn_connections),
-            Arc::new(ProductionWifiContinuityClient),
-            true,
-            Vec::new(),
+/// The AP identity shared by publication and inspection.
+fn network_row_id(network: &WifiNetworkInfo) -> String {
+    format!("settings.network:{}", network.ssid)
+}
+
+impl NetworkModel {
+    /// Only state already adopted by the ordinary snapshot/completion pump.
+    /// Bound the explicit read, and omit editable forms, profiles and secrets.
+    fn inspection(&self) -> Result<serde_json::Value, String> {
+        const MAX_ROWS: usize = 256;
+        const MAX_BYTES: usize = 128 * 1024;
+        let networks = self
+            .networks
+            .iter()
+            .take(MAX_ROWS)
+            .map(|network| {
+                serde_json::json!({
+                    "resource":network_row_id(network), "ssid":network.ssid,
+                    "signal_bucket":network.signal, "security":network.security,
+                    "secure":network.secure, "connected":network.connected,
+                    "visible":self.loaded && self.wifi_enabled,
+                })
+            })
+            .collect::<Vec<_>>();
+        let known_wifi = self.loaded && self.read_errors.wifi_enabled.is_none();
+        let known_radios = self.loaded && self.read_errors.radios.is_none();
+        let known_wired = self.loaded && self.read_errors.wired.is_none();
+        let known_connectivity = self.loaded && self.read_errors.connectivity.is_none();
+        let wifi_status = self.loaded.then(|| {
+            if self.wifi_absent() {
+                t("net-no-wifi-adapter")
+            } else {
+                self.wifi_status_error()
+                    .unwrap_or_else(|| self.connection_status_text())
+            }
+        });
+        let value = serde_json::json!({
+            "source":if self.cx.reaches_devices() { "device" } else { "preview" },
+            "state":if self.loaded { "ready" } else { "loading" }, "loaded":self.loaded,
+            "wifi": { "available":known_radios.then_some(self.radios.wifi_available),
+                "enabled":known_wifi.then_some(self.wifi_enabled), "status_label":wifi_status },
+            "wired": { "device":known_wired.then_some(self.wired.device.as_deref()).flatten(),
+                "connected":known_wired.then_some(self.wired.connected) },
+            "connectivity": { "state":known_connectivity.then_some(match self.connectivity {
+                ConnectivityState::Unknown => "unknown", ConnectivityState::Offline => "offline",
+                ConnectivityState::Portal => "portal", ConnectivityState::Limited => "limited", ConnectivityState::Full => "full",
+            }), "label":known_connectivity.then(|| connectivity_shown(self.connectivity)) },
+            "scan": { "snapshot_pending":self.snapshot.is_some(), "jobs_pending":self.refreshes_pending },
+            "changes_pending":self.in_flight, "networks":networks,
+            "network_count":self.networks.len(), "networks_truncated":self.networks.len() > MAX_ROWS,
+            "errors": { "networks":self.read_errors.networks, "wifi_enabled":self.read_errors.wifi_enabled,
+                "radios":self.read_errors.radios, "wired":self.read_errors.wired, "connectivity":self.read_errors.connectivity },
+            "labels": { "wifi":t("net-wifi"), "wifi_caption":t("net-wifi-caption"),
+                "enterprise_caption":t("net-enterprise-caption"), "refresh":t("net-refresh") },
+        });
+        let size = serde_json::to_vec(&value)
+            .map_err(|_| "Network inspection could not be encoded.".to_string())?
+            .len();
+        if size > MAX_BYTES {
+            return Err("Network inspection exceeds its bounded response size.".into());
+        }
+        Ok(value)
+    }
+    /// This device's networks: the pane is pending until the first
+    /// snapshot, read in the background, arrives.
+    fn of_device(cx: PaneCx) -> Self {
+        let mut model = Self::with_service(
+            cx,
+            Arc::new(DeviceNetwork {
+                dispatcher: dispatcher_or_real(None),
+            }),
         );
-        pane.begin_initial_load();
-        pane
+        model.start_snapshot();
+        model
     }
 
-    /// Test-only constructor that pins the dispatcher, the wifi-state,
-    /// and the network-list source. The list is captured into the
-    /// pane's cache immediately.
-    pub fn with_dispatcher(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        initial_wifi_enabled: bool,
-        networks: Vec<WifiNetworkInfo>,
-    ) -> Self {
-        let snapshot = networks.clone();
-        Self::from_parts(
-            dispatcher,
-            Arc::new(move || Ok(snapshot.clone())),
-            Arc::new(Vec::<VpnInfo>::new),
-            Arc::new(EmptyWifiContinuityClient),
-            initial_wifi_enabled,
-            networks,
-        )
+    /// Sample networks with a secure one's password prompt open, as
+    /// joining it looks.
+    fn sample(cx: PaneCx) -> Self {
+        let mut model = Self::loaded_from(cx, Arc::new(SampleNetwork));
+        model.set_expanded(Some("Office_5G".into()));
+        model
     }
 
-    /// `--shots` helper: a pane with a fixed network list and the real
-    /// dispatcher (clicks would shell out, but the render never clicks).
-    pub fn new_demo(networks: Vec<WifiNetworkInfo>) -> Self {
-        let snapshot = networks.clone();
-        let mut pane = Self::from_parts(
-            dispatcher_or_real(None),
-            Arc::new(move || Ok(snapshot.clone())),
-            Arc::new(Vec::<VpnInfo>::new),
-            Arc::new(ProductionWifiContinuityClient),
-            true,
-            networks,
-        );
-        pane.connectivity = ConnectivityState::Full;
-        pane
+    /// A model over `service`, its first snapshot read at once.
+    fn loaded_from(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
+        let mut model = Self::with_service(cx, service);
+        let snapshot = model.service.snapshot(true);
+        let _ = model.adopt_snapshot(snapshot);
+        model
     }
 
-    /// A loaded pane showing `networks` and nothing else read from the host.
-    fn from_parts(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        lister: NetworkLister,
-        vpn_lister: VpnLister,
-        wifi_continuity: Arc<dyn WifiContinuityClient>,
-        initial_wifi_enabled: bool,
-        networks: Vec<WifiNetworkInfo>,
-    ) -> Self {
-        let (connection_tx, connection_rx) = std::sync::mpsc::channel();
+    fn with_service(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
         Self {
-            dispatcher,
-            lister,
-            networks,
+            listed: cx.radios().now(),
+            cx,
+            service,
+            loaded: false,
+            snapshot: None,
+            networks: Vec::new(),
+            wifi_enabled: false,
             wired: WiredInfo::default(),
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Unknown,
             profiles: Vec::new(),
             profile_settings: HashMap::new(),
-            selected_wifi_profile: None,
-            selected_wired_profile: None,
+            wake_settings: HashMap::new(),
             sims: Vec::new(),
-            diagnostics: None,
-            advanced_open: false,
-            enterprise_editor_open: false,
-            vpns: Vec::new(),
-            vpn_lister,
-            tool_opener: Arc::new(os_actions::open_tool),
-            initial_wifi_enabled,
-            last_wifi_enabled: initial_wifi_enabled,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            dispatched_connects: Vec::new(),
-            connection_tx,
-            connection_rx,
-            wifi_continuity,
-            connection_notice: None,
-            ca_picker_rx: None,
-            captive_portal: ui::LatestRequest::new(),
-            diagnostics_request: ui::LatestRequest::new(),
-            snapshot_request: ui::LatestRequest::new(),
-            loaded: true,
-            refresh_pending: false,
-            actions: std::collections::VecDeque::new(),
-            action_request: ui::LatestRequest::new(),
-            hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "Tilo Hotspot".into(),
-            hotspot_band: "Automatic".into(),
-            hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
-            secret_buffers: initial_secret_buffers(),
-            expanded_ssid: None,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            vpns: Vec::new(),
+            diagnostics: None,
+            read_errors: NetworkReadErrors::default(),
+            in_flight: 0,
+            refreshes_pending: 0,
+            connecting: Vec::new(),
+            notice: None,
+            expanded: None,
+            join_passwords: HashMap::new(),
+            policy_open: false,
+            enterprise_open: false,
+            hotspot_code_shown: false,
+            wifi_profile: LocalState::new(String::new()),
+            wired_profile: LocalState::new(String::new()),
+            seen_selection: (String::new(), String::new()),
+            hotspot_name: LocalState::new(DEFAULT_HOTSPOT_NAME.into()),
+            hotspot_password: Arc::new(Mutex::new(String::new())),
+            hotspot_band: LocalState::new(band_shown("Automatic")),
+            policy_forms: HashMap::new(),
+            ipv4_forms: HashMap::new(),
+            mobile_name: LocalState::new(String::new()),
+            mobile_apn: LocalState::new(String::new()),
+            mobile_sim: LocalState::new(String::new()),
+            sim_pin: Arc::new(Mutex::new(String::new())),
+            enterprise: EnterpriseForm::new(),
+            ca_picker: None,
+            changed: false,
         }
     }
 
-    /// Show the pending state and start reading the first snapshot.
-    fn begin_initial_load(&mut self) {
-        self.loaded = false;
-        if !self.start_snapshot() {
-            self.connection_notice =
-                Some("Network status is unavailable while the window closes.".into());
-        }
+    /// The radio state `NetworkManager` last reported, once it has.
+    fn reported_radios(&self) -> Option<&os_actions::RadioState> {
+        (self.loaded && self.read_errors.radios.is_none()).then_some(&self.radios)
     }
 
-    /// Start reading a fresh `NetworkManager` snapshot on the app runtime.
-    /// A newer read supersedes an older one still running. Returns `false`
-    /// when the owning window is closing.
-    fn start_snapshot(&mut self) -> bool {
-        let lister = Arc::clone(&self.lister);
-        let vpn_lister = Arc::clone(&self.vpn_lister);
-        let initial = !self.loaded;
-        let started = self.snapshot_request.spawn(async move {
-            ui::rt::app()
-                .spawn_blocking(move || NetworkSnapshot::read(&lister, &vpn_lister, initial))
-                .await
-                .unwrap_or_else(|error| {
-                    NetworkSnapshot::failed(format!("the network query stopped: {error}"))
-                })
-        });
-        self.structure_dirty = true;
-        started
+    /// Which radios Network can switch now.
+    fn radios_present(&self) -> NetworkRadios {
+        NetworkRadios::of(&self.cx, self.reported_radios())
     }
 
-    fn sync_snapshot_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(snapshot) = self.snapshot_request.try_take() {
-            self.apply_snapshot(state, root, snapshot);
-        }
+    /// Whether this device has no Wi-Fi radio.
+    fn wifi_absent(&self) -> bool {
+        self.radios_present().wifi == Some(false)
     }
 
-    /// Adopt a snapshot. The first one only fills the pane's fields; the
-    /// seed that follows writes them into the document. Later ones also
-    /// update the document keys whose controls mirror host state, so a
-    /// stale key never reads as a request to change that state.
-    fn apply_snapshot(&mut self, state: &mut AutoCommit, root: &ObjId, snapshot: NetworkSnapshot) {
-        let initial = !self.loaded;
-        let outcome = match snapshot.networks {
-            Ok(networks) => {
-                self.networks = networks;
-                Ok("Network list refreshed.".to_string())
-            }
-            Err(error) => {
-                warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
-                Err(format!("Could not refresh network list: {error}"))
-            }
-        };
-        if std::mem::take(&mut self.refresh_pending) {
-            self.finish_local_operation(crate::actions::NetworkOperation::Refresh, outcome);
-        }
-        if self.loaded && self.actions_busy() {
-            // Read before a queued change landed; the snapshot taken once
-            // the queue drains reports the host state.
-            self.structure_dirty = true;
-            return;
-        }
-        if let Some(enabled) = snapshot.wifi_enabled {
-            self.initial_wifi_enabled = enabled;
-            self.last_wifi_enabled = enabled;
-        }
-        if let Some(sims) = snapshot.sims {
-            self.sims = sims;
-        }
-        if let Some(wired) = snapshot.wired {
-            self.wired = wired;
-            if !initial {
-                let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
-            }
-        }
-        if let Some(radios) = snapshot.radios {
-            self.radios = radios;
-            if !initial {
-                for (key, value) in [
-                    (AIRPLANE_KEY, self.radios.airplane_mode),
-                    (HOTSPOT_KEY, self.radios.hotspot_active),
-                    (MOBILE_KEY, self.radios.wwan_enabled),
-                ] {
-                    let _ = state.put(root, key, value);
-                }
-            }
-        }
-        if let Some(connectivity) = snapshot.connectivity {
-            self.connectivity = connectivity;
-        }
-        if let Some(clients) = snapshot.hotspot_clients {
-            self.hotspot_clients = clients;
-        }
-        if let Some(profiles) = snapshot.profiles {
-            self.profiles = profiles;
-            self.profile_settings = snapshot.profile_settings;
-            self.select_available_profiles();
-        }
-        if let Some(vpns) = snapshot.vpns {
-            self.vpns = vpns;
-            if !initial {
-                for vpn in &self.vpns {
-                    let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
-                }
-            }
-        }
-        self.loaded = true;
-        self.structure_dirty = true;
-    }
-
-    const fn radio(&self, radio: Radio) -> bool {
-        match radio {
-            Radio::Airplane => self.radios.airplane_mode,
-            Radio::Hotspot => self.radios.hotspot_active,
-            Radio::Mobile => self.radios.wwan_enabled,
-        }
-    }
-
-    const fn set_radio(&mut self, radio: Radio, enabled: bool) {
-        match radio {
-            Radio::Airplane => self.radios.airplane_mode = enabled,
-            Radio::Hotspot => self.radios.hotspot_active = enabled,
-            Radio::Mobile => self.radios.wwan_enabled = enabled,
-        }
-    }
-
-    /// Whether a requested change is still queued or running.
-    fn actions_busy(&self) -> bool {
-        !self.actions.is_empty() || self.action_request.is_pending()
-    }
-
-    /// Queue a change behind the ones already requested. The pane shows the
-    /// requested state at once and reverts it if the change fails.
-    fn queue_action(&mut self, action: NetworkAction) {
-        self.actions.push_back(action);
-        self.start_next_action();
-        self.structure_dirty = true;
-    }
-
-    /// Start the oldest queued change unless one is already running.
-    fn start_next_action(&mut self) {
-        if self.action_request.is_pending() {
-            return;
-        }
-        let Some(action) = self.actions.pop_front() else {
-            return;
-        };
-        let dispatcher = Arc::clone(&self.dispatcher);
-        let started = self.action_request.spawn(async move {
-            ui::rt::app()
-                .spawn_blocking(move || {
-                    let result = action.run(&*dispatcher);
-                    (action, result)
-                })
-                .await
-                .map_err(|error| format!("the network change stopped: {error}"))
-        });
-        if !started {
-            // The window is closing; nothing is left to report to.
-            self.actions.clear();
-        }
-    }
-
-    /// Apply finished changes in order, start the next one, and re-read
-    /// `NetworkManager` once the queue has drained.
-    fn sync_action_results(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let mut finished = false;
-        while let Some(done) = self.action_request.try_take() {
-            match done {
-                Ok((action, result)) => self.finish_action(state, root, &action, result),
-                Err(error) => {
-                    warn!(target: "tilo::settings", op = "network_action", %error, "network change stopped");
-                    self.connection_notice = Some(format!("A network change stopped: {error}"));
-                }
-            }
-            finished = true;
-            self.start_next_action();
-        }
-        if finished && !self.actions_busy() {
-            self.start_snapshot();
-        }
-        if finished {
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Report one finished change, reverting what the pane showed if it
-    /// failed.
-    fn finish_action(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        action: &NetworkAction,
-        result: Result<(), String>,
-    ) {
-        match action {
-            NetworkAction::Wifi { .. }
-            | NetworkAction::Wired { .. }
-            | NetworkAction::Radio { .. } => self.finish_switch(state, root, action, result),
-            _ => self.finish_setting(state, root, action, result),
-        }
-    }
-
-    /// Report a finished Wi-Fi, wired or radio switch and its operation.
-    fn finish_switch(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        action: &NetworkAction,
-        result: Result<(), String>,
-    ) {
-        match (action, result) {
-            (NetworkAction::Wifi { enabled }, Ok(())) => self.finish_local_operation(
-                crate::actions::NetworkOperation::SetWifiEnabled { enabled: *enabled },
-                Ok(if *enabled {
-                    "Wi-Fi enabled.".into()
-                } else {
-                    "Wi-Fi disabled.".into()
-                }),
-            ),
-            (NetworkAction::Wifi { enabled }, Err(e)) => {
-                self.last_wifi_enabled = !enabled;
-                let _ = state.put(root, WIFI_ENABLED_KEY, !enabled);
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::SetWifiEnabled { enabled: *enabled },
-                    Err(format!("Could not change Wi-Fi power: {e}")),
-                );
-                warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
-            }
-            (NetworkAction::Wired { enabled }, Ok(())) => self.finish_local_operation(
-                crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
-                Ok(if *enabled {
-                    "Wired networking enabled.".into()
-                } else {
-                    "Wired networking disabled.".into()
-                }),
-            ),
-            (NetworkAction::Wired { enabled }, Err(e)) => {
-                warn!(target: "tilo::settings", op = "set_wired", error = %e, "network pane dispatch failed");
-                self.wired.connected = !enabled;
-                let _ = state.put(root, WIRED_ENABLED_KEY, !enabled);
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
-                    Err(format!("Could not change wired networking: {e}")),
-                );
-            }
-            (NetworkAction::Radio { radio, enabled }, Ok(())) => self.finish_local_operation(
-                radio.operation(*enabled),
-                Ok(format!(
-                    "{} {}.",
-                    radio.label(),
-                    if *enabled { "enabled" } else { "disabled" }
-                )),
-            ),
-            (NetworkAction::Radio { radio, enabled }, Err(e)) => {
-                warn!(target: "tilo::settings", op = radio.label(), error = %e, "radio action failed");
-                self.set_radio(*radio, !enabled);
-                let _ = state.put(root, radio.key(), !enabled);
-                self.finish_local_operation(
-                    radio.operation(*enabled),
-                    Err(format!("Could not change {} state: {e}", radio.label())),
-                );
-            }
-            _ => {}
-        }
-    }
-
-    /// Report a finished VPN, profile, hotspot or policy change.
-    fn finish_setting(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        action: &NetworkAction,
-        result: Result<(), String>,
-    ) {
-        match (action, result) {
-            (NetworkAction::Vpn { name, enabled }, Err(e)) => {
-                warn!(target: "tilo::settings", op = "set_vpn_connection", profile = %name, error = %e, "VPN action failed");
-                if let Some(vpn) = self.vpns.iter_mut().find(|vpn| &vpn.name == name) {
-                    vpn.active = !enabled;
-                }
-                let _ = state.put(root, Self::vpn_key(name), !enabled);
-            }
-            (
-                NetworkAction::Autoconnect {
-                    uuid,
-                    name,
-                    enabled,
-                },
-                Err(error),
-            ) => {
-                self.connection_notice = Some(format!("Could not update {name}: {error}"));
-                if let Some(saved) = self.profiles.iter_mut().find(|p| &p.uuid == uuid) {
-                    saved.autoconnect = !enabled;
-                }
-                let _ = state.put(root, profile_autoconnect_key(uuid), !enabled);
-            }
-            (NetworkAction::Forget { uuid, name }, Ok(())) => {
-                self.profiles.retain(|p| &p.uuid != uuid);
-                self.connection_notice = Some(format!("Forgot {name}."));
-            }
-            (NetworkAction::Forget { name, .. }, Err(error)) => {
-                self.connection_notice = Some(format!("Could not forget {name}: {error}"));
-            }
-            (NetworkAction::Hotspot { .. }, Ok(())) => {
-                self.radios.hotspot_active = true;
-                let _ = state.put(root, HOTSPOT_KEY, true);
-                self.connection_notice = Some("Hotspot is active.".into());
-            }
-            (NetworkAction::Hotspot { .. }, Err(error)) => {
-                self.connection_notice = Some(format!("Hotspot failed: {error}"));
-            }
-            (NetworkAction::Ipv4 { name, .. }, Ok(())) => {
-                self.connection_notice = Some(format!("Applied IP settings to {name}."));
-            }
-            (NetworkAction::Ipv4 { .. }, Err(error)) => {
-                self.connection_notice = Some(format!("IP settings were not applied: {error}"));
-            }
-            (NetworkAction::Policy { name, .. }, Ok(())) => {
-                self.connection_notice = Some(format!("Applied advanced policy to {name}."));
-            }
-            (NetworkAction::Policy { .. }, Err(e)) => {
-                self.connection_notice = Some(format!("Policy was not applied: {e}"));
-            }
-            // Enabling a VPN or autoconnect needs no report; switches are
-            // reported by `finish_switch`.
-            _ => {}
-        }
-    }
-
-    /// Keep each profile selector on a profile that still exists.
-    fn select_available_profiles(&mut self) {
-        if !self
-            .profiles
-            .iter()
-            .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
-        {
-            self.selected_wifi_profile = self
-                .profiles
-                .iter()
-                .find(|p| p.kind == "802-11-wireless")
-                .map(|p| p.uuid.clone());
-        }
-        if !self
-            .profiles
-            .iter()
-            .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
-        {
-            self.selected_wired_profile = self
-                .profiles
-                .iter()
-                .find(|p| p.kind == "802-3-ethernet")
-                .map(|p| p.uuid.clone());
-        }
-    }
-
-    /// Test/`--shots` helper: pin the wired snapshot so the Wired card
-    /// renders deterministic content.
-    #[must_use]
-    pub fn with_wired(mut self, wired: WiredInfo) -> Self {
-        self.wired = wired;
-        self
-    }
-
-    /// Test/`--shots` helper: pin the VPN list so the VPN card renders
-    /// deterministic content. Also pins the refresh lister to the same set.
-    #[must_use]
-    pub fn with_vpns(mut self, vpns: Vec<VpnInfo>) -> Self {
-        let snapshot = vpns.clone();
-        self.vpn_lister = Arc::new(move || snapshot.clone());
-        self.vpns = vpns;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_tool_opener(mut self, opener: ToolOpener) -> Self {
-        self.tool_opener = opener;
-        self
-    }
-
-    pub fn vpns(&self) -> &[VpnInfo] {
-        &self.vpns
-    }
-
-    /// Attach the host-owned lifecycle for typed device-local operations.
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-
-    fn execute_local_command(
-        &mut self,
-        local: &mut AutoCommit,
-        operation: crate::actions::NetworkOperation,
-    ) {
-        let root = automerge::ROOT;
-        use crate::actions::NetworkOperation as Op;
-        match &operation {
-            Op::Refresh => {
-                let _ = local.put(&root, REFRESH_KEY, true);
-            }
-            Op::SetWifiEnabled { enabled } => {
-                let _ = local.put(&root, WIFI_ENABLED_KEY, *enabled);
-            }
-            Op::SetWiredEnabled { enabled } => {
-                let _ = local.put(&root, WIRED_ENABLED_KEY, *enabled);
-            }
-            Op::SetAirplaneMode { enabled } => {
-                let _ = local.put(&root, AIRPLANE_KEY, *enabled);
-            }
-            Op::SetHotspot { enabled } => {
-                let _ = local.put(&root, HOTSPOT_KEY, *enabled);
-            }
-            Op::SetMobileBroadband { enabled } => {
-                let _ = local.put(&root, MOBILE_KEY, *enabled);
-            }
-            Op::RunDiagnostics => {
-                let _ = local.put(&root, DIAGNOSTICS_KEY, true);
-            }
-        }
-        self.sync_wifi_and_wired_toggles(local, &root);
-        self.sync_radio_toggles(local, &root);
-        self.sync_refresh(local, &root);
-        self.sync_diagnostics(local, &root);
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "callers construct the exact typed request whose token is completed"
-    )]
-    fn finish_local_operation(
-        &self,
-        operation: crate::actions::NetworkOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::NETWORK_OPERATION_TYPE,
-            &operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        ) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-
-    fn operation_is_running(&self, operation: &crate::actions::NetworkOperation) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::NETWORK_OPERATION_TYPE,
-            operation,
-        );
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        )
-    }
-
-    fn vpn_key(name: &str) -> String {
-        format!("network.vpn.{name}")
-    }
-
-    fn vpn_studio_key(name: &str) -> String {
-        format!("network.vpn.studio.{name}")
-    }
-
-    const VPN_STUDIO_OVERVIEW_KEY: &'static str = "network.vpn.studio.open";
-
-    /// Rows for the VPN card use the same `NetworkManager` profiles and
-    /// action boundary as quick settings.
-    fn vpn_rows(&self) -> Vec<El> {
-        if self.vpns.is_empty() {
-            return vec![
-                caption(
-                    "No VPN profiles yet. VPN Studio can import WireGuard and OpenVPN configurations.",
-                ),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(Button::new(
-                            "settings.network.vpn.studio.open",
-                            "Open VPN Studio",
-                            Some(Self::VPN_STUDIO_OVERVIEW_KEY),
-                        ))),
-                ),
-            ];
-        }
-        let mut out: Vec<El> = Vec::new();
-        for v in &self.vpns {
-            let id = format!("settings.network.vpn.{}", v.name);
-            let key = Self::vpn_key(&v.name);
-            out.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&v.name).with_size(13.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(
-                        &format!("settings.network.vpn.studio.{}", v.name),
-                        "Open VPN Studio",
-                        Some(&Self::vpn_studio_key(&v.name)),
-                    )))
-                    .push(Box::new(Toggle::new(&id, &key))),
-            ));
-        }
-        out.push(caption(
-            "Connect here day to day. Use VPN Studio only for imports, DNS, routing, and kill-switch rules.",
-        ));
-        out
-    }
-
-    /// Test/`--shots` helper: pre-expand a network's inline password prompt
-    /// so the deterministic render shows it. Also forces the radio "on" so
-    /// the network list renders.
-    #[must_use]
-    pub fn with_expanded(mut self, ssid: &str) -> Self {
-        self.expanded_ssid = Some(ssid.to_string());
-        self.secret_buffers
-            .insert(ssid.to_string(), Arc::new(Mutex::new(String::new())));
-        self.last_wifi_enabled = true;
-        self.initial_wifi_enabled = true;
-        self
-    }
-
-    /// Cached network list. Tests read this to assert the panes
-    /// rendered the right rows.
+    /// The networks in range, as last scanned.
     pub fn networks(&self) -> &[WifiNetworkInfo] {
         &self.networks
     }
 
+    /// Start reading a snapshot in the background; a newer read supersedes
+    /// an older one still running.
+    fn start_snapshot(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let service = Arc::clone(&self.service);
+        let initial = !self.loaded;
+        let wake = ui::WakeHandle::new();
+        let started = std::thread::Builder::new()
+            .name("settings-network-read".into())
+            .spawn(move || {
+                if sender.send(service.snapshot(initial)).is_ok() {
+                    wake.wake();
+                }
+            });
+        match started {
+            Ok(_) => self.snapshot = Some(receiver),
+            Err(error) => self.notice = Some(format!("{}: {error}", t("net-notice-unavailable"))),
+        }
+        self.changed = true;
+    }
+
+    /// Adopt a snapshot; what refreshing reports.
+    fn adopt_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
+        self.changed = true;
+        let outcome = match snapshot.networks {
+            Ok(networks) => {
+                self.networks = networks;
+                self.read_errors.networks = None;
+                Ok(t("net-notice-refreshed"))
+            }
+            Err(error) => {
+                warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
+                // The last list is no longer what the radio sees.
+                self.networks.clear();
+                self.read_errors.networks = Some(error.clone());
+                Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
+            }
+        };
+        if self.loaded && self.in_flight > 0 {
+            // Read before a running change landed; the snapshot taken once
+            // the changes land reports the device.
+            return outcome;
+        }
+        if let Some(enabled) = adopt(snapshot.wifi_enabled, &mut self.read_errors.wifi_enabled) {
+            self.wifi_enabled = enabled;
+        }
+        if let Some(sims) = adopt(snapshot.sims, &mut self.read_errors.sims) {
+            self.sims = sims;
+        }
+        if let Some(wired) = adopt(snapshot.wired, &mut self.read_errors.wired) {
+            self.wired = wired;
+        }
+        if let Some(radios) = adopt(snapshot.radios, &mut self.read_errors.radios) {
+            self.radios = radios;
+        }
+        if let Some(connectivity) = adopt(snapshot.connectivity, &mut self.read_errors.connectivity)
+        {
+            self.connectivity = connectivity;
+        }
+        if let Some(clients) = adopt(
+            snapshot.hotspot_clients,
+            &mut self.read_errors.hotspot_clients,
+        ) {
+            self.hotspot_clients = clients;
+        }
+        if let Some(profiles) = adopt(snapshot.profiles, &mut self.read_errors.profiles) {
+            self.profiles = profiles;
+            self.profile_settings = snapshot.profile_settings;
+            self.wake_settings = snapshot.wake_settings;
+            self.fill_forms();
+        }
+        if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
+            self.vpns = vpns;
+        }
+        if self.mobile_sim.get().is_empty()
+            && let Some(sim) = self.sims.first()
+        {
+            self.mobile_sim.set(sim.label.clone());
+        }
+        self.loaded = true;
+        outcome
+    }
+
+    /// Give each saved profile its forms, filled from what `NetworkManager`
+    /// reports, and keep each selector on a profile that still exists.
+    fn fill_forms(&mut self) {
+        for profile in &self.profiles {
+            let Some(settings) = self.profile_settings.get(&profile.uuid) else {
+                continue;
+            };
+            if profile.kind == "802-11-wireless" {
+                self.policy_forms
+                    .entry(profile.uuid.clone())
+                    .or_insert_with(|| PolicyForm {
+                        metered: LocalState::new(metered_shown(metered_id(
+                            settings.metered.unwrap_or_default(),
+                        ))),
+                        mac: LocalState::new(mac_shown(
+                            settings.mac.map_or("Stable per network", mac_id),
+                        )),
+                        proxy: LocalState::new(
+                            settings
+                                .proxy
+                                .as_ref()
+                                .and_then(|proxy| proxy.automatic_url.clone())
+                                .unwrap_or_default(),
+                        ),
+                    });
+            }
+            if let Some(ipv4) = &settings.ipv4 {
+                self.ipv4_forms
+                    .entry(profile.uuid.clone())
+                    .or_insert_with(|| Ipv4Form {
+                        automatic: LocalState::new(ipv4.automatic),
+                        addresses: LocalState::new(ipv4.addresses.join(", ")),
+                        gateway: LocalState::new(ipv4.gateway.clone().unwrap_or_default()),
+                        dns: LocalState::new(ipv4.dns.join(", ")),
+                    });
+            }
+        }
+        for (selection, kind) in [
+            (&self.wifi_profile, "802-11-wireless"),
+            (&self.wired_profile, "802-3-ethernet"),
+        ] {
+            let current = selection.get();
+            if !self
+                .profiles
+                .iter()
+                .any(|p| p.kind == kind && profile_label(p) == current)
+            {
+                selection.set(
+                    self.profiles
+                        .iter()
+                        .find(|p| p.kind == kind)
+                        .map(profile_label)
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    /// The saved profile `id` (its id or its name).
+    fn profile(&self, id: &str) -> Result<SavedNetworkProfile, String> {
+        self.profiles
+            .iter()
+            .find(|p| p.uuid == id || p.name == id)
+            .cloned()
+            .ok_or_else(|| format!("No saved network is called {id}."))
+    }
+
+    /// The saved profile `selection` names, else the first.
+    fn selected<'a>(
+        profiles: &[&'a SavedNetworkProfile],
+        selection: &LocalState<String>,
+    ) -> Option<&'a SavedNetworkProfile> {
+        let label = selection.get();
+        profiles
+            .iter()
+            .find(|p| profile_label(p) == label)
+            .or_else(|| profiles.first())
+            .copied()
+    }
+
+    /// Open the password prompt of `ssid`, or close it; the previous
+    /// prompt's password is zeroed.
+    fn set_expanded(&mut self, ssid: Option<String>) {
+        if self.expanded == ssid {
+            return;
+        }
+        if let Some(old) = self.expanded.take()
+            && let Some(buffer) = self.join_passwords.remove(&old)
+            && let Ok(mut secret) = buffer.lock()
+        {
+            secret.zeroize();
+        }
+        if let Some(ssid) = &ssid {
+            self.join_passwords
+                .entry(ssid.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(String::new())));
+        }
+        self.expanded = ssid;
+        self.changed = true;
+    }
+
+    /// Start `change` on a worker, showing `notice` meanwhile.
+    fn change(&mut self, change: NetworkChange, notice: Option<String>) -> Begun {
+        if notice.is_some() {
+            self.notice = notice;
+        }
+        self.in_flight += 1;
+        let service = Arc::clone(&self.service);
+        Begun::work(move || {
+            let result = service.change(&change);
+            Landed::Changed(change, result)
+        })
+    }
+
+    /// Begin `effect`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per effect; the longer ones call out"
+    )]
+    fn begin(&mut self, effect: NetworkEffect) -> Result<Begun, String> {
+        self.changed = true;
+        let service = Arc::clone(&self.service);
+        Ok(match effect {
+            NetworkEffect::InspectNetworkState => {
+                return Err("Network inspection is a read-only resource operation.".into());
+            }
+            NetworkEffect::RefreshNetworks => {
+                self.refreshes_pending += 1;
+                Begun::work(move || {
+                    let scan = service.scan();
+                    service.recheck_connectivity();
+                    Landed::Refreshed {
+                        snapshot: service.snapshot(false),
+                        scan,
+                    }
+                })
+            }
+            NetworkEffect::SetWifi { on } => {
+                if let Some(error) = &self.read_errors.wifi_enabled {
+                    return Err(t_args(
+                        "net-status-error",
+                        &[("error", error.as_str().into())],
+                    ));
+                }
+                self.wifi_enabled = on;
+                self.change(NetworkChange::Wifi(on), None)
+            }
+            NetworkEffect::SetWired { on } => {
+                if self.wired.device.is_none() {
+                    return Err("Wired networking is unavailable on this device.".into());
+                }
+                self.wired.connected = on;
+                self.change(NetworkChange::Wired(on), None)
+            }
+            NetworkEffect::SetAirplaneMode { on } => self.switch(Radio::Airplane, on)?,
+            NetworkEffect::SetHotspot { on } => self.switch(Radio::Hotspot, on)?,
+            NetworkEffect::SetMobileBroadband { on } => self.switch(Radio::Mobile, on)?,
+            NetworkEffect::ConnectNetwork { ssid, password } => self.connect(ssid, password)?,
+            NetworkEffect::CancelConnect { ssid } => {
+                if self.expanded.as_deref() == Some(ssid.as_str()) {
+                    self.set_expanded(None);
+                }
+                Begun::Done
+            }
+            NetworkEffect::SetAutoconnect { profile, on } => {
+                let profile = self.profile(&profile)?;
+                if let Some(saved) = self.profiles.iter_mut().find(|p| p.uuid == profile.uuid) {
+                    saved.autoconnect = on;
+                }
+                self.change(
+                    NetworkChange::Autoconnect {
+                        uuid: profile.uuid,
+                        name: profile.name,
+                        on,
+                    },
+                    None,
+                )
+            }
+            NetworkEffect::SetNetworkWake { profile, on } => {
+                let profile = self.profile(&profile)?;
+                self.change(
+                    NetworkChange::Wake {
+                        uuid: profile.uuid,
+                        on,
+                    },
+                    None,
+                )
+            }
+            NetworkEffect::ForgetNetwork { profile } => {
+                let profile = self.profile(&profile)?;
+                self.change(
+                    NetworkChange::Forget {
+                        uuid: profile.uuid,
+                        name: profile.name,
+                    },
+                    None,
+                )
+            }
+            NetworkEffect::ShareNetwork { profile } => {
+                let profile = self.profile(&profile)?;
+                if profile.kind != "802-11-wireless" {
+                    return Err(format!("{} is not a Wi-Fi network.", profile.name));
+                }
+                self.notice = Some(format!("Sealing {} for your devices…", profile.name));
+                Begun::work(move || {
+                    Landed::Shared(
+                        service
+                            .continuity(WifiContinuityCommand::ShareSavedProfile {
+                                profile_uuid: profile.uuid.clone(),
+                            })
+                            .and_then(|reply| match reply {
+                                WifiContinuityReply::Shared { ssid } => Ok(ssid),
+                                WifiContinuityReply::Rejected { reason } => Err(reason),
+                                _ => Err("the Wi-Fi continuity service returned an invalid \
+                                          profile reply"
+                                    .into()),
+                            }),
+                    )
+                })
+            }
+            NetworkEffect::SetVpn { vpn, on } => {
+                let known = self
+                    .vpns
+                    .iter_mut()
+                    .find(|known| known.name == vpn)
+                    .ok_or_else(|| format!("No VPN is called {vpn}."))?;
+                known.active = on;
+                self.change(NetworkChange::Vpn { name: vpn, on }, None)
+            }
+            NetworkEffect::OpenVpnStudio { vpn } => {
+                let intent = match vpn {
+                    Some(profile) => ToolIntent::Vpn {
+                        route: VpnRoute::Profile,
+                        profile: Some(profile),
+                    },
+                    None => ToolIntent::Vpn {
+                        route: VpnRoute::Overview,
+                        profile: None,
+                    },
+                };
+                self.service.open_tool(intent)?;
+                Begun::Done
+            }
+            NetworkEffect::RunDiagnostics => {
+                Begun::work(move || Landed::Diagnosed(service.diagnostics()))
+            }
+            NetworkEffect::OpenNetworkSignIn => {
+                // The opener is resolved here: a scoped host is only visible
+                // on this thread.
+                let opener = ui::host::current().opener;
+                Begun::work(move || {
+                    Landed::SignedIn(service.sign_in_page().and_then(|uri| {
+                        ui::portal::open_uri_with(&*opener, &uri).map_err(|error| {
+                            format!("could not open browser through the desktop portal: {error}")
+                        })
+                    }))
+                })
+            }
+            NetworkEffect::StartHotspot {
+                name,
+                password,
+                band,
+            } => {
+                let config = self.hotspot(name, password, band)?;
+                self.change(
+                    NetworkChange::Hotspot(config),
+                    Some(t("net-notice-hotspot-starting")),
+                )
+            }
+            NetworkEffect::ShowHotspotCode => {
+                if !self.hotspot_code_shown {
+                    self.hotspot(None, None, None)?;
+                }
+                self.hotspot_code_shown = !self.hotspot_code_shown;
+                Begun::Done
+            }
+            NetworkEffect::SetIpv4 {
+                profile,
+                automatic,
+                addresses,
+                gateway,
+                dns,
+            } => {
+                let profile = self.profile(&profile)?;
+                if self
+                    .profile_settings
+                    .get(&profile.uuid)
+                    .is_none_or(|s| s.ipv4.is_none())
+                {
+                    return Err(
+                        "IP settings were not applied because the profile could not \
+                                be read safely."
+                            .into(),
+                    );
+                }
+                let form = self.ipv4_forms.get(&profile.uuid);
+                let field = |given: Option<String>, held: fn(&Ipv4Form) -> &LocalState<String>| {
+                    given.or_else(|| form.map(|form| held(form).get()))
+                };
+                let config = IpConfiguration {
+                    automatic: automatic
+                        .or_else(|| form.map(|form| form.automatic.get()))
+                        .unwrap_or(false),
+                    addresses: list_of(
+                        &field(addresses, |form| &form.addresses).unwrap_or_default(),
+                    ),
+                    gateway: field(gateway, |form| &form.gateway).and_then(non_blank),
+                    dns: list_of(&field(dns, |form| &form.dns).unwrap_or_default()),
+                };
+                self.change(
+                    NetworkChange::Ipv4 {
+                        uuid: profile.uuid,
+                        name: profile.name.clone(),
+                        config,
+                    },
+                    Some(format!("Applying IP settings to {}…", profile.name)),
+                )
+            }
+            NetworkEffect::ShowConnectionPolicy => {
+                self.policy_open = !self.policy_open;
+                Begun::Done
+            }
+            NetworkEffect::SetConnectionPolicy {
+                profile,
+                metered,
+                mac,
+                proxy,
+            } => {
+                let profile = self.profile(&profile)?;
+                let patch = self.policy_patch(&profile, metered, mac, proxy)?;
+                self.change(
+                    NetworkChange::Policy {
+                        uuid: profile.uuid,
+                        name: profile.name.clone(),
+                        patch,
+                    },
+                    Some(format!("Applying advanced policy to {}…", profile.name)),
+                )
+            }
+            NetworkEffect::CreateMobileProfile { name, apn } => {
+                let name = name.unwrap_or_else(|| self.mobile_name.get());
+                let apn = apn.unwrap_or_else(|| self.mobile_apn.get());
+                self.change(
+                    NetworkChange::MobileProfile { name, apn },
+                    Some("Creating mobile profile…".into()),
+                )
+            }
+            NetworkEffect::UnlockSim { sim, pin } => {
+                let typed = take_secret(&self.sim_pin);
+                let pin = pin.map_or(typed, Zeroizing::new);
+                let wanted = sim.unwrap_or_else(|| self.mobile_sim.get());
+                let sim = self
+                    .sims
+                    .iter()
+                    .find(|s| s.label == wanted || s.path == wanted)
+                    .or_else(|| self.sims.first())
+                    .map(|s| s.path.clone())
+                    .ok_or_else(|| "No SIM is available".to_string())?;
+                self.change(
+                    NetworkChange::UnlockSim { sim, pin },
+                    Some("Unlocking SIM…".into()),
+                )
+            }
+            NetworkEffect::ShowEnterpriseSetup => {
+                self.enterprise_open = !self.enterprise_open;
+                Begun::Done
+            }
+            NetworkEffect::ChooseCaCertificate => {
+                if self.ca_picker.is_none() {
+                    self.ca_picker = Some(
+                        ui::portal::PickRequest::open(
+                            "Choose organization CA certificate",
+                            "Choose",
+                        )
+                        .thread_name("settings-ca-picker")
+                        .send(),
+                    );
+                }
+                Begun::Done
+            }
+            NetworkEffect::ConnectEnterpriseNetwork {
+                profile,
+                ssid,
+                identity,
+                anonymous_identity,
+                ca_certificate,
+                method,
+                inner_auth,
+                client_certificate,
+                private_key,
+                password,
+            } => {
+                let (config, password) = self.enterprise_config(EnterpriseGiven {
+                    profile,
+                    ssid,
+                    identity,
+                    anonymous_identity,
+                    ca_certificate,
+                    method,
+                    inner_auth,
+                    client_certificate,
+                    private_key,
+                    password,
+                });
+                self.change(
+                    NetworkChange::Enterprise { config, password },
+                    Some("Connecting to enterprise Wi-Fi…".into()),
+                )
+            }
+        })
+    }
+
+    /// Switch `radio`, showing the requested state at once.
+    fn switch(&mut self, radio: Radio, on: bool) -> Result<Begun, String> {
+        if let Some(error) = &self.read_errors.radios {
+            return Err(t_args(
+                "net-radios-error",
+                &[("error", error.as_str().into())],
+            ));
+        }
+        match radio {
+            Radio::Airplane => self.radios.airplane_mode = on,
+            Radio::Hotspot => self.radios.hotspot_active = on,
+            Radio::Mobile => self.radios.wwan_enabled = on,
+        }
+        Ok(self.change(NetworkChange::Radio(radio, on), None))
+    }
+
+    /// Join `ssid`: with `password`, else with what its open prompt holds,
+    /// else (a secure network) with a password the person's devices share.
+    fn connect(&mut self, ssid: String, password: Option<String>) -> Result<Begun, String> {
+        let network = self
+            .networks
+            .iter()
+            .find(|network| network.ssid == ssid)
+            .cloned()
+            .ok_or_else(|| format!("{ssid} is not in range."))?;
+        if self.connecting.contains(&ssid) {
+            return Err(format!("Already connecting to {ssid}."));
+        }
+        let prompt_open = self.expanded.as_deref() == Some(ssid.as_str());
+        let typed = prompt_open
+            .then(|| {
+                self.join_passwords
+                    .get(&ssid)
+                    .map(|buffer| take_secret(buffer))
+            })
+            .flatten();
+        let password = password
+            .map(Zeroizing::new)
+            .or(typed)
+            .filter(|password| !password.is_empty());
+        let lookup_shared = network.secure && password.is_none() && !prompt_open;
+        if !lookup_shared {
+            self.set_expanded(None);
+        }
+        self.connecting.push(ssid.clone());
+        self.notice = Some(t_args(
+            "net-notice-connecting",
+            &[("ssid", ssid.as_str().into())],
+        ));
+        let service = Arc::clone(&self.service);
+        let portable = portable_security(network.security);
+        Ok(Begun::work(move || {
+            let result = if lookup_shared {
+                join_with_shared_password(service.as_ref(), &ssid, portable)
+            } else {
+                join(service.as_ref(), &ssid, portable, password)
+            };
+            Landed::Connected { ssid, result }
+        }))
+    }
+
+    /// The hotspot from what is given, else what its form holds.
+    fn hotspot(
+        &self,
+        name: Option<String>,
+        password: Option<String>,
+        band: Option<String>,
+    ) -> Result<HotspotConfiguration, String> {
+        let ssid = name
+            .or_else(|| non_blank(self.hotspot_name.get()))
+            .unwrap_or_else(|| DEFAULT_HOTSPOT_NAME.into());
+        let password = match password {
+            Some(password) => password,
+            None => self
+                .hotspot_password
+                .lock()
+                .map_err(|_| "hotspot password buffer is unavailable")?
+                .clone(),
+        };
+        let band = band_from_label(&band.unwrap_or_else(|| self.hotspot_band.get()));
+        let config = HotspotConfiguration {
+            ssid,
+            password,
+            band,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The change between `profile`'s policy and what is asked of it.
+    fn policy_patch(
+        &self,
+        profile: &SavedNetworkProfile,
+        metered: Option<String>,
+        mac: Option<String>,
+        proxy: Option<String>,
+    ) -> Result<os_actions::ConnectionPolicyPatch, String> {
+        let original = self
+            .profile_settings
+            .get(&profile.uuid)
+            .cloned()
+            .ok_or_else(|| t("net-notice-policy-unread"))?;
+        let form = self.policy_forms.get(&profile.uuid);
+        let metered = metered.or_else(|| form.map(|form| form.metered.get()));
+        let mac = mac.or_else(|| form.map(|form| form.mac.get()));
+        let proxy = proxy.or_else(|| form.map(|form| form.proxy.get()));
+        let requested_metered = metered
+            .as_deref()
+            .and_then(metered_from_label)
+            .unwrap_or_else(|| original.metered.unwrap_or_default());
+        let requested_mac = mac.as_deref().and_then(mac_from_label).or(original.mac);
+        let requested_proxy = original
+            .proxy
+            .as_ref()
+            .map(|old| os_actions::ProxyConfiguration {
+                automatic_url: proxy.and_then(non_blank),
+                browser_only: old.browser_only,
+            });
+        Ok(os_actions::ConnectionPolicyPatch {
+            metered: original
+                .metered
+                .filter(|old| *old != requested_metered)
+                .map(|_| requested_metered),
+            mac: match (original.mac, requested_mac) {
+                (Some(old), Some(new)) if old != new => Some(new),
+                _ => None,
+            },
+            proxy: match (&original.proxy, requested_proxy) {
+                (Some(old), Some(new)) if old != &new => Some(new),
+                _ => None,
+            },
+        })
+    }
+
+    /// The enterprise network `given` asks for, completed from the setup
+    /// form, and its password; the form's password is zeroed.
+    fn enterprise_config(
+        &self,
+        given: EnterpriseGiven,
+    ) -> (EnterpriseWifiConfiguration, Zeroizing<String>) {
+        let EnterpriseGiven {
+            profile,
+            ssid,
+            identity,
+            anonymous_identity,
+            ca_certificate,
+            method,
+            inner_auth,
+            client_certificate,
+            private_key,
+            password,
+        } = given;
+        let form = &self.enterprise;
+        let typed = take_secret(&form.password);
+        let config = EnterpriseWifiConfiguration {
+            profile_name: profile.unwrap_or_else(|| form.profile.get()),
+            ssid: ssid.unwrap_or_else(|| form.ssid.get()),
+            identity: identity.unwrap_or_else(|| form.identity.get()),
+            anonymous_identity: anonymous_identity
+                .or_else(|| Some(form.anonymous.get()))
+                .and_then(non_blank),
+            ca_certificate: ca_certificate.unwrap_or_else(|| form.ca.get()),
+            method: match method.unwrap_or_else(|| form.method.get()).as_str() {
+                "TTLS" => os_actions::EnterpriseEapMethod::Ttls,
+                "TLS" => os_actions::EnterpriseEapMethod::Tls,
+                _ => os_actions::EnterpriseEapMethod::Peap,
+            },
+            phase2_auth: Some(
+                inner_auth
+                    .unwrap_or_else(|| form.inner_auth.get())
+                    .to_ascii_lowercase(),
+            ),
+            client_certificate: client_certificate
+                .or_else(|| Some(form.client_certificate.get()))
+                .and_then(non_blank),
+            private_key: private_key
+                .or_else(|| Some(form.private_key.get()))
+                .and_then(non_blank),
+        };
+        (config, password.map_or(typed, Zeroizing::new))
+    }
+
+    /// Take in work that landed; what the effect answers.
+    fn land(&mut self, landed: Landed) -> EffectAnswer {
+        self.changed = true;
+        let reported = match landed {
+            Landed::Refreshed { snapshot, scan } => {
+                self.refreshes_pending = self.refreshes_pending.saturating_sub(1);
+                let adopted = self.adopt_snapshot(snapshot);
+                match scan {
+                    // The list and status still read; only the fresh look
+                    // failed. A radio that is off cannot scan, and says so.
+                    Err(error) if adopted.is_ok() && self.wifi_enabled => {
+                        warn!(target: "tilo::settings", op = "scan_wifi", %error, "Wi-Fi scan failed");
+                        Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
+                    }
+                    _ => adopted,
+                }
+            }
+            Landed::Changed(change, result) => {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                let reported = self.report(&change, result);
+                if self.in_flight == 0 {
+                    self.start_snapshot();
+                }
+                reported
+            }
+            Landed::Connected { ssid, result } => self.joined(&ssid, result),
+            Landed::Shared(result) => match result {
+                Ok(ssid) => Ok(t_args(
+                    "net-notice-sealed-profile",
+                    &[("ssid", ssid.into())],
+                )),
+                Err(error) => Err(t_args(
+                    "net-notice-configure-err",
+                    &[
+                        ("subject", t("net-subject-saved-wifi").into()),
+                        ("error", error.into()),
+                    ],
+                )),
+            },
+            Landed::Diagnosed(result) => match result {
+                Ok(diagnostics) => {
+                    self.diagnostics = Some(diagnostics);
+                    Ok("Network diagnostics completed.".into())
+                }
+                Err(error) => Err(format!("Diagnostics unavailable: {error}")),
+            },
+            Landed::SignedIn(result) => result
+                .map(|()| String::new())
+                .map_err(|error| format!("Could not open network sign-in: {error}")),
+        };
+        self.notice = Some(match &reported {
+            Ok(said) if said.is_empty() => return Ok(Effected::done()),
+            Ok(said) | Err(said) => said.clone(),
+        });
+        reported.map(|_| Effected::done())
+    }
+
+    /// Report a landed change, putting back what the pane showed if it
+    /// failed.
+    #[expect(clippy::too_many_lines, reason = "one arm per change and outcome")]
+    fn report(
+        &mut self,
+        change: &NetworkChange,
+        result: Result<(), String>,
+    ) -> Result<String, String> {
+        if let Err(error) = &result {
+            warn!(target: "tilo::settings", %error, "network change failed");
+        }
+        match (change, result) {
+            (NetworkChange::Wifi(on), Ok(())) => Ok(t(if *on {
+                "net-notice-wifi-on"
+            } else {
+                "net-notice-wifi-off"
+            })),
+            (NetworkChange::Wifi(on), Err(error)) => {
+                self.wifi_enabled = !on;
+                Err(t_args("net-notice-wifi-err", &[("error", error.into())]))
+            }
+            (NetworkChange::Wired(on), Ok(())) => Ok(t(if *on {
+                "net-notice-wired-on"
+            } else {
+                "net-notice-wired-off"
+            })),
+            (NetworkChange::Wired(on), Err(error)) => {
+                self.wired.connected = !on;
+                Err(t_args("net-notice-wired-err", &[("error", error.into())]))
+            }
+            (NetworkChange::Radio(radio, on), Ok(())) => Ok(t_args(
+                if *on {
+                    "net-notice-radio-on"
+                } else {
+                    "net-notice-radio-off"
+                },
+                &[("radio", radio_shown(*radio).into())],
+            )),
+            (NetworkChange::Radio(radio, on), Err(error)) => {
+                match radio {
+                    Radio::Airplane => self.radios.airplane_mode = !on,
+                    Radio::Hotspot => self.radios.hotspot_active = !on,
+                    Radio::Mobile => self.radios.wwan_enabled = !on,
+                }
+                Err(t_args(
+                    "net-notice-radio-err",
+                    &[
+                        ("radio", radio_shown(*radio).into()),
+                        ("error", error.into()),
+                    ],
+                ))
+            }
+            (NetworkChange::Vpn { name, on }, result) => {
+                if result.is_err()
+                    && let Some(vpn) = self.vpns.iter_mut().find(|vpn| &vpn.name == name)
+                {
+                    vpn.active = !on;
+                }
+                result.map(|()| String::new())
+            }
+            (NetworkChange::Autoconnect { uuid, name, on }, result) => match result {
+                Ok(()) => Ok(String::new()),
+                Err(error) => {
+                    if let Some(saved) = self.profiles.iter_mut().find(|p| &p.uuid == uuid) {
+                        saved.autoconnect = !on;
+                    }
+                    Err(t_args(
+                        "net-notice-update-err",
+                        &[("name", name.as_str().into()), ("error", error.into())],
+                    ))
+                }
+            },
+            (NetworkChange::Wake { .. }, result) => result.map(|()| t("net-wake-saved")),
+            (NetworkChange::Forget { uuid, name }, Ok(())) => {
+                self.profiles.retain(|p| &p.uuid != uuid);
+                Ok(t_args(
+                    "net-notice-forgot",
+                    &[("name", name.as_str().into())],
+                ))
+            }
+            (NetworkChange::Forget { name, .. }, Err(error)) => Err(t_args(
+                "net-notice-forget-err",
+                &[("name", name.as_str().into()), ("error", error.into())],
+            )),
+            (NetworkChange::Hotspot(_), Ok(())) => {
+                self.radios.hotspot_active = true;
+                Ok(t("net-notice-hotspot-on"))
+            }
+            (NetworkChange::Hotspot(_), Err(error)) => {
+                Err(t_args("net-notice-hotspot-err", &[("error", error.into())]))
+            }
+            (NetworkChange::Ipv4 { name, .. }, Ok(())) => Ok(t_args(
+                "net-notice-ip-ok",
+                &[("name", name.as_str().into())],
+            )),
+            (NetworkChange::Ipv4 { .. }, Err(error)) => {
+                Err(t_args("net-notice-ip-err", &[("error", error.into())]))
+            }
+            (NetworkChange::Policy { name, .. }, Ok(())) => Ok(t_args(
+                "net-notice-policy-ok",
+                &[("name", name.as_str().into())],
+            )),
+            (NetworkChange::Policy { .. }, Err(error)) => {
+                Err(t_args("net-notice-policy-err", &[("error", error.into())]))
+            }
+            (NetworkChange::MobileProfile { .. }, result) => {
+                Self::operation(result, "Mobile profile created.", "net-subject-mobile")
+            }
+            (NetworkChange::UnlockSim { .. }, result) => {
+                Self::operation(result, "SIM unlocked.", "net-subject-sim")
+            }
+            (NetworkChange::Enterprise { .. }, result) => Self::operation(
+                result,
+                "Enterprise Wi-Fi connected.",
+                "net-subject-enterprise",
+            ),
+            (NetworkChange::Connect { .. }, result) => result.map(|()| String::new()),
+        }
+    }
+
+    fn operation(result: Result<(), String>, done: &str, subject: &str) -> Result<String, String> {
+        result.map(|()| done.to_owned()).map_err(|error| {
+            t_args(
+                "net-notice-configure-err",
+                &[("subject", t(subject).into()), ("error", error.into())],
+            )
+        })
+    }
+
+    /// Take in how joining `ssid` ended.
+    fn joined(&mut self, ssid: &str, result: Result<Joined, String>) -> Result<String, String> {
+        self.connecting.retain(|pending| pending != ssid);
+        match result {
+            Ok(Joined::Connected { continuity_notice }) => {
+                self.set_expanded(None);
+                self.start_snapshot();
+                Ok(continuity_notice.map_or_else(
+                    || t_args("net-notice-connected", &[("subject", ssid.into())]),
+                    |notice| {
+                        t_args(
+                            "net-notice-connected-extra",
+                            &[("subject", ssid.into()), ("notice", notice.into())],
+                        )
+                    },
+                ))
+            }
+            Ok(Joined::PasswordRequired { continuity_warning }) => {
+                self.set_expanded(Some(ssid.to_owned()));
+                Ok(continuity_warning.map_or_else(
+                    || t_args("net-notice-enter-password", &[("ssid", ssid.into())]),
+                    |warning| {
+                        t_args(
+                            "net-notice-enter-password-warn",
+                            &[("ssid", ssid.into()), ("warning", warning.into())],
+                        )
+                    },
+                ))
+            }
+            Err(error) => {
+                warn!(target: "tilo::settings", op = "connect_wifi", %ssid, %error, "joining a network failed");
+                Err(t_args(
+                    "net-notice-configure-err",
+                    &[("subject", ssid.into()), ("error", error.into())],
+                ))
+            }
+        }
+    }
+
+    /// Take in the CA certificate the picker chose.
+    fn poll_picker(&mut self) {
+        let Some(result) = self
+            .ca_picker
+            .as_ref()
+            .and_then(|picker| picker.try_recv().ok())
+        else {
+            return;
+        };
+        match result {
+            ui::portal::PortalOutcome::Opened(path) => {
+                self.enterprise.ca.set(path.display().to_string());
+                self.notice = Some("CA certificate selected.".into());
+            }
+            ui::portal::PortalOutcome::Cancelled => {}
+            ui::portal::PortalOutcome::Failed(error) => {
+                self.notice = Some(t_args("net-notice-cert-err", &[("error", error.into())]));
+            }
+        }
+        self.ca_picker = None;
+        self.changed = true;
+    }
+
+    /// Why the Wi-Fi status cannot be told, when it cannot: the radio or the
+    /// network list could not be read.
+    fn wifi_status_error(&self) -> Option<String> {
+        let error = self
+            .read_errors
+            .wifi_enabled
+            .as_ref()
+            .or(self.read_errors.networks.as_ref())?;
+        Some(t_args(
+            "net-status-error",
+            &[("error", error.as_str().into())],
+        ))
+    }
+
     fn connection_status_text(&self) -> String {
-        if !self.last_wifi_enabled {
-            return "Wi-Fi is off".to_string();
+        if !self.wifi_enabled {
+            return t("net-wifi-off");
         }
         match self.networks.iter().find(|n| n.connected) {
-            Some(n) => format!("Connected to {}", n.ssid),
-            None => "Not connected".to_string(),
+            Some(n) => t_args("net-connected-to", &[("ssid", n.ssid.as_str().into())]),
+            None => t("net-not-connected"),
         }
+    }
+
+    /// A button invoking `effect`.
+    fn button(&self, id: &str, label: &str, effect: NetworkEffect) -> Button {
+        self.cx.bind_invocation(Button::new(id, label), effect)
+    }
+
+    /// `button`, sized to its label and pushed to the row's start.
+    fn button_row(&self, id: &str, label: &str, effect: NetworkEffect) -> Item {
+        row(Box::new(
+            Row::new()
+                .push(Box::new(self.button(id, label, effect)))
+                .push(Box::new(Spacer::new())),
+        ))
+    }
+
+    /// A switch showing `on`, invoking `set`.
+    fn switch_control(
+        &self,
+        id: &str,
+        on: bool,
+        set: ui::tilo_resource::ActionRef<NetworkEffect, bool>,
+    ) -> Toggle {
+        self.cx.bind(
+            Toggle::from_state(&LocalState::new(on)).with_id(id),
+            effect(set),
+        )
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         if !self.loaded {
-            let mut pending = vec![caption("Reading network status from NetworkManager…")];
-            if let Some(notice) = &self.connection_notice {
-                pending.push(caption(notice));
+            let mut pending = vec![note(&t("net-pending"))];
+            if let Some(notice) = &self.notice {
+                pending.push(note(notice));
             }
-            return crate::widgets::cards(vec![card("Network", rows(pending))]);
+            return crate::widgets::cards(vec![card(&t("net-pending-title"), rows(pending))]);
         }
         let mut cards = vec![
             self.internet_access_card(),
@@ -1236,15 +2365,19 @@ impl NetworkPane {
             self.enterprise_card(),
             self.wired_card(),
             self.profile_card(),
-            card("Connection diagnostics", rows(self.diagnostic_rows())),
-            card("VPN", rows(self.vpn_rows())),
-            Self::airplane_card(),
+            card(&t("net-diag-title"), rows(self.diagnostic_rows())),
+            card(&t("net-vpn"), rows(self.vpn_rows())),
+            self.airplane_card(),
             self.hotspot_card(),
         ];
         if self.radios.wwan_available {
             cards.push(card_with_action(
-                "Mobile broadband",
-                Box::new(Toggle::new("settings.network.mobile", MOBILE_KEY)),
+                &t("net-mobile"),
+                Box::new(self.switch_control(
+                    "network.mobile",
+                    self.radios.wwan_enabled,
+                    NetworkEffect::SET_MOBILE_BROADBAND,
+                )),
                 rows(self.mobile_rows()),
             ));
         }
@@ -1253,538 +2386,637 @@ impl NetworkPane {
 
     /// Connectivity summary card: `NetworkManager`'s captive-portal-aware
     /// state, plus a sign-in shortcut when a portal is blocking the route.
-    fn internet_access_card(&self) -> El {
+    fn internet_access_card(&self) -> SettingsSection {
+        let connectivity = t("net-connectivity");
+        let connectivity_row = match &self.read_errors.connectivity {
+            Some(error) => error_row(
+                &connectivity,
+                &t_args(
+                    "net-connectivity-error",
+                    &[("error", error.as_str().into())],
+                ),
+            ),
+            None => value_row(&connectivity, &connectivity_shown(self.connectivity)),
+        };
+        let portal = self.connectivity == ConnectivityState::Portal;
         let mut content = vec![
-            value_row("Connectivity", self.connectivity.label()),
-            caption(if self.connectivity == ConnectivityState::Portal {
-                "This network requires browser sign-in. NetworkManager will keep it below a fully connected route until sign-in succeeds."
+            connectivity_row,
+            note(&t(if portal {
+                "net-portal-caption"
             } else {
-                "Connectivity comes from NetworkManager's captive-portal check, not merely from having an IP address."
-            }),
+                "net-connectivity-caption"
+            })),
         ];
-        if self.connectivity == ConnectivityState::Portal {
-            content.push(Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.network.captive-portal",
-                        "Open sign-in page",
-                        Some(CAPTIVE_PORTAL_KEY),
-                    )))
-                    .push(Box::new(Spacer::new())),
+        if portal {
+            content.push(self.button_row(
+                "settings.network.captive-portal",
+                &t("net-open-signin"),
+                NetworkEffect::OpenNetworkSignIn,
             ));
         }
-        card("Internet access", rows(content))
+        card(&t("net-internet"), rows(content))
     }
 
-    /// Wi-Fi card: header carries the toggle; body is status + scanned-network
+    /// Wi-Fi card: header carries the switch; body is status + scanned-network
     /// rows + a Refresh action.
-    fn wifi_card(&self) -> El {
+    fn wifi_card(&self) -> SettingsSection {
         let wifi_toggle =
-            Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi");
-        let wifi_toggle = match crate::actions::network_bool_binding("wifi") {
-            Some(binding) => wifi_toggle.on_action(binding),
-            None => wifi_toggle.with_enabled(false),
-        };
-        let wifi_toggle: El = Box::new(wifi_toggle);
+            self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
+        // An unread radio state is not offered as a switch position.
+        let wifi_toggle: El = Box::new(
+            if self.read_errors.wifi_enabled.is_none() && !self.wifi_absent() {
+                wifi_toggle
+            } else {
+                wifi_toggle.with_enabled(false)
+            },
+        );
 
-        let mut wifi_rows: Vec<El> = Vec::new();
-        wifi_rows.push(value_row("Status", &self.connection_status_text()));
-        if let Some(notice) = &self.connection_notice {
-            wifi_rows.push(caption(notice));
+        let mut wifi_rows: Vec<Item> = Vec::new();
+        let status_label = t("net-status");
+        if self.wifi_absent() {
+            wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
+        } else {
+            match self.wifi_status_error() {
+                Some(error) => wifi_rows.push(error_row(&status_label, &error)),
+                None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+            }
         }
-
-        if self.last_wifi_enabled {
+        if let Some(notice) = &self.notice {
+            wifi_rows.push(note(notice));
+        }
+        if self.wifi_enabled {
             for net in &self.networks {
                 wifi_rows.push(self.network_row(net));
-                // Inline password prompt expands directly beneath the row
-                // whose "Connect" was pressed (secure networks only).
-                if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
+                // The password prompt opens directly beneath its network.
+                if self.expanded.as_deref() == Some(net.ssid.as_str()) {
                     wifi_rows.push(self.password_prompt(&net.ssid));
                 }
             }
         }
-        if self.actions_busy() {
-            wifi_rows.push(caption("Applying network changes…"));
-        } else if self.snapshot_request.is_pending() {
-            wifi_rows.push(caption("Refreshing…"));
+        if self.in_flight > 0 {
+            wifi_rows.push(note(&t("net-applying")));
+        } else if self.snapshot.is_some() {
+            wifi_rows.push(note(&t("net-refreshing")));
         }
-        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
-            Box::new(Button::new(
-                "settings.network.refresh",
-                "Refresh",
-                Some(REFRESH_KEY),
-            )),
+        wifi_rows.push(row(Box::new(
+            Row::new()
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(self.button(
+                    "settings.network.refresh",
+                    &t("net-refresh"),
+                    NetworkEffect::RefreshNetworks,
+                ))),
         )));
-        wifi_rows.push(caption(
-            "Wi-Fi scanning and connection are best-effort via nmcli; \
-             secure networks prompt for a password before joining.",
-        ));
+        wifi_rows.push(note(&t("net-wifi-caption")));
 
-        card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows))
+        card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
     }
 
-    /// Wired card (real nmcli snapshot). `NetworkManager` applies the switch
-    /// to this interface only; Wi-Fi and VPN stay untouched.
-    fn wired_card(&self) -> El {
+    /// Wired card. `NetworkManager` applies the switch to this interface
+    /// only; Wi-Fi and VPN stay untouched.
+    fn wired_card(&self) -> SettingsSection {
+        if let Some(error) = &self.read_errors.wired {
+            return card(
+                &t("net-wired"),
+                rows(vec![row(error_caption(&t_args(
+                    "net-wired-error",
+                    &[("error", error.as_str().into())],
+                )))]),
+            );
+        }
         if self.wired.device.is_some() {
             card_with_action(
-                "Wired",
-                Box::new(
-                    Toggle::new("settings.network.wired", WIRED_ENABLED_KEY)
-                        .with_id("network.wired"),
-                ),
+                &t("net-wired"),
+                Box::new(self.switch_control(
+                    "network.wired",
+                    self.wired.connected,
+                    NetworkEffect::SET_WIRED,
+                )),
                 rows(self.wired_rows()),
             )
         } else {
-            card("Wired", rows(self.wired_rows()))
+            card(&t("net-wired"), rows(self.wired_rows()))
         }
     }
 
-    fn airplane_card() -> El {
+    fn airplane_card(&self) -> SettingsSection {
+        let mut content = Vec::new();
+        if let Some(error) = &self.read_errors.radios {
+            content.push(row(error_caption(&t_args(
+                "net-radios-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        content.push(note(&t("net-airplane-caption")));
         card_with_action(
-            "Airplane mode",
-            Box::new(Toggle::new("settings.network.airplane", AIRPLANE_KEY)),
-            rows(vec![caption(
-                "Disables Wi-Fi and mobile broadband together.",
-            )]),
+            &t("net-airplane"),
+            Box::new(
+                self.switch_control(
+                    "network.airplane",
+                    self.radios.airplane_mode,
+                    NetworkEffect::SET_AIRPLANE_MODE,
+                )
+                .with_enabled(self.read_errors.radios.is_none()),
+            ),
+            rows(content),
         )
     }
 
-    /// Rows for the hotspot card: SSID/password/band configuration, the
-    /// apply/QR actions, and (when active) the QR payload and connected
-    /// device list.
-    fn hotspot_rows(&self) -> Vec<El> {
-        let hotspot_secret = self
-            .hotspot_password
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        let mut hotspot_rows: Vec<El> = vec![
-            value_row(
-                "Status",
-                if self.radios.hotspot_active {
-                    "Active"
-                } else {
-                    "Off"
-                },
-            ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.hotspot.ssid")
-                    .with_on_change_path(HOTSPOT_SSID_KEY)
-                    .with_placeholder("Hotspot name"),
-            ),
-            Box::new(
-                TextInput::local()
-                    .with_id("network.hotspot.password")
-                    .with_external_buffer(Arc::clone(&self.hotspot_password))
-                    .with_initial_value(&hotspot_secret)
-                    .with_secret(true)
-                    .with_placeholder("Password · at least 8 characters"),
-            ),
-            choice_row(
-                "Band",
+    /// The hotspot's on/off state, or why the radios could not be read.
+    fn hotspot_status_row(&self) -> Item {
+        let status = t("net-status");
+        if let Some(error) = &self.read_errors.radios {
+            return error_row(
+                &status,
+                &t_args("net-radios-error", &[("error", error.as_str().into())]),
+            );
+        }
+        let value = if self.radios.hotspot_active {
+            t("net-hotspot-active")
+        } else {
+            t("net-hotspot-off")
+        };
+        value_row(&status, &value)
+    }
+
+    /// Rows for the hotspot card: name/password/band, the start and QR
+    /// actions, and (when active) the QR code and connected devices.
+    fn hotspot_rows(&self) -> Vec<Item> {
+        let hotspot_secret = self.hotspot_password.lock().map_or_else(
+            |_| Zeroizing::new(String::new()),
+            |value| Zeroizing::new(value.clone()),
+        );
+        let mut hotspot_rows: Vec<Item> = vec![
+            self.hotspot_status_row(),
+            field_row(
+                &t("net-hotspot-name"),
                 Box::new(
-                    Dropdown::new(
-                        ["Automatic", "2.4 GHz", "5 GHz"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                        HOTSPOT_BAND_KEY,
-                    )
-                    .with_id("network.hotspot.band")
-                    .with_placeholder("Automatic"),
+                    TextInput::from_state(&self.hotspot_name)
+                        .with_id("network.hotspot.ssid")
+                        .with_placeholder(t("net-hotspot-name")),
                 ),
             ),
-            Box::new(
+            field_row(
+                &t("net-hotspot-password"),
+                Box::new(
+                    TextInput::local()
+                        .with_id("network.hotspot.password")
+                        .with_external_buffer(Arc::clone(&self.hotspot_password))
+                        .with_initial_value(&hotspot_secret)
+                        .with_secret(true)
+                        .with_placeholder(t("net-hotspot-password")),
+                ),
+            ),
+            setting_row(
+                &t("net-band"),
+                Box::new(
+                    Dropdown::from_state(
+                        HOTSPOT_BANDS.iter().map(|band| band_shown(band)).collect(),
+                        &self.hotspot_band,
+                    )
+                    .with_id("network.hotspot.band")
+                    .with_placeholder(&self.hotspot_band.get()),
+                ),
+            ),
+            row(Box::new(
                 Row::new()
-                    .push(Box::new(Button::new(
+                    .push(Box::new(self.button(
                         "settings.network.hotspot.apply",
-                        "Apply and start",
-                        Some(HOTSPOT_APPLY_KEY),
-                    )))
-                    .push(Box::new(Button::new(
-                        "settings.network.hotspot.qr",
-                        if self.hotspot_qr_visible {
-                            "Hide QR"
-                        } else {
-                            "Share QR"
+                        &t("net-apply-start"),
+                        NetworkEffect::StartHotspot {
+                            name: None,
+                            password: None,
+                            band: None,
                         },
-                        Some(HOTSPOT_QR_KEY),
+                    )))
+                    .push(Box::new(self.button(
+                        "settings.network.hotspot.qr",
+                        &if self.hotspot_code_shown {
+                            t("net-hide-qr")
+                        } else {
+                            t("net-share-qr")
+                        },
+                        NetworkEffect::ShowHotspotCode,
                     )))
                     .push(Box::new(Spacer::new())),
-            ),
+            )),
         ];
-        if self.hotspot_qr_visible {
-            let config = self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band);
-            if let Ok(payload) = config.and_then(|config| config.qr_payload()) {
-                hotspot_rows.push(Box::new(QrWidget::new(payload.into_bytes())));
-                hotspot_rows.push(caption(
-                    "Scan to join. The QR code contains the hotspot password.",
-                ));
-            }
+        if self.hotspot_code_shown
+            && let Ok(payload) = self
+                .hotspot(None, None, None)
+                .and_then(|config| config.qr_payload())
+        {
+            hotspot_rows.push(block(Box::new(QrWidget::new(payload.into_bytes()))));
+            hotspot_rows.push(note(&t("net-qr-caption")));
         }
-        if self.radios.hotspot_active {
-            hotspot_rows.push(value_row(
-                "Connected devices",
-                &self.hotspot_clients.len().to_string(),
-            ));
+        if let Some(error) = &self.read_errors.hotspot_clients
+            && self.radios.hotspot_active
+        {
+            hotspot_rows.push(row(error_caption(&t_args(
+                "net-hotspot-clients-error",
+                &[("error", error.as_str().into())],
+            ))));
+        } else if self.radios.hotspot_active {
+            let clients = t("net-hotspot-clients");
+            hotspot_rows.push(value_row(&clients, &self.hotspot_clients.len().to_string()));
             for client in &self.hotspot_clients {
                 let signal = client
                     .signal_dbm
-                    .map_or_else(|| "signal unknown".to_string(), |dbm| format!("{dbm} dBm"));
+                    .map_or_else(|| t("net-signal-unknown"), |dbm| format!("{dbm} dBm"));
                 hotspot_rows.push(value_row(&client.mac, &signal));
             }
-            hotspot_rows.push(caption(
-                "Client names are not guessed from traffic. Turn the hotspot off to disconnect every client immediately.",
-            ));
+            hotspot_rows.push(note(&t("net-hotspot-clients-caption")));
         }
         hotspot_rows
     }
 
-    fn hotspot_card(&self) -> El {
+    fn hotspot_card(&self) -> SettingsSection {
         card_with_action(
-            "Wi-Fi hotspot",
-            Box::new(Toggle::new("settings.network.hotspot", HOTSPOT_KEY)),
+            &t("net-hotspot"),
+            Box::new(self.switch_control(
+                "network.hotspot",
+                self.radios.hotspot_active,
+                NetworkEffect::SET_HOTSPOT,
+            )),
             rows(self.hotspot_rows()),
         )
     }
 
-    fn profile_card(&self) -> El {
+    fn profile_card(&self) -> SettingsSection {
         card_with_action(
-            "Connection profiles",
-            Box::new(Button::new(
+            &t("net-profiles"),
+            Box::new(self.button(
                 "settings.network.advanced",
-                if self.advanced_open {
-                    "Hide connection policy"
+                &if self.policy_open {
+                    t("net-hide-policy")
                 } else {
-                    "Connection policy"
+                    t("net-show-policy")
                 },
-                Some(ADVANCED_KEY),
+                NetworkEffect::ShowConnectionPolicy,
             )),
-            rows(self.profile_rows()),
+            rows(match &self.read_errors.profiles {
+                Some(error) => vec![row(error_caption(&t_args(
+                    "net-profiles-error",
+                    &[("error", error.as_str().into())],
+                )))],
+                None => self.profile_rows(),
+            }),
         )
     }
 
-    fn profile_rows(&self) -> Vec<El> {
+    fn profile_rows(&self) -> Vec<Item> {
         let wifi_profiles: Vec<&SavedNetworkProfile> = self
             .profiles
             .iter()
             .filter(|profile| profile.kind == "802-11-wireless")
             .collect();
         if wifi_profiles.is_empty() {
-            return vec![caption("No saved Wi-Fi networks.")];
+            return vec![note(&t("net-no-saved-wifi"))];
         }
-        let mut rows_out: Vec<El> = Vec::new();
+        let mut rows_out: Vec<Item> = Vec::new();
         for profile in &wifi_profiles {
-            rows_out.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&profile.name).with_size(13.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(
-                        &format!("settings.network.profile.share.{}", profile.uuid),
-                        "Share with my devices",
-                        Some(&profile_share_key(&profile.uuid)),
-                    )))
-                    .push(Box::new(Button::new(
-                        &format!("settings.network.profile.forget.{}", profile.uuid),
-                        "Forget",
-                        Some(&profile_forget_key(&profile.uuid)),
-                    )))
-                    .push(Box::new(
-                        Toggle::new(
-                            &format!("settings.network.profile.autoconnect.{}", profile.uuid),
-                            &profile_autoconnect_key(&profile.uuid),
-                        )
-                        .with_id(&format!("network.profile.autoconnect.{}", profile.uuid)),
-                    )),
+            let uuid = profile.uuid.clone();
+            rows_out.push(setting_row(
+                &profile.name,
+                Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(self.button(
+                            &format!("settings.network.profile.share.{}", profile.uuid),
+                            &t("net-share-devices"),
+                            NetworkEffect::ShareNetwork {
+                                profile: profile.uuid.clone(),
+                            },
+                        )))
+                        .push(Box::new(self.button(
+                            &format!("settings.network.profile.forget.{}", profile.uuid),
+                            &t("net-forget"),
+                            NetworkEffect::ForgetNetwork {
+                                profile: profile.uuid.clone(),
+                            },
+                        )))
+                        .push(Box::new(
+                            self.cx.bind(
+                                Toggle::from_state(&LocalState::new(profile.autoconnect)).with_id(
+                                    &format!("network.profile.autoconnect.{}", profile.uuid),
+                                ),
+                                effect(NetworkEffect::SET_AUTOCONNECT)
+                                    .map(move |on: bool| (uuid.clone(), on)),
+                            ),
+                        )),
+                ),
             ));
         }
-        rows_out.push(caption(
-            "Sharing is opt-in and seals only the network name, security mode, and passphrase for your certified devices. Interface, MAC, IP, DNS, proxy, and auto-connect settings stay on this device.",
-        ));
-        self.push_advanced_profile_rows(&wifi_profiles, &mut rows_out);
+        for profile in &wifi_profiles {
+            rows_out.extend(self.wake_rows(profile));
+        }
+        rows_out.push(note(&t("net-share-caption")));
+        if self.policy_open {
+            self.push_policy_rows(&wifi_profiles, &mut rows_out);
+        }
         rows_out
     }
 
-    /// Appends the Wi-Fi profile policy editor rows (metered/MAC/proxy
-    /// policy) when the Connection policy panel is open and a profile is selected.
-    fn push_advanced_profile_rows(
-        &self,
-        wifi_profiles: &[&SavedNetworkProfile],
-        rows_out: &mut Vec<El>,
-    ) {
-        if self.advanced_open
-            && let Some(profile) = self
-                .selected_wifi_profile
-                .as_ref()
-                .and_then(|uuid| wifi_profiles.iter().find(|p| &p.uuid == uuid).copied())
-                .or_else(|| wifi_profiles.first().copied())
-        {
-            if wifi_profiles.len() > 1 {
-                rows_out.push(choice_row(
-                    "Edit profile",
-                    Box::new(
-                        Dropdown::new(
-                            wifi_profiles.iter().map(|p| profile_label(p)).collect(),
-                            ADVANCED_PROFILE_KEY,
-                        )
-                        .with_placeholder(&profile_label(profile)),
-                    ),
-                ));
+    fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+        let label = t_args(
+            "net-wake-network",
+            &[("name", profile.name.as_str().into())],
+        );
+        match self.wake_settings.get(&profile.uuid) {
+            Some(Ok(status)) => {
+                let uuid = profile.uuid.clone();
+                let toggle = self.cx.bind(
+                    Toggle::from_state(&LocalState::new(status.configured))
+                        .with_id(&format!("network.profile.wake.{}", profile.uuid))
+                        .with_accessible_name(&label)
+                        .with_enabled(status.configured || status.supported == Some(true)),
+                    effect(NetworkEffect::SET_NETWORK_WAKE).map(move |on: bool| (uuid.clone(), on)),
+                );
+                let description = wake_description(status);
+                let mut rows = vec![setting_row_described(
+                    &label,
+                    &t(description),
+                    Box::new(toggle),
+                )];
+                if let Some(problem) = &status.problem {
+                    rows.push(row(error_caption(problem)));
+                }
+                rows
             }
-            rows_out.push(caption(&format!(
-                "Connection policy for {}. NetworkManager remains the source of truth.",
-                profile.name
-            )));
-            let Some(_settings) = self.profile_settings.get(&profile.uuid) else {
-                rows_out.push(caption("Policy values could not be read from NetworkManager, so Settings will not offer a destructive default editor."));
-                return;
-            };
-            rows_out.push(choice_row(
-                "Metered",
-                Box::new(
-                    Dropdown::new(
-                        vec!["Automatic".into(), "Metered".into(), "Unmetered".into()],
-                        &format!("network.profile.metered.{}", profile.uuid),
-                    )
-                    .with_placeholder("Automatic"),
-                ),
-            ));
-            rows_out.push(choice_row(
-                "Wi-Fi address",
-                Box::new(
-                    Dropdown::new(
-                        vec![
-                            "Stable per network".into(),
-                            "Random each connection".into(),
-                            "Permanent hardware address".into(),
-                        ],
-                        &format!("network.profile.mac.{}", profile.uuid),
-                    )
-                    .with_placeholder("Stable per network"),
-                ),
-            ));
-            rows_out.push(setting_row(
-                "Automatic proxy URL",
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_on_change_path(&format!("network.profile.proxy.{}", profile.uuid))
-                        .with_placeholder("https://example.org/proxy.pac"),
-                ),
-            ));
-            rows_out.push(Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        &format!("settings.network.profile.policy.{}", profile.uuid),
-                        "Apply policy",
-                        Some(&format!("network.profile.policy.{}", profile.uuid)),
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
+            Some(Err(error)) => vec![
+                value_row(&label, &t("net-wake-unavailable")),
+                row(error_caption(error)),
+            ],
+            None => vec![value_row(&label, &t("net-wake-unavailable"))],
         }
     }
 
-    fn diagnostic_rows(&self) -> Vec<El> {
-        let mut out: Vec<El> = vec![Box::new(
-            Row::new()
-                .push(Box::new(Button::new(
-                    "settings.network.diagnostics",
-                    "Run diagnostics",
-                    Some(DIAGNOSTICS_KEY),
-                )))
-                .push(Box::new(Spacer::new())),
+    /// The selected saved Wi-Fi network's policy editor: metered, hardware
+    /// address and proxy.
+    fn push_policy_rows(&self, wifi_profiles: &[&SavedNetworkProfile], rows_out: &mut Vec<Item>) {
+        let Some(profile) = Self::selected(wifi_profiles, &self.wifi_profile) else {
+            return;
+        };
+        if wifi_profiles.len() > 1 {
+            rows_out.push(setting_row(
+                &t("net-edit-profile"),
+                Box::new(
+                    Dropdown::from_state(
+                        wifi_profiles.iter().map(|p| profile_label(p)).collect(),
+                        &self.wifi_profile,
+                    )
+                    .with_placeholder(&profile_label(profile)),
+                ),
+            ));
+        }
+        rows_out.push(note(&t_args(
+            "net-policy-for",
+            &[("name", profile.name.as_str().into())],
+        )));
+        let Some(form) = self.policy_forms.get(&profile.uuid) else {
+            rows_out.push(note(&t("net-policy-unread")));
+            return;
+        };
+        rows_out.push(setting_row(
+            &t("net-metered"),
+            Box::new(
+                Dropdown::from_state(
+                    METERED_POLICIES
+                        .iter()
+                        .map(|id| metered_shown(id))
+                        .collect(),
+                    &form.metered,
+                )
+                .with_id(&format!("network.profile.metered.{}", profile.uuid))
+                .with_placeholder(&form.metered.get()),
+            ),
+        ));
+        rows_out.push(setting_row(
+            &t("net-mac"),
+            Box::new(
+                Dropdown::from_state(
+                    MAC_POLICIES.iter().map(|id| mac_shown(id)).collect(),
+                    &form.mac,
+                )
+                .with_id(&format!("network.profile.mac.{}", profile.uuid))
+                .with_placeholder(&form.mac.get()),
+            ),
+        ));
+        rows_out.push(field_row(
+            &t("net-proxy-url"),
+            Box::new(
+                TextInput::from_state(&form.proxy)
+                    .with_id(&format!("network.profile.proxy.{}", profile.uuid))
+                    .with_placeholder("https://example.org/proxy.pac"),
+            ),
+        ));
+        rows_out.push(self.button_row(
+            &format!("settings.network.profile.policy.{}", profile.uuid),
+            &t("net-apply-policy"),
+            NetworkEffect::SetConnectionPolicy {
+                profile: profile.uuid.clone(),
+                metered: None,
+                mac: None,
+                proxy: None,
+            },
+        ));
+    }
+
+    fn diagnostic_rows(&self) -> Vec<Item> {
+        let mut out: Vec<Item> = vec![self.button_row(
+            "settings.network.diagnostics",
+            &t("net-run-diagnostics"),
+            NetworkEffect::RunDiagnostics,
         )];
         if let Some(d) = &self.diagnostics {
             out.push(value_row("NetworkManager", &d.network_manager_state));
-            out.push(value_row("Internet", d.connectivity.label()));
+            out.push(value_row(
+                &t("net-diag-internet"),
+                &connectivity_shown(d.connectivity),
+            ));
             if let Some(v) = &d.device {
-                out.push(value_row("Device", v));
+                out.push(value_row(&t("net-diag-device"), v));
             }
             if let Some(v) = &d.address {
-                out.push(value_row("Address", v));
+                out.push(value_row(&t("net-diag-address"), v));
             }
             if let Some(v) = &d.gateway {
-                out.push(value_row("Gateway", v));
+                out.push(value_row(&t("net-diag-gateway"), v));
             }
             let dns = if d.dns.is_empty() {
-                "Not provided".to_string()
+                t("net-diag-dns-none")
             } else {
                 d.dns.join(", ")
             };
-            out.push(value_row("DNS", &dns));
+            out.push(value_row(&t("net-diag-dns"), &dns));
             for recommendation in &d.recommendations {
-                out.push(caption(recommendation));
+                out.push(note(recommendation));
             }
         } else {
-            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a Tilo service."));
+            out.push(note(&t("net-diag-idle")));
         }
         out
     }
 
-    fn secret_field(&self, key: &str, id: &str, placeholder: &str) -> El {
-        // `key` is always one of the fixed buffers seeded by
-        // `initial_secret_buffers`; fall back to a fresh, unshared buffer
-        // rather than panicking if that invariant is ever violated.
-        let buffer = self
-            .secret_buffers
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
-        let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
-        Box::new(
-            TextInput::local()
-                .with_id(id)
-                .with_external_buffer(buffer)
-                .with_initial_value(&initial)
-                .with_secret(true)
-                .with_placeholder(placeholder),
+    /// A masked field over `buffer`, which never leaves this process.
+    fn secret_field(buffer: &Arc<Mutex<String>>, id: &str, placeholder: &str) -> Item {
+        let initial = buffer.lock().map_or_else(
+            |_| Zeroizing::new(String::new()),
+            |value| Zeroizing::new(value.clone()),
+        );
+        field_row(
+            placeholder,
+            Box::new(
+                TextInput::local()
+                    .with_id(id)
+                    .with_external_buffer(Arc::clone(buffer))
+                    .with_initial_value(&initial)
+                    .with_secret(true)
+                    .with_placeholder(placeholder),
+            ),
         )
     }
 
-    fn mobile_rows(&self) -> Vec<El> {
-        let mut rows = vec![
-            caption(
-                "Create the carrier profile through NetworkManager. The APN is supplied by your carrier.",
-            ),
+    /// A text field over `state`.
+    fn text_field(state: &LocalState<String>, id: &str, placeholder: &str) -> Item {
+        field_row(
+            placeholder,
             Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.mobile.profile")
-                    .with_on_change_path(MOBILE_PROFILE_KEY)
-                    .with_placeholder("Profile name"),
+                TextInput::from_state(state)
+                    .with_id(id)
+                    .with_placeholder(placeholder),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.mobile.apn")
-                    .with_on_change_path(MOBILE_APN_KEY)
-                    .with_placeholder("Access point name (APN)"),
+        )
+    }
+
+    fn mobile_rows(&self) -> Vec<Item> {
+        let mut rows = Vec::new();
+        if let Some(error) = &self.read_errors.sims {
+            rows.push(row(error_caption(&t_args(
+                "net-sims-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        rows.extend([
+            note(&t("net-mobile-caption")),
+            Self::text_field(
+                &self.mobile_name,
+                "network.mobile.profile",
+                &t("net-profile-name"),
             ),
-            Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.network.mobile.create",
-                        "Create profile",
-                        Some(MOBILE_CREATE_KEY),
-                    )))
-                    .push(Box::new(Spacer::new())),
+            Self::text_field(&self.mobile_apn, "network.mobile.apn", &t("net-apn")),
+            self.button_row(
+                "settings.network.mobile.create",
+                &t("net-create-profile"),
+                NetworkEffect::CreateMobileProfile {
+                    name: None,
+                    apn: None,
+                },
             ),
-            caption(
-                "If the SIM is locked, enter its PIN. It is sent directly to ModemManager over the system bus and is never saved.",
-            ),
-        ];
-        if let Some(first_sim) = self.sims.first() {
-            rows.push(choice_row(
-                "SIM",
+            note(&t("net-sim-pin-caption")),
+        ]);
+        if !self.sims.is_empty() {
+            rows.push(setting_row(
+                &t("net-sim"),
                 Box::new(
-                    Dropdown::new(
+                    Dropdown::from_state(
                         self.sims.iter().map(|s| s.label.clone()).collect(),
-                        MOBILE_SIM_KEY,
+                        &self.mobile_sim,
                     )
-                    .with_placeholder(&first_sim.label),
+                    .with_placeholder(&self.mobile_sim.get()),
                 ),
             ));
         }
         rows.extend([
-            self.secret_field(MOBILE_PIN_BUFFER, "network.mobile.pin", "SIM PIN"),
-            Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.network.mobile.unlock",
-                        "Unlock SIM",
-                        Some(MOBILE_UNLOCK_KEY),
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ) as El,
+            Self::secret_field(&self.sim_pin, "network.mobile.pin", &t("net-sim-pin")),
+            self.button_row(
+                "settings.network.mobile.unlock",
+                &t("net-unlock-sim"),
+                NetworkEffect::UnlockSim {
+                    sim: None,
+                    pin: None,
+                },
+            ),
         ]);
         rows
     }
 
-    fn enterprise_rows(&self) -> Vec<El> {
+    fn enterprise_rows(&self) -> Vec<Item> {
+        let form = &self.enterprise;
         vec![
-            choice_row(
-                "Method",
+            setting_row(
+                &t("net-method"),
                 Box::new(
-                    Dropdown::new(
+                    Dropdown::from_state(
                         vec!["PEAP".into(), "TTLS".into(), "TLS".into()],
-                        ENTERPRISE_METHOD_KEY,
+                        &form.method,
                     )
-                    .with_placeholder("PEAP"),
+                    .with_placeholder(&form.method.get()),
                 ),
             ),
-            choice_row(
-                "Inner authentication",
+            setting_row(
+                &t("net-inner-auth"),
                 Box::new(
-                    Dropdown::new(
+                    Dropdown::from_state(
                         vec!["MSCHAPv2".into(), "PAP".into(), "CHAP".into()],
-                        ENTERPRISE_PHASE2_KEY,
+                        &form.inner_auth,
                     )
-                    .with_placeholder("MSCHAPv2"),
+                    .with_placeholder(&form.inner_auth.get()),
                 ),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.profile")
-                    .with_on_change_path(ENTERPRISE_PROFILE_KEY)
-                    .with_placeholder("Profile name"),
+            Self::text_field(
+                &form.profile,
+                "network.enterprise.profile",
+                &t("net-profile-name"),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.client_cert")
-                    .with_on_change_path(ENTERPRISE_CLIENT_CERT_KEY)
-                    .with_placeholder("Client certificate path (TLS)"),
+            Self::text_field(
+                &form.client_certificate,
+                "network.enterprise.client_cert",
+                &t("net-client-cert"),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.private_key")
-                    .with_on_change_path(ENTERPRISE_PRIVATE_KEY)
-                    .with_placeholder("Private key path (TLS)"),
+            Self::text_field(
+                &form.private_key,
+                "network.enterprise.private_key",
+                &t("net-private-key"),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.ssid")
-                    .with_on_change_path(ENTERPRISE_SSID_KEY)
-                    .with_placeholder("Network name (SSID)"),
+            Self::text_field(&form.ssid, "network.enterprise.ssid", &t("net-ssid")),
+            Self::text_field(
+                &form.identity,
+                "network.enterprise.identity",
+                &t("net-identity"),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.identity")
-                    .with_on_change_path(ENTERPRISE_IDENTITY_KEY)
-                    .with_placeholder("Username / identity"),
+            Self::text_field(
+                &form.anonymous,
+                "network.enterprise.anonymous",
+                &t("net-anonymous"),
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.anonymous")
-                    .with_on_change_path(ENTERPRISE_ANONYMOUS_KEY)
-                    .with_placeholder("Anonymous identity (optional)"),
+            Self::text_field(&form.ca, "network.enterprise.ca", &t("net-ca-path")),
+            self.button_row(
+                "settings.network.enterprise.ca.choose",
+                &t("net-choose-ca"),
+                NetworkEffect::ChooseCaCertificate,
             ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("network.enterprise.ca")
-                    .with_on_change_path(ENTERPRISE_CA_KEY)
-                    .with_placeholder("Absolute path to CA certificate"),
-            ),
-            Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.network.enterprise.ca.choose",
-                        "Choose CA certificate…",
-                        Some(ENTERPRISE_CA_CHOOSE_KEY),
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ),
-            self.secret_field(
-                ENTERPRISE_PASSWORD_BUFFER,
+            Self::secret_field(
+                &form.password,
                 "network.enterprise.password",
-                "Password",
+                &t("net-password"),
             ),
-            Box::new(
-                Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.network.enterprise.connect",
-                        "Save and connect",
-                        Some(ENTERPRISE_CONNECT_KEY),
-                    )))
-                    .push(Box::new(Spacer::new())),
+            self.button_row(
+                "settings.network.enterprise.connect",
+                &t("net-save-connect"),
+                NetworkEffect::ConnectEnterpriseNetwork {
+                    profile: None,
+                    ssid: None,
+                    identity: None,
+                    anonymous_identity: None,
+                    ca_certificate: None,
+                    method: None,
+                    inner_auth: None,
+                    client_certificate: None,
+                    private_key: None,
+                    password: None,
+                },
             ),
         ]
     }
@@ -1792,2336 +3024,1522 @@ impl NetworkPane {
     /// Keep specialist 802.1X credentials out of the ordinary connection
     /// view. The affordance remains visible, while the form appears only when
     /// someone has chosen to add that kind of network.
-    fn enterprise_card(&self) -> El {
-        let mut content = vec![caption(
-            "Use an enterprise network for PEAP, TTLS, or EAP-TLS sign-in. Server certificate validation is mandatory.",
-        )];
-        if self.enterprise_editor_open {
+    fn enterprise_card(&self) -> SettingsSection {
+        let mut content = vec![note(&t("net-enterprise-caption"))];
+        if self.enterprise_open {
             content.extend(self.enterprise_rows());
         }
-        content.push(Box::new(
-            Row::new()
-                .push(Box::new(Button::new(
-                    "settings.network.enterprise.editor",
-                    if self.enterprise_editor_open {
-                        "Close enterprise setup"
-                    } else {
-                        "Set up enterprise"
-                    },
-                    Some(ENTERPRISE_EDITOR_KEY),
-                )))
-                .push(Box::new(Spacer::new())),
+        content.push(self.button_row(
+            "settings.network.enterprise.editor",
+            &if self.enterprise_open {
+                t("net-close-enterprise")
+            } else {
+                t("net-setup-enterprise")
+            },
+            NetworkEffect::ShowEnterpriseSetup,
         ));
-        card("Enterprise Wi-Fi", rows(content))
-    }
-
-    fn hotspot_config_from_values(
-        &self,
-        ssid: &str,
-        band: &str,
-    ) -> Result<HotspotConfiguration, String> {
-        let password = self
-            .hotspot_password
-            .lock()
-            .map_err(|_| "hotspot password buffer is unavailable")?
-            .clone();
-        let band = match band {
-            "2.4 GHz" => HotspotBand::TwoPointFourGhz,
-            "5 GHz" => HotspotBand::FiveGhz,
-            _ => HotspotBand::Automatic,
-        };
-        let config = HotspotConfiguration {
-            ssid: ssid.to_string(),
-            password,
-            band,
-        };
-        config.validate()?;
-        Ok(config)
+        card(&t("net-enterprise"), rows(content))
     }
 
     /// One scanned-network row: signal + lock glyph + SSID on the left, a
-    /// Connect / Connected button on the right.
-    fn network_row(&self, net: &WifiNetworkInfo) -> El {
+    /// Connect / Connected / Cancel button on the right.
+    fn network_row(&self, net: &WifiNetworkInfo) -> Item {
         let signal_glyph = wifi_signal_glyph(net.signal);
         // A closed padlock for secure networks, its open-padlock pair for open
         // ones — both from the MDI `lock` family the shipped fonts carry, so the
         // security state reads at a glance without a stray unrelated glyph.
         let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f033f}" };
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
-        let key = connect_key(&net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
-        let cta_label = if net.connected {
-            "Connected"
-        } else if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
-            "Cancel"
+        let cta: El = if net.connected {
+            Box::new(Button::new(&cta_id, &t("net-connected")))
+        } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
+            Box::new(self.button(
+                &cta_id,
+                &t("net-cancel"),
+                NetworkEffect::CancelConnect {
+                    ssid: net.ssid.clone(),
+                },
+            ))
         } else {
-            "Connect"
+            Box::new(self.button(
+                &cta_id,
+                &t("net-connect"),
+                NetworkEffect::ConnectNetwork {
+                    ssid: net.ssid.clone(),
+                    password: None,
+                },
+            ))
         };
-        Box::new(
-            Row::new()
-                .push(Box::new(Text::new(&label).with_size(13.0)))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(&cta_id, cta_label, Some(&key)))),
-        )
+        setting_row(&label, cta)
     }
 
-    /// The inline password prompt shown beneath a secure network when its
-    /// "Connect" is pressed: a masked, process-local field plus a Join
-    /// command bit. The password itself never enters the Automerge document.
-    fn password_prompt(&self, ssid: &str) -> El {
-        let jk = join_key(ssid);
-        let field_id = format!("settings.network.password.{ssid}");
-        let join_id = format!("settings.network.join.{ssid}");
+    /// The password prompt beneath a secure network: a masked,
+    /// process-local field and a Join button.
+    fn password_prompt(&self, ssid: &str) -> Item {
         let buffer = self
-            .secret_buffers
+            .join_passwords
             .get(ssid)
             .cloned()
             .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
         let field = TextInput::local()
-            .with_id(&field_id)
+            .with_id(&format!("settings.network.password.{ssid}"))
             .with_external_buffer(buffer)
             .with_secret(true)
-            .with_placeholder("Password")
-            .with_font_size(13.0);
-        Box::new(
+            .with_placeholder(t("net-password"));
+        // A field and its Join button share one line: not a label/control pair.
+        row(Box::new(
             Row::new()
                 .push(Box::new(field))
                 .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(&join_id, "Join", Some(&jk)))),
-        )
+                .push(Box::new(self.button(
+                    &format!("settings.network.join.{ssid}"),
+                    &t("net-join"),
+                    NetworkEffect::ConnectNetwork {
+                        ssid: ssid.to_owned(),
+                        password: None,
+                    },
+                ))),
+        ))
     }
 
-    /// Rows for the Wired card, derived from the live `nmcli` snapshot.
-    fn wired_rows(&self) -> Vec<El> {
+    /// Rows for the Wired card: the link, and the selected wired profile's
+    /// IPv4 settings.
+    fn wired_rows(&self) -> Vec<Item> {
         if !self.wired.connected {
             return vec![
-                value_row("Ethernet", "Not connected"),
-                caption("Plug in an Ethernet cable to use a wired connection."),
+                value_row(&t("net-ethernet"), &t("net-not-connected")),
+                note(&t("net-wired-empty")),
             ];
         }
         let mut out = Vec::new();
         let status = match &self.wired.speed {
-            Some(s) => format!("Connected · {s}"),
-            None => "Connected".to_string(),
+            Some(s) => t_args("net-connected-speed", &[("speed", s.as_str().into())]),
+            None => t("net-connected"),
         };
-        out.push(value_row("Ethernet", &status));
+        out.push(value_row(&t("net-ethernet"), &status));
         if let Some(dev) = &self.wired.device {
-            out.push(value_row("Interface", dev));
+            out.push(value_row(&t("net-interface"), dev));
         }
-        out.push(value_row("IPv4", self.wired.ipv4.as_deref().unwrap_or("—")));
-        let wired_profiles: Vec<_> = self
+        out.push(value_row(
+            &t("net-ipv4"),
+            self.wired.ipv4.as_deref().unwrap_or("—"),
+        ));
+        let wired_profiles: Vec<&SavedNetworkProfile> = self
             .profiles
             .iter()
             .filter(|p| p.kind == "802-3-ethernet")
             .collect();
-        if let Some(profile) = self
-            .selected_wired_profile
-            .as_ref()
-            .and_then(|uuid| wired_profiles.iter().find(|p| &p.uuid == uuid).copied())
-            .or_else(|| wired_profiles.first().copied())
-        {
-            if wired_profiles.len() > 1 {
-                out.push(choice_row(
-                    "Edit profile",
-                    Box::new(
-                        Dropdown::new(
-                            wired_profiles.iter().map(|p| profile_label(p)).collect(),
-                            WIRED_PROFILE_KEY,
-                        )
-                        .with_placeholder(&profile_label(profile)),
-                    ),
-                ));
-            }
-            let Some(_settings) = self
-                .profile_settings
-                .get(&profile.uuid)
-                .and_then(|s| s.ipv4.as_ref())
-            else {
-                out.push(caption("This profile's IPv4 method is unsupported or could not be read; Settings will leave it unchanged."));
-                return out;
-            };
-            let automatic_key = ipv4_key(&profile.uuid, "automatic");
-            let address_key = ipv4_key(&profile.uuid, "address");
-            let gateway_key = ipv4_key(&profile.uuid, "gateway");
-            let dns_key = ipv4_key(&profile.uuid, "dns");
-            let apply_key = ipv4_key(&profile.uuid, "apply");
-            out.extend([
-                setting_row(
-                    "Automatic IPv4",
-                    Box::new(Toggle::new(
-                        "settings.network.ipv4.automatic",
-                        &automatic_key,
-                    )),
-                ),
+        let Some(profile) = Self::selected(&wired_profiles, &self.wired_profile) else {
+            return out;
+        };
+        if wired_profiles.len() > 1 {
+            out.push(setting_row(
+                &t("net-edit-profile"),
                 Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("network.ipv4.address")
-                        .with_on_change_path(&address_key)
-                        .with_placeholder("Address/prefix · e.g. 192.0.2.10/24"),
+                    Dropdown::from_state(
+                        wired_profiles.iter().map(|p| profile_label(p)).collect(),
+                        &self.wired_profile,
+                    )
+                    .with_placeholder(&profile_label(profile)),
                 ),
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("network.ipv4.gateway")
-                        .with_on_change_path(&gateway_key)
-                        .with_placeholder("Gateway"),
-                ),
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("network.ipv4.dns")
-                        .with_on_change_path(&dns_key)
-                        .with_placeholder("DNS servers · comma-separated"),
-                ),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "settings.network.ipv4.apply",
-                            "Apply IP settings",
-                            Some(&apply_key),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ),
-                caption("NetworkManager validates and applies this profile. Custom DNS disables DHCP-provided DNS for this connection only."),
-            ]);
+            ));
         }
+        let Some(form) = self.ipv4_forms.get(&profile.uuid) else {
+            out.push(note(&t("net-ipv4-unsupported")));
+            return out;
+        };
+        out.extend([
+            setting_row(
+                &t("net-auto-ipv4"),
+                Box::new(
+                    Toggle::from_state(&form.automatic).with_id("settings.network.ipv4.automatic"),
+                ),
+            ),
+            Self::text_field(
+                &form.addresses,
+                "network.ipv4.address",
+                &t("net-address-prefix"),
+            ),
+            Self::text_field(&form.gateway, "network.ipv4.gateway", &t("net-gateway")),
+            Self::text_field(&form.dns, "network.ipv4.dns", &t("net-dns-servers")),
+            self.button_row(
+                "settings.network.ipv4.apply",
+                &t("net-apply-ip"),
+                NetworkEffect::SetIpv4 {
+                    profile: profile.uuid.clone(),
+                    automatic: None,
+                    addresses: None,
+                    gateway: None,
+                    dns: None,
+                },
+            ),
+            note(&t("net-ipv4-caption")),
+        ]);
         out
     }
 
-    /// Update which network's password prompt is expanded, mirroring it
-    /// into the document and flagging a structure rebuild so the prompt
-    /// appears/disappears on the next frame.
-    fn set_expanded(&mut self, state: &mut AutoCommit, root: &ObjId, ssid: Option<String>) {
-        if self.expanded_ssid == ssid {
-            return;
+    fn vpn_rows(&self) -> Vec<Item> {
+        if let Some(error) = &self.read_errors.vpns {
+            return vec![row(error_caption(&t_args(
+                "net-vpn-error",
+                &[("error", error.as_str().into())],
+            )))];
         }
-        let _ = state.put(root, EXPANDED_KEY, ssid.clone().unwrap_or_default());
-        if let Some(s) = &ssid {
-            self.secret_buffers
-                .entry(s.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(String::new())));
+        if self.vpns.is_empty() {
+            return vec![
+                note(&t("net-vpn-empty")),
+                row(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+                    Box::new(self.button(
+                        "settings.network.vpn.studio.open",
+                        &t("net-open-vpn-studio"),
+                        NetworkEffect::OpenVpnStudio { vpn: None },
+                    )),
+                ))),
+            ];
         }
-        let old_to_clear = self
-            .expanded_ssid
-            .clone()
-            .filter(|old| ssid.as_ref() != Some(old));
-        if let Some(old) = old_to_clear
-            && let Some(buffer) = self.secret_buffers.remove(&old)
-            && let Ok(mut secret) = buffer.lock()
-        {
-            secret.zeroize();
-        }
-        self.expanded_ssid = ssid;
-        self.structure_dirty = true;
-    }
-
-    /// Dispatch a Wi-Fi connection, deduplicated per SSID so a single
-    /// button press doesn't re-fire on every frame.
-    fn do_connect(
-        &mut self,
-        ssid: &str,
-        security: os_actions::WifiSecurity,
-        password: Option<&str>,
-        lookup_shared: bool,
-    ) {
-        if self.dispatched_connects.iter().any(|s| s == ssid) {
-            return;
-        }
-        self.dispatched_connects.push(ssid.to_string());
-        self.connection_notice = Some(format!("Connecting to {ssid}…"));
-        let dispatcher = Arc::clone(&self.dispatcher);
-        let tx = self.connection_tx.clone();
-        let ssid = ssid.to_string();
-        let password = password.map(|value| Zeroizing::new(value.to_string()));
-        let continuity = Arc::clone(&self.wifi_continuity);
-        std::thread::spawn(move || {
-            let portable = portable_security(security);
-            let result = if lookup_shared {
-                let Some(mode) = portable else {
-                    let _ = tx.send((
-                        NetworkJob::Wifi(ssid),
-                        Ok(NetworkJobSuccess::PasswordRequired {
-                            continuity_warning: None,
-                        }),
-                    ));
-                    return;
-                };
-                match continuity.command(ui::collaboration::WifiContinuityCommand::Lookup {
-                    ssid: ssid.clone(),
-                    security: mode,
-                }) {
-                    Ok(ui::collaboration::WifiContinuityReply::Password { password }) => {
-                        let password = Zeroizing::new(password);
-                        dispatcher
-                            .connect_wifi(&ssid, Some(password.as_str()))
-                            .map(|()| NetworkJobSuccess::Connected {
-                                continuity_notice: Some(
-                                    "Used the sealed password from your certified devices.".into(),
-                                ),
-                            })
-                    }
-                    Ok(ui::collaboration::WifiContinuityReply::NotFound) => {
-                        Ok(NetworkJobSuccess::PasswordRequired {
-                            continuity_warning: None,
-                        })
-                    }
-                    Ok(ui::collaboration::WifiContinuityReply::Rejected { reason }) => {
-                        Ok(NetworkJobSuccess::PasswordRequired {
-                            continuity_warning: Some(reason),
-                        })
-                    }
-                    Ok(_) => Ok(NetworkJobSuccess::PasswordRequired {
-                        continuity_warning: Some(
-                            "the Wi-Fi continuity service returned an invalid lookup reply".into(),
-                        ),
-                    }),
-                    Err(error) => Ok(NetworkJobSuccess::PasswordRequired {
-                        continuity_warning: Some(error),
-                    }),
-                }
-            } else {
-                dispatcher
-                    .connect_wifi(&ssid, password.as_deref().map(String::as_str))
-                    .map(|()| {
-                        let continuity_notice = password.as_ref().and_then(|password| {
-                            let mode = portable?;
-                            match continuity.command(
-                                ui::collaboration::WifiContinuityCommand::Share {
-                                    ssid: ssid.clone(),
-                                    security: mode,
-                                    password: password.to_string(),
-                                },
-                            ) {
-                                Ok(ui::collaboration::WifiContinuityReply::Shared { .. }) => Some(
-                                    "Password sealed for your certified devices.".into(),
-                                ),
-                                Ok(ui::collaboration::WifiContinuityReply::Rejected { reason }) => {
-                                    Some(format!("Password could not be shared: {reason}"))
-                                }
-                                Ok(_) => Some(
-                                    "Password could not be shared: the continuity service returned an invalid reply."
-                                        .into(),
-                                ),
-                                Err(error) => {
-                                    Some(format!("Password could not be shared: {error}"))
-                                }
-                            }
-                        });
-                        NetworkJobSuccess::Connected { continuity_notice }
-                    })
-            };
-            let _ = tx.send((NetworkJob::Wifi(ssid), result));
-        });
-    }
-
-    /// Consume the CA-certificate file-picker result, if the background
-    /// chooser thread has replied.
-    fn sync_ca_picker_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(receiver) = &self.ca_picker_rx
-            && let Ok(result) = receiver.try_recv()
-        {
-            match result {
-                ui::portal::PortalOutcome::Opened(path) => {
-                    let path = path.display().to_string();
-                    let object = crate::ensure_text_object(state, root, ENTERPRISE_CA_KEY);
-                    let old_len =
-                        state.text(&object).map_or(0, |text| text.chars().count()) as isize;
-                    let _ = state.splice_text(&object, 0, old_len, &path);
-                    self.connection_notice = Some("CA certificate selected.".into());
-                }
-                ui::portal::PortalOutcome::Cancelled => {}
-                ui::portal::PortalOutcome::Failed(error) => {
-                    self.connection_notice = Some(format!("Could not choose certificate: {error}"));
-                }
-            }
-            self.ca_picker_rx = None;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Drain completed background connection/profile jobs and report their
-    /// outcome via `connection_notice`.
-    fn sync_connection_jobs(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        while let Ok((job, result)) = self.connection_rx.try_recv() {
-            let subject = match &job {
-                NetworkJob::Wifi(ssid) => ssid.as_str(),
-                NetworkJob::ShareProfile => "saved Wi-Fi profile",
-                NetworkJob::MobileProfile => "mobile profile",
-                NetworkJob::SimUnlock => "SIM",
-                NetworkJob::EnterpriseWifi => "enterprise Wi-Fi",
-            };
-            if let NetworkJob::Wifi(ssid) = &job {
-                self.dispatched_connects.retain(|pending| pending != ssid);
-            }
-            match result {
-                Ok(NetworkJobSuccess::Connected { continuity_notice }) => {
-                    self.connection_notice = Some(continuity_notice.map_or_else(
-                        || format!("Connected to {subject}."),
-                        |notice| format!("Connected to {subject}. {notice}"),
-                    ));
-                    // Re-read the list and saved profiles off the UI thread.
-                    self.start_snapshot();
-                    if matches!(job, NetworkJob::Wifi(_)) {
-                        self.set_expanded(state, root, None);
-                    }
-                }
-                Ok(NetworkJobSuccess::PasswordRequired { continuity_warning }) => {
-                    if let NetworkJob::Wifi(ssid) = &job {
-                        self.set_expanded(state, root, Some(ssid.clone()));
-                        self.connection_notice = continuity_warning.map_or_else(
-                            || Some(format!("Enter the password for {ssid}.")),
-                            |warning| Some(format!("Enter the password for {ssid}. Shared password unavailable: {warning}")),
-                        );
-                    }
-                }
-                Ok(NetworkJobSuccess::ProfileShared { ssid }) => {
-                    self.connection_notice = Some(format!(
-                        "{ssid} is sealed for your certified devices. Device-specific profile settings were not shared."
-                    ));
-                }
-                Ok(NetworkJobSuccess::OperationCompleted { notice }) => {
-                    self.connection_notice = Some(notice);
-                }
-                Err(error) => {
-                    self.connection_notice =
-                        Some(format!("Could not configure {subject}: {error}"));
-                    warn!(target: "tilo::settings", op = "network_job", %subject, %error, "network pane operation failed");
-                }
-            }
-            self.structure_dirty = true;
-        }
-    }
-
-    /// One-time seed of every CRDT key this pane owns, run on first `sync`
-    /// (and again after a structure rebuild reconstructs the pane). Only
-    /// fills keys the document doesn't already carry, so a rebuild never
-    /// clobbers a value the user already changed.
-    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.needs_seed {
-            return;
-        }
-        self.seed_radio_and_vpn_keys(state, root);
-        self.seed_hotspot_and_profile_selection(state, root);
-        self.seed_text_and_command_keys(state, root);
-        self.seed_profile_settings(state, root);
-        let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
-        // Seed the expansion mirror from the field so a pre-expanded
-        // pane (tests / `--shots`) keeps its prompt open through the
-        // first sync (which would otherwise read the empty doc as "no
-        // prompt" and collapse it). Only when nothing's there yet.
-        if state.get(root, EXPANDED_KEY).ok().flatten().is_none() {
-            let _ = state.put(
-                root,
-                EXPANDED_KEY,
-                self.expanded_ssid.clone().unwrap_or_default(),
-            );
-        }
-        self.needs_seed = false;
-    }
-
-    fn seed_radio_and_vpn_keys(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, WIFI_ENABLED_KEY).ok().flatten().is_none() {
-            let _ = state.put(
-                root,
-                WIFI_ENABLED_KEY,
-                automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
-            );
-        } else if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY)
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-        {
-            // Adopt the existing value so the dispatcher-change guard
-            // doesn't re-fire `set_wifi` on the first post-rebuild sync.
-            self.last_wifi_enabled = *b;
-        }
-        if state.get(root, WIRED_ENABLED_KEY).ok().flatten().is_none() {
-            let _ = state.put(
-                root,
-                WIRED_ENABLED_KEY,
-                automerge::ScalarValue::Boolean(self.wired.connected),
-            );
-        }
-        for (key, value) in [
-            (AIRPLANE_KEY, self.radios.airplane_mode),
-            (HOTSPOT_KEY, self.radios.hotspot_active),
-            (MOBILE_KEY, self.radios.wwan_enabled),
-        ] {
-            if state.get(root, key).ok().flatten().is_none() {
-                let _ = state.put(root, key, value);
-            }
-        }
+        let mut out: Vec<Item> = Vec::new();
         for vpn in &self.vpns {
-            if state
-                .get(root, Self::vpn_key(&vpn.name))
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
-            }
-            let _ = state.put(root, Self::vpn_studio_key(&vpn.name), false);
-        }
-    }
-
-    fn seed_hotspot_and_profile_selection(&self, state: &mut AutoCommit, root: &ObjId) {
-        let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
-        let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
-        let _ = state.put(root, HOTSPOT_QR_KEY, false);
-        let _ = state.put(root, HOTSPOT_SSID_KEY, self.hotspot_ssid.as_str());
-        let _ = crate::ensure_text_object(state, root, HOTSPOT_SSID_KEY);
-        let _ = state.put(root, HOTSPOT_BAND_KEY, self.hotspot_band.as_str());
-        if let Some(uuid) = &self.selected_wifi_profile
-            && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
-            && state
-                .get(root, ADVANCED_PROFILE_KEY)
-                .ok()
-                .flatten()
-                .is_none()
-        {
-            let _ = state.put(root, ADVANCED_PROFILE_KEY, profile_label(profile));
-        }
-        if let Some(uuid) = &self.selected_wired_profile
-            && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
-            && state.get(root, WIRED_PROFILE_KEY).ok().flatten().is_none()
-        {
-            let _ = state.put(root, WIRED_PROFILE_KEY, profile_label(profile));
-        }
-    }
-
-    fn seed_text_and_command_keys(&self, state: &mut AutoCommit, root: &ObjId) {
-        for key in [
-            MOBILE_PROFILE_KEY,
-            MOBILE_APN_KEY,
-            ENTERPRISE_PROFILE_KEY,
-            ENTERPRISE_SSID_KEY,
-            ENTERPRISE_IDENTITY_KEY,
-            ENTERPRISE_ANONYMOUS_KEY,
-            ENTERPRISE_CA_KEY,
-            ENTERPRISE_CLIENT_CERT_KEY,
-            ENTERPRISE_PRIVATE_KEY,
-        ] {
-            let _ = crate::ensure_text_object(state, root, key);
-        }
-        for key in [
-            MOBILE_CREATE_KEY,
-            MOBILE_UNLOCK_KEY,
-            ENTERPRISE_CONNECT_KEY,
-            ENTERPRISE_EDITOR_KEY,
-            ENTERPRISE_CA_CHOOSE_KEY,
-            CAPTIVE_PORTAL_KEY,
-            DIAGNOSTICS_KEY,
-            ADVANCED_KEY,
-        ] {
-            let _ = state.put(root, key, false);
-        }
-        let _ = state.put(root, ENTERPRISE_METHOD_KEY, "PEAP");
-        let _ = state.put(root, ENTERPRISE_PHASE2_KEY, "MSCHAPv2");
-        if let Some(sim) = self.sims.first() {
-            let _ = state.put(root, MOBILE_SIM_KEY, sim.label.as_str());
-        }
-    }
-
-    fn seed_profile_settings(&self, state: &mut AutoCommit, root: &ObjId) {
-        for profile in &self.profiles {
-            let _ = state.put(
-                root,
-                profile_autoconnect_key(&profile.uuid),
-                profile.autoconnect,
-            );
-            let _ = state.put(root, profile_forget_key(&profile.uuid), false);
-            let _ = state.put(root, profile_share_key(&profile.uuid), false);
-            let Some(settings) = self.profile_settings.get(&profile.uuid) else {
-                continue;
-            };
-            if let Some(value) = settings.metered {
-                let label = match value {
-                    os_actions::MeteredPolicy::Automatic => "Automatic",
-                    os_actions::MeteredPolicy::Metered => "Metered",
-                    os_actions::MeteredPolicy::Unmetered => "Unmetered",
-                };
-                let key = format!("network.profile.metered.{}", profile.uuid);
-                if state.get(root, &key).ok().flatten().is_none() {
-                    let _ = state.put(root, &key, label);
-                }
-            }
-            if let Some(value) = settings.mac {
-                let label = match value {
-                    os_actions::MacPolicy::Stable => "Stable per network",
-                    os_actions::MacPolicy::Random => "Random each connection",
-                    os_actions::MacPolicy::Permanent => "Permanent hardware address",
-                };
-                let key = format!("network.profile.mac.{}", profile.uuid);
-                if state.get(root, &key).ok().flatten().is_none() {
-                    let _ = state.put(root, &key, label);
-                }
-            }
-            if let Some(proxy) = &settings.proxy {
-                let key = format!("network.profile.proxy.{}", profile.uuid);
-                if state.get(root, &key).ok().flatten().is_none() {
-                    let _ = state.put(root, &key, proxy.automatic_url.as_deref().unwrap_or(""));
-                }
-                let _ = crate::ensure_text_object(state, root, &key);
-            }
-            if let Some(ipv4) = &settings.ipv4 {
-                let automatic_key = ipv4_key(&profile.uuid, "automatic");
-                if state.get(root, &automatic_key).ok().flatten().is_none() {
-                    let _ = state.put(root, &automatic_key, ipv4.automatic);
-                }
-                for (field, value) in [
-                    ("address", ipv4.addresses.join(", ")),
-                    ("gateway", ipv4.gateway.clone().unwrap_or_default()),
-                    ("dns", ipv4.dns.join(", ")),
-                ] {
-                    let key = ipv4_key(&profile.uuid, field);
-                    if state.get(root, &key).ok().flatten().is_none() {
-                        let _ = state.put(root, &key, value);
-                    }
-                    let _ = crate::ensure_text_object(state, root, &key);
-                }
-                let _ = state.put(root, ipv4_key(&profile.uuid, "apply"), false);
-            }
-        }
-    }
-
-    fn sync_wifi_and_wired_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Wi-Fi toggle.
-        if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY)
-            && let Value::Scalar(s) = val
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-            && *b != self.last_wifi_enabled
-        {
-            let enabled = *b;
-            let operation = crate::actions::NetworkOperation::SetWifiEnabled { enabled };
-            if !self.operation_is_running(&operation) {
-                let _ = state.put(root, WIFI_ENABLED_KEY, self.last_wifi_enabled);
-                return;
-            }
-            // Shown at once; `finish_action` reverts it if the change fails.
-            self.last_wifi_enabled = enabled;
-            self.queue_action(NetworkAction::Wifi { enabled });
-        }
-
-        // Wired interface toggle. Missing hardware has no switch, and this
-        // never uses NetworkManager's global networking radio.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIRED_ENABLED_KEY)
-            && let automerge::ScalarValue::Boolean(enabled) = s.as_ref()
-            && *enabled != self.wired.connected
-            && self.wired.device.is_some()
-        {
-            let enabled = *enabled;
-            let operation = crate::actions::NetworkOperation::SetWiredEnabled { enabled };
-            if !self.operation_is_running(&operation) {
-                let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
-                return;
-            }
-            self.wired.connected = enabled;
-            self.queue_action(NetworkAction::Wired { enabled });
-        }
-    }
-
-    fn sync_radio_toggles(&mut self, state: &AutoCommit, root: &ObjId) {
-        for radio in [Radio::Airplane, Radio::Hotspot, Radio::Mobile] {
-            let Some(enabled) = read_bool(state, root, radio.key()) else {
-                continue;
-            };
-            let previous = self.radio(radio);
-            if enabled == previous {
-                continue;
-            }
-            self.set_radio(radio, enabled);
-            self.queue_action(NetworkAction::Radio { radio, enabled });
-        }
-    }
-
-    fn sync_vpn_toggles(&mut self, state: &AutoCommit, root: &ObjId) {
-        let mut changed = Vec::new();
-        for vpn in &mut self.vpns {
-            let enabled = read_bool(state, root, Self::vpn_key(&vpn.name)).unwrap_or(false);
-            if enabled != vpn.active {
-                vpn.active = enabled;
-                changed.push(NetworkAction::Vpn {
-                    name: vpn.name.clone(),
-                    enabled,
-                });
-            }
-        }
-        for action in changed {
-            self.queue_action(action);
-        }
-    }
-
-    fn sync_profile_autoconnect_and_forget(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let profile_snapshot = self.profiles.clone();
-        for profile in profile_snapshot {
-            let auto_key = profile_autoconnect_key(&profile.uuid);
-            if let Some(enabled) = read_bool(state, root, &auto_key)
-                && enabled != profile.autoconnect
-            {
-                if let Some(saved) = self.profiles.iter_mut().find(|p| p.uuid == profile.uuid) {
-                    saved.autoconnect = enabled;
-                }
-                self.queue_action(NetworkAction::Autoconnect {
-                    uuid: profile.uuid.clone(),
-                    name: profile.name.clone(),
-                    enabled,
-                });
-            }
-            let forget_key = profile_forget_key(&profile.uuid);
-            if read_bool(state, root, &forget_key).unwrap_or(false) {
-                let _ = state.put(root, &forget_key, false);
-                self.queue_action(NetworkAction::Forget {
-                    uuid: profile.uuid.clone(),
-                    name: profile.name.clone(),
-                });
-            }
-        }
-    }
-
-    fn sync_profile_shares(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for profile in self
-            .profiles
-            .iter()
-            .filter(|profile| profile.kind == "802-11-wireless")
-        {
-            let key = profile_share_key(&profile.uuid);
-            if !read_bool(state, root, &key).unwrap_or(false) {
-                continue;
-            }
-            let _ = state.put(root, key, false);
-            self.connection_notice = Some(format!("Sealing {} for your devices…", profile.name));
-            let continuity = Arc::clone(&self.wifi_continuity);
-            let tx = self.connection_tx.clone();
-            let uuid = profile.uuid.clone();
-            std::thread::spawn(move || {
-                let result = continuity
-                    .command(
-                        ui::collaboration::WifiContinuityCommand::ShareSavedProfile {
-                            profile_uuid: uuid.clone(),
-                        },
-                    )
-                    .and_then(|reply| match reply {
-                        ui::collaboration::WifiContinuityReply::Shared { ssid } => {
-                            Ok(NetworkJobSuccess::ProfileShared { ssid })
-                        }
-                        ui::collaboration::WifiContinuityReply::Rejected { reason } => Err(reason),
-                        _ => Err(
-                            "the Wi-Fi continuity service returned an invalid profile reply".into(),
-                        ),
-                    });
-                let _ = tx.send((NetworkJob::ShareProfile, result));
-            });
-        }
-    }
-
-    fn sync_hotspot_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, HOTSPOT_APPLY_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
-        self.hotspot_ssid = read_str_or_text(state, root, HOTSPOT_SSID_KEY)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Tilo Hotspot".into());
-        self.hotspot_band =
-            read_str_or_text(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
-        match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
-            Ok(config) => {
-                self.connection_notice = Some("Starting the hotspot…".into());
-                self.queue_action(NetworkAction::Hotspot { config });
-            }
-            Err(error) => self.connection_notice = Some(error),
-        }
-        self.structure_dirty = true;
-    }
-
-    fn sync_hotspot_qr(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, HOTSPOT_QR_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, HOTSPOT_QR_KEY, false);
-        self.hotspot_ssid = read_str_or_text(state, root, HOTSPOT_SSID_KEY)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Tilo Hotspot".into());
-        self.hotspot_band =
-            read_str_or_text(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
-        match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
-            Ok(_) => self.hotspot_qr_visible = !self.hotspot_qr_visible,
-            Err(error) => self.connection_notice = Some(error),
-        }
-        self.structure_dirty = true;
-    }
-
-    fn sync_profile_selectors(&mut self, state: &AutoCommit, root: &ObjId) {
-        for selector in [ADVANCED_PROFILE_KEY, WIRED_PROFILE_KEY] {
-            if let Some(label) = read_str_or_text(state, root, selector)
-                && let Some(profile) = self.profiles.iter().find(|p| profile_label(p) == label)
-            {
-                let selected = if selector == ADVANCED_PROFILE_KEY {
-                    &mut self.selected_wifi_profile
-                } else {
-                    &mut self.selected_wired_profile
-                };
-                if selected.as_deref() != Some(&profile.uuid) {
-                    *selected = Some(profile.uuid.clone());
-                    self.structure_dirty = true;
-                }
-            }
-        }
-    }
-
-    fn sync_ipv4_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for profile in self
-            .profiles
-            .clone()
-            .into_iter()
-            .filter(|p| p.kind == "802-3-ethernet")
-        {
-            let apply_key = ipv4_key(&profile.uuid, "apply");
-            if !read_bool(state, root, &apply_key).unwrap_or(false) {
-                continue;
-            }
-            let _ = state.put(root, &apply_key, false);
-            if self
-                .profile_settings
-                .get(&profile.uuid)
-                .is_none_or(|s| s.ipv4.is_none())
-            {
-                self.connection_notice = Some(
-                    "IP settings were not applied because the profile could not be read safely."
-                        .into(),
-                );
-                continue;
-            }
-            let config = IpConfiguration {
-                automatic: read_bool(state, root, ipv4_key(&profile.uuid, "automatic"))
-                    .unwrap_or(false),
-                addresses: read_str_or_text(state, root, ipv4_key(&profile.uuid, "address"))
-                    .into_iter()
-                    .flat_map(|value| {
-                        value
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|v| !v.is_empty())
-                            .take(17)
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .collect(),
-                gateway: read_str_or_text(state, root, ipv4_key(&profile.uuid, "gateway"))
-                    .filter(|v| !v.trim().is_empty()),
-                dns: read_str_or_text(state, root, ipv4_key(&profile.uuid, "dns"))
-                    .into_iter()
-                    .flat_map(|value| {
-                        value
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|v| !v.is_empty())
-                            .take(17)
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .collect(),
-            };
-            self.connection_notice = Some(format!("Applying IP settings to {}…", profile.name));
-            self.queue_action(NetworkAction::Ipv4 {
-                uuid: profile.uuid.clone(),
-                name: profile.name.clone(),
-                config,
-            });
-        }
-    }
-
-    fn sync_mobile_create(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, MOBILE_CREATE_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, MOBILE_CREATE_KEY, false);
-        let name = read_str_or_text(state, root, MOBILE_PROFILE_KEY).unwrap_or_default();
-        let apn = read_str_or_text(state, root, MOBILE_APN_KEY).unwrap_or_default();
-        let tx = self.connection_tx.clone();
-        self.connection_notice = Some("Creating mobile profile…".into());
-        std::thread::spawn(move || {
-            let result = os_actions::create_mobile_profile(&name, &apn);
-            let _ = tx.send((
-                NetworkJob::MobileProfile,
-                result.map(|()| NetworkJobSuccess::OperationCompleted {
-                    notice: "Mobile profile created.".into(),
-                }),
+            let name = vpn.name.clone();
+            out.push(setting_row(
+                &vpn.name,
+                Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(self.button(
+                            &format!("settings.network.vpn.studio.{}", vpn.name),
+                            &t("net-open-vpn-studio"),
+                            NetworkEffect::OpenVpnStudio {
+                                vpn: Some(vpn.name.clone()),
+                            },
+                        )))
+                        .push(Box::new(
+                            self.cx.bind(
+                                Toggle::from_state(&LocalState::new(vpn.active))
+                                    .with_id(&format!("settings.network.vpn.{}", vpn.name)),
+                                effect(NetworkEffect::SET_VPN)
+                                    .map(move |on: bool| (name.clone(), on)),
+                            ),
+                        )),
+                ),
             ));
-        });
-    }
-
-    fn sync_advanced_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ADVANCED_KEY).unwrap_or(false) {
-            return;
         }
-        let _ = state.put(root, ADVANCED_KEY, false);
-        self.advanced_open = !self.advanced_open;
-        if self.advanced_open {
-            for profile in &self.profiles {
-                if profile.kind == "802-11-wireless" {
-                    let _ = crate::ensure_text_object(
-                        state,
-                        root,
-                        &format!("network.profile.proxy.{}", profile.uuid),
-                    );
+        out.push(note(&t("net-vpn-caption")));
+        out
+    }
+}
+
+/// Connect to `ssid`, then seal a typed password for the person's other
+/// devices.
+fn join(
+    service: &dyn NetworkService,
+    ssid: &str,
+    portable: Option<ui::collaboration::PortableWifiSecurity>,
+    password: Option<Zeroizing<String>>,
+) -> Result<Joined, String> {
+    let shared = password.as_ref().map(|password| password.to_string());
+    service.change(&NetworkChange::Connect {
+        ssid: ssid.to_owned(),
+        password,
+    })?;
+    let continuity_notice = shared.map(Zeroizing::new).and_then(|password| {
+        let mode = portable?;
+        Some(
+            match service.continuity(WifiContinuityCommand::Share {
+                ssid: ssid.to_owned(),
+                security: mode,
+                password: password.to_string(),
+            }) {
+                Ok(WifiContinuityReply::Shared { .. }) => t("net-notice-password-sealed"),
+                Ok(WifiContinuityReply::Rejected { reason }) => {
+                    t_args("net-notice-share-err", &[("error", reason.into())])
                 }
-            }
-        }
-        self.structure_dirty = true;
-    }
+                Ok(_) => t("net-notice-share-invalid"),
+                Err(error) => t_args("net-notice-share-err", &[("error", error.into())]),
+            },
+        )
+    });
+    Ok(Joined::Connected { continuity_notice })
+}
 
-    fn sync_enterprise_editor(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_EDITOR_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, ENTERPRISE_EDITOR_KEY, false);
-        self.enterprise_editor_open = !self.enterprise_editor_open;
-        self.structure_dirty = true;
-    }
-
-    fn sync_diagnostics(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, DIAGNOSTICS_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, DIAGNOSTICS_KEY, false);
-        // The read is a system-bus round trip; it runs on the app runtime's
-        // blocking pool and reports through `sync_diagnostics_result`.
-        let started = self.diagnostics_request.spawn(async {
-            ui::rt::app()
-                .spawn_blocking(os_actions::connection_diagnostics)
-                .await
-                .unwrap_or_else(|error| Err(format!("the diagnostics task stopped: {error}")))
-        });
-        if !started {
-            self.finish_diagnostics(Err("the settings window is closing".into()));
-        }
-    }
-
-    fn sync_diagnostics_result(&mut self) {
-        if let Some(result) = self.diagnostics_request.try_take() {
-            self.finish_diagnostics(result);
-        }
-    }
-
-    fn finish_diagnostics(&mut self, result: Result<os_actions::ConnectionDiagnostics, String>) {
-        match result {
-            Ok(d) => {
-                self.diagnostics = Some(d);
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::RunDiagnostics,
-                    Ok("Network diagnostics completed.".into()),
-                );
-            }
-            Err(e) => {
-                self.connection_notice = Some(format!("Diagnostics unavailable: {e}"));
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::RunDiagnostics,
-                    Err(format!("Diagnostics unavailable: {e}")),
-                );
-            }
-        }
-        self.structure_dirty = true;
-    }
-
-    fn sync_profile_policy(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for profile in self.profiles.clone() {
-            let apply = format!("network.profile.policy.{}", profile.uuid);
-            if !read_bool(state, root, &apply).unwrap_or(false) {
-                continue;
-            }
-            let _ = state.put(root, &apply, false);
-            let Some(original) = self.profile_settings.get(&profile.uuid).cloned() else {
-                self.connection_notice = Some("Policy was not applied because NetworkManager's current values could not be read.".into());
-                continue;
-            };
-            let requested_metered = match read_str_or_text(
-                state,
-                root,
-                format!("network.profile.metered.{}", profile.uuid),
-            )
-            .as_deref()
-            {
-                Some("Metered") => os_actions::MeteredPolicy::Metered,
-                Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
-                Some("Automatic") => os_actions::MeteredPolicy::Automatic,
-                _ => original.metered.unwrap_or_default(),
-            };
-            let requested_mac = match read_str_or_text(
-                state,
-                root,
-                format!("network.profile.mac.{}", profile.uuid),
-            )
-            .as_deref()
-            {
-                Some("Random each connection") => Some(os_actions::MacPolicy::Random),
-                Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
-                Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
-                _ => original.mac,
-            };
-            let requested_proxy_url = read_str_or_text(
-                state,
-                root,
-                format!("network.profile.proxy.{}", profile.uuid),
-            )
-            .filter(|s| !s.trim().is_empty());
-            let requested_proxy =
-                original
-                    .proxy
-                    .as_ref()
-                    .map(|old| os_actions::ProxyConfiguration {
-                        automatic_url: requested_proxy_url,
-                        browser_only: old.browser_only,
-                    });
-            let patch = os_actions::ConnectionPolicyPatch {
-                metered: original
-                    .metered
-                    .filter(|old| *old != requested_metered)
-                    .map(|_| requested_metered),
-                mac: match (original.mac, requested_mac) {
-                    (Some(old), Some(new)) if old != new => Some(new),
-                    _ => None,
-                },
-                proxy: match (&original.proxy, requested_proxy) {
-                    (Some(old), Some(new)) if old != &new => Some(new),
-                    _ => None,
-                },
-            };
-            self.connection_notice = Some(format!("Applying advanced policy to {}…", profile.name));
-            self.queue_action(NetworkAction::Policy {
-                uuid: profile.uuid.clone(),
-                name: profile.name.clone(),
-                patch,
-            });
-        }
-    }
-
-    fn sync_mobile_unlock(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, MOBILE_UNLOCK_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, MOBILE_UNLOCK_KEY, false);
-        let mut pin = self
-            .secret_buffers
-            .get(MOBILE_PIN_BUFFER)
-            .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
-            .unwrap_or_default();
-        if let Some(buffer) = self.secret_buffers.get(MOBILE_PIN_BUFFER)
-            && let Ok(mut value) = buffer.lock()
-        {
-            value.zeroize();
-        }
-        let pin = Zeroizing::new(std::mem::take(&mut pin));
-        let tx = self.connection_tx.clone();
-        let selected = read_str_or_text(state, root, MOBILE_SIM_KEY)
-            .and_then(|label| {
-                self.sims
-                    .iter()
-                    .find(|s| s.label == label)
-                    .map(|s| s.path.clone())
+/// Connect to secure `ssid` with a password the person's devices share; a
+/// password is asked for when they share none.
+fn join_with_shared_password(
+    service: &dyn NetworkService,
+    ssid: &str,
+    portable: Option<ui::collaboration::PortableWifiSecurity>,
+) -> Result<Joined, String> {
+    let ask = |continuity_warning| Ok(Joined::PasswordRequired { continuity_warning });
+    let Some(mode) = portable else {
+        return ask(None);
+    };
+    match service.continuity(WifiContinuityCommand::Lookup {
+        ssid: ssid.to_owned(),
+        security: mode,
+    }) {
+        Ok(WifiContinuityReply::Password { password }) => {
+            service.change(&NetworkChange::Connect {
+                ssid: ssid.to_owned(),
+                password: Some(Zeroizing::new(password)),
+            })?;
+            Ok(Joined::Connected {
+                continuity_notice: Some(t("net-notice-used-sealed")),
             })
-            .or_else(|| self.sims.first().map(|s| s.path.clone()));
-        self.connection_notice = Some("Unlocking SIM…".into());
-        std::thread::spawn(move || {
-            let result = selected
-                .ok_or_else(|| "No SIM is available".to_string())
-                .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
-            let _ = tx.send((
-                NetworkJob::SimUnlock,
-                result.map(|()| NetworkJobSuccess::OperationCompleted {
-                    notice: "SIM unlocked.".into(),
-                }),
-            ));
-        });
-        self.structure_dirty = true;
-    }
-
-    fn sync_enterprise_connect(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_CONNECT_KEY).unwrap_or(false) {
-            return;
         }
-        let _ = state.put(root, ENTERPRISE_CONNECT_KEY, false);
-        let config = EnterpriseWifiConfiguration {
-            profile_name: read_str_or_text(state, root, ENTERPRISE_PROFILE_KEY).unwrap_or_default(),
-            ssid: read_str_or_text(state, root, ENTERPRISE_SSID_KEY).unwrap_or_default(),
-            identity: read_str_or_text(state, root, ENTERPRISE_IDENTITY_KEY).unwrap_or_default(),
-            anonymous_identity: read_str_or_text(state, root, ENTERPRISE_ANONYMOUS_KEY)
-                .filter(|value| !value.trim().is_empty()),
-            ca_certificate: read_str_or_text(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
-            method: match read_str_or_text(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
-                Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
-                Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
-                _ => os_actions::EnterpriseEapMethod::Peap,
-            },
-            phase2_auth: read_str_or_text(state, root, ENTERPRISE_PHASE2_KEY)
-                .map(|v| v.to_ascii_lowercase()),
-            client_certificate: read_str_or_text(state, root, ENTERPRISE_CLIENT_CERT_KEY)
-                .filter(|v| !v.trim().is_empty()),
-            private_key: read_str_or_text(state, root, ENTERPRISE_PRIVATE_KEY)
-                .filter(|v| !v.trim().is_empty()),
-        };
-        let mut password = self
-            .secret_buffers
-            .get(ENTERPRISE_PASSWORD_BUFFER)
-            .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
-            .unwrap_or_default();
-        if let Some(buffer) = self.secret_buffers.get(ENTERPRISE_PASSWORD_BUFFER)
-            && let Ok(mut value) = buffer.lock()
-        {
-            value.zeroize();
-        }
-        let password = Zeroizing::new(std::mem::take(&mut password));
-        let tx = self.connection_tx.clone();
-        self.connection_notice = Some("Connecting to enterprise Wi-Fi…".into());
-        std::thread::spawn(move || {
-            let result = os_actions::connect_enterprise_wifi(&config, &password);
-            let _ = tx.send((
-                NetworkJob::EnterpriseWifi,
-                result.map(|()| NetworkJobSuccess::OperationCompleted {
-                    notice: "Enterprise Wi-Fi connected.".into(),
-                }),
-            ));
-        });
-        self.structure_dirty = true;
-    }
-
-    fn sync_enterprise_ca_choose(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_CA_CHOOSE_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, ENTERPRISE_CA_CHOOSE_KEY, false);
-        if self.ca_picker_rx.is_none() {
-            self.ca_picker_rx = Some(
-                ui::portal::PickRequest::open("Choose organization CA certificate", "Choose")
-                    .thread_name("settings-ca-picker")
-                    .send(),
-            );
-        }
-    }
-
-    fn sync_captive_portal(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, CAPTIVE_PORTAL_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
-        // Both steps block (a system-bus lookup, then the desktop portal), so
-        // they run on a worker of the app runtime and report through
-        // `sync_captive_portal_result`. The opener is resolved here: a scoped
-        // host is only visible on this thread.
-        let opener = ui::host::current().opener;
-        let started = self.captive_portal.spawn(async move {
-            ui::rt::app()
-                .spawn_blocking(move || {
-                    let uri = os_actions::captive_portal_uri()?;
-                    ui::portal::open_uri_with(&*opener, &uri).map_err(|error| {
-                        format!("could not open browser through the desktop portal: {error}")
-                    })
-                })
-                .await
-                .unwrap_or_else(|error| Err(format!("the sign-in task stopped: {error}")))
-        });
-        if !started {
-            self.report_captive_portal(Err("the settings window is closing".into()));
-        }
-    }
-
-    fn sync_captive_portal_result(&mut self) {
-        if let Some(result) = self.captive_portal.try_take() {
-            self.report_captive_portal(result);
-        }
-    }
-
-    fn report_captive_portal(&mut self, result: Result<(), String>) {
-        if let Err(error) = result {
-            self.connection_notice = Some(format!("Could not open network sign-in: {error}"));
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Contextual handoff: Settings owns daily status/toggles; VPN Studio
-    /// owns profile editing. Reset each command bit before requesting the
-    /// shell so a failed launch cannot loop every frame.
-    fn sync_vpn_studio_handoff(&self, state: &mut AutoCommit, root: &ObjId) {
-        let requested_profiles: Vec<String> = self
-            .vpns
-            .iter()
-            .filter(|vpn| read_bool(state, root, Self::vpn_studio_key(&vpn.name)).unwrap_or(false))
-            .map(|vpn| vpn.name.clone())
-            .collect();
-        for profile in requested_profiles {
-            let _ = state.put(root, Self::vpn_studio_key(&profile), false);
-            if let Err(e) = (self.tool_opener)(ToolIntent::Vpn {
-                route: VpnRoute::Profile,
-                profile: Some(profile.clone()),
-            }) {
-                warn!(target: "tilo::settings", profile = %profile, error = %e, "could not open VPN Studio");
-            }
-        }
-        if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY).unwrap_or(false) {
-            let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
-            if let Err(e) = (self.tool_opener)(ToolIntent::Vpn {
-                route: VpnRoute::Overview,
-                profile: None,
-            }) {
-                warn!(target: "tilo::settings", error = %e, "could not open VPN Studio");
-            }
-        }
-    }
-
-    /// Refresh button — when the button writes `true`, rescan and clear the
-    /// bit so subsequent frames don't loop.
-    fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let refresh_pressed = matches!(
-            state.get(root, REFRESH_KEY),
-            Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-        );
-        if !refresh_pressed {
-            return;
-        }
-        let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
-        // The rescan runs on the app runtime; `apply_snapshot` finishes the
-        // Refresh operation when it arrives.
-        self.refresh_pending = true;
-        if !self.start_snapshot() {
-            self.refresh_pending = false;
-            self.finish_local_operation(
-                crate::actions::NetworkOperation::Refresh,
-                Err("Could not refresh network list: the settings window is closing".into()),
-            );
-        }
-    }
-
-    /// Restore the expanded-prompt SSID from the document (so it survives
-    /// structure rebuilds), then drive the per-network "Connect" and "Join"
-    /// buttons.
-    fn sync_network_connect_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let doc_expanded = read_str_or_text(state, root, EXPANDED_KEY).filter(|s| !s.is_empty());
-        if doc_expanded != self.expanded_ssid {
-            self.expanded_ssid = doc_expanded;
-        }
-
-        // Snapshot the network attributes we need without holding a borrow
-        // across the mutating `state` calls below.
-        let nets: Vec<(String, bool, os_actions::WifiSecurity)> = self
-            .networks
-            .iter()
-            .map(|n| (n.ssid.clone(), n.secure, n.security))
-            .collect();
-
-        // Per-network "Connect" buttons. Open networks connect immediately;
-        // secure networks toggle the inline password prompt instead.
-        for (ssid, secure, security) in &nets {
-            let key = connect_key(ssid);
-            let pressed = read_bool(state, root, &key).unwrap_or(false);
-            if !pressed {
-                continue;
-            }
-            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-            if *secure {
-                if self.expanded_ssid.as_deref() == Some(ssid.as_str()) {
-                    self.set_expanded(state, root, None);
-                } else {
-                    self.do_connect(ssid, *security, None, true);
-                }
-            } else {
-                // Open network — connect with no password.
-                self.do_connect(ssid, *security, None, false);
-                self.set_expanded(state, root, None);
-            }
-        }
-
-        // Per-network "Join" buttons in the expanded password prompt:
-        // connect with the typed password, then collapse the prompt.
-        for (ssid, _secure, security) in &nets {
-            let jk = join_key(ssid);
-            if !read_bool(state, root, &jk).unwrap_or(false) {
-                continue;
-            }
-            let _ = state.put(root, jk.as_str(), automerge::ScalarValue::Boolean(false));
-            let mut pw = self
-                .secret_buffers
-                .get(ssid)
-                .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
-                .unwrap_or_default();
-            let password = (!pw.is_empty()).then_some(pw.as_str());
-            self.do_connect(ssid, *security, password, false);
-            pw.zeroize();
-            if let Some(buffer) = self.secret_buffers.get(ssid)
-                && let Ok(mut value) = buffer.lock()
-            {
-                value.zeroize();
-            }
-            self.set_expanded(state, root, None);
-        }
-    }
-    /// Seed and act on the pane's controls. Runs only once the first
-    /// snapshot has arrived, so no control is compared against state the
-    /// pane has not read yet.
-    fn sync_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.seed_if_needed(state, root);
-        if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            self.execute_local_command(state, operation);
-        }
-        self.sync_wifi_and_wired_toggles(state, root);
-        self.sync_radio_toggles(state, root);
-        self.sync_vpn_toggles(state, root);
-        self.sync_profile_autoconnect_and_forget(state, root);
-        self.sync_profile_shares(state, root);
-        self.sync_hotspot_apply(state, root);
-        self.sync_hotspot_qr(state, root);
-        self.sync_profile_selectors(state, root);
-        self.sync_ipv4_apply(state, root);
-        self.sync_mobile_create(state, root);
-        self.sync_advanced_toggle(state, root);
-        self.sync_enterprise_editor(state, root);
-        self.sync_diagnostics(state, root);
-        self.sync_profile_policy(state, root);
-        self.sync_mobile_unlock(state, root);
-        self.sync_enterprise_connect(state, root);
-        self.sync_enterprise_ca_choose(state, root);
-        self.sync_captive_portal(state, root);
-        self.sync_vpn_studio_handoff(state, root);
-        self.sync_refresh(state, root);
-        self.sync_network_connect_actions(state, root);
+        Ok(WifiContinuityReply::NotFound) => ask(None),
+        Ok(WifiContinuityReply::Rejected { reason }) => ask(Some(reason)),
+        Ok(_) => ask(Some(
+            "the Wi-Fi continuity service returned an invalid lookup reply".into(),
+        )),
+        Err(error) => ask(Some(error)),
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(NetworkPane::new())
-}
-
-impl Widget for NetworkPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        self.sync_ca_picker_result(&mut state, &root);
-        self.sync_connection_jobs(&mut state, &root);
-        self.sync_diagnostics_result();
-        self.sync_captive_portal_result();
-        self.sync_action_results(&mut state, &root);
-        self.sync_snapshot_result(&mut state, &root);
-        if self.loaded {
-            self.sync_controls(&mut state, &root);
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(&mut state, &root);
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
+impl PaneModel for NetworkModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; `child` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+    fn poll(&mut self) -> bool {
+        self.poll_background();
+        let selection = (self.wifi_profile.get(), self.wired_profile.get());
+        if selection != self.seen_selection {
+            self.seen_selection = selection;
+            self.changed = true;
         }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
         "NetworkPane"
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// Bubble the expansion-driven rebuild request (the inline password
-    /// prompt opening/closing) plus any child's own request, so the host
-    /// re-runs `build_layout` and the prompt actually appears.
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
-        own || child
+impl NetworkModel {
+    /// Take in a snapshot or a chosen certificate that arrived.
+    fn poll_background(&mut self) {
+        let listed = self.cx.radios().now();
+        if listed != self.listed {
+            let plugged = self.listed.is_some();
+            self.listed = listed;
+            self.changed = true;
+            // A radio plugged in or pulled out: what `NetworkManager` makes
+            // of it is read again.
+            if plugged && self.loaded && self.snapshot.is_none() {
+                self.start_snapshot();
+            }
+        }
+        if let Some(receiver) = &self.snapshot {
+            match receiver.try_recv() {
+                Ok(snapshot) => {
+                    self.snapshot = None;
+                    let _ = self.adopt_snapshot(snapshot);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.snapshot = None;
+                    self.changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        self.poll_picker();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::testing::RecordingDispatcher;
 
-    fn sample_networks() -> Vec<WifiNetworkInfo> {
-        vec![
-            WifiNetworkInfo {
-                ssid: "Home_Network".to_string(),
-                signal: 4,
-                secure: true,
-                security: os_actions::WifiSecurity::Wpa3,
-                connected: true,
-            },
-            WifiNetworkInfo {
-                ssid: "Cafe_Guest".to_string(),
-                signal: 3,
-                secure: false,
-                security: os_actions::WifiSecurity::Open,
-                connected: false,
-            },
-            WifiNetworkInfo {
-                ssid: "Neighbour_5G".to_string(),
-                signal: 2,
-                secure: true,
-                security: os_actions::WifiSecurity::Wpa2,
-                connected: false,
-            },
-        ]
-    }
-
-    fn wait_for_password_prompt(pane: &mut NetworkPane, doc: &mut AutoCommit, root: &ObjId) {
-        // A hang guard for the worker thread, not a latency budget.
-        let deadline = tilo_test_env::hang_deadline();
-        while ui::time::now() < deadline {
-            pane.sync(doc, root);
-            if pane.expanded_ssid.is_some() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-
-    struct SharedPasswordClient {
-        commands: Arc<Mutex<Vec<ui::collaboration::WifiContinuityCommand>>>,
-    }
-
-    impl WifiContinuityClient for SharedPasswordClient {
-        fn command(
-            &self,
-            command: ui::collaboration::WifiContinuityCommand,
-        ) -> Result<ui::collaboration::WifiContinuityReply, String> {
-            self.commands.lock().unwrap().push(command.clone());
-            match command {
-                ui::collaboration::WifiContinuityCommand::Lookup { .. } => {
-                    Ok(ui::collaboration::WifiContinuityReply::Password {
-                        password: "shared-secret".into(),
-                    })
-                }
-                ui::collaboration::WifiContinuityCommand::Share { ssid, .. }
-                | ui::collaboration::WifiContinuityCommand::ShareSavedProfile {
-                    profile_uuid: ssid,
-                } => Ok(ui::collaboration::WifiContinuityReply::Shared { ssid }),
-            }
-        }
-    }
-
-    /// MDI signal glyphs, one row per network, refresh and the first snapshot via the wake.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn wifi_list_arrives_through_the_wake_and_renders_each_network() {
-        // Case `wifi_signal_glyph_uses_the_mdi_family_not_block_elements`.
-        // The signal indicator must use the Material Design Icons `wifi-strength`
-        // family (Private Use Area, `U+F09xx`) — the same family the sidebar's
-        // Network glyph uses and which the shipped fonts actually carry — never the
-        // Unicode block elements (`U+258x`), which fall back to a `.notdef` tofu
-        // box and convey no signal level.
-        {
-            for signal in 0u8..=6 {
-                let g = wifi_signal_glyph(signal);
-                let cp = g.chars().next().unwrap() as u32;
-                assert!(
-                    (0xF091F..=0xF092B).contains(&cp),
-                    "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
-                );
-                // Never a Unicode block element (the old tofu bars).
-                assert!(
-                    !(0x2580..=0x259F).contains(&cp),
-                    "block-element bars are tofu"
-                );
+    fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+        use ui::i18n::I18nManager;
+
+        let fake = Arc::new(FakeNetwork::default());
+        let network = model(&fake);
+        let _ = t("net-refresh");
+        I18nManager::set_locale("en-US");
+        let root = ModelPane::new(Rc::new(RefCell::new(network)));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        for (locale, expected) in [
+            ("en-US", "Refresh"),
+            ("de-DE", "Aktualisieren"),
+            ("en-US", "Refresh"),
+        ] {
+            I18nManager::set_locale(locale);
+            host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+                .map_err(|error| error.to_string())?;
+            let name = ui::widget::find_test_id(host.root_widget(), "settings.network.refresh")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name);
+            if name.as_deref() != Some(expected) {
+                return Err(format!(
+                    "the actual network refresh control must follow {locale}: {name:?}"
+                ));
             }
-            // Distinct levels for 1..=4 so strength is legible at a glance.
-            let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
-            let unique: std::collections::HashSet<&&str> = levels.iter().collect();
-            assert_eq!(unique.len(), 4, "each bar level is a distinct glyph");
         }
+        Ok(())
+    }
 
-        // Case `wifi_list_renders_each_returned_network`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let nets = sample_networks();
-            let pane =
-                NetworkPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, nets);
-            assert_eq!(pane.networks().len(), 3);
-            let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
-            assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
-            // Status line picks the connected network.
-            assert_eq!(pane.connection_status_text(), "Connected to Home_Network");
+    #[test]
+    fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        let fake = Arc::new(FakeNetwork::default());
+        let mut network = model(&fake);
+        network.enterprise_open = true;
+        let profile = network.enterprise.profile.clone();
+        let root = ModelPane::new(Rc::new(RefCell::new(network)));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.click_named("network.enterprise.profile")?;
+        host.type_text("abcd");
+        if profile.get() != "abcd" {
+            return Err("the real network profile editor must accept typing".into());
         }
-
-        // Case `refresh_button_replaces_network_list`.
-        // Refresh only starts the rescan; the new list arrives through the
-        // wake and is applied by the next sync.
-        {
-            let fresh = vec![WifiNetworkInfo {
-                ssid: "NewSpot".to_string(),
-                signal: 4,
-                secure: false,
-                security: os_actions::WifiSecurity::Open,
-                connected: false,
-            }];
-            let expected = fresh.clone();
-            let (before, pending, after) = on_ui_thread(move |wakes| {
-                let rec = Arc::new(RecordingDispatcher::default());
-                let mut pane = NetworkPane::with_dispatcher(
-                    rec as Arc<dyn Dispatcher + Send + Sync>,
-                    true,
-                    sample_networks(),
-                );
-                // Swap the lister to a fresh set so we can observe the refresh.
-                pane.lister = Arc::new(move || Ok(fresh.clone()));
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
-                pane.sync(&mut doc, &root);
-                let before = pane.networks().to_vec();
-                let pending = pane.snapshot_request.is_pending();
-                // Each wake is followed by the sync the host would run.
-                while pane.snapshot_request.is_pending() {
-                    wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                    pane.sync(&mut doc, &root);
-                }
-                (before, pending, pane.networks().to_vec())
-            });
-            assert_eq!(
-                before,
-                sample_networks(),
-                "the sync does not wait for the scan"
-            );
-            assert!(pending);
-            assert_eq!(after, expected);
+        host.key("Left");
+        host.key("Left");
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        host.type_text("X");
+        if profile.get() != "abXcd" {
+            return Err("resizing must retain the network editor's actual caret and focus".into());
         }
+        Ok(())
+    }
 
-        // Case `the_first_snapshot_arrives_through_the_wake`.
-        // The production pane is built without querying `NetworkManager`: it
-        // shows a pending view and acts on no control until the first snapshot
-        // arrives through the wake.
+    #[test]
+    fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        let fake = Arc::new(FakeNetwork::default());
+        let network = Rc::new(RefCell::new(model(&fake)));
+        let root = ModelPane::new(Rc::clone(&network));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
         {
-            let outcome = on_ui_thread(|wakes| {
-                // The scan waits for the test, so the pending state is observed
-                // deterministically.
-                let (release, gate) = std::sync::mpsc::channel::<()>();
-                let gate = Mutex::new(gate);
-                let rec = Arc::new(RecordingDispatcher::default());
-                let mut pane = NetworkPane::from_parts(
-                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                    Arc::new(move || {
-                        let _ = gate.lock().unwrap().recv();
-                        Ok(sample_networks())
-                    }),
-                    Arc::new(Vec::<VpnInfo>::new),
-                    Arc::new(EmptyWifiContinuityClient),
-                    true,
-                    Vec::new(),
-                );
-                pane.begin_initial_load();
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                let loading = !pane.loaded && pane.networks().is_empty();
-                let unseeded = doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_none();
-                // A control flipped before the snapshot is not acted on yet.
-                let _ = doc.put(&root, AIRPLANE_KEY, true);
-                pane.sync(&mut doc, &root);
-                let inert = rec.calls().is_empty();
-                release.send(()).unwrap();
-                while !pane.loaded {
-                    wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                    pane.sync(&mut doc, &root);
-                }
-                (
-                    loading,
-                    unseeded,
-                    inert,
-                    pane.loaded,
-                    pane.networks().to_vec(),
-                    doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_some(),
-                )
-            });
-            let (loading, unseeded, inert, loaded, networks, seeded) = outcome;
-            assert!(loading, "construction does not wait for NetworkManager");
-            assert!(unseeded, "controls are not seeded from unread state");
-            assert!(inert, "no control acts before the first snapshot");
-            assert!(loaded);
-            assert_eq!(networks, sample_networks());
-            assert!(seeded, "the first snapshot seeds the controls");
+            let mut model = network.borrow_mut();
+            model.enterprise_open = true;
+            model.changed = true;
+        }
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        host.click_named("network.enterprise.profile")?;
+        host.type_text("New profile");
+        if network.borrow().enterprise.profile.get() != "New profile" {
+            return Err("a changed model must expose its newly composed controls".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn network_picker_remains_open_through_window_resize() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        fn expanded(host: &ui::headless::FrameHarness) -> Result<bool, String> {
+            ui::widget::find_test_id(host.root_widget(), "network.hotspot.band")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.state.expanded)
+                .ok_or_else(|| "the actual band picker must expose its expanded state".into())
+        }
+        let fake = Arc::new(FakeNetwork::default());
+        let root = ModelPane::new(Rc::new(RefCell::new(model(&fake))));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.click_named("network.hotspot.band")?;
+        if !expanded(host)? {
+            return Err("the real network band picker must open".into());
+        }
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        if !expanded(host)? {
+            return Err("resizing must retain the open network picker".into());
+        }
+        Ok(())
+    }
+
+    struct SnapshotGate {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    struct ReleaseSnapshot(Option<std::sync::mpsc::Sender<()>>);
+
+    impl Drop for ReleaseSnapshot {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
         }
     }
 
-    /// Enterprise/VPN editors open only explicitly and seed per profile; diagnostics run off the UI thread.
+    fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> {
+        let (started, starts) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+            started,
+            release: releases,
+        });
+        let profile = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut network =
+            NetworkModel::with_service(PaneCx::in_file(profile.path().join("settings.json")), fake);
+        let release = ReleaseSnapshot(Some(release));
+        network.start_snapshot();
+        starts
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| format!("the actual network read must start: {error}"))?;
+        Ok((Rc::new(std::cell::RefCell::new(network)), release))
+    }
+
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn network_diagnostics_and_advanced_editors_are_explicit_and_off_thread() {
-        // Case `enterprise_editor_opens_only_after_its_explicit_action`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
+    fn pending_network_read_does_not_animate_the_pane() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use ui::headless::{Framed, viewport};
+
+        let (network, _release) = pending_network()?;
+        let pane = ModelPane::new(network);
+        let app = Framed::new(
+            ui::State::new(),
+            pane,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        if Framed::harness(&app).frame_schedule().needs_animation_frame {
+            return Err(
+                "waiting for a network read must not request continuous animation frames".into(),
             );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert!(!pane.enterprise_editor_open);
-
-            let _ = doc.put(&root, ENTERPRISE_EDITOR_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert!(pane.enterprise_editor_open);
-            assert!(pane.take_structure_dirty());
-            assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY).unwrap_or(false));
         }
+        Ok(())
+    }
 
-        // Case `diagnostics_run_off_the_ui_thread_and_report_through_the_wake`.
-        // Diagnostics read the system bus. The UI thread only starts the read;
-        // the outcome — a report or an error, depending on the host — arrives
-        // through the wake and is applied by the next sync.
-        {
-            let outcome = ui::rt::spawn_thread("settings-ui-test", || {
-                ui::rt::mark_ui_thread();
-                let mut scope = ui::WakeScope::new();
-                let (woke, wakes) = std::sync::mpsc::channel();
-                scope
-                    .bind(move |_| {
-                        let _ = woke.send(());
-                    })
-                    .unwrap();
-                let _entry = scope.enter();
-                let rec = Arc::new(RecordingDispatcher::default());
-                let mut pane = NetworkPane::with_dispatcher(
-                    rec as Arc<dyn Dispatcher + Send + Sync>,
-                    true,
-                    sample_networks(),
-                );
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                let _ = doc.put(&root, DIAGNOSTICS_KEY, true);
-                pane.sync(&mut doc, &root);
-                assert!(!read_bool(&doc, &root, DIAGNOSTICS_KEY).unwrap_or(true));
-                assert!(pane.diagnostics_request.is_pending());
-                wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                pane.sync(&mut doc, &root);
-                (pane.diagnostics.is_some(), pane.connection_notice.clone())
+    #[test]
+    fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use ui::headless::{Framed, viewport};
+
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
             })
-            .unwrap()
-            .join()
-            .unwrap();
-            match outcome {
-                (true, _) => {}
-                (false, Some(notice)) => {
-                    assert!(notice.starts_with("Diagnostics unavailable:"), "{notice}");
-                    assert!(!notice.contains("UI thread"), "{notice}");
-                }
-                (false, None) => panic!("diagnostics finished without a report or an error"),
-            }
+            .map_err(|error| error.to_string())?;
+        let _entry = scope.enter();
+        let (network, release) = pending_network()?;
+        let pane = ModelPane::new(Rc::clone(&network));
+        let mut app = Framed::new(
+            ui::State::new(),
+            pane,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        drop(release);
+        wakes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| {
+                format!("a completed network read must wake its real owner: {error}")
+            })?;
+        Framed::harness_mut(&mut app)
+            .relayout_at(viewport((1200.0, 1800.0)))
+            .map_err(|error| error.to_string())?;
+        if !network.borrow().loaded {
+            return Err("the awakened production pane must adopt its completed snapshot".into());
         }
-
-        // Case `advanced_vpn_action_opens_the_exact_profile_context`.
-        {
-            use std::sync::Mutex;
-
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let record = Arc::clone(&seen);
-            let mut pane = NetworkPane::new_demo(sample_networks())
-                .with_vpns(vec![VpnInfo {
-                    name: "Work VPN".into(),
-                    active: false,
-                }])
-                .with_tool_opener(Arc::new(move |intent| {
-                    record.lock().unwrap().push(intent);
-                    Ok(())
-                }));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, NetworkPane::vpn_studio_key("Work VPN"), true);
-            pane.sync(&mut doc, &root);
-
-            assert_eq!(
-                seen.lock().unwrap().as_slice(),
-                &[ToolIntent::Vpn {
-                    route: VpnRoute::Profile,
-                    profile: Some("Work VPN".into()),
-                }]
-            );
-            assert!(
-                !read_bool(&doc, &root, NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false)
-            );
-        }
-
-        // Case `advanced_editors_seed_networkmanager_values_per_profile`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                Vec::new(),
-            );
-            let wifi = SavedNetworkProfile {
-                name: "Office".into(),
-                uuid: "11111111-1111-1111-1111-111111111111".into(),
-                kind: "802-11-wireless".into(),
-                autoconnect: true,
-            };
-            let lan = SavedNetworkProfile {
-                name: "Dock".into(),
-                uuid: "22222222-2222-2222-2222-222222222222".into(),
-                kind: "802-3-ethernet".into(),
-                autoconnect: true,
-            };
-            pane.profiles = vec![wifi.clone(), lan.clone()];
-            pane.selected_wifi_profile = Some(wifi.uuid.clone());
-            pane.selected_wired_profile = Some(lan.uuid.clone());
-            pane.profile_settings.insert(
-                wifi.uuid.clone(),
-                os_actions::ConnectionProfileSettings {
-                    metered: Some(os_actions::MeteredPolicy::Metered),
-                    mac: Some(os_actions::MacPolicy::Random),
-                    proxy: Some(os_actions::ProxyConfiguration {
-                        automatic_url: Some("https://proxy.example/pac".into()),
-                        browser_only: true,
-                    }),
-                    ipv4: None,
-                },
-            );
-            pane.profile_settings.insert(
-                lan.uuid.clone(),
-                os_actions::ConnectionProfileSettings {
-                    ipv4: Some(IpConfiguration {
-                        automatic: false,
-                        addresses: vec!["192.0.2.44/24".into()],
-                        gateway: Some("192.0.2.1".into()),
-                        dns: vec!["1.1.1.1".into()],
-                    }),
-                    ..Default::default()
-                },
-            );
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                read_str_or_text(
-                    &doc,
-                    &automerge::ROOT,
-                    format!("network.profile.metered.{}", wifi.uuid)
-                )
-                .as_deref(),
-                Some("Metered")
-            );
-            assert_eq!(
-                read_str_or_text(
-                    &doc,
-                    &automerge::ROOT,
-                    format!("network.profile.proxy.{}", wifi.uuid)
-                )
-                .as_deref(),
-                Some("https://proxy.example/pac")
-            );
-            assert!(
-                !read_bool(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "automatic"))
-                    .unwrap_or(false)
-            );
-            assert_eq!(
-                read_str_or_text(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "address")).as_deref(),
-                Some("192.0.2.44/24")
-            );
-        }
+        Ok(())
     }
 
-    /// Drive the syncs the host runs on each wake until every queued change
-    /// and the snapshot that follows have been applied.
-    fn settle(pane: &mut NetworkPane, doc: &mut AutoCommit, wakes: &std::sync::mpsc::Receiver<()>) {
-        let root = automerge::ROOT;
-        while pane.actions_busy() || pane.snapshot_request.is_pending() {
-            wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-            pane.sync(doc, &root);
-        }
-    }
-
-    /// Wi-Fi/wired toggles dispatch in order off-thread, revert on failure, and ignore replicated latches.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn radio_toggles_run_off_thread_and_ignore_replicated_values() {
-        // Case `wifi_toggle_invokes_set_wifi`.
-        {
-            let calls = on_ui_thread(|wakes| {
-                let rec = Arc::new(RecordingDispatcher::default());
-                let mut pane = NetworkPane::with_dispatcher(
-                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                    true,
-                    sample_networks(),
-                );
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                // User flips the toggle off.
-                let _ = doc.put(
-                    &root,
-                    WIFI_ENABLED_KEY,
-                    automerge::ScalarValue::Boolean(false),
-                );
-                pane.sync(&mut doc, &root);
-                settle(&mut pane, &mut doc, wakes);
-                rec.calls()
-            });
-            assert_eq!(calls, vec!["set_wifi(false)"]);
-        }
-
-        // Case `wifi_changes_run_off_the_ui_thread_in_order_and_revert_on_failure`.
-        // Switching Wi-Fi never waits on the UI thread: the sync returns while
-        // the switch is still running, changes run in request order, and a
-        // failed one reverts the toggle.
-        {
-            let outcome = on_ui_thread(|wakes| {
-                let (release, gate) = std::sync::mpsc::channel();
-                let dispatcher = Arc::new(GatedWifi {
-                    gate: Mutex::new(gate),
-                    calls: Mutex::new(Vec::new()),
-                });
-                let mut pane = NetworkPane::with_dispatcher(
-                    dispatcher.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                    true,
-                    sample_networks(),
-                );
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
-                pane.sync(&mut doc, &root);
-                let busy_while_running = pane.actions_busy() && !pane.last_wifi_enabled;
-                let _ = doc.put(&root, WIFI_ENABLED_KEY, true);
-                pane.sync(&mut doc, &root);
-                // The first switch succeeds, the second fails.
-                release.send(Ok(())).unwrap();
-                release.send(Err("radio is blocked".into())).unwrap();
-                settle(&mut pane, &mut doc, wakes);
-                (
-                    busy_while_running,
-                    dispatcher.calls.lock().unwrap().clone(),
-                    pane.last_wifi_enabled,
-                    read_bool(&doc, &root, WIFI_ENABLED_KEY),
-                )
-            });
-            let (busy, calls, enabled, key) = outcome;
-            assert!(busy, "the sync returns while the switch is running");
-            assert_eq!(calls, ["set_wifi(false)", "set_wifi(true)"]);
-            assert!(!enabled, "the failed switch back on is reverted");
-            assert_eq!(key, Some(false));
-        }
-
-        // Case `replicated_radio_toggle_is_inert_without_its_local_token`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let commands = ui::LocalState::new(None);
-            let mut pane = NetworkPane::with_dispatcher(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            )
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-            let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
-            pane.sync(&mut doc, &root);
-            assert!(rec.calls().is_empty());
-            assert!(pane.last_wifi_enabled);
-        }
-
-        // Case `wired_toggle_only_dispatches_the_primary_lan_interface`.
-        {
-            let (calls, wifi) = on_ui_thread(|wakes| {
-                let rec = Arc::new(RecordingDispatcher::default());
-                let mut pane = NetworkPane::with_dispatcher(
-                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                    true,
-                    sample_networks(),
-                )
-                .with_wired(WiredInfo {
-                    connected: true,
-                    device: Some("enp3s0".into()),
-                    speed: Some("1000 Mb/s".into()),
-                    ipv4: Some("192.0.2.10".into()),
-                });
-                let mut doc = AutoCommit::new();
-                let root = automerge::ROOT;
-                pane.sync(&mut doc, &root);
-                let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
-                pane.sync(&mut doc, &root);
-                settle(&mut pane, &mut doc, wakes);
-                (rec.calls(), pane.last_wifi_enabled)
-            });
-            assert_eq!(calls, vec!["set_wired(false)"]);
-            assert!(wifi, "LAN must not change the Wi-Fi radio");
-        }
-    }
-
-    /// A dispatcher whose Wi-Fi switch waits for the test and can fail, so
-    /// the pending state and the revert are observed deterministically.
-    struct GatedWifi {
-        gate: Mutex<std::sync::mpsc::Receiver<Result<(), String>>>,
-        calls: Mutex<Vec<String>>,
-    }
-
-    impl Dispatcher for GatedWifi {
-        fn set_brightness(&self, _p: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_volume(&self, _p: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("set_wifi({enabled})"));
-            self.gate
-                .lock()
-                .unwrap()
-                .recv()
-                .unwrap_or_else(|_| Err("gate closed".into()))
-        }
-        fn set_bluetooth(&self, _e: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn connect_wifi(&self, _ssid: &str, _password: Option<&str>) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    /// Connect, secure prompts, shared passwords, explicit profile sharing, join and collapse.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn wifi_connect_prompts_shares_and_joins_explicitly() {
-        // Case `connect_button_invokes_connect_wifi_once`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(
-                &root,
-                connect_key("Cafe_Guest").as_str(),
-                automerge::ScalarValue::Boolean(true),
-            );
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root);
-            // Connection dispatch deliberately runs off the UI thread. Wait for
-            // the recorder exactly as the password-bearing async path below does;
-            // asserting immediately races the worker and can falsely report that
-            // the visible Connect button did nothing.
-            // A hang guard for the worker thread, not a latency budget.
-            let deadline = tilo_test_env::hang_deadline();
-            while ui::time::now() < deadline {
-                if !rec.calls().is_empty() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
-        }
-
-        // Case `connect_on_secure_network_opens_password_prompt`.
-        // Clicking "Connect" on a SECURE network does not connect immediately —
-        // it expands the inline password prompt (mirrored into the document)
-        // and fires no dispatch yet.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Press Connect on the secure "Neighbour_5G".
-            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-            pane.sync(&mut doc, &root);
-            wait_for_password_prompt(&mut pane, &mut doc, &root);
-            assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
-            assert_eq!(
-                read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
-                Some("Neighbour_5G"),
-                "expansion is mirrored into the document so it survives rebuilds"
-            );
-            assert!(rec.calls().is_empty(), "no connect dispatched before Join");
-            assert!(pane.take_structure_dirty(), "expanding requests a rebuild");
-        }
-
-        // Case `secure_connect_uses_shared_password_before_prompting`.
-        {
-            let rec = Arc::new(PwRecorder::default());
-            let commands = Arc::new(Mutex::new(Vec::new()));
-            let mut pane = NetworkPane::with_dispatcher(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            pane.wifi_continuity = Arc::new(SharedPasswordClient {
-                commands: Arc::clone(&commands),
-            });
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
-            pane.sync(&mut doc, &root);
-            // A hang guard for the worker thread, not a latency budget.
-            let deadline = tilo_test_env::hang_deadline();
-            while ui::time::now() < deadline {
-                pane.sync(&mut doc, &root);
-                if !rec.calls.lock().unwrap().is_empty() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert_eq!(
-                rec.calls.lock().unwrap().as_slice(),
-                ["connect_wifi(Neighbour_5G, pw=shared-secret)"]
-            );
-            assert!(pane.expanded_ssid.is_none());
-            assert!(matches!(
-                commands.lock().unwrap().as_slice(),
-                [ui::collaboration::WifiContinuityCommand::Lookup { ssid, .. }]
-                    if ssid == "Neighbour_5G"
-            ));
-        }
-
-        // Case `saved_wifi_profile_share_is_explicit_and_uses_only_local_handle`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let commands = Arc::new(Mutex::new(Vec::new()));
-            let mut pane = NetworkPane::with_dispatcher(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            pane.profiles = vec![SavedNetworkProfile {
-                name: "Studio".into(),
-                uuid: "12345678-1234-1234-1234-123456789abc".into(),
-                kind: "802-11-wireless".into(),
-                autoconnect: true,
-            }];
-            pane.wifi_continuity = Arc::new(SharedPasswordClient {
-                commands: Arc::clone(&commands),
-            });
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-
-            assert!(commands.lock().unwrap().is_empty(), "sharing is opt-in");
-            let _ = doc.put(
-                &root,
-                profile_share_key("12345678-1234-1234-1234-123456789abc"),
-                true,
-            );
-            pane.sync(&mut doc, &root);
-            // A hang guard for the worker thread, not a latency budget.
-            let deadline = tilo_test_env::hang_deadline();
-            while ui::time::now() < deadline {
-                pane.sync(&mut doc, &root);
-                if !commands.lock().unwrap().is_empty() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert!(matches!(
-                commands.lock().unwrap().as_slice(),
-                [ui::collaboration::WifiContinuityCommand::ShareSavedProfile { profile_uuid }]
-                    if profile_uuid == "12345678-1234-1234-1234-123456789abc"
-            ));
-        }
-
-        // Case `join_connects_with_typed_password`.
-        // Pressing "Join" in the prompt connects WITH the typed password and
-        // collapses the prompt.
-        {
-            let rec = Arc::new(PwRecorder::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Open the prompt, type a password, press Join.
-            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-            pane.sync(&mut doc, &root);
-            wait_for_password_prompt(&mut pane, &mut doc, &root);
-            *pane
-                .secret_buffers
-                .get("Neighbour_5G")
-                .unwrap()
-                .lock()
-                .unwrap() = "hunter2".into();
-            let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
-            pane.sync(&mut doc, &root);
-            // A hang guard for the worker thread, not a latency budget.
-            let deadline = tilo_test_env::hang_deadline();
-            while ui::time::now() < deadline {
-                if !rec.calls.lock().unwrap().is_empty() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert_eq!(
-                rec.calls.lock().unwrap().as_slice(),
-                ["connect_wifi(Neighbour_5G, pw=hunter2)"]
-            );
-            assert_eq!(pane.expanded_ssid, None, "Join collapses the prompt");
-            assert_eq!(
-                read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
-                Some("")
-            );
-        }
-
-        // Case `second_connect_press_collapses_prompt`.
-        // Pressing Connect a second time on the same expanded network collapses
-        // the prompt (it acts as a toggle / Cancel).
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-            pane.sync(&mut doc, &root);
-            wait_for_password_prompt(&mut pane, &mut doc, &root);
-            assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
-            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(pane.expanded_ssid, None);
-        }
-    }
-
-    /// Run `body` on a thread marked as the UI thread, inside a bound wake
-    /// scope; `body` receives the wakes the scope delivers.
-    fn on_ui_thread<T: Send + 'static>(
-        body: impl FnOnce(&std::sync::mpsc::Receiver<()>) -> T + Send + 'static,
-    ) -> T {
-        ui::rt::spawn_thread("settings-ui-test", move || {
-            ui::rt::mark_ui_thread();
-            let mut scope = ui::WakeScope::new();
-            let (woke, wakes) = std::sync::mpsc::channel();
-            scope
-                .bind(move |_| {
-                    let _ = woke.send(());
-                })
-                .unwrap();
-            let _entry = scope.enter();
-            body(&wakes)
-        })
-        .unwrap()
-        .join()
-        .unwrap()
-    }
-
-    /// A dispatcher that captures the password handed to `connect_wifi`, so
-    /// the password-prompt test can assert it actually reached the backend
-    /// (the shared `RecordingDispatcher` drops the password).
+    /// A device whose `NetworkManager` answers from what the test sets,
+    /// recording each change.
     #[derive(Default)]
-    struct PwRecorder {
-        calls: std::sync::Mutex<Vec<String>>,
+    struct FakeNetwork {
+        networks: Mutex<Vec<WifiNetworkInfo>>,
+        unreadable: Mutex<Option<String>>,
+        refuse: Mutex<Option<String>>,
+        shared_password: Mutex<Option<String>>,
+        changes: Mutex<Vec<String>>,
+        continuity: Mutex<Vec<WifiContinuityCommand>>,
+        vpns: Mutex<Vec<VpnInfo>>,
+        profiles: Mutex<Vec<SavedNetworkProfile>>,
+        snapshot_gate: Mutex<Option<SnapshotGate>>,
+        snapshot_reads: std::sync::atomic::AtomicUsize,
+        connectivity_rechecks: std::sync::atomic::AtomicUsize,
+        /// Scans, each recorded with the snapshot reads made before it.
+        scans: Mutex<Vec<usize>>,
+        scan_refusal: Mutex<Option<String>>,
     }
-    impl Dispatcher for PwRecorder {
-        fn set_brightness(&self, _p: f32) -> Result<(), String> {
-            Ok(())
+
+    impl NetworkService for FakeNetwork {
+        fn scan(&self) -> Result<(), String> {
+            let reads = self
+                .snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.scans.lock().unwrap().push(reads);
+            self.scan_refusal
+                .lock()
+                .unwrap()
+                .clone()
+                .map_or(Ok(()), Err)
         }
-        fn set_volume(&self, _p: f32) -> Result<(), String> {
-            Ok(())
+
+        fn recheck_connectivity(&self) {
+            self.connectivity_rechecks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        fn set_wifi(&self, _e: bool) -> Result<(), String> {
-            Ok(())
+
+        fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+            self.snapshot_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let gate = self.snapshot_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.started.send(()).unwrap();
+                gate.release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            let unreadable = self.unreadable.lock().unwrap().clone();
+            if let Some(reason) = unreadable {
+                fn failed<T>(reason: &str) -> Result<T, String> {
+                    Err(reason.to_string())
+                }
+                return NetworkSnapshot {
+                    networks: Err(reason.clone()),
+                    wifi_enabled: Some(failed(&reason)),
+                    sims: Some(failed(&reason)),
+                    wired: Some(failed(&reason)),
+                    radios: Some(failed(&reason)),
+                    connectivity: Some(failed(&reason)),
+                    profiles: Some(failed(&reason)),
+                    profile_settings: HashMap::new(),
+                    wake_settings: HashMap::new(),
+                    hotspot_clients: Some(failed(&reason)),
+                    vpns: Some(failed(&reason)),
+                };
+            }
+            let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
+            snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
+            snapshot.profiles = Some(Ok(self.profiles.lock().unwrap().clone()));
+            snapshot
         }
-        fn set_bluetooth(&self, _e: bool) -> Result<(), String> {
-            Ok(())
+
+        fn change(&self, change: &NetworkChange) -> Result<(), String> {
+            let said = match change {
+                NetworkChange::Wifi(on) => format!("wifi {on}"),
+                NetworkChange::Radio(radio, on) => format!("{radio:?} {on}"),
+                NetworkChange::Vpn { name, on } => format!("vpn {name} {on}"),
+                NetworkChange::Connect { ssid, password } => format!(
+                    "connect {ssid} {}",
+                    password.as_deref().map_or("-", String::as_str)
+                ),
+                NetworkChange::Wake { uuid, on } => format!("wake {uuid} {on}"),
+                NetworkChange::Forget { uuid, .. } => format!("forget {uuid}"),
+                NetworkChange::Hotspot(config) => format!("hotspot {}", config.ssid),
+                _ => "other".into(),
+            };
+            self.changes.lock().unwrap().push(said);
+            self.refuse.lock().unwrap().clone().map_or(Ok(()), Err)
         }
-        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-            self.calls.lock().unwrap().push(format!(
-                "connect_wifi({ssid}, pw={})",
-                password.unwrap_or("<none>")
-            ));
-            Ok(())
+
+        fn continuity(
+            &self,
+            command: WifiContinuityCommand,
+        ) -> Result<WifiContinuityReply, String> {
+            self.continuity.lock().unwrap().push(command.clone());
+            Ok(match command {
+                WifiContinuityCommand::Lookup { .. } => {
+                    let shared = self.shared_password.lock().unwrap().clone();
+                    shared.map_or(WifiContinuityReply::NotFound, |password| {
+                        WifiContinuityReply::Password { password }
+                    })
+                }
+                WifiContinuityCommand::NetworkWake { profile_uuid, .. } => {
+                    WifiContinuityReply::NetworkWake {
+                        status: NetworkWakeStatus {
+                            profile: profile_uuid,
+                            interface: None,
+                            configured: false,
+                            supported: None,
+                            applied: None,
+                            problem: None,
+                        },
+                    }
+                }
+                WifiContinuityCommand::Share { ssid, .. }
+                | WifiContinuityCommand::ShareSavedProfile { profile_uuid: ssid } => {
+                    WifiContinuityReply::Shared { ssid }
+                }
+            })
         }
-        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
+
+        fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+            Err("no bus".into())
+        }
+
+        fn sign_in_page(&self) -> Result<String, String> {
+            Err("no portal".into())
+        }
+
+        fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+            let _ = intent;
+            self.changes.lock().unwrap().push("tool".into());
             Ok(())
         }
     }
 
-    /// Wired rows, VPN parsing and rows, and their empty states.
+    fn networks() -> Vec<WifiNetworkInfo> {
+        SampleNetwork::networks()
+    }
+
+    fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
+        let profile = tempfile::tempdir().unwrap().keep();
+        NetworkModel::loaded_from(
+            PaneCx::in_file(profile.join("settings.json")),
+            Arc::clone(fake) as Arc<dyn NetworkService>,
+        )
+    }
+
+    fn mount_network(
+        app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+        observed: NetworkModel,
+    ) -> Option<()> {
+        app.with_surface::<SettingsApp, _>(|settings| {
+            *settings.network().model().borrow_mut() = observed;
+        })
+    }
+
     #[test]
-    fn wired_and_vpn_rows_reflect_real_profiles() {
-        // Case `wired_rows_reflect_connected_snapshot`.
+    fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut observed = model(&fake);
+        observed.enterprise_open = true;
+        *observed.enterprise.password.lock().unwrap() = "private-enterprise-input".into();
+        *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
+        *observed.sim_pin.lock().unwrap() = "private-pin-input".into();
+        let mut app =
+            ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
+                .expect("read-only Settings opens");
+        mount_network(&mut app, observed).expect("the ordinary mounted network model");
+        crate::effects::show_pane(&mut app, crate::categories::Category::Network);
+        app.settle();
+        let before = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .expect("the network state must have a declared read-only door")
+            .expect("the inspector returns the observed model");
+        assert_eq!(before["network_count"], 3);
+        assert_eq!(before["connectivity"]["state"], "full");
+        assert_eq!(
+            before["source"], "preview",
+            "test stand-ins cannot masquerade as device observations"
+        );
+        let row_ids = app
+            .surface::<SettingsApp, _>(|settings| {
+                settings
+                    .network()
+                    .rows()
+                    .into_iter()
+                    .map(|row| row.id().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        for network in before["networks"].as_array().unwrap() {
+            assert!(
+                row_ids
+                    .iter()
+                    .any(|id| id == network["resource"].as_str().unwrap())
+            );
+        }
+        let shown = crate::widgets::announced_text(app.harness().root_widget());
+        assert!(
+            shown.contains(
+                &before["labels"]["enterprise_caption"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            ),
+            "the Inspector and mounted pane use the same resolved caption"
+        );
+        let encoded = serde_json::to_string(&before).unwrap();
+        for secret in [
+            "private-enterprise-input",
+            "private-hotspot-input",
+            "private-pin-input",
+        ] {
+            assert!(
+                !encoded.contains(secret),
+                "explicit network reads omit private input buffers"
+            );
+        }
+        assert!(
+            app.call("refresh-networks", serde_json::json!({})).is_err(),
+            "Read does not grant scan/write authority"
+        );
+        for actor in ["person:foreign", "agent:foreign"] {
+            assert!(
+                app.call_by(
+                    ui::tilo_actions::ActionInvoker::actor(actor),
+                    "settings.root",
+                    "inspect-network-state",
+                    serde_json::json!({})
+                )
+                .is_err(),
+                "device-only inspection refuses unrelated callers"
+            );
+        }
+        assert!(
+            app.call("inspect-network-state", serde_json::json!({"on":false}))
+                .is_err(),
+            "Read accepts no mutation-shaped arguments"
+        );
+        let after = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "inspection never refreshes or changes network state"
+        );
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(fake.changes.lock().unwrap().is_empty());
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let observed = model(&fake);
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        mount_network(&mut app, observed).unwrap();
+        app.settle();
+        let (started, starts) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+            started,
+            release: releases,
+        });
+        let mut release = ReleaseSnapshot(Some(release));
+        *fake.unreadable.lock().unwrap() = Some("NetworkManager query refused".into());
+        let effect = SettingsEffect::from(NetworkEffect::RefreshNetworks);
+        assert!(
+            app.operate(ui::tilo_resource::Invoke::effect(&effect))
+                .unwrap()
+                .is_none(),
+            "scan completion awaits its actual worker"
+        );
+        starts
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let pending = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending["scan"]["jobs_pending"], 1);
+        assert_eq!(
+            pending["network_count"], 3,
+            "pending scans preserve the last adopted rows"
+        );
+        release.0.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let failed = loop {
+            app.settle();
+            let snapshot = app
+                .call("inspect-network-state", serde_json::json!({}))
+                .unwrap()
+                .unwrap();
+            if snapshot["scan"]["jobs_pending"] == 0 {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the real worker outcome must land"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(failed["errors"]["networks"], "NetworkManager query refused");
+        assert_eq!(
+            failed["network_count"], 0,
+            "failed scans do not publish stale rows as current"
+        );
+        assert!(
+            failed["wifi"]["enabled"].is_null(),
+            "unreadable radio state is never fabricated as off"
+        );
+        assert!(failed["connectivity"]["state"].is_null());
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_reads() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = NetworkArea::new(&cx);
+        assert_eq!(area.inspection().unwrap()["state"], "unopened");
+        assert!(
+            area.model.get().is_none(),
+            "Read must not lazily start a device scan"
+        );
+        let fake = Arc::new(FakeNetwork::default());
+        let mut observed = NetworkModel::with_service(cx, fake);
+        let initial = observed.inspection().unwrap();
+        assert_eq!(initial["state"], "loading");
+        assert!(initial["wifi"]["enabled"].is_null());
+        assert!(initial["connectivity"]["state"].is_null());
+        observed.networks = vec![
+            WifiNetworkInfo {
+                ssid: "x".repeat(1024),
+                signal: 0,
+                secure: false,
+                security: os_actions::WifiSecurity::Open,
+                connected: false
+            };
+            257
+        ];
+        assert!(
+            observed.inspection().is_err(),
+            "the explicit Read has a finite byte bound"
+        );
+        for row in &mut observed.networks {
+            row.ssid = "bounded".into();
+        }
+        let bounded = observed.inspection().unwrap();
+        assert_eq!(bounded["network_count"], 257);
+        assert_eq!(bounded["networks"].as_array().unwrap().len(), 256);
+        assert_eq!(bounded["networks_truncated"], true);
+    }
+
+    /// Begin `effect` and run its work here, as a worker would; what it
+    /// answered.
+    fn run(model: &mut NetworkModel, effect: NetworkEffect) -> Result<Option<String>, String> {
+        match model.begin(effect)? {
+            Begun::Done => Ok(None),
+            Begun::Work(work) => match model.land(work())? {
+                Effected::Done(output) => Ok(output
+                    .value
+                    .and_then(|value| value.as_str().map(str::to_owned))),
+                Effected::Pending => Ok(None),
+            },
+        }
+    }
+
+    /// The ordinary worker completion must honor the action a caller invoked,
+    /// while keeping its human-readable outcome in the pane.
+    #[test]
+    fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().map_err(|error| error.to_string())? = networks();
+        let mut model = model(&fake);
+        for (effect, notice) in [
+            (NetworkEffect::RefreshNetworks, t("net-notice-refreshed")),
+            (NetworkEffect::SetWifi { on: true }, t("net-notice-wifi-on")),
+        ] {
+            let contract = NetworkEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == effect.id())
+                .ok_or("the invoked action must be published")?
+                .contract;
+            if contract.result != ui::tilo_actions::ResultSpec::Job {
+                return Err("the network action must declare a unit job".into());
+            }
+            let Begun::Work(work) = model.begin(effect)? else {
+                return Err("the invoked network action must start real work".into());
+            };
+            let Effected::Done(output) = model.land(work())? else {
+                return Err("finished network work must complete".into());
+            };
+            contract.result.validate(&output)?;
+            if output.value.is_some() || !output.resources.is_empty() {
+                return Err("the unit job must not return a value or resources".into());
+            }
+            if model.notice.as_deref() != Some(notice.as_str()) {
+                return Err("the completed job must retain its status notice".into());
+            }
+            if !shown(&model).contains(&notice) {
+                return Err("the completed job's notice must remain visible".into());
+            }
+        }
+        if model.networks().len() != 3 || !model.wifi_enabled {
+            return Err("the completed workers must adopt networks and enable Wi-Fi".into());
+        }
+        if fake
+            .changes
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice()
+            != ["wifi true"]
         {
-            let pane = NetworkPane::new_demo(sample_networks()).with_wired(WiredInfo {
-                connected: true,
-                device: Some("eth0".into()),
-                speed: Some("100 Mb/s".into()),
-                ipv4: Some("10.0.0.7".into()),
-            });
-            // The Wired card body builds three rows when connected.
-            assert_eq!(pane.wired_rows().len(), 3);
+            return Err("the worker must issue exactly one Wi-Fi enable request".into());
+        }
+        Ok(())
+    }
+
+    fn shown(model: &NetworkModel) -> Vec<String> {
+        crate::widgets::announced_text(model.build_composition().as_ref())
+    }
+
+    /// A wired-only machine names its missing adapter without treating it as
+    /// a read failure or offering a radio switch.
+    #[test]
+    fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
+        let radios = Ok(os_actions::RadioState::default());
+        assert_eq!(wifi_enabled_from(&radios), Ok(false));
+        assert_eq!(
+            wifi_enabled_from(&Err("nmcli not installed".into())),
+            Err("nmcli not installed".to_string())
+        );
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        let mut snapshot = NetworkSnapshot::of_networks(Vec::new());
+        snapshot.wifi_enabled = Some(wifi_enabled_from(&radios));
+        snapshot.radios = Some(radios);
+        model.adopt_snapshot(snapshot).unwrap();
+        let text = shown(&model);
+        assert!(
+            text.iter()
+                .any(|line| line == "No Wi-Fi adapter on this device"),
+            "{text:#?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("Can't read network status")),
+            "{text:#?}"
+        );
+        assert!(!text.contains(&t("net-wifi-off")), "{text:#?}");
+    }
+
+    /// A status that could not be read is shown as that failure, never as a
+    /// state; a later successful read clears it.
+    #[test]
+    fn unreadable_network_state_is_shown_as_an_error_not_as_a_state() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.unreadable.lock().unwrap() = Some("org.freedesktop.NetworkManager is gone".into());
+        let mut model = model(&fake);
+        let text = shown(&model).join("\n");
+        assert!(
+            text.contains("org.freedesktop.NetworkManager is gone"),
+            "{text}"
+        );
+        assert!(!text.contains(&t("net-not-connected")), "{text}");
+        assert!(
+            model.begin(NetworkEffect::SetWifi { on: true }).is_err(),
+            "an unread radio is not switched"
+        );
+
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "opening Network reads the last verdict; it does not probe the internet"
+        );
+
+        *fake.unreadable.lock().unwrap() = None;
+        *fake.networks.lock().unwrap() = networks();
+        run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
+        assert_eq!(model.read_errors, NetworkReadErrors::default());
+        assert_eq!(model.networks().len(), 3);
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the explicit refresh asks for a fresh connectivity verdict"
+        );
+    }
+
+    /// Opening Network shows the connected network from what
+    /// `NetworkManager` already knows; it never waits for a radio scan,
+    /// which takes over ten seconds on some adapters and once timed the
+    /// status out ("Can't read network status: nmcli timed out after
+    /// 12000 ms") while the internet worked. Only Refresh scans, before it
+    /// reads, and a failed scan leaves the status and list readable.
+    #[test]
+    fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut model = model(&fake);
+        assert!(
+            fake.scans.lock().unwrap().is_empty(),
+            "opening Network must not scan"
+        );
+        let connected = t_args("net-connected-to", &[("ssid", "Home_Network".into())]);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert_eq!(model.wifi_status_error(), None);
+
+        run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
+        assert_eq!(
+            *fake.scans.lock().unwrap(),
+            vec![1],
+            "Refresh scans once, before the snapshot it adopts"
+        );
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+
+        *fake.scan_refusal.lock().unwrap() = Some("Scanning not allowed".into());
+        let refused = run(&mut model, NetworkEffect::RefreshNetworks)
+            .expect_err("a failed scan is reported to whoever pressed Refresh");
+        assert!(refused.contains("Scanning not allowed"), "{refused}");
+        assert_eq!(model.read_errors, NetworkReadErrors::default());
+        assert_eq!(model.wifi_status_error(), None);
+        assert_eq!(model.networks().len(), 3);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert!(!text.contains("Can't read network status"), "{text}");
+    }
+
+    /// A secure network first asks the person's devices for its password,
+    /// opens its prompt when they share none, and joins with what is typed
+    /// there; the typed password is zeroed and the prompt closes.
+    #[test]
+    fn joining_a_secure_network_asks_then_uses_the_typed_password() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut model = model(&fake);
+        let connect = || NetworkEffect::ConnectNetwork {
+            ssid: "Office_5G".into(),
+            password: None,
+        };
+        run(&mut model, connect()).unwrap();
+        assert_eq!(model.expanded.as_deref(), Some("Office_5G"));
+        assert!(
+            fake.changes.lock().unwrap().is_empty(),
+            "nothing joined yet"
+        );
+
+        let buffer = Arc::clone(&model.join_passwords["Office_5G"]);
+        *buffer.lock().unwrap() = "hunter22".into();
+        run(&mut model, connect()).unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["connect Office_5G hunter22"]
+        );
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "the typed password is zeroed"
+        );
+        assert_eq!(model.expanded, None);
+        assert!(
+            fake.continuity
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, WifiContinuityCommand::Share { .. })),
+            "the password is sealed for the person's devices"
+        );
+    }
+
+    /// A password the person's devices share joins without a prompt; an
+    /// open network joins at once.
+    #[test]
+    fn a_shared_password_or_an_open_network_joins_directly() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.shared_password.lock().unwrap() = Some("from-phone".into());
+        let mut model = model(&fake);
+        run(
+            &mut model,
+            NetworkEffect::ConnectNetwork {
+                ssid: "Office_5G".into(),
+                password: None,
+            },
+        )
+        .unwrap();
+        run(
+            &mut model,
+            NetworkEffect::ConnectNetwork {
+                ssid: "Cafe_Guest".into(),
+                password: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["connect Office_5G from-phone", "connect Cafe_Guest -"]
+        );
+        assert_eq!(model.expanded, None);
+        assert!(
+            model
+                .begin(NetworkEffect::ConnectNetwork {
+                    ssid: "Elsewhere".into(),
+                    password: None,
+                })
+                .is_err(),
+            "a network out of range is refused"
+        );
+    }
+
+    /// A switch shows the requested state at once and puts it back when the
+    /// device refuses.
+    #[test]
+    fn a_refused_switch_is_put_back() {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        run(&mut model, NetworkEffect::SetAirplaneMode { on: true }).unwrap();
+        assert!(model.radios.airplane_mode);
+
+        *fake.refuse.lock().unwrap() = Some("rfkill is blocked".into());
+        let refused = run(&mut model, NetworkEffect::SetAirplaneMode { on: false });
+        assert!(refused.unwrap_err().contains("rfkill is blocked"));
+        assert!(model.radios.airplane_mode, "the switch is put back");
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["Airplane true", "Airplane false"]
+        );
+    }
+
+    /// Each nearby network, saved network and VPN is a row offering what can
+    /// be done with it; switching a VPN reaches the device.
+    #[test]
+    fn networks_saved_profiles_and_vpns_are_rows() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.vpns.lock().unwrap() = vec![VpnInfo {
+            name: "Work".into(),
+            active: false,
+        }];
+        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
+            uuid: "1234-abcd".into(),
+            name: "Home_Network".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        let profile = tempfile::tempdir().unwrap().keep();
+        let cx = PaneCx::in_file(profile.join("settings.json"));
+        let area = NetworkArea::new(&cx);
+        let _ = area
+            .model
+            .set(Rc::new(std::cell::RefCell::new(model(&fake))));
+        let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
+        for id in [
+            "settings.network:Home_Network",
+            "settings.network:Office_5G",
+            "settings.network-profile:1234-abcd",
+            "settings.vpn:Work",
+        ] {
+            assert!(ids.iter().any(|row| row == id), "{id} in {ids:?}");
         }
 
-        // Case `wired_rows_show_not_connected_when_down`.
-        {
-            let pane = NetworkPane::new_demo(sample_networks());
-            // Default WiredInfo is disconnected → status + caption only.
-            assert_eq!(pane.wired_rows().len(), 2);
-        }
+        let mut model = area.model().borrow_mut();
+        run(
+            &mut model,
+            NetworkEffect::SetVpn {
+                vpn: "Work".into(),
+                on: true,
+            },
+        )
+        .unwrap();
+        run(
+            &mut model,
+            NetworkEffect::ForgetNetwork {
+                profile: "Home_Network".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["vpn Work true", "forget 1234-abcd"]
+        );
+        assert!(model.profiles.is_empty(), "a forgotten network is gone");
+    }
 
-        // Case `parse_vpn_connections_filters_to_vpn_types_and_marks_active`.
-        {
-            let all = "Wired connection 1:ethernet\n\
-                   Work VPN:vpn\n\
-                   home-wg:wireguard\n\
-                   MyWifi:wifi\n";
-            let active = "Wired connection 1\nhome-wg\n";
-            let vpns = parse_vpn_connections(all, active);
-            assert_eq!(vpns.len(), 2, "only vpn + wireguard rows: {vpns:?}");
-            let work = vpns.iter().find(|v| v.name == "Work VPN").unwrap();
-            let wg = vpns.iter().find(|v| v.name == "home-wg").unwrap();
-            assert!(!work.active, "Work VPN isn't in the active set");
-            assert!(wg.active, "home-wg is up");
+    #[test]
+    fn supported_network_wake_is_named_and_routes_through_the_worker() {
+        fn named_switch(widget: &dyn Widget, name: &str) -> bool {
+            widget.accessibility().is_some_and(|node| {
+                node.role == ui::a11y::Role::Switch && node.name.as_deref() == Some(name)
+            }) || widget
+                .children()
+                .iter()
+                .any(|child| named_switch(*child, name))
         }
+        let fake = Arc::new(FakeNetwork::default());
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
+            uuid: uuid.into(),
+            name: "Home".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        let mut model = model(&fake);
+        model.wake_settings.insert(
+            uuid.into(),
+            Ok(NetworkWakeStatus {
+                profile: uuid.into(),
+                interface: Some("wlan0".into()),
+                configured: false,
+                supported: Some(true),
+                applied: Some(false),
+                problem: None,
+            }),
+        );
+        let area = NetworkArea::new(&model.cx);
+        let _ = area.model.set(Rc::new(std::cell::RefCell::new(model)));
+        let row = area
+            .rows()
+            .into_iter()
+            .find(|row| row.id() == format!("settings.network-profile:{uuid}"))
+            .unwrap()
+            .into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.label == "Wake over network")
+        );
+        assert!(
+            row.presentation
+                .unwrap()
+                .preview
+                .unwrap()
+                .contains("must be tested separately")
+        );
+        let mut model = area.model().borrow_mut();
+        assert!(named_switch(
+            model.build_composition().as_ref(),
+            "Wake over Home"
+        ));
+        let text = shown(&model);
+        assert!(
+            text.iter().any(|text| text.contains("Wake over Home")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|text| text.contains("must be tested separately")),
+            "{text:?}"
+        );
+        run(
+            &mut model,
+            NetworkEffect::SetNetworkWake {
+                profile: uuid.into(),
+                on: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            [format!("wake {uuid} true")]
+        );
+        assert!(
+            model
+                .begin(NetworkEffect::SetNetworkWake {
+                    profile: "missing".into(),
+                    on: true
+                })
+                .is_err()
+        );
+        *fake.refuse.lock().unwrap() = Some("not authorized".into());
+        assert!(
+            run(
+                &mut model,
+                NetworkEffect::SetNetworkWake {
+                    profile: uuid.into(),
+                    on: false
+                }
+            )
+            .unwrap_err()
+            .contains("not authorized")
+        );
+    }
 
-        // Case `vpn_rows_reflect_configured_profiles`.
-        {
-            let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
-                VpnInfo {
-                    name: "Work VPN".into(),
-                    active: true,
-                },
-                VpnInfo {
-                    name: "Home WG".into(),
-                    active: false,
-                },
-            ]);
-            assert_eq!(pane.vpns().len(), 2);
-            // 2 status rows + 1 caption.
-            assert_eq!(pane.vpn_rows().len(), 3);
-        }
+    /// The hotspot starts from its form, and a password shorter than eight
+    /// characters is refused before anything reaches the device.
+    #[test]
+    fn the_hotspot_starts_from_its_form() {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        *model.hotspot_password.lock().unwrap() = "short".into();
+        assert!(
+            model
+                .begin(NetworkEffect::StartHotspot {
+                    name: None,
+                    password: None,
+                    band: None,
+                })
+                .is_err()
+        );
+        *model.hotspot_password.lock().unwrap() = "long enough secret".into();
+        model.hotspot_name.set("Kitchen".into());
+        run(
+            &mut model,
+            NetworkEffect::StartHotspot {
+                name: None,
+                password: None,
+                band: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(fake.changes.lock().unwrap().as_slice(), ["hotspot Kitchen"]);
+        assert!(model.radios.hotspot_active);
+    }
 
-        // Case `vpn_rows_show_empty_state_when_none`.
-        {
-            let pane = NetworkPane::new_demo(sample_networks());
-            // Empty-state explanation plus the single Studio handoff.
-            assert_eq!(pane.vpn_rows().len(), 2);
+    /// The availability Settings publishes for `id`, as agents, the
+    /// palette and assistive technology read it.
+    fn published(
+        app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+        id: &str,
+    ) -> ui::tilo_actions::Availability {
+        app.actions()
+            .expect("the actions are published")
+            .into_iter()
+            .find(|action| action.address.action == id)
+            .unwrap_or_else(|| panic!("`{id}` is published"))
+            .contract
+            .availability
+    }
+
+    fn unavailable(code: &str, reason: &str) -> ui::tilo_actions::Availability {
+        ui::tilo_actions::Availability::Unavailable {
+            code: code.into(),
+            reason: reason.into(),
         }
+    }
+
+    /// A wired-only machine publishes Wi-Fi, the hotspot, mobile broadband
+    /// and airplane mode unavailable with why, and refuses them; a Wi-Fi
+    /// dongle plugged in is offered at once, before `NetworkManager` is
+    /// read again.
+    #[test]
+    fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
+        use crate::radios::Present;
+        use ui::tilo_actions::Availability;
+
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let fake = Arc::new(FakeNetwork::default());
+        let mut wired_only = model(&fake);
+        let mut snapshot = NetworkSnapshot::of_networks(Vec::new());
+        snapshot.radios = Some(Ok(os_actions::RadioState::default()));
+        snapshot.wifi_enabled = Some(Ok(false));
+        wired_only.adopt_snapshot(snapshot).unwrap();
+        mount_network(&mut app, wired_only).unwrap();
+        let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+
+        radios.set(Present::NONE);
+        app.settle();
+        let no_wifi = unavailable("no_adapter", "No Wi-Fi adapter on this device");
+        for id in ["set-wifi", "set-hotspot", "start-hotspot"] {
+            assert_eq!(published(&mut app, id), no_wifi, "`{id}`");
+        }
+        assert_eq!(
+            published(&mut app, "set-mobile-broadband"),
+            unavailable("no_modem", "No mobile broadband modem on this device")
+        );
+        assert_eq!(
+            published(&mut app, "set-airplane-mode"),
+            unavailable(
+                "no_radio",
+                "No Wi-Fi or mobile broadband radio on this device"
+            )
+        );
+        assert_eq!(
+            published(&mut app, "refresh-networks"),
+            Availability::Available,
+            "a wired connection is still read"
+        );
+        app.effect(&SettingsEffect::from(NetworkEffect::SetWifi { on: true }))
+            .expect_err("an unavailable radio is refused, not tried");
+        assert!(fake.changes.lock().unwrap().is_empty(), "nothing was tried");
+
+        radios.set(Present {
+            wifi: true,
+            ..Present::NONE
+        });
+        app.settle();
+        for id in [
+            "set-wifi",
+            "set-hotspot",
+            "start-hotspot",
+            "set-airplane-mode",
+        ] {
+            assert_eq!(published(&mut app, id), Availability::Available, "`{id}`");
+        }
+        assert_eq!(
+            published(&mut app, "set-mobile-broadband"),
+            unavailable("no_modem", "No mobile broadband modem on this device")
+        );
+    }
+
+    /// Either the kernel or `NetworkManager` seeing a radio is enough: a
+    /// modem `ModemManager` drives over a serial port is listed by
+    /// `NetworkManager` alone. Neither having said offers everything, and
+    /// the area's model is never read for it.
+    #[test]
+    fn a_radio_either_source_sees_is_offered() {
+        use crate::radios::Present;
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = NetworkArea::new(&cx);
+        assert!(
+            area.statuses().is_empty(),
+            "radios not read offer everything"
+        );
+        assert!(!area.is_open(), "the networks were not read");
+
+        cx.radios().set(Present::ALL);
+        assert!(
+            area.statuses().is_empty(),
+            "with every radio nothing changes"
+        );
+
+        let reported = os_actions::RadioState {
+            wwan_available: true,
+            ..os_actions::RadioState::default()
+        };
+        cx.radios().set(Present::NONE);
+        assert_eq!(
+            NetworkRadios::of(&cx, Some(&reported)),
+            NetworkRadios {
+                wifi: Some(false),
+                wwan: Some(true),
+            }
+        );
+        assert_eq!(
+            NetworkRadios::of(&PaneCx::in_file(profile.path().join("other.json")), None),
+            NetworkRadios::default(),
+            "neither has said"
+        );
     }
 }

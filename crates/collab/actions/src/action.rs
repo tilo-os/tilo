@@ -146,13 +146,73 @@ pub trait Action: std::fmt::Debug {
         crate::contract::RiskLevel::Low
     }
 
+    /// The document action that undoes this one when `apply` records an
+    /// outside consequence in the document (an outbox entry, a filesystem op
+    /// queue). Computed against the document *before* this action runs, so a
+    /// delete can still read the row it removes.
+    ///
+    /// When this returns `Some`, undo applies that action through
+    /// [`Action::apply`] instead of writing Automerge inverse patches — so the
+    /// compensating queue entry is recorded the same way peers will replay it.
+    /// Pure CRDT actions with no outside consequence leave this as `None`;
+    /// inverse patches remain correct for them. Effects never participate:
+    /// they have no heads and are not undoable.
+    fn inverse_before(&self, doc: &Doc) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = doc;
+        None
+    }
+
+    /// [`inverse_before`](Self::inverse_before) as an encoded action, so the
+    /// door can undo through `apply` after the concrete type has been erased.
+    ///
+    /// The palette, an agent and a script apply a decoded `dyn Action`. That
+    /// value cannot return `Self`. An action whose `apply` writes an outside
+    /// queue implements this and encodes the compensating action under the
+    /// same registry type id. The default is `None`: undo stays Automerge
+    /// inverse patches.
+    fn inverse_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        let _ = doc;
+        None
+    }
+
     /// Whether this value changes the document's content or is housekeeping
     /// about it (a read marker, a reading position). The executor writes it
     /// into the change's [`ActionContext`](crate::ActionContext), where a
     /// workspace activity feed reads it. Must be a pure function of `self`.
-    /// Defaults to [`Content`](crate::ChangeKind::Content).
+    /// Defaults to [`Content`](crate::context::ChangeKind::Content).
     fn change_kind(&self) -> crate::context::ChangeKind {
         crate::context::ChangeKind::Content
+    }
+
+    /// What kind of action this value is: whether it only changes the
+    /// document or also reaches outside it. Must be a pure function of
+    /// `self`. An action that records an outside consequence in the document
+    /// (an outbox entry) is [`Outside`](crate::ActionKind::Outside); the
+    /// default is [`Undoable`](crate::ActionKind::Undoable).
+    fn action_kind(&self) -> crate::ActionKind {
+        crate::ActionKind::Undoable
+    }
+
+    /// Whether this value records a message someone received (a chat post,
+    /// a delivered mail). The executor marks its change with
+    /// [`INCOMING_MESSAGE_FACET`](crate::INCOMING_MESSAGE_FACET). Must be a
+    /// pure function of `self`.
+    fn incoming_message(&self) -> bool {
+        false
+    }
+
+    /// What this value does and to which item, as history records it: a
+    /// field edit with its values before and after, a verb with its plain
+    /// arguments, or a group of those. Read from `doc` as it is before the
+    /// value applies, on the origin only; replicas replay it with the
+    /// change. `None` lets the executor describe the value as the verb its
+    /// encoded form names ([`crate::Described::from_encoded`]).
+    fn describe(&self, doc: &Doc) -> Option<crate::Described> {
+        let _ = doc;
+        None
     }
 }
 
@@ -175,10 +235,31 @@ impl EncodedAction {
     where
         A: Action + Serialize,
     {
-        Ok(Self {
-            type_id: type_id.into(),
-            payload: serde_json::to_vec(action).map_err(ActionError::Encode)?,
-        })
+        Self::encoded(type_id.into(), serde_json::to_vec(action))
+    }
+
+    /// The tail of [`Self::encode`] every action type shares.
+    #[inline(never)]
+    fn encoded(
+        type_id: String,
+        payload: Result<Vec<u8>, serde_json::Error>,
+    ) -> Result<Self, ActionError> {
+        Ok(Self::written(
+            type_id,
+            payload.map_err(ActionError::Encode)?,
+        ))
+    }
+
+    /// An action of `type_id` whose payload is `payload`, a group's written
+    /// with what its members share once ([`crate::group_form`]).
+    #[must_use]
+    pub fn written(type_id: String, payload: Vec<u8>) -> Self {
+        let payload = if crate::group_form::is_group(&type_id) {
+            crate::group_form::compact(&payload).unwrap_or(payload)
+        } else {
+            payload
+        };
+        Self { type_id, payload }
     }
 
     /// Serialize a non-document operation payload. Unlike [`Self::encode`],

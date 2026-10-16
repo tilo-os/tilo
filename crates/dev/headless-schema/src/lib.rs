@@ -15,26 +15,63 @@ pub enum SemanticAction {
     SetSelection { anchor: usize, focus: usize },
 }
 
+impl SemanticAction {
+    /// The wire name a scenario uses for this action.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Activate => "activate",
+            Self::Focus => "focus",
+            Self::ToggleCheck => "toggle_check",
+            Self::Increment => "increment",
+            Self::Decrement => "decrement",
+            Self::Expand => "expand",
+            Self::Collapse => "collapse",
+            Self::ScrollIntoView => "scroll_into_view",
+            Self::ShowContextMenu => "show_context_menu",
+            Self::SetValue(_) => "set_value",
+            Self::SetSelection { .. } => "set_selection",
+        }
+    }
+}
+
+/// One thing to do to the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Click the centre of the widget addressed by `name` — either its
+    /// test id or the `Parent/Child[index]` path fallback.
     ClickNamed(String),
+    /// Click at raw logical coordinates.
     ClickAt(f64, f64),
+    /// Direct-touch tap on a named widget.
     TapNamed(String),
+    /// Direct-touch tap at logical coordinates.
     TapAt(f64, f64),
+    /// Drag one touch from start to end, exercising tap cancellation and
+    /// pixel-precise scrolling.
     SwipeAt(f64, f64, f64, f64),
+    /// Press and release one named key (`Enter`, `Tab`, `Escape`, `Space`,
+    /// `Backspace`, arrows) or a single character.
     Key(String),
+    /// Type a string, one press/release pair per character.
     Type(String),
+    /// Hold the given modifiers for subsequent actions. Empty clears them.
     Modifiers(Vec<String>),
-    WaitForNamed {
-        target: String,
-        timeout_ms: u64,
-    },
-    Expect(Expectation),
+    /// Drive frames until a named retained widget appears, or fail after the
+    /// bounded timeout. This lets saved scenarios synchronize with workers
+    /// and asynchronous model delegates without timing sleeps.
+    WaitForNamed { target: String, timeout_ms: u64 },
+    /// Require semantic output or state at this exact point in a scenario.
+    Expect(SemanticExpectation),
+    /// Ask the named widget to perform an accessibility action, through the
+    /// same path as a live accessibility request.
     Perform {
         target: String,
         semantic_target: Option<String>,
         action: SemanticAction,
     },
+    /// Invoke one published action by address, through the same resolution,
+    /// availability, confirmation and strict binding the live host applies.
     Invoke(Invocation),
 }
 
@@ -73,8 +110,8 @@ impl std::fmt::Debug for Invocation {
 }
 
 /// Semantic outcome required at this point in a saved scenario.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Expectation {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SemanticExpectation {
     pub target: String,
     pub semantic_target: Option<String>,
     /// Optional bounded auto-wait. Absent expectations are immediate.
@@ -93,6 +130,104 @@ pub struct Expectation {
     pub invalid: Option<bool>,
 }
 
+impl SemanticExpectation {
+    /// Start an assertion for one retained widget id or inspection path.
+    #[must_use]
+    pub fn named(target: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Address a synthetic collection descendant by its stable model identity.
+    #[must_use]
+    pub fn semantic_target(mut self, target: impl Into<String>) -> Self {
+        self.semantic_target = Some(target.into());
+        self
+    }
+
+    /// Drive live-equivalent frames until this assertion matches or the
+    /// explicit bound expires. Without this, assertions are immediate.
+    #[must_use]
+    pub fn within(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout_ms = Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
+        self
+    }
+
+    #[must_use]
+    pub fn role(mut self, role: impl Into<String>) -> Self {
+        self.role = Some(role.into());
+        self
+    }
+
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn name_contains(mut self, fragment: impl Into<String>) -> Self {
+        self.name_contains = Some(fragment.into());
+        self
+    }
+
+    #[must_use]
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    #[must_use]
+    pub fn value_contains(mut self, fragment: impl Into<String>) -> Self {
+        self.value_contains = Some(fragment.into());
+        self
+    }
+
+    #[must_use]
+    pub fn focused(mut self, expected: bool) -> Self {
+        self.focused = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn selected(mut self, expected: bool) -> Self {
+        self.selected = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn checked(mut self, expected: bool) -> Self {
+        self.checked = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn expanded(mut self, expected: bool) -> Self {
+        self.expanded = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn enabled(mut self, expected: bool) -> Self {
+        self.enabled = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn busy(mut self, expected: bool) -> Self {
+        self.busy = Some(expected);
+        self
+    }
+
+    #[must_use]
+    pub fn invalid(mut self, expected: bool) -> Self {
+        self.invalid = Some(expected);
+        self
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spec {
     pub viewport: Option<(u32, u32)>,
@@ -102,6 +237,7 @@ pub struct Spec {
     pub dump: Option<String>,
     pub targets: Option<String>,
     pub inspect: Option<String>,
+    pub results: Option<String>,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -119,10 +255,17 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     for key in object.keys() {
         if !matches!(
             key.as_str(),
-            "viewport" | "actions" | "audit" | "audit_report" | "dump" | "targets" | "inspect"
+            "viewport"
+                | "actions"
+                | "audit"
+                | "audit_report"
+                | "dump"
+                | "targets"
+                | "inspect"
+                | "results"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, audit, audit_report, dump, targets, or inspect"
+                "unknown field {key:?}; expected viewport, actions, audit, audit_report, dump, targets, inspect, or results"
             ));
         }
     }
@@ -144,6 +287,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         dump: optional_string(object, "dump")?,
         targets: optional_string(object, "targets")?,
         inspect: optional_string(object, "inspect")?,
+        results: optional_string(object, "results")?,
     })
 }
 
@@ -330,7 +474,7 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
     })
 }
 
-fn parse_expectation(value: &serde_json::Value) -> Result<Expectation, String> {
+fn parse_expectation(value: &serde_json::Value) -> Result<SemanticExpectation, String> {
     const FIELDS: &[&str] = &[
         "target",
         "semantic_target",
@@ -401,7 +545,7 @@ fn parse_expectation(value: &serde_json::Value) -> Result<Expectation, String> {
             "unknown expect.role {role:?}; use a toolkit snake-case semantic role"
         ));
     }
-    Ok(Expectation {
+    Ok(SemanticExpectation {
         target,
         semantic_target: non_empty_string("semantic_target")?,
         timeout_ms: optional_timeout_ms(object, "expect")?,
@@ -633,12 +777,14 @@ mod tests {
             let actions = r#"[{"perform":{"target":"name","action":"set_value","value":"Ada"}},{"wait_for_named":{"target":"result","timeout_ms":750}},{"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},{"tap_at":[4,5]}]"#;
             let standalone = parse_actions(actions).unwrap();
             let complete = parse_spec(&format!(
-                r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json"}}"#
+                r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json","results":"results.json"}}"#
             ))
             .unwrap();
             assert_eq!(complete.actions, standalone);
             assert_eq!(complete.viewport, Some((800, 600)));
             assert!(complete.audit);
+            assert_eq!(complete.results.as_deref(), Some("results.json"));
+            assert!(parse_spec(r#"{"results":3}"#).is_err());
             assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
         }
 

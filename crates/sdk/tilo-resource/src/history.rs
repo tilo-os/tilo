@@ -12,7 +12,6 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
-use tilo_clock::{SystemTime, UNIX_EPOCH};
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -36,25 +35,21 @@ pub struct Version {
     pub message: Option<String>,
 }
 
-impl Version {
-    /// A one-line human description: the action's label when known.
-    pub fn summary(&self) -> Option<String> {
-        self.context
-            .as_ref()
-            .and_then(ActionContext::summary)
-            .or_else(|| self.message.clone())
-    }
-}
-
-fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
+/// One change of `doc` as a version on the timeline; a continuation of a
+/// gesture reads as its gesture's entry ([`tilo_actions::entry_of`]).
+pub fn version_of(doc: &automerge::Automerge, meta: &automerge::ChangeMetadata<'_>) -> Version {
     let message = meta.message.as_deref().map(str::to_owned);
+    let context = match message.as_deref() {
+        Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+            tilo_actions::entry_of(doc, meta.hash)
+        }
+        text => text.and_then(ActionContext::from_change_message),
+    };
     Version {
         hash: meta.hash,
         actor: meta.actor.to_hex_string(),
         time_ms: meta.timestamp.saturating_mul(1000),
-        context: message
-            .as_deref()
-            .and_then(ActionContext::from_change_message),
+        context,
         message,
     }
 }
@@ -65,13 +60,29 @@ fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
 /// Reads every change's metadata (never its operations). For a long history
 /// shown a screen at a time, [`page`] reads only the page.
 pub fn versions(doc: &mut Doc) -> Vec<Version> {
-    doc.get_changes_meta(&[]).iter().map(version_of).collect()
+    // Closes the open transaction, so its change is listed too.
+    doc.get_heads();
+    committed_versions(doc)
 }
 
-fn unix_now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
+/// [`versions`] of the committed document, read through a shared
+/// reference: a transaction still open is not listed.
+pub fn committed_versions(doc: &Doc) -> Vec<Version> {
+    let mut entries = tilo_actions::EntryReader::default();
+    doc.committed_document()
+        .get_changes_meta(&[])
+        .iter()
+        .map(|meta| {
+            let message = meta.message.as_deref().map(str::to_owned);
+            Version {
+                hash: meta.hash,
+                actor: meta.actor.to_hex_string(),
+                time_ms: meta.timestamp.saturating_mul(1000),
+                context: entries.read(&meta.actor, message.as_deref()),
+                message,
+            }
+        })
+        .collect()
 }
 
 /// Commit the open transaction with a wall-clock timestamp attached.
@@ -82,7 +93,7 @@ fn unix_now_secs() -> i64 {
 ///
 /// An empty commit abandons the empty transaction and records nothing.
 pub fn commit_stamped(doc: &mut Doc) -> Option<ChangeHash> {
-    commit_stamped_at_with_message(doc, unix_now_secs(), None)
+    commit_stamped_at_with_message(doc, tilo_clock::unix_now_i64(), None)
 }
 
 /// As [`commit_stamped`], with a caller-supplied Unix time in **seconds**
@@ -96,7 +107,7 @@ pub fn commit_stamped_at(doc: &mut Doc, unix_secs: i64) -> Option<ChangeHash> {
 /// message: the commit-boundary counterpart to action dispatch, so history
 /// learns which app and resource an edit belongs to.
 pub fn commit_stamped_with_message(doc: &mut Doc, message: Option<String>) -> Option<ChangeHash> {
-    commit_stamped_at_with_message(doc, unix_now_secs(), message)
+    commit_stamped_at_with_message(doc, tilo_clock::unix_now_i64(), message)
 }
 
 /// [`commit_stamped_with_message`] at a caller-supplied Unix time in seconds.
@@ -265,13 +276,14 @@ struct Walk {
 }
 
 impl Walk {
-    fn rank(&mut self, doc: &mut Doc, hash: ChangeHash) -> Option<Rank> {
+    fn rank(&mut self, doc: &Doc, hash: ChangeHash) -> Option<Rank> {
         if let Some((rank, _, _)) = self.metas.get(&hash) {
             return Some(*rank);
         }
-        let meta = doc.get_change_meta_by_hash(&hash)?;
+        let document = doc.committed_document();
+        let meta = document.get_change_meta_by_hash(&hash)?;
         let rank = (meta.max_op, meta.start_op);
-        let entry = (rank, meta.deps.clone(), version_of(&meta));
+        let entry = (rank, meta.deps.clone(), version_of(document, &meta));
         self.metas.insert(hash, entry);
         Some(rank)
     }

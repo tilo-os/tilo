@@ -2,13 +2,27 @@ name: Prepare Rust build
 description: Ensure native build tools and restore Cargo downloads. The runner provides the compiler cache.
 
 outputs:
+  cargo-cache-key:
+    description: Exact primary download-cache key emitted by the restore action.
+    value: ${{ steps.cargo-downloads.outputs.cache-key }}
   cargo-cache-hit:
     description: Whether the exact Cargo.lock download cache was restored.
     value: ${{ steps.cargo-downloads.outputs.cache-hit }}
+  cargo-cache-paths:
+    description: The cached Cargo download directories, for the matching save step.
+    value: ${{ steps.cargo-downloads.outputs.paths }}
 
 runs:
   using: composite
   steps:
+    # Compiler-cache clients probe rustup with `rustc +stable`. Images
+    # carry the workspace's pinned compiler; that probe must not install another
+    # toolchain in each native check/test/Clippy job. A missing pinned
+    # compiler remains a build failure.
+    - name: Keep compiler discovery on the installed toolchain
+      shell: bash
+      run: echo 'RUSTUP_AUTO_INSTALL=0' >> "$GITHUB_ENV"
+
     # Builder images created before the NTFS reader landed do not contain the
     # GNU build system needed to bootstrap its pinned source archive. Keep this
     # fallback until every runner has consumed a rebuilt Containerfile.builder;

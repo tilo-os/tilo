@@ -1,59 +1,9 @@
-use vello::kurbo::Point;
-
 #[derive(Clone, Debug)]
 pub enum DragPayload {
     Tab { group: u64, tab: u64 },
     File { path: String },
     Text { value: String },
     Custom { kind: String, blob: Vec<u8> },
-}
-
-#[derive(Clone, Debug)]
-pub struct DragState {
-    pub payload: DragPayload,
-    pub origin: Point,
-    pub current: Point,
-}
-
-#[derive(Default)]
-pub struct DragDropManager {
-    pub active: Option<DragState>,
-}
-
-impl DragDropManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn start(&mut self, payload: DragPayload, origin: Point) {
-        self.active = Some(DragState {
-            payload,
-            origin,
-            current: origin,
-        });
-    }
-    pub fn update_position(&mut self, p: Point) {
-        if let Some(s) = &mut self.active {
-            s.current = p;
-        }
-    }
-    pub fn end(&mut self) -> Option<DragState> {
-        self.active.take()
-    }
-    pub fn is_active(&self) -> bool {
-        self.active.is_some()
-    }
-}
-
-impl DragDropManager {
-    pub fn distance_moved(&self) -> f64 {
-        if let Some(s) = &self.active {
-            let dx = s.current.x - s.origin.x;
-            let dy = s.current.y - s.origin.y;
-            (dx * dx + dy * dy).sqrt()
-        } else {
-            0.0
-        }
-    }
 }
 
 /// Threshold in logical pixels after which a pointer press-and-move is promoted
@@ -78,6 +28,7 @@ pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Weak};
 
+use tilo_lock::MutexRecover as _;
 use winit::window::Window;
 
 /// The window drags are started from. A `Weak` so the toolkit does not
@@ -90,10 +41,7 @@ static DRAG_WINDOW: Mutex<Option<Weak<Window>>> = Mutex::new(None);
 /// with no drag support, [`start_file_drag`] reports that it started
 /// nothing rather than pretending.
 pub fn set_drag_window(window: &std::sync::Arc<Window>) {
-    *DRAG_WINDOW
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        Some(std::sync::Arc::downgrade(window));
+    *DRAG_WINDOW.lock_recover() = Some(std::sync::Arc::downgrade(window));
 }
 
 /// The mime type a list of `file://` URIs travels as.
@@ -132,8 +80,17 @@ fn file_uri(path: &Path) -> Option<url::Url> {
 /// URI list, rather than claiming
 /// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
-    mime_guess::from_path(path).first_raw()
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    TILO_TYPES
+        .iter()
+        .find(|(known, _)| extension.is_some_and(|extension| extension.eq_ignore_ascii_case(known)))
+        .map(|(_, media_type)| *media_type)
+        .or_else(|| mime_guess::from_path(path).first_raw())
 }
+
+/// The file types Tilo's own apps write, which no general table knows:
+/// their extension and media type.
+const TILO_TYPES: &[(&str, &str)] = &[("artwork", "application/vnd.tilo.artwork+zip")];
 
 /// Start a drag carrying `paths`, out of this app and into whatever
 /// application the pointer is released over. Call from a press-and-move
@@ -172,9 +129,7 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
 /// something that is not a file on disk.
 pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     let window = {
-        let slot = DRAG_WINDOW
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = DRAG_WINDOW.lock_recover();
         slot.as_ref().and_then(Weak::upgrade)
     };
     let Some(window) = window else {

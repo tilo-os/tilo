@@ -7,6 +7,9 @@ use super::*;
 #[derive(Default)]
 pub(super) struct InspectorLayout {
     pub(super) valid: bool,
+    /// The selected clip's facts (position, duration, source in and out),
+    /// at the head of the body.
+    pub(super) properties: Option<Rect>,
     pub(super) opacity: Option<Rect>,
     pub(super) volume: Option<Rect>,
     pub(super) brightness: Option<Rect>,
@@ -119,6 +122,10 @@ pub(super) struct InspectorLayout {
     pub(super) add_marker: Option<Rect>,
     /// Total content extent (px) from the inspector top, for scroll clamping.
     pub(super) content_height: f64,
+    /// Where the scrolled body may be cut: the top of every row and the foot
+    /// of the last. The body shows whole rows only, so its edges land on
+    /// these rather than through a row's text.
+    pub(super) breaks: Vec<f64>,
 }
 impl VideoEditorApp {
     /// Lay out the markers section — its header, one row per marked instant,
@@ -130,6 +137,7 @@ impl VideoEditorApp {
         l.sections
             .push((Section::Markers, Rect::new(x0, *y, x1, *y + SECTION_H)));
         *y += SECTION_H + 4.0;
+        l.breaks.push(*y);
         if self.collapsed.contains(&Section::Markers) {
             return;
         }
@@ -138,6 +146,7 @@ impl VideoEditorApp {
             // Room for the "nothing marked yet" line, which would otherwise
             // land on the section header it sits under.
             *y += 18.0;
+            l.breaks.push(*y);
         }
         for (at, m, on_clip) in markers {
             // A row grows for a note it has — and for one being typed into it
@@ -154,9 +163,11 @@ impl VideoEditorApp {
                 Rect::new(x0, *y, x1, *y + h),
             ));
             *y += h + 4.0;
+            l.breaks.push(*y);
         }
         l.add_marker = Some(Rect::new(x0, *y, x1, *y + 26.0));
         *y += 34.0;
+        l.breaks.push(*y);
     }
 
     /// Lay out the project's format section — the readout of what the frame
@@ -172,6 +183,7 @@ impl VideoEditorApp {
         l.sections
             .push((Section::Project, Rect::new(x0, *y, x1, *y + SECTION_H)));
         *y += SECTION_H + 4.0;
+        l.breaks.push(*y);
         if self.collapsed.contains(&Section::Project) {
             return;
         }
@@ -183,27 +195,37 @@ impl VideoEditorApp {
         // descenders sat on the preset row's top border.
         l.project_format_y = *y;
         *y += 24.0;
-        let seg_w = (x1 - x0) / FRAME_PRESETS.len() as f64;
-        for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
-            let sx0 = x0 + i as f64 * seg_w;
-            l.project_frames
-                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w, *y + 24.0)));
+        l.breaks.push(*y);
+        let labels: Vec<String> = FRAME_PRESETS
+            .iter()
+            .map(|(n, _, _)| (*n).to_string())
+            .collect();
+        for ((_, w, h), rect) in FRAME_PRESETS
+            .iter()
+            .zip(self.segment_rects(&labels, x0, x1, *y, 24.0))
+        {
+            l.project_frames.push(((*w, *h), rect));
         }
         *y += 32.0;
+        l.breaks.push(*y);
         l.project_rate_y = *y;
         *y += 20.0;
-        let rate_w = (x1 - x0) / RATE_PRESETS.len() as f64;
-        for (i, rate) in RATE_PRESETS.iter().enumerate() {
-            let sx0 = x0 + i as f64 * rate_w;
-            l.project_rates
-                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w, *y + 24.0)));
+        l.breaks.push(*y);
+        let labels: Vec<String> = RATE_PRESETS.iter().map(|r| rate_words(*r)).collect();
+        for (rate, rect) in RATE_PRESETS
+            .iter()
+            .zip(self.segment_rects(&labels, x0, x1, *y, 24.0))
+        {
+            l.project_rates.push((*rate, rect));
         }
         *y += 32.0;
+        l.breaks.push(*y);
         // Offered only when there is a source to copy a shape from, and only
         // when that source has one -- audio and titles carry no frame.
         if self.format_source().is_some() {
             l.project_match = Some(Rect::new(x0, *y, x1, *y + 26.0));
             *y += 34.0;
+            l.breaks.push(*y);
         }
     }
 
@@ -267,6 +289,54 @@ impl VideoEditorApp {
         (key, up, down, slider, remove)
     }
 
+    /// One segmented strip across `x0..x1`, its segments sized to their
+    /// labels the way every segmented control partitions itself.
+    pub(super) fn segment_rects(
+        &self,
+        labels: &[String],
+        x0: f64,
+        x1: f64,
+        y: f64,
+        h: f64,
+    ) -> Vec<Rect> {
+        let strip = Rect::new(x0, y, x1.max(x0), y + h);
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.with_dialog_layout(|_, tr, theme| {
+            ui::widget::SegmentedFace::partition(
+                strip,
+                &labels,
+                control_size_for(strip, theme),
+                tr,
+                theme,
+            )
+        })
+    }
+
+    /// The part of the inspector's scroll body that is drawn: the viewport
+    /// pulled in to the nearest row boundaries, so a row the scroll would cut
+    /// through is left out until it is wholly in view, and nothing is ever
+    /// shown sliced at the header's foot or the panel's bottom edge.
+    pub(super) fn inspector_shown_body(&self, r: &Regions, l: &InspectorLayout) -> Rect {
+        let view = self.inspector_viewport(r);
+        let top = l
+            .breaks
+            .iter()
+            .copied()
+            .filter(|y| *y >= view.y0 - 0.5)
+            .fold(f64::INFINITY, f64::min);
+        let bottom = l
+            .breaks
+            .iter()
+            .copied()
+            .filter(|y| *y <= view.y1 + 0.5)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if top.is_finite() && bottom.is_finite() && bottom > top {
+            Rect::new(view.x0, top.max(view.y0), view.x1, bottom.min(view.y1))
+        } else {
+            Rect::new(view.x0, view.y0, view.x1, view.y0)
+        }
+    }
+
     /// The maximum inspector scroll offset for the current selection.
     /// `content_height` is scroll-independent (the scroll is a pure translation),
     /// so the current layout's extent is the intrinsic content height.
@@ -306,6 +376,7 @@ impl VideoEditorApp {
             let x0 = r.inspector.x0 + PAD;
             let x1 = r.inspector.x1 - PAD;
             let mut y = body_origin - self.inspector_scroll / scale + 16.0;
+            l.breaks.push(y);
             self.layout_markers(&mut l, x0, x1, &mut y);
             self.layout_project(&mut l, x0, x1, &mut y);
             l.content_height = (y - (body_origin - self.inspector_scroll / scale)) * scale;
@@ -320,66 +391,90 @@ impl VideoEditorApp {
         let is_title = media.is_some_and(|item| item.text.is_some());
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
-        // Static header + four property rows consume a fixed block; the
-        // editable controls start below it. Everything scrolls together by
-        // `inspector_scroll` (the pane clips + is wheel-scrollable) so the
-        // effects stack can grow without clipping the actions.
+        // The fixed header (name, lane and the clip's facts) is measured by
+        // `inspector_header`; the editable controls start below it, and
+        // everything here scrolls together by `inspector_scroll` (the pane
+        // clips + is wheel-scrollable) so the effects stack can grow without
+        // clipping the actions.
         let top = body_origin - self.inspector_scroll / scale;
-        // The four property rows end on a baseline at `top + 132`; a 12px
-        // line reaches ~15px past it, so the first control label cannot start
-        // before `top + 147` without sitting on top of "Source Out".
-        let mut y = top;
-        let row = 34.0; // label sits at y, the 9px track at y+19
-        let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
+        let mut y = top + S3;
+        l.breaks.push(y);
+        // The clip's facts first, as tall as the property list draws them.
+        let facts_h = self.with_dialog_layout(|_, tr, theme| {
+            let values = Self::inspector_property_values(clip, self.project.fps);
+            let rows = inspector_property_rows(&values);
+            ui::widget::PropertyListFace::new(&rows).height(tr, theme, (x1 - x0) * scale) / scale
+        });
+        l.properties = Some(Rect::new(x0, y, x1, y + facts_h));
+        let fact_rows = Self::inspector_property_values(clip, self.project.fps)
+            .len()
+            .max(1);
+        for i in 1..fact_rows {
+            l.breaks.push(y + facts_h * i as f64 / fact_rows as f64);
+        }
+        y += facts_h + S2;
+        l.breaks.push(y);
+        let row = 40.0; // the label line at y, the 8px track under it with room for the knob
+        let track_at = |y: f64| Rect::new(x0, y + 25.0, x1, y + 33.0);
         // An animatable row indents its label past a key control at the head.
         // The indent is unconditional so the row does not shuffle sideways the
         // moment a parameter is keyed.
-        let key_at = |y: f64| Rect::new(x0, y - 3.0, x0 + KEY_BOX, y + 15.0);
+        let key_at = |y: f64| Rect::new(x0, y, x0 + KEY_BOX, y + 18.0);
 
         if is_video {
             l.opacity = Some(track_at(y));
             l.keys.push((Param::Opacity, key_at(y)));
             y += row;
+            l.breaks.push(y);
             l.brightness = Some(track_at(y));
             l.keys.push((Param::Brightness, key_at(y)));
             y += row;
+            l.breaks.push(y);
             l.contrast = Some(track_at(y));
             l.keys.push((Param::Contrast, key_at(y)));
             y += row;
+            l.breaks.push(y);
             l.saturation = Some(track_at(y));
             l.keys.push((Param::Saturation, key_at(y)));
-            y += row;
         } else {
             l.volume = Some(track_at(y));
             l.keys.push((Param::Volume, key_at(y)));
-            y += row;
         }
+        y += row;
+        l.breaks.push(y);
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
-        l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
-        l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
-        // The transition caption sits at `transition_y - 20`, five pixels
-        // higher relative to its row than a slider label does to its track,
-        // so it needs that much more advance to keep the clearance every
-        // other caption has over the knobs above it. At `+ 2` it touched them.
-        y += row + 4.0;
+        l.fade_in = Some(Rect::new(x0, y + 25.0, x0 + half, y + 33.0));
+        l.fade_out = Some(Rect::new(x1 - half, y + 25.0, x1, y + 33.0));
+        // A captioned control row takes a slider row's geometry: its control
+        // where a track would be, its caption where a label would be, so the
+        // caption keeps the clearance every label has over the knobs above.
+        y += row;
+        l.breaks.push(y);
 
         // Transition segmented control.
-        let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
-        l.transition_y = y + 15.0;
-        for (i, t) in Transition::ALL.iter().enumerate() {
-            let sx0 = x0 + i as f64 * seg_w;
-            l.transitions
-                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w, y + 37.0)));
+        l.transition_y = y + 25.0;
+        let labels: Vec<String> = Transition::ALL
+            .iter()
+            .map(|t| t.label().to_string())
+            .collect();
+        for (t, rect) in
+            Transition::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y + 25.0, 24.0))
+        {
+            l.transitions.push((*t, rect));
         }
-        y += 48.0;
+        y += 56.0;
+        l.breaks.push(y);
         // Transition length, only when there is a transition to size.
         if clip.transition != Transition::None {
-            l.transition_len = Some(Rect::new(x0, y + 19.0, x1, y + 28.0));
+            l.transition_len = Some(Rect::new(x0, y + 25.0, x1, y + 33.0));
             y += row;
+            l.breaks.push(y);
         }
         // Label color swatches.
-        l.colors_y = y + 15.0;
+        l.colors_y = y + 25.0;
         let sw = 24.0;
         for i in 0..7u8 {
             let sx0 = x0 + f64::from(i) * (sw + 4.0);
@@ -387,9 +482,10 @@ impl VideoEditorApp {
                 break;
             }
             l.colors
-                .push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
+                .push((i, Rect::new(sx0, y + 25.0, sx0 + sw, y + 25.0 + sw)));
         }
-        y += 44.0;
+        y += 56.0;
+        l.breaks.push(y);
         // The link control. It sits in the top block, with the clip's own
         // identity rather than down among the picture sections, because it
         // says what this clip *is* — half of a shot, or a clip on its own —
@@ -398,6 +494,7 @@ impl VideoEditorApp {
             l.link_label_y = y + 15.0;
             l.link = Some(Rect::new(x0, y + 20.0, x1, y + 46.0));
             y += 56.0;
+            l.breaks.push(y);
         }
 
         // ---- collapsible sections ------------------------------------
@@ -406,18 +503,24 @@ impl VideoEditorApp {
         let header = |l: &mut InspectorLayout, y: &mut f64, s: Section| -> bool {
             l.sections.push((s, Rect::new(x0, *y, x1, *y + SECTION_H)));
             *y += SECTION_H + 4.0;
+            l.breaks.push(*y);
             !self.collapsed.contains(&s)
         };
         // Tone curves, video only — it is the same grade the three sliders
         // above start, so it sits directly under them.
         if is_video && header(&mut l, &mut y, Section::Curves) {
-            let cw = (x1 - x0) / crate::curve::Channel::ALL.len() as f64;
-            for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
-                let cx = x0 + i as f64 * cw;
-                l.curve_channels
-                    .push((*ch, Rect::new(cx, y, cx + cw, y + 24.0)));
+            let labels: Vec<String> = crate::curve::Channel::ALL
+                .iter()
+                .map(|c| c.label().to_string())
+                .collect();
+            for (ch, rect) in crate::curve::Channel::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.curve_channels.push((*ch, rect));
             }
             y += 32.0;
+            l.breaks.push(y);
             // Square, so the diagonal that means "unchanged" really is a
             // diagonal — on a squashed box a curve reads as steeper or
             // flatter than it is.
@@ -427,11 +530,14 @@ impl VideoEditorApp {
             // the amount row's own label: at the bare 12px gap the two shared
             // a baseline and drew through each other.
             y += side + 34.0;
+            l.breaks.push(y);
             l.nums.push((NumField::CurveMix, track_at(y)));
             l.keys.push((Param::CurveMix, key_at(y)));
             y += row;
+            l.breaks.push(y);
             l.curve_reset = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
+            l.breaks.push(y);
         }
         // Geometry, video only — an audio clip has no picture to place.
         if is_video && header(&mut l, &mut y, Section::Transform) {
@@ -447,31 +553,37 @@ impl VideoEditorApp {
                     l.keys.push((p, key_at(y)));
                 }
                 y += row;
+                l.breaks.push(y);
             }
             // Crop: two half-width pairs under their own caption. No key
             // control — crop frames the shot rather than moving it, and the
             // model does not animate it.
             y += 12.0;
+            l.breaks.push(y);
             l.crop_label_y = y;
             y += 20.0;
+            l.breaks.push(y);
             let half = (x1 - x0) / 2.0 - 6.0;
             for pair in [
                 [NumField::CropLeft, NumField::CropRight],
                 [NumField::CropTop, NumField::CropBottom],
             ] {
                 l.nums
-                    .push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
+                    .push((pair[0], Rect::new(x0, y + 25.0, x0 + half, y + 33.0)));
                 l.nums
-                    .push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
+                    .push((pair[1], Rect::new(x1 - half, y + 25.0, x1, y + 33.0)));
                 y += row;
+                l.breaks.push(y);
             }
             // Anchor: the point scale and rotation turn about. Nine presets
             // as three segmented rows rather than a free pair of sliders —
             // an anchor is chosen, not dialled, and every value anyone wants
             // is a corner, an edge or the middle.
             y += 12.0;
+            l.breaks.push(y);
             l.anchor_label_y = y;
             y += 20.0;
+            l.breaks.push(y);
             let cell = (x1 - x0) / 3.0;
             // Three segmented rows an `S1` apart: each row is one shared
             // control whose segments abut (the face draws the separators),
@@ -483,17 +595,20 @@ impl VideoEditorApp {
                         .push(((*ax, ay), Rect::new(cx, y, cx + cell, y + 22.0)));
                 }
                 y += 22.0 + S1;
+                l.breaks.push(y);
             }
             y += 6.0;
+            l.breaks.push(y);
             // Picture-in-picture, as the four corners it is actually used for.
             y += 16.0;
+            l.breaks.push(y);
             // Four sibling buttons, `S2` apart.
             let bw = (x1 - x0 - 3.0 * S2) / 4.0;
             for (i, (label, corner)) in [
-                ("↖", (-1.0, -1.0)),
-                ("↗", (1.0, -1.0)),
-                ("↙", (-1.0, 1.0)),
-                ("↘", (1.0, 1.0)),
+                ("Top left", (-1.0, -1.0)),
+                ("Top right", (1.0, -1.0)),
+                ("Bottom left", (-1.0, 1.0)),
+                ("Bottom right", (1.0, 1.0)),
             ]
             .into_iter()
             .enumerate()
@@ -503,22 +618,28 @@ impl VideoEditorApp {
                     .push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
             }
             y += 32.0;
+            l.breaks.push(y);
             l.reset_transform = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
+            l.breaks.push(y);
         }
         // Rate and direction.
         if header(&mut l, &mut y, Section::Speed) {
             l.nums.push((NumField::Speed, track_at(y)));
             y += row;
-            let pw = (x1 - x0) / SPEED_PRESETS.len() as f64;
-            for (i, rate) in SPEED_PRESETS.iter().enumerate() {
-                let px0 = x0 + i as f64 * pw;
-                l.speed_presets
-                    .push((*rate, Rect::new(px0, y, px0 + pw, y + 24.0)));
+            l.breaks.push(y);
+            let labels: Vec<String> = SPEED_PRESETS.iter().map(|r| speed_words(*r)).collect();
+            for (rate, rect) in SPEED_PRESETS
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.speed_presets.push((*rate, rect));
             }
             y += 32.0;
+            l.breaks.push(y);
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
+            l.breaks.push(y);
         }
         // The lane's own fader and pan. Present for a picture clip as well as
         // an audio one: a shot on a video track carries its source's sound,
@@ -531,11 +652,14 @@ impl VideoEditorApp {
         if header(&mut l, &mut y, Section::Mix) {
             l.mix_track_y = y;
             y += 18.0;
+            l.breaks.push(y);
             l.mix_meter = Some(Rect::new(x0, y, x1, y + 12.0));
             y += 22.0;
+            l.breaks.push(y);
             for f in [NumField::TrackGain, NumField::TrackPan] {
                 l.nums.push((f, track_at(y)));
                 y += row;
+                l.breaks.push(y);
             }
             if self
                 .selected_track()
@@ -546,6 +670,7 @@ impl VideoEditorApp {
             } else {
                 y += 4.0;
             }
+            l.breaks.push(y);
         }
         // Colour key, video only — there is nothing to key out of audio.
         // The four sliders appear only once the key is switched on, so an
@@ -555,12 +680,14 @@ impl VideoEditorApp {
             if open {
                 l.key_enable = Some(Rect::new(x0, y, x1, y + 26.0));
                 y += 34.0;
+                l.breaks.push(y);
                 if clip.key.enabled {
                     // The caption's own line, then the swatches under it —
                     // the same 20px the Crop caption takes, so the two read
                     // as one convention rather than two.
                     l.key_color_y = y;
                     y += 20.0;
+                    l.breaks.push(y);
                     let sw = 26.0;
                     for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
                         let sx = x0 + i as f64 * (sw + S1);
@@ -577,6 +704,7 @@ impl VideoEditorApp {
                         l.key_pick = Some(Rect::new(pick_x, y, x1, y + sw));
                     }
                     y += sw + 14.0;
+                    l.breaks.push(y);
                     for f in [
                         NumField::KeyTolerance,
                         NumField::KeySoftness,
@@ -587,8 +715,10 @@ impl VideoEditorApp {
                             l.keys.push((p, key_at(y)));
                         }
                         y += row;
+                        l.breaks.push(y);
                     }
                     y += 4.0;
+                    l.breaks.push(y);
                 }
             }
         }
@@ -597,13 +727,18 @@ impl VideoEditorApp {
         if is_video {
             let open = header(&mut l, &mut y, Section::Mask);
             if open {
-                let mw = (x1 - x0) / crate::model::MaskShape::ALL.len() as f64;
-                for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
-                    let sx = x0 + i as f64 * mw;
-                    l.mask_shapes
-                        .push((*s, Rect::new(sx, y, sx + mw, y + 24.0)));
+                let labels: Vec<String> = crate::model::MaskShape::ALL
+                    .iter()
+                    .map(|s| s.label().to_string())
+                    .collect();
+                for (shape, rect) in crate::model::MaskShape::ALL
+                    .iter()
+                    .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+                {
+                    l.mask_shapes.push((*shape, rect));
                 }
                 y += 32.0;
+                l.breaks.push(y);
                 if clip.mask.is_active() {
                     for f in [
                         NumField::MaskX,
@@ -618,11 +753,13 @@ impl VideoEditorApp {
                             l.keys.push((p, key_at(y)));
                         }
                         y += row;
+                        l.breaks.push(y);
                     }
                     let hw = (x1 - x0) / 2.0 - 4.0;
                     l.mask_fit = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
                     l.mask_invert = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
                     y += 34.0;
+                    l.breaks.push(y);
                 }
             }
         }
@@ -631,23 +768,32 @@ impl VideoEditorApp {
             // Captioned controls need the caption's line above them; without
             // it the caption lands on the section header it sits under.
             y += 16.0;
+            l.breaks.push(y);
             // Three lines' worth: a title is two or three lines as often as
             // it is one, and a one-line box could not show what was typed.
             l.title_text = Some(Rect::new(x0, y, x1, y + 66.0));
             y += 92.0;
+            l.breaks.push(y);
             l.nums.push((NumField::TitleSize, track_at(y)));
             y += row;
-            let aw = (x1 - x0) / TextAlign::ALL.len() as f64;
-            for (i, a) in TextAlign::ALL.iter().enumerate() {
-                let ax = x0 + i as f64 * aw;
-                l.title_align
-                    .push((*a, Rect::new(ax, y, ax + aw, y + 24.0)));
+            l.breaks.push(y);
+            let labels: Vec<String> = TextAlign::ALL
+                .iter()
+                .map(|a| a.label().to_string())
+                .collect();
+            for (a, rect) in TextAlign::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.title_align.push((*a, rect));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.
             y += 32.0 + 22.0;
+            l.breaks.push(y);
             l.title_font = Some(Rect::new(x0, y, x1, y + 28.0));
             y += 36.0 + 16.0;
+            l.breaks.push(y);
             let sw = 24.0;
             for (i, col) in TITLE_COLORS.iter().enumerate() {
                 let sx = x0 + i as f64 * (sw + 4.0);
@@ -658,12 +804,15 @@ impl VideoEditorApp {
                     .push((*col, Rect::new(sx, y, sx + sw, y + sw)));
             }
             y += sw + 12.0;
+            l.breaks.push(y);
             let hw = (x1 - x0) / 2.0 - 4.0;
             l.title_bold = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
             l.title_italic = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
             y += 34.0;
+            l.breaks.push(y);
             l.nums.push((NumField::TitleBackdrop, track_at(y)));
             y += row + 4.0;
+            l.breaks.push(y);
         }
         // Effects stack (video only): one row per effect, then an "Add
         // effect" button.
@@ -671,18 +820,22 @@ impl VideoEditorApp {
             let open = header(&mut l, &mut y, Section::Effects);
             l.effects_label_y = y;
             if open {
-                for i in 0..clip.effects.len() {
+                for effect in &*clip.effects {
                     let row = Rect::new(x0, y, x1, y + 24.0);
                     l.effect_rows.push(row);
                     // The row's key control joins the panel's one list of
                     // them, so drawing, hit-testing and the keyframe menu all
                     // reach it without a second code path.
-                    l.keys
-                        .push((Param::EffectAmount(i as u32), Self::effect_row_parts(row).0));
+                    l.keys.push((
+                        Param::EffectAmount(effect.id),
+                        Self::effect_row_parts(row).0,
+                    ));
                     y += 28.0;
+                    l.breaks.push(y);
                 }
                 l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
                 y += 34.0;
+                l.breaks.push(y);
             }
         }
         // Markers: every marked instant on the timeline, the project's own and
@@ -691,9 +844,11 @@ impl VideoEditorApp {
         self.layout_project(&mut l, x0, x1, &mut y);
         // Actions.
         y += 6.0;
+        l.breaks.push(y);
         l.split = Rect::new(x0, y, x0.midpoint(x1) - 4.0, y + 28.0);
         l.delete = Rect::new(x0.midpoint(x1) + 4.0, y, x1, y + 28.0);
         y += 34.0;
+        l.breaks.push(y);
         l.content_height = (y - top) * scale;
         l.valid = true;
         l.scale_from(r.inspector.x0, r.inspector.y0, scale);
@@ -705,6 +860,10 @@ impl InspectorLayout {
     /// Project a logical inspector layout into physical pixels.  The layout
     /// owns every interactive rectangle, so doing this once keeps painting,
     /// hit testing, the scrollbar's extent and AT focus rings identical.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one mapping per laid-out field, listed together so a new field cannot be left unscaled"
+    )]
     pub(super) fn scale_from(&mut self, ox: f64, oy: f64, scale: f64) {
         if (scale - 1.0).abs() < f64::EPSILON {
             return;
@@ -718,6 +877,7 @@ impl InspectorLayout {
             )
         };
         let one = |r: &mut Option<Rect>| *r = r.map(map);
+        one(&mut self.properties);
         one(&mut self.opacity);
         one(&mut self.volume);
         one(&mut self.brightness);
@@ -743,6 +903,9 @@ impl InspectorLayout {
         one(&mut self.curve_canvas);
         one(&mut self.curve_reset);
         one(&mut self.project_match);
+        for y in &mut self.breaks {
+            *y = oy + (*y - oy) * scale;
+        }
         self.split = map(self.split);
         self.delete = map(self.delete);
         self.transition_y = oy + (self.transition_y - oy) * scale;

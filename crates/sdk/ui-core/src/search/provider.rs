@@ -3,9 +3,12 @@
 //! records in a [`tilo_search::SearchIndex`].
 
 use super::body::{BodyIndex, SearchBody};
+use super::ordinals;
+use super::query::{Facet, SearchQuery};
 use super::rank::FieldWeight;
+use super::row::SearchRow;
 use crate::icons::Icon;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_search::{Document, Page, SearchIndex};
 
@@ -34,6 +37,7 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 use std::borrow::Borrow;
 use tilo_actions::ActionAddress;
+use tilo_lock::RwLockRecover as _;
 
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics (see [`tilo_search::fold`]).
@@ -90,14 +94,19 @@ impl SearchCursor {
     }
 }
 
-/// One bounded page returned by [`SearchCatalog::query_page`].
+/// One bounded page of a provider's answer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPage {
     pub results: Vec<SearchResult>,
-    /// Pass this back to `query_page` to continue. `None` means exhausted.
+    /// Pass this back to `search_page` to continue. `None` means exhausted.
     pub next: Option<SearchCursor>,
     /// Hits materialised for this page.
     pub inspected: usize,
+    /// More results for this query are on their way from a slow source (a
+    /// mail server, a video service, a catalogue): the palette keeps a
+    /// loading row and asks [`SearchProvider::poll_page`] with this token
+    /// until they arrive, then appends them to the same list.
+    pub pending: Option<PendingToken>,
 }
 
 impl SearchPage {
@@ -108,8 +117,58 @@ impl SearchPage {
             results: Vec::new(),
             next: None,
             inspected: 0,
+            pending: None,
         }
     }
+
+    /// A finished page: these results, continuing at `next`.
+    #[must_use]
+    pub fn of(results: Vec<SearchResult>, next: Option<SearchCursor>) -> Self {
+        Self {
+            inspected: results.len(),
+            results,
+            next,
+            pending: None,
+        }
+    }
+
+    /// A page whose results are still coming: show `results` now and poll
+    /// `token` for the rest.
+    #[must_use]
+    pub fn pending(results: Vec<SearchResult>, token: PendingToken) -> Self {
+        Self {
+            inspected: results.len(),
+            results,
+            next: None,
+            pending: Some(token),
+        }
+    }
+}
+
+/// A provider's handle on one outstanding request to a slow source. Opaque
+/// to the palette, which only hands it back to [`SearchProvider::poll_page`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PendingToken(u64);
+
+impl PendingToken {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.0
+    }
+}
+
+/// The answer to [`SearchProvider::poll_page`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PagePoll {
+    /// Still waiting; ask again on a later frame.
+    Pending,
+    /// The awaited page. It may carry its own `next` or another `pending`.
+    Ready(SearchPage),
 }
 
 /// Cheap diagnostics used by contract and performance tests.
@@ -277,6 +336,73 @@ impl SearchCatalogInner {
             tracing::error!(%error, "could not index search records");
         }
     }
+
+    /// Make `records`, validated and unique, the whole catalogue in their
+    /// order, touching only what differs. Returns how many records it
+    /// indexed again or dropped.
+    fn sync(&mut self, records: Vec<SearchRecord>) -> Result<usize, SearchCatalogError> {
+        let held: Vec<Option<u64>> = records
+            .iter()
+            .map(|record| self.ordinals.get(record.resource_id.as_str()).copied())
+            .collect();
+        let planned = ordinals::plan(&held).ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
+        let wanted: HashSet<&str> = records
+            .iter()
+            .map(|record| record.resource_id.as_str())
+            .collect();
+        let removed: Vec<Arc<str>> = self
+            .ordinals
+            .keys()
+            .filter(|id| !wanted.contains(id.as_ref()))
+            .cloned()
+            .collect();
+        // Placed records (new, moved, or changed in place) by position.
+        let placed: Vec<usize> = (0..records.len())
+            .filter(|&at| {
+                let (Some(record), Some(ordinal)) = (records.get(at), planned.get(at)) else {
+                    return false;
+                };
+                held.get(at).copied().flatten() != Some(*ordinal)
+                    || !self.same_content(*ordinal, record)
+            })
+            .collect();
+        drop(wanted);
+        if removed.is_empty() && placed.is_empty() {
+            return Ok(0);
+        }
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
+        let last = planned.last().copied().unwrap_or(0);
+        let next_browse_ordinal = self.next_browse_ordinal.max(
+            last.checked_add(1)
+                .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?,
+        );
+        // Free every ordinal that changes hands before taking any: a placed
+        // record may take one a moved record held.
+        for id in &removed {
+            self.take(id);
+        }
+        for &at in &placed {
+            if let Some(record) = records.get(at) {
+                self.take(&record.resource_id);
+            }
+        }
+        let mut records: Vec<Option<SearchRecord>> = records.into_iter().map(Some).collect();
+        for &at in &placed {
+            let (Some(record), Some(&ordinal)) =
+                (records.get_mut(at).and_then(Option::take), planned.get(at))
+            else {
+                continue;
+            };
+            let resource_id: Arc<str> = record.resource_id.as_str().into();
+            self.insert(ordinal, resource_id, record);
+        }
+        self.generation = generation;
+        self.next_browse_ordinal = next_browse_ordinal;
+        Ok(removed.len().saturating_add(placed.len()))
+    }
 }
 
 /// A complete, incremental search catalogue keyed by canonical resource id.
@@ -327,10 +453,7 @@ impl SearchCatalog {
     /// other session sharing it — observing the change.
     #[must_use]
     pub fn detached(&self) -> Self {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let copy = SearchCatalogInner {
             index: inner.index.detached(),
             entries: inner.entries.clone(),
@@ -376,23 +499,24 @@ impl SearchCatalog {
         records: impl IntoIterator<Item = SearchRecord>,
     ) -> Result<(), SearchCatalogError> {
         // A fresh index indexes everything in one bulk build on commit.
-        let mut next = SearchCatalogInner::default();
+        let mut next = SearchCatalogInner {
+            next_browse_ordinal: ordinals::GAP,
+            ..SearchCatalogInner::default()
+        };
         for record in records {
             validate(&record)?;
             let resource_id: Arc<str> = record.resource_id.as_str().into();
             if next.ordinals.contains_key(&resource_id) {
                 return Err(SearchCatalogError::DuplicateResourceId);
             }
+            // A gap apart, so a later sync can place records between.
             let ordinal = next.next_browse_ordinal;
             next.next_browse_ordinal = ordinal
-                .checked_add(1)
+                .checked_add(ordinals::GAP)
                 .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
             next.insert(ordinal, resource_id, record);
         }
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         next.generation = inner
             .generation
             .checked_add(1)
@@ -402,70 +526,60 @@ impl SearchCatalog {
         Ok(())
     }
 
-    /// Set this freshly-built catalogue's generation immediately after a
-    /// published predecessor. This supports providers that construct a full
-    /// replacement off their public snapshot lock, then make one short atomic
-    /// swap without allowing a cursor from the predecessor to remain current.
+    /// [`Self::sync_records`] for legacy `(resource id, searchable text,
+    /// result)` rows, as [`Self::replace_all`] takes them.
     ///
     /// # Errors
     ///
-    /// Returns [`SearchCatalogError::GenerationExhausted`] when advancing the
-    /// predecessor generation would overflow.
-    pub fn advance_after(&self, predecessor_generation: u64) -> Result<(), SearchCatalogError> {
-        let generation = predecessor_generation
-            .checked_add(1)
-            .ok_or(SearchCatalogError::GenerationExhausted)?;
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.generation = generation;
-        drop(inner);
-        Ok(())
+    /// As [`Self::sync_records`].
+    pub fn sync(
+        &self,
+        rows: impl IntoIterator<Item = (String, String, SearchResult)>,
+    ) -> Result<bool, SearchCatalogError> {
+        self.sync_records(
+            rows.into_iter().map(|(resource_id, text, result)| {
+                SearchRecord::legacy(resource_id, &text, result)
+            }),
+        )
     }
 
-    /// Preflight a bounded batch of incremental mutations without changing the
-    /// retained catalogue. Providers can use this before changing companion
-    /// lookup metadata, ensuring exhausted generation or browse identities
-    /// fail closed rather than publishing a partial delta.
+    /// Make `records`, in their order, the whole catalogue, as
+    /// [`Self::replace_all_records`] would, indexing only the records that
+    /// are new, changed or moved, and dropping those absent. Hits and
+    /// browsing come in the same order a bulk replacement gives. The
+    /// generation advances once if anything changed and not at all
+    /// otherwise, so an unchanged snapshot keeps every cursor current.
+    ///
+    /// The catalogue's write lock is held only to compare and stage the
+    /// records; indexing them waits for the next query or
+    /// [`Self::index_bytes`], incrementally when few changed.
     ///
     /// # Errors
     ///
-    /// Returns an exhaustion error when the requested mutations cannot obtain
-    /// distinct generation or browse identities.
-    pub fn preflight_mutations(
+    /// As [`Self::replace_all_records`]; the catalogue is then unchanged.
+    pub fn sync_records(
         &self,
-        mutations: usize,
-        inserts: usize,
-    ) -> Result<(), SearchCatalogError> {
-        let mutations =
-            u64::try_from(mutations).map_err(|_| SearchCatalogError::GenerationExhausted)?;
-        let inserts =
-            u64::try_from(inserts).map_err(|_| SearchCatalogError::BrowseOrdinalExhausted)?;
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner
-            .generation
-            .checked_add(mutations)
-            .ok_or(SearchCatalogError::GenerationExhausted)?;
-        inner
-            .next_browse_ordinal
-            .checked_add(inserts)
-            .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
+        records: impl IntoIterator<Item = SearchRecord>,
+    ) -> Result<bool, SearchCatalogError> {
+        let records: Vec<SearchRecord> = records.into_iter().collect();
+        let mut seen = HashSet::with_capacity(records.len());
+        for record in &records {
+            validate(record)?;
+            if !seen.insert(record.resource_id.as_str()) {
+                return Err(SearchCatalogError::DuplicateResourceId);
+            }
+        }
+        drop(seen);
+        let mut inner = self.inner.write_recover();
+        let touched = inner.sync(records);
         drop(inner);
-        Ok(())
+        touched.map(|touched| touched > 0)
     }
 
     /// Whether a canonical resource is currently retained by this catalogue.
     #[must_use]
     pub fn contains(&self, resource_id: &str) -> bool {
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ordinals
-            .contains_key(resource_id)
+        self.inner.read_recover().ordinals.contains_key(resource_id)
     }
 
     /// Insert or replace one durable resource. `searchable_text` may combine
@@ -496,10 +610,7 @@ impl SearchCatalog {
     /// As [`Self::upsert`].
     pub fn upsert_record(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
         validate(&record)?;
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let existing = inner.ordinals.get(record.resource_id.as_str()).copied();
         if existing.is_some_and(|ordinal| inner.same_content(ordinal, &record)) {
             return Ok(());
@@ -527,10 +638,7 @@ impl SearchCatalog {
 
     /// Remove one resource. Returns whether it existed.
     pub fn remove(&self, resource_id: &str) -> bool {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         // Returning `false` is the existing fail-closed contract for a remove
         // that was not performed. Do not mutate at MAX: keeping the row is
         // safer than making a previously-issued cursor current again.
@@ -544,10 +652,7 @@ impl SearchCatalog {
 
     #[must_use]
     pub fn stats(&self) -> SearchCatalogStats {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let stats = SearchCatalogStats {
             records: inner.entries.len(),
             body_records: inner.body_records,
@@ -561,11 +666,7 @@ impl SearchCatalog {
     #[must_use]
     pub fn index_bytes(&self) -> u64 {
         self.commit_pending();
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .index
-            .index_bytes()
+        self.inner.read_recover().index.index_bytes()
     }
 
     /// Whether a prior cursor belongs to this exact retained-index
@@ -577,17 +678,9 @@ impl SearchCatalog {
     }
 
     fn commit_pending(&self) {
-        let dirty = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .index
-            .is_dirty();
+        let dirty = self.inner.read_recover().index.is_dirty();
         if dirty {
-            self.inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .commit();
+            self.inner.write_recover().commit();
         }
     }
 
@@ -613,10 +706,7 @@ impl SearchCatalog {
         }
         let normalized_query = tilo_search::fold(query);
         self.commit_pending();
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let generation = inner.generation;
         // A catalogue edit between pages invalidates the order. Restarting
         // may repeat rows but can never skip a new or edited resource.
@@ -649,6 +739,7 @@ impl SearchCatalog {
                 offset: offset.saturating_add(inspected),
             }),
             inspected,
+            pending: None,
         }
     }
 }
@@ -693,10 +784,18 @@ pub struct SearchResult {
     pub action_id: String,
     /// Optional leading glyph drawn at the start of the row.
     pub icon: Option<Icon>,
+    /// What the hit is (a message, a video, a match in a file) and that
+    /// row's slots. `None` draws the generic row.
+    pub row: Option<SearchRow>,
     /// Provider-supplied relevance bias — a nudge, not an override, since the
     /// registry adds a query-match bonus on top. `0` ranks by query match
     /// alone; raise it to float pinned/recent/favourite hits.
     pub score: i32,
+    /// Where the hit lies in the app's anchor path, for scope checks, when
+    /// that is not what its action addresses: a contact addressed by its flat
+    /// id `contact:42` that lies in `group:family`. `None` scopes the hit by
+    /// its action's resource (see [`anchor`](Self::anchor)).
+    pub scope_anchor: Option<String>,
 }
 
 impl SearchResult {
@@ -713,7 +812,9 @@ impl SearchResult {
             kind: kind.into(),
             action_id: action_id.into(),
             icon: None,
+            row: None,
             score: 0,
+            scope_anchor: None,
         }
     }
 
@@ -776,6 +877,36 @@ impl SearchResult {
     pub fn with_score(mut self, score: i32) -> Self {
         self.score = score;
         self
+    }
+
+    /// Draw this hit as `row` (a message, a video, a file hit) instead of
+    /// the generic row.
+    #[must_use]
+    pub fn with_row(mut self, row: SearchRow) -> Self {
+        self.row = Some(row);
+        self
+    }
+
+    /// Place the hit at `anchor` in the app's anchor path for scope checks,
+    /// whatever its action addresses: a hit addressed by a flat id
+    /// (`sheets.cell:B4`) lies in the scope its path names (`sheet:2`), so it
+    /// is narrowed without renaming the resource.
+    #[must_use]
+    pub fn within(mut self, anchor: impl Into<String>) -> Self {
+        self.scope_anchor = Some(anchor.into());
+        self
+    }
+
+    /// The anchor the hit lies at, for scope checks: its
+    /// [`within`](Self::within) anchor, else the resource its action
+    /// addresses, or the opaque navigation id.
+    #[must_use]
+    pub fn anchor(&self) -> String {
+        if let Some(anchor) = &self.scope_anchor {
+            return anchor.clone();
+        }
+        self.action_address()
+            .map_or_else(|| self.action_id.clone(), |address| address.resource)
     }
 }
 
@@ -868,13 +999,16 @@ impl SearchProvider for OpenResourceSearch {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        let mut page = self
+            .catalog
+            .query_page(query.text(), cursor, work_budget, result_limit);
+        page.results.retain(|hit| query.in_scope(&hit.anchor()));
+        page
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
@@ -951,31 +1085,53 @@ pub trait SearchProvider {
 
     /// Return one bounded continuation page for an interactive search.
     ///
+    /// `query` carries the free text, the facet filters the platform parsed
+    /// out of it or the user picked as chips, and the resource scope the
+    /// search is narrowed to. A provider that cannot apply a filter or the
+    /// scope ignores it; the palette still drops hits outside the scope.
+    ///
     /// Providers backed by a durable namespace should override this method so
     /// callers can eventually reach every exact match without scanning the
-    /// whole corpus on the UI thread. Tiny legacy providers remain a single
-    /// page: a non-empty cursor therefore means they are exhausted.
+    /// whole corpus on the UI thread. Tiny providers remain a single page: a
+    /// non-empty cursor therefore means they are exhausted.
+    ///
+    /// A provider whose source answers slowly (a mail server, a web service)
+    /// returns what it has now with [`SearchPage::pending`] and answers the
+    /// rest from [`poll_page`](Self::poll_page). It never blocks here.
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
         if cursor.is_some() || work_budget == 0 || result_limit == 0 {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
+            return SearchPage::empty();
         }
         let limit = work_budget.min(result_limit);
-        let results = self.search_limited(query, limit);
-        SearchPage {
-            inspected: results.len(),
-            results,
-            next: None,
-        }
+        SearchPage::of(self.search_limited(query.text(), limit), None)
+    }
+
+    /// The page a [`SearchPage::pending`] token stands for, once its source
+    /// has answered. Called on later frames, never in a loop; return
+    /// [`PagePoll::Pending`] until the answer is in. A token the provider no
+    /// longer knows (the query moved on) answers an empty ready page.
+    fn poll_page(&self, _token: &PendingToken) -> PagePoll {
+        PagePoll::Ready(SearchPage::empty())
+    }
+
+    /// The dimensions this provider filters by. The palette offers their
+    /// values as chips and parses typed `key:value` tokens for them into
+    /// [`SearchQuery::filters`].
+    fn facets(&self) -> Vec<Facet> {
+        Vec::new()
+    }
+
+    /// The parts of the app this provider's hits can be narrowed to (see
+    /// [`ScopeDecl`](super::ScopeDecl)). An unscoped palette offers each as a
+    /// "Search in" row that narrows the search to it.
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        Vec::new()
     }
 
     /// Lazily resolve a canonical search address that is intentionally absent
@@ -1028,6 +1184,24 @@ pub trait CatalogSearchProvider {
     fn resolve_action_address(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
+
+    /// As [`SearchProvider::facets`].
+    fn facets(&self) -> Vec<Facet> {
+        Vec::new()
+    }
+
+    /// As [`SearchProvider::search_scopes`]: the parts of the app this
+    /// catalogue's hits can be narrowed to.
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        Vec::new()
+    }
+
+    /// Whether `hit` passes `query`'s facet filters. The catalogue matches
+    /// text only; a provider with facets checks the hit's values here
+    /// (`query.admits("language", &[..])`). The default admits every hit.
+    fn admits(&self, _hit: &SearchResult, _query: &SearchQuery) -> bool {
+        true
+    }
 }
 
 impl<T: CatalogSearchProvider> SearchProvider for T {
@@ -1050,7 +1224,7 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         self.search_page(
-            query,
+            &SearchQuery::new(query),
             None,
             self.limited_work_budget(limit),
             limit.min(T::RESULT_LIMIT),
@@ -1060,24 +1234,31 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        match self.catalog() {
-            Some(catalog) => catalog.query_page(
-                &self.catalog_query(query),
-                cursor,
-                work_budget,
-                result_limit,
-            ),
-            None => SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            },
-        }
+        let Some(catalog) = self.catalog() else {
+            return SearchPage::empty();
+        };
+        let mut page = catalog.query_page(
+            &self.catalog_query(query.text()),
+            cursor,
+            work_budget,
+            result_limit,
+        );
+        page.results
+            .retain(|hit| query.in_scope(&hit.anchor()) && self.admits(hit, query));
+        page
+    }
+
+    fn facets(&self) -> Vec<Facet> {
+        CatalogSearchProvider::facets(self)
+    }
+
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        CatalogSearchProvider::search_scopes(self)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
@@ -1170,7 +1351,7 @@ mod tests {
             assert_eq!(provider.search_limited("row", 100).len(), 5);
             assert_eq!(provider.search_limited("row", 3).len(), 3);
 
-            let page = provider.search_page("row", None, 4, 10);
+            let page = provider.search_page(&"row".into(), None, 4, 10);
             assert_eq!(page.inspected, 4);
             let next = page.next.expect("a broad query continues by cursor");
             assert!(provider.action_directory_cursor_is_current(&next));
@@ -1193,7 +1374,7 @@ mod tests {
             // than it returns.
             assert_eq!(generous.search_limited("abcde", 2).len(), 2);
             assert_eq!(frugal.search_limited("abcde", 2).len(), 2);
-            assert_eq!(frugal.search_page("row", None, 2, 5).inspected, 2);
+            assert_eq!(frugal.search_page(&"row".into(), None, 2, 5).inspected, 2);
         }
         // phase: catalog_provider_without_a_catalogue_is_empty_and_has_no_generation
         {
@@ -1203,7 +1384,7 @@ mod tests {
             };
             assert_eq!(provider.action_directory_generation(), None);
             assert!(provider.search("row").is_empty());
-            let page = provider.search_page("row", None, 10, 10);
+            let page = provider.search_page(&"row".into(), None, 10, 10);
             assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
         }
     }
@@ -1274,7 +1455,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let provider = OpenResourceSearch::new(&resources);
-            let page = provider.search_page("", None, 3, 2);
+            let page = provider.search_page(&"".into(), None, 3, 2);
             assert!(page.inspected <= 3);
             assert!(page.results.len() <= 2);
             assert!(page.next.is_some());
@@ -1475,11 +1656,7 @@ mod tests {
             catalog
                 .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
                 .unwrap();
-            catalog
-                .inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .generation = u64::MAX;
+            catalog.inner.write_recover().generation = u64::MAX;
 
             assert_eq!(
                 catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
@@ -1494,11 +1671,7 @@ mod tests {
         // phase: catalogue_refuses_browse_ordinal_reuse_without_inserting
         {
             let catalog = SearchCatalog::new("Documents");
-            catalog
-                .inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .next_browse_ordinal = u64::MAX;
+            catalog.inner.write_recover().next_browse_ordinal = u64::MAX;
 
             assert_eq!(
                 catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),
@@ -1743,7 +1916,15 @@ mod tests {
                 record("document:b", "B"),
             ])
             .unwrap();
-        let reused = rebuilt.inner.read().unwrap().entries[&0]
+        // The first record browses first, whatever its ordinal.
+        let reused = rebuilt
+            .inner
+            .read()
+            .unwrap()
+            .entries
+            .values()
+            .next()
+            .unwrap()
             .body
             .clone()
             .unwrap();
@@ -1816,5 +1997,146 @@ mod tests {
             page.inspected, 1,
             "the interior term's posting is the candidate list"
         );
+    }
+
+    /// A small deterministic generator, so a failure replays exactly.
+    struct Steps(u64);
+
+    impl Steps {
+        fn next(&mut self, below: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(self.0 >> 33).unwrap() % below.max(1)
+        }
+    }
+
+    const SYNC_WORDS: [&str; 6] = ["harbour", "atlas", "granite", "lagoon", "fjord", "kestrel"];
+
+    fn sync_record(id: usize, version: usize) -> SearchRecord {
+        let title = format!(
+            "{} {} {id}",
+            SYNC_WORDS[id % SYNC_WORDS.len()],
+            SYNC_WORDS[version % SYNC_WORDS.len()]
+        );
+        record(&format!("document:{id}"), &title)
+    }
+
+    fn answers(catalog: &SearchCatalog) -> Vec<(Vec<SearchResult>, bool)> {
+        ["", "harbour", "atlas granite", "lagoon", "1", "fjord 2"]
+            .into_iter()
+            .map(|query| {
+                let page = catalog.query_page(query, None, 256, 256);
+                (page.results, page.next.is_some())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn syncing_a_snapshot_answers_as_a_bulk_replacement() {
+        let mut steps = Steps(0x5ea2_c4ed);
+        // (id, version) in snapshot order.
+        let mut snapshot: Vec<(usize, usize)> = (0..200).map(|id| (id, 0)).collect();
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .replace_all_records(
+                snapshot
+                    .iter()
+                    .map(|&(id, version)| sync_record(id, version)),
+            )
+            .unwrap();
+        let mut next_id = 200;
+        for step in 1..150 {
+            match steps.next(5) {
+                // New records at one place, and at the same place again and
+                // again later, until its gap is crowded.
+                0 => {
+                    let at = if step % 3 == 0 {
+                        50
+                    } else {
+                        steps.next(snapshot.len())
+                    };
+                    for _ in 0..=steps.next(4) {
+                        snapshot.insert(at, (next_id, step));
+                        next_id += 1;
+                    }
+                }
+                1 => {
+                    snapshot.remove(steps.next(snapshot.len()));
+                }
+                2 => {
+                    let at = steps.next(snapshot.len());
+                    snapshot[at].1 = step;
+                }
+                3 => {
+                    let moved = snapshot.remove(steps.next(snapshot.len()));
+                    snapshot.insert(steps.next(snapshot.len()), moved);
+                }
+                _ => {}
+            }
+            catalog
+                .sync_records(
+                    snapshot
+                        .iter()
+                        .map(|&(id, version)| sync_record(id, version)),
+                )
+                .unwrap();
+            let bulk = SearchCatalog::new("Documents");
+            bulk.replace_all_records(
+                snapshot
+                    .iter()
+                    .map(|&(id, version)| sync_record(id, version)),
+            )
+            .unwrap();
+            assert_eq!(catalog.stats().records, snapshot.len());
+            assert_eq!(answers(&catalog), answers(&bulk), "step {step}");
+        }
+    }
+
+    #[test]
+    fn a_sync_indexes_only_what_changed_and_an_unchanged_one_nothing() {
+        let catalog = SearchCatalog::new("Documents");
+        let snapshot = |changed: Option<usize>| {
+            (0..1_000).map(move |id| sync_record(id, usize::from(changed == Some(id))))
+        };
+        catalog.replace_all_records(snapshot(None)).unwrap();
+        let generation = catalog.stats().generation;
+        let touched =
+            |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
+        assert_eq!(touched(snapshot(None).collect()), 0);
+        assert_eq!(
+            catalog.stats().generation,
+            generation,
+            "cursors stay current"
+        );
+        assert_eq!(touched(snapshot(Some(500)).collect()), 1);
+        assert_eq!(catalog.stats().generation, generation + 1);
+        // One more record at the front, and one gone from the end.
+        let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
+        records.pop();
+        records.insert(0, sync_record(5_000, 0));
+        assert_eq!(touched(records), 2);
+        let first = catalog.query_page("", None, 1, 1);
+        assert_eq!(
+            first.results[0].action_address().unwrap().resource,
+            "document:5000",
+            "the new first record browses first"
+        );
+    }
+
+    #[test]
+    fn a_refused_sync_changes_nothing() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .replace_all_records([record("document:a", "A"), record("document:b", "B")])
+            .unwrap();
+        let before = catalog.stats();
+        assert_eq!(
+            catalog.sync_records([record("document:a", "A"), record("document:a", "again")]),
+            Err(SearchCatalogError::DuplicateResourceId)
+        );
+        assert_eq!(catalog.stats(), before);
+        assert!(!catalog.query_page("b", None, 8, 8).results.is_empty());
     }
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "Confined helper processes and the shared memory they exchange: Landlock + seccomp + memfd on Linux, Seatbelt + POSIX shm on macOS, unsupported on the web."
+description = "Confined helper processes and the shared memory they exchange (Landlock + seccomp + memfd on Linux, Seatbelt + POSIX shm on macOS, unsupported on the web), and whole commands run as isolated jobs on a shared kernel (Linux)."
 repository.workspace = true
 homepage.workspace = true
 
@@ -13,6 +13,7 @@ name = "tilo_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -20,8 +21,13 @@ libc.workspace = true
 memmap2 = "0.9.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Landlock rulesets and the seccomp parser policy.
+# Landlock rulesets, the seccomp parser policy and the CI job policy.
 tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
+# Jobs: their child is born in its cgroup with clone3.
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

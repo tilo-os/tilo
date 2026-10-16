@@ -38,7 +38,7 @@ fn composer_process_group() -> Option<libc::pid_t> {
 /// still reachable.
 pub(crate) fn composer_authority_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir
-        .join("tilo-session")
+        .join(tilo_paths::login::SESSION_DIR)
         .join("xwayland")
         .join("composer-Xauthority")
 }
@@ -343,6 +343,11 @@ fn socket_inodes_of(pid: libc::pid_t) -> Vec<u64> {
 
 /// Write every display's cookie into the composer's authority file,
 /// atomically, owner-only.
+///
+/// The compositor loop calls this, so it does not sync: the file lives in the
+/// login's runtime directory and is rewritten from the live displays whenever
+/// the composer is asked to connect, so a crash loses nothing a sync would
+/// have kept, while a sync under I/O pressure stalls the desktop.
 pub(crate) fn write_composer_authority(path: &Path, authorities: &[PathBuf]) -> Result<(), String> {
     let mut contents = Vec::new();
     for authority in authorities {
@@ -351,7 +356,7 @@ pub(crate) fn write_composer_authority(path: &Path, authorities: &[PathBuf]) -> 
                 .map_err(|error| format!("reading {}: {error}", authority.display()))?,
         );
     }
-    atomic_file::write_with_mode(path, &contents, 0o600)
+    tilo_files::native::atomic::write_regenerable_with_mode(path, &contents, 0o600)
         .map_err(|error| format!("installing {}: {error}", path.display()))
 }
 

@@ -1,35 +1,9 @@
 //! Borrowed transport for the managed sender's existing exact-binding calls.
 //! Neither an observation nor a transport failure creates a durable receipt.
 use super::SdkRoute;
+use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
 use crate::time::Instant;
-use runtime_collab::{PublishedInvocationBinding, PublishedInvocationObservation};
-
-pub(super) enum Request<'a> {
-    Invoke {
-        invocation: &'a [u8; 16],
-        binding: &'a PublishedInvocationBinding,
-        revision: &'a str,
-        resource: &'a str,
-        action: &'a str,
-        argument: Option<&'a str>,
-        confirmation_json: &'a str,
-    },
-    Observe {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-    Cancel {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-}
-
-/// Fixed transport outcomes. Neither variant proves that execution did not occur.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Failure {
-    Deadline,
-    Unavailable,
-}
+use runtime_collab::PublishedInvocationObservation;
 
 /// Runs on the actual route's LocalSet; it never creates an ID or retries.
 /// The caller still validates the complete lifecycle grammar before retention.
@@ -39,17 +13,17 @@ pub(super) enum Failure {
 )]
 pub(super) async fn send(
     route: &SdkRoute,
-    request: Request<'_>,
+    request: RequestView<'_>,
     deadline: Instant,
-) -> Result<PublishedInvocationObservation, Failure> {
+) -> Result<PublishedInvocationObservation, AttemptFailure> {
     let now = crate::time::now();
     if deadline <= now {
-        return Err(Failure::Deadline);
+        return Err(AttemptFailure::Deadline);
     }
     let deadline = deadline.min(now + crate::time::Duration::from_secs(2));
     let rpc = async {
         match request {
-            Request::Invoke {
+            RequestView::Invoke {
                 invocation,
                 binding,
                 revision,
@@ -71,13 +45,13 @@ pub(super) async fn send(
                     )
                     .await
             }
-            Request::Observe { host, invocation } => {
+            RequestView::Observe { host, invocation } => {
                 route
                     .channel
                     .published_invocation_observation(host, invocation)
                     .await
             }
-            Request::Cancel { host, invocation } => {
+            RequestView::Cancel { host, invocation } => {
                 route
                     .channel
                     .cancel_durable_published_invocation(host, invocation)
@@ -89,11 +63,11 @@ pub(super) async fn send(
     // Timeout polls its inner future first: a ready reply can be observed by
     // a delayed task after expiry. Never expose that reply past our deadline.
     if crate::time::now() >= deadline {
-        return Err(Failure::Deadline);
+        return Err(AttemptFailure::Deadline);
     }
     result
-        .map_err(|_| Failure::Deadline)?
-        .map_err(|_| Failure::Unavailable)
+        .map_err(|_| AttemptFailure::Deadline)?
+        .map_err(|_| AttemptFailure::Unavailable)
 }
 
 #[cfg(test)]

@@ -9,24 +9,36 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use agent_provider_config::local::snapshot::{
+    AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
+    InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
+    LocalModelSnapshot,
+};
 use agent_provider_config::local::{
-    Accelerator, HardwareSnapshot, LocalEndpoint, LocalModelCatalog, LocalModelRelease,
-    LocalModelStatus, RuntimeDecision, RuntimeKind, select_runtime,
+    Accelerator, HardwareSnapshot, LocalModelRelease, LocalModelStatus, RuntimeDecision,
+    RuntimeKind, select_runtime_for_model,
 };
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use local_model_service::catalog::CatalogPayload;
+use local_model_service::run_observation::{Observed, RunCheckpoint, RuntimeSample};
+use local_model_service::supervision::SystemdSupervisor;
 use local_model_service::{
-    HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, ServiceError,
-    SignedRuntime, VllmCommand,
+    HttpsTransport, LocalModelService, ServiceError, SignedRuntime, user_model_root,
+};
+#[cfg(test)]
+use local_model_service::{
+    VllmCommand,
+    supervision::{model_endpoint_ready, podman_vllm_argv},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod memory_capacity;
 
 #[derive(Parser)]
 #[command(
@@ -42,6 +54,9 @@ struct Cli {
     catalog: Option<PathBuf>,
     #[arg(long)]
     keys: Option<PathBuf>,
+    /// Offline developer artifact store, indexed only by signed SHA-256.
+    #[arg(long)]
+    artifact_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Action,
 }
@@ -71,6 +86,11 @@ enum Action {
     Remove {
         #[arg(long)]
         model: String,
+    },
+    /// Direct unconfined operator recovery of one retained orphan run identity.
+    RecoverOrphan {
+        #[arg(long)]
+        run_id: String,
     },
     /// Ask the root-owned hardware policy for this machine's exact signed
     /// `BootPack` and enqueue it for immutable deployment staging.
@@ -137,107 +157,16 @@ struct RpcResponse {
     error: Option<String>,
 }
 
-/// Signed, release-channel catalog. The signature covers canonical JSON of
-/// `payload`; model and runtime artifacts within it remain individually pinned.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SignedCatalog {
-    schema: u16,
-    signature_domain: String,
-    key_id: String,
-    signature: Vec<u8>,
-    payload: CatalogPayload,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CatalogPayload {
-    schema: u16,
-    models: Vec<LocalModelRelease>,
-    runtimes: Vec<SignedRuntime>,
-    recommendation: String,
-}
-#[derive(Default, Deserialize)]
-struct KeyFile {
-    keys: BTreeMap<String, String>,
-}
-
-// The JSON contract is intentionally duplicated rather than importing the
-// Settings application: this CLI remains service-only, but its schema exactly
-// matches Settings' `LocalModelSnapshot` deserialization contract.
+/// What `snapshot` answers: the snapshot Settings reads, with what the
+/// service observed of its runtimes.
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
-}
-#[derive(Serialize)]
-struct HardwareRecommendation {
-    fit: HardwareFit,
-    memory_gib: u16,
-    accelerator: String,
-    accelerator_memory_gib: Option<u16>,
-    free_storage_gib: Option<u16>,
-    reason: String,
-}
-#[derive(Clone, Serialize)]
-struct LocalModelPackage {
-    id: String,
-    name: String,
-    description: String,
-    source: String,
-    revision: String,
-    license: String,
-    license_url: String,
-    download_bytes: u64,
-    installed_bytes: u64,
-    vision: bool,
-    face_recognition: bool,
-}
-#[derive(Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        endpoint: Option<LocalEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-#[derive(Serialize)]
-struct InstalledLocalModel {
-    package: LocalModelPackage,
-    phase: LocalModelPhase,
-}
-#[derive(Clone, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-#[derive(Serialize)]
-struct AcceleratorSetup {
-    boot_pack_id: String,
-    status: AcceleratorSetupState,
-}
-#[derive(Serialize)]
-struct LocalModelSnapshot {
-    hardware: HardwareRecommendation,
-    recommendation: Option<LocalModelPackage>,
-    models: Vec<InstalledLocalModel>,
-    accelerator_setup: Option<AcceleratorSetup>,
+struct ServiceSnapshot {
+    #[serde(flatten)]
+    snapshot: LocalModelSnapshot,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    runtime_observations: BTreeMap<String, Observed<RuntimeSample>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained_run_observations: Option<Observed<Vec<RunCheckpoint>>>,
 }
 
 const SYSTEM_EXTENSION_SOCKET: &str = "/run/tilo/system-extension-api/request.sock";
@@ -259,44 +188,9 @@ struct BootPackStatus {
     error: Option<String>,
 }
 
-fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String> {
-    let signed: SignedCatalog =
-        serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    if signed.schema != 1 {
-        return Err("unsupported signed catalog envelope schema".into());
-    }
-    if signed.payload.schema != 1 {
-        return Err("unsupported model catalog schema".into());
-    }
-    let keyfile: KeyFile =
-        serde_json::from_slice(&std::fs::read(keys).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    let key_hex = keyfile
-        .keys
-        .get(&signed.key_id)
-        .ok_or_else(|| "catalog signing key is not trusted".to_string())?;
-    let bytes = hex::decode(key_hex).map_err(|_| "invalid catalog public key")?;
-    let key = VerifyingKey::from_bytes(
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "invalid catalog public key")?,
-    )
-    .map_err(|_| "invalid catalog public key")?;
-    let signature =
-        Signature::from_slice(&signed.signature).map_err(|_| "invalid catalog signature")?;
-    if signed.signature_domain != "tilo.local-model.catalog.v1" {
-        return Err("unexpected catalog signature domain".into());
-    }
-    let mut payload = b"tilo.local-model.catalog.v1\0".to_vec();
-    payload.extend(serde_json::to_vec(&signed.payload).map_err(|error| error.to_string())?);
-    key.verify(&payload, &signature)
-        .map_err(|_| "catalog signature verification failed")?;
-    for runtime in &signed.payload.runtimes {
-        runtime.validate().map_err(|error| error.to_string())?;
-    }
-    Ok(signed.payload)
+fn load_catalog(path: &Path, keys: &Path) -> Result<CatalogPayload, String> {
+    local_model_service::catalog::VerifiedCatalog::load(path, keys)
+        .map(local_model_service::catalog::VerifiedCatalog::into_payload)
 }
 
 /// Range downloader. The service already constrains URL+size+digest;
@@ -390,174 +284,47 @@ impl HttpsTransport for ReqwestTransport {
     }
 }
 
-/// User-systemd supervision. The executable and every vLLM argument come from
-/// [`VllmCommand`], itself constructed only from a verified signed catalog.
-struct SystemdSupervisor;
-fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
-    let mut argv = vec![
-        "run".into(),
-        "--rm".into(),
-        "--pull".into(),
-        "never".into(),
-        "--network".into(),
-        "host".into(),
-    ];
-    match command.runtime_kind {
-        agent_provider_config::local::RuntimeKind::Cpu => {}
-        agent_provider_config::local::RuntimeKind::NvidiaCuda => {
-            argv.extend(["--device".into(), "nvidia.com/gpu=all".into()]);
-        }
-        agent_provider_config::local::RuntimeKind::AmdRocm => {
-            argv.extend([
-                "--device".into(),
-                "/dev/kfd".into(),
-                "--device".into(),
-                "/dev/dri".into(),
-            ]);
-        }
-    }
-    // The host object is derived exclusively from its verified SHA-256 path.
-    // `label=disable` lets rootless podman read the existing per-user store
-    // on SELinux systems without recursively relabeling shared model bytes.
-    argv.extend([
-        "--mount".into(),
-        format!(
-            "type=bind,src={},dst={},ro",
-            command.model_path.display(),
-            command.model_container_path
-        ),
-        "--security-opt".into(),
-        "label=disable".into(),
-        command.runtime_image.clone(),
-    ]);
-    argv.extend(command.args.iter().cloned());
-    argv
+enum ManagerTransport {
+    Https(ReqwestTransport),
+    Offline(local_model_service::developer::OfflineTransport),
 }
-impl ProcessSupervisor for SystemdSupervisor {
-    fn install_runtime_image(
-        &mut self,
-        archive: &std::path::Path,
-        signed_image: &str,
+impl ManagerTransport {
+    fn new(dir: Option<&Path>, catalog: &CatalogPayload) -> Result<Self, ServiceError> {
+        match dir {
+            Some(dir) => local_model_service::developer::OfflineTransport::new(dir, catalog)
+                .map(Self::Offline),
+            None => ReqwestTransport::new().map(Self::Https),
+        }
+    }
+}
+impl HttpsTransport for ManagerTransport {
+    fn validate_pin(
+        &self,
+        pin: &agent_provider_config::local::PinnedArtifact,
     ) -> Result<(), ServiceError> {
-        // `podman load` receives a verified, content-addressed archive path;
-        // it is never given a registry tag or caller-controlled image string.
-        let mut load = Command::new("podman");
-        load.args(["load", "--input"]).arg(archive);
-        let output =
-            bounded_command::run_prepared(load, None, 1024 * 1024, Duration::from_secs(1800))
-                .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        if !output.status.success() {
-            return Err(ServiceError::Backend(
-                "podman could not import verified runtime archive".into(),
-            ));
+        match self {
+            Self::Https(t) => t.validate_pin(pin),
+            Self::Offline(t) => t.validate_pin(pin),
         }
-        let mut inspect = Command::new("podman");
-        inspect.args([
-            "image",
-            "inspect",
-            "--format",
-            "{{json .RepoDigests}}",
-            signed_image,
-        ]);
-        let output =
-            bounded_command::run_prepared(inspect, None, 1024 * 1024, Duration::from_secs(30))
-                .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        if !output.status.success() {
-            return Err(ServiceError::Backend(
-                "podman cannot inspect imported signed runtime image".into(),
-            ));
-        }
-        let digests: Vec<String> = serde_json::from_slice(&output.stdout).map_err(|_| {
-            ServiceError::Backend("podman returned invalid image digest metadata".into())
-        })?;
-        if !digests.iter().any(|digest| digest == signed_image) {
-            return Err(ServiceError::Backend(
-                "imported OCI archive did not provide the exact signed image digest".into(),
-            ));
-        }
-        Ok(())
     }
-    fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
-        let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
-        let unit = format!("tilo-vllm-{}", digest.get(..16).unwrap_or(&digest));
-        let mut launch = Command::new("systemd-run");
-        launch
-            .args([
-                "--user",
-                "--collect",
-                "--service-type=exec",
-                "--unit",
-                &unit,
-                "--",
-                "podman",
-            ])
-            .args(podman_vllm_argv(command));
-        let output =
-            bounded_command::run_prepared(launch, None, 1024 * 1024, Duration::from_secs(30))
-                .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        if !output.status.success() {
-            return Err(ServiceError::Backend(
-                "systemd-run rejected the verified vLLM command".into(),
-            ));
-        }
-        let address = command
-            .endpoint
-            .url
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .unwrap_or_default();
-        // Loading model weights routinely takes minutes. This worker is
-        // already detached from Settings, so favour a truthful bounded wait
-        // over reporting a healthy large model as failed after 20 seconds.
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(10 * 60) {
-            if std::net::TcpStream::connect_timeout(
-                &address.parse().map_err(|_| ServiceError::InvalidEndpoint)?,
-                Duration::from_millis(250),
-            )
-            .is_ok()
-            {
-                return Ok(ProcessHandle { id: unit });
-            }
-            std::thread::sleep(Duration::from_millis(150));
-        }
-        let mut stop = Command::new("systemctl");
-        stop.args(["--user", "stop", &unit]);
-        let _ = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30));
-        Err(ServiceError::Backend(
-            "verified vLLM service did not become ready".into(),
-        ))
-    }
-    fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
-        let mut stop = Command::new("systemctl");
-        stop.args(["--user", "stop", &handle.id]);
-        let output = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30))
-            .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(ServiceError::Backend(
-                "systemctl could not stop model service".into(),
-            ))
+    fn resume(
+        &mut self,
+        url: &str,
+        start: u64,
+        maximum: u64,
+        progress: &mut dyn FnMut(u64),
+        destination: &mut File,
+    ) -> Result<u64, ServiceError> {
+        match self {
+            Self::Https(t) => t.resume(url, start, maximum, progress, destination),
+            Self::Offline(t) => t.resume(url, start, maximum, progress, destination),
         }
     }
 }
 
-fn local_hardware() -> HardwareSnapshot {
-    let memory_mib = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|body| {
-            body.lines().find_map(|line| {
-                line.strip_prefix("MemTotal:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            })
-        })
-        .map_or(0, |kib| kib / 1024);
-    let free_storage_mib = free_storage_mib("/var/lib/tilo/models").unwrap_or(0);
+fn local_hardware(root: &Path) -> Result<HardwareSnapshot, String> {
+    let memory_mib = memory_capacity::runtime_memory_mib()?;
+    let free_storage_mib = store_free_storage_mib(root).unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
     // caller-provided argument. Sysfs discovery distinguishes an absent
@@ -617,16 +384,49 @@ fn local_hardware() -> HardwareSnapshot {
             }
         }
     }
-    HardwareSnapshot {
+    Ok(HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
             .map_or(1, |count| u16::try_from(count.get()).unwrap_or(u16::MAX)),
         memory_mib,
         free_storage_mib,
         accelerators,
-    }
+    })
 }
-fn free_storage_mib(path: &str) -> Option<u64> {
-    let path = std::ffi::CString::new(path).ok()?;
+/// Observe the selected store's filesystem, including a normal not-yet-created
+/// store. Only `NotFound` permits bounded ascent; invalid paths and probe errors
+/// remain unavailable rather than borrowing capacity from an unrelated store.
+fn store_free_storage_mib(root: &Path) -> Option<u64> {
+    store_free_storage_mib_with(root, free_storage_mib)
+}
+
+fn store_free_storage_mib_with(
+    root: &Path,
+    mut probe: impl FnMut(&Path) -> Option<u64>,
+) -> Option<u64> {
+    if !root.is_absolute()
+        || root.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return None;
+    }
+    let mut path = root;
+    for _ in 0..32 {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() => return probe(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => path = path.parent()?,
+            Ok(_) | Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn free_storage_mib(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
         return None;
@@ -654,50 +454,18 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         installed_bytes: model.installed_size_bytes,
         vision: model.vision,
         face_recognition: model.face_recognition,
+        in_process: model.runs_in_process(),
+        segmentation: model.segmentation,
     }
 }
 fn runtime_kind_for(
     hardware: &HardwareSnapshot,
+    model: &LocalModelRelease,
     available: impl IntoIterator<Item = RuntimeKind>,
 ) -> Result<RuntimeKind, String> {
-    let kind = match select_runtime(hardware) {
-        RuntimeDecision::Ready(kind) => kind,
-        RuntimeDecision::Unavailable(reason) => return Err(reason.into()),
-    };
-    if kind == RuntimeKind::Cpu
-        && hardware
-            .accelerators
-            .iter()
-            .any(|accelerator| match accelerator {
-                Accelerator::Nvidia { driver, .. } => driver.trim().is_empty(),
-                Accelerator::Amd { rocm, .. } => rocm.is_none(),
-            })
-    {
-        return Err(
-            "An accelerator was detected but its signed driver runtime is inactive. Install the matching signed driver boot pack and restart before local inference."
-                .into(),
-        );
-    }
-    if available.into_iter().any(|candidate| candidate == kind) {
-        Ok(kind)
-    } else if kind == RuntimeKind::Cpu {
-        Err("The signed CPU runtime is unavailable in this image.".into())
-    } else {
-        Err(format!(
-            "{} was detected, but its signed runtime is not active. Install the matching signed driver boot pack and restart before local inference.",
-            kind.label()
-        ))
-    }
-}
-
-fn model_catalog(catalog: &CatalogPayload) -> LocalModelCatalog {
-    LocalModelCatalog {
-        runtimes: catalog
-            .runtimes
-            .iter()
-            .map(|runtime| runtime.release.clone())
-            .collect(),
-        models: catalog.models.clone(),
+    match select_runtime_for_model(hardware, model, available) {
+        RuntimeDecision::Ready(kind) => Ok(kind),
+        RuntimeDecision::Unavailable(reason) => Err(reason.into()),
     }
 }
 
@@ -705,25 +473,22 @@ fn recommended_model<'a>(
     catalog: &'a CatalogPayload,
     hardware: &HardwareSnapshot,
 ) -> Result<(&'a LocalModelRelease, RuntimeKind), String> {
-    let kind = runtime_kind_for(
-        hardware,
-        catalog.runtimes.iter().map(|runtime| runtime.release.kind),
-    )?;
-    let model_id = model_catalog(catalog)
-        .recommend(hardware, kind)
-        .map(|model| model.id.clone())
-        .ok_or_else(|| {
-            format!(
-                "No signed {} model fits the detected RAM, accelerator memory, and free storage.",
-                kind.label()
-            )
-        })?;
-    let model = catalog
-        .models
-        .iter()
-        .find(|candidate| candidate.id == model_id)
-        .ok_or_else(|| "catalog recommendation target disappeared".to_string())?;
-    Ok((model, kind))
+    catalog.models.iter()
+        .filter(|model| !model.runs_in_process())
+        .filter_map(|model| {
+            let runtime = signed_runtime_for(catalog, hardware, model).ok()?;
+            let required_storage = model.installed_size_bytes.div_ceil(1024 * 1024);
+            (required_storage <= hardware.free_storage_mib).then_some((model, runtime.release.kind))
+        })
+        .max_by_key(|(model, kind)| {
+            let priority = match kind {
+                RuntimeKind::NvidiaCuda => 2,
+                RuntimeKind::AmdRocm => 1,
+                RuntimeKind::Cpu => 0,
+            };
+            (priority, model.context_window, std::cmp::Reverse(model.artifact.size_bytes))
+        })
+        .ok_or_else(|| "No signed model and compatible runtime fit the detected RAM, accelerator memory, and selected store's free storage.".into())
 }
 
 fn signed_runtime_for<'a>(
@@ -733,12 +498,24 @@ fn signed_runtime_for<'a>(
 ) -> Result<&'a SignedRuntime, String> {
     let kind = runtime_kind_for(
         hardware,
-        catalog.runtimes.iter().map(|runtime| runtime.release.kind),
+        model,
+        catalog
+            .runtimes
+            .iter()
+            .filter(|runtime| {
+                model.allowed_runtimes.contains(&runtime.release.kind)
+                    && runtime.release.supports_format(model.artifact_format)
+            })
+            .map(|runtime| runtime.release.kind),
     )?;
     catalog
         .runtimes
         .iter()
-        .filter(|runtime| runtime.release.kind == kind && model.allowed_runtimes.contains(&kind))
+        .filter(|runtime| {
+            runtime.release.kind == kind
+                && model.allowed_runtimes.contains(&kind)
+                && runtime.release.supports_format(model.artifact_format)
+        })
         .max_by_key(|runtime| &runtime.release.version)
         .ok_or_else(|| format!("The selected model has no signed {} runtime.", kind.label()))
 }
@@ -851,6 +628,10 @@ fn phase(status: &LocalModelStatus) -> LocalModelPhase {
 fn main() {
     let cli = Cli::parse();
     let is_serve = matches!(&cli.command, Action::Serve { .. });
+    if let Err(error) = validate_developer_mode(&cli) {
+        eprintln!("tilo-model-manager: {error}");
+        std::process::exit(1);
+    }
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
         Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
@@ -915,9 +696,10 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             model: model.clone(),
         }),
         Action::StageAccelerator => Ok(RpcAction::StageAccelerator),
-        Action::Worker { .. } | Action::WorkerStart { .. } | Action::Serve { .. } => {
-            Err("internal model manager action cannot be proxied".into())
-        }
+        Action::RecoverOrphan { .. }
+        | Action::Worker { .. }
+        | Action::WorkerStart { .. }
+        | Action::Serve { .. } => Err("internal model manager action cannot be proxied".into()),
     }
 }
 
@@ -954,7 +736,11 @@ fn read_rpc<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T, 
 fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
     // Path options are developer-only direct-mode facilities. A sandbox may
     // request only a typed catalog verb against the launcher-selected daemon.
-    if cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some() {
+    if cli.root.is_some()
+        || cli.catalog.is_some()
+        || cli.keys.is_some()
+        || cli.artifact_dir.is_some()
+    {
         return Err("path overrides are unavailable through the model service".into());
     }
     let fd = service_fd().ok_or_else(|| "model service descriptor is unavailable".to_string())?;
@@ -1000,7 +786,7 @@ fn same_user(stream: &UnixStream) -> bool {
     result == 0
         && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
         // SAFETY: getsockopt succeeded and wrote the complete ucred buffer.
-        && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+        && unsafe { credentials.assume_init().uid } == rustix::process::geteuid().as_raw()
 }
 
 fn cli_for_rpc(action: RpcAction) -> Cli {
@@ -1026,6 +812,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         root: None,
         catalog: None,
         keys: None,
+        artifact_dir: None,
         command,
     }
 }
@@ -1085,8 +872,11 @@ fn serve_client(mut stream: UnixStream) {
     serve_requests(&mut stream, |action| run_local(cli_for_rpc(action)));
 }
 
-fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+fn serve(socket: &Path) -> Result<Option<String>, String> {
+    // SAFETY: activation is taken over before any thread is spawned.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket) }
+        .map_err(|error| error.to_string())?;
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         bind_listener(socket)?
@@ -1100,75 +890,66 @@ fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if socket.exists() {
-        let metadata = std::fs::symlink_metadata(socket).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_socket() {
-            return Err("refusing to replace a non-socket model service path".into());
-        }
-        std::fs::remove_file(socket).map_err(|error| error.to_string())?;
-    }
-    let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    Ok(listener)
+    tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
-)]
-fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
-    const SYSTEMD_LISTEN_FD: RawFd = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
-        return Err("systemd must pass exactly one model-manager listener".into());
-    }
-    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
-        return Err("systemd model-manager listener fd is closed".into());
-    }
-    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
-    // to this process exactly once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    let actual = listener.local_addr().map_err(|error| error.to_string())?;
-    if actual.as_pathname() != Some(expected) {
-        return Err("systemd model-manager listener has an unexpected path".into());
-    }
-    // The manager starts Podman/model processes. Keep the authenticated
-    // control listener and systemd's one-shot activation metadata out of every
-    // child process spawned after activation.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err("cannot mark systemd model-manager listener close-on-exec".into());
-    }
-    // SAFETY: activation is consumed once, before worker threads exist.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
+fn validate_developer_mode(cli: &Cli) -> Result<(), String> {
+    // NoNewPrivs is kernel state and cannot be unset by an app. Unknown/error
+    // state fails closed; launcher markers and service FDs are extra refusals.
+    let confined = service_fd().is_some()
+        || std::env::var_os("TILO_APP_DIR").is_some()
+        || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 0;
+    validate_developer_inputs(cli, rustix::process::geteuid().as_raw(), confined)
 }
+
+fn validate_developer_inputs(cli: &Cli, uid: u32, confined: bool) -> Result<(), String> {
+    if matches!(cli.command, Action::RecoverOrphan { .. })
+        && (uid == 0 || confined || cli.root.is_none())
+    {
+        return Err(
+            "orphan recovery requires unprivileged unconfined direct mode and explicit root".into(),
+        );
+    }
+    if cli.artifact_dir.is_some()
+        && (uid == 0
+            || confined
+            || cli.root.is_none()
+            || cli.catalog.is_none()
+            || cli.keys.is_none()
+            || matches!(cli.command, Action::Serve { .. } | Action::StageAccelerator))
+    {
+        return Err("offline artifacts require unprivileged unconfined direct mode with explicit root/catalog/keys".into());
+    }
+    Ok(())
+}
+
+fn selected_catalog(cli: &Cli, catalog: &Path, keys: &Path) -> Result<CatalogPayload, String> {
+    if cli.artifact_dir.is_some() {
+        local_model_service::catalog::VerifiedCatalog::load_developer_offline(catalog, keys)
+            .map(local_model_service::catalog::VerifiedCatalog::into_payload)
+    } else {
+        load_catalog(catalog, keys)
+    }
+}
+
 fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    validate_developer_mode(cli)?;
     // The model manager is deliberately a per-user service: Settings never
     // needs root or a writable image path to provision a model. Keep override
     // rejection when someone mistakenly elevates the normal user binary.
-    let elevated = unsafe { libc::geteuid() == 0 };
+    let elevated = rustix::process::geteuid().as_raw() == 0;
     if elevated && (cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some()) {
         return Err("path overrides are forbidden for the privileged model manager".into());
     }
     Ok((
-        cli.root.clone().unwrap_or_else(user_model_root),
+        cli.root
+            .clone()
+            .or_else(user_model_root)
+            .ok_or("no data home for the model store: set HOME or pass --root")?,
         cli.catalog.clone().unwrap_or_else(|| {
             PathBuf::from("/usr/share/tilo/system-extensions/local-model-catalog.json")
         }),
@@ -1176,12 +957,6 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
             PathBuf::from("/usr/share/tilo/system-extensions/local-model-keys.json")
         }),
     ))
-}
-
-fn user_model_root() -> PathBuf {
-    xdg_paths::xdg::data_home()
-        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
-        .join("tilo/models")
 }
 
 fn allocate_loopback_port() -> Result<u16, String> {
@@ -1303,18 +1078,39 @@ fn stage_recommended_accelerator() -> Result<(), String> {
     Ok(())
 }
 
-fn run_local(cli: Cli) -> Result<Option<String>, String> {
-    let (root, catalog_path, key_path) = paths(&cli)?;
-    if let Action::Snapshot { format } = &cli.command {
-        return local_snapshot(&root, &catalog_path, &key_path, format).map(Some);
-    }
-    let catalog = load_catalog(&catalog_path, &key_path)?;
-    let mut service = LocalModelService::open(
-        &root,
-        ReqwestTransport::new().map_err(|error| error.to_string())?,
+fn open_cli_service(
+    cli: &Cli,
+    root: &Path,
+    catalog: &CatalogPayload,
+) -> Result<LocalModelService<ManagerTransport, SystemdSupervisor>, String> {
+    LocalModelService::open(
+        root,
+        ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)
+            .map_err(|error| error.to_string())?,
         SystemdSupervisor,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string())
+}
+
+fn run_local(cli: Cli) -> Result<Option<String>, String> {
+    let (root, catalog_path, key_path) = paths(&cli)?;
+    if let Action::RecoverOrphan { run_id } = &cli.command {
+        local_model_service::ownership::recover_orphan(&root, &mut SystemdSupervisor, run_id)
+            .map_err(|error| error.to_string())?;
+        return Ok(None);
+    }
+    if let Action::Snapshot { format } = &cli.command {
+        return local_snapshot(
+            &root,
+            &catalog_path,
+            &key_path,
+            format,
+            cli.artifact_dir.as_deref(),
+        )
+        .map(Some);
+    }
+    let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
+    let mut service = open_cli_service(&cli, &root, &catalog)?;
     match cli.command {
         Action::Install {
             model,
@@ -1344,23 +1140,46 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .queue_install(release)
                 .map_err(|error| error.to_string())?;
-            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref())
-                .inspect_err(|error| {
-                    let _ = service.record_failure(&model, error);
-                })?;
+            enqueue_worker(
+                &root,
+                &catalog_path,
+                &key_path,
+                &model,
+                revision.as_deref(),
+                cli.artifact_dir.as_deref(),
+            )
+            .inspect_err(|error| {
+                let _ = service.record_failure(&model, error);
+            })?;
         }
         Action::Start { model } => {
-            if !catalog.models.iter().any(|release| release.id == model) {
-                return Err("model is not in the signed catalog".to_string());
-            }
+            let release = catalog
+                .models
+                .iter()
+                .find(|release| release.id == model)
+                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+            refuse_in_process(release)?;
+            // Refuse before reporting an admitted background start; its worker
+            // observes the same runtime slice again immediately before launch.
+            signed_runtime_for(&catalog, &local_hardware(&root)?, release)?;
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
-            enqueue_start_worker(&root, &catalog_path, &key_path, &model).inspect_err(|error| {
+            enqueue_start_worker(
+                &root,
+                &catalog_path,
+                &key_path,
+                &model,
+                cli.artifact_dir.as_deref(),
+            )
+            .inspect_err(|error| {
                 let _ = service.record_failure(&model, error);
             })?;
         }
         Action::Stop { model } => {
+            if let Some(release) = catalog.models.iter().find(|release| release.id == model) {
+                refuse_in_process(release)?;
+            }
             service.stop(&model).map_err(|error| error.to_string())?;
         }
         Action::Remove { model } => {
@@ -1368,47 +1187,69 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         }
         Action::StageAccelerator => stage_recommended_accelerator()?,
         Action::Worker { model, revision } => {
-            run_install_worker(&mut service, &catalog, &model, revision.as_ref())?;
+            run_install_worker(&mut service, &catalog, &model, revision.as_ref(), &root)?;
         }
-        Action::WorkerStart { model } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| release.id == model)
-                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
-            if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
-                let _ = service.record_failure(&model, error.to_string());
-                return Err(error.to_string());
-            }
-        }
+        Action::WorkerStart { model } => run_start_worker(&mut service, &catalog, &model, &root)?,
         // The dispatcher answers these itself and never hands them over.
-        Action::Snapshot { .. } | Action::Serve { .. } => {
+        Action::RecoverOrphan { .. } | Action::Snapshot { .. } | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
     }
     Ok(None)
 }
 
+fn run_start_worker(
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+    catalog: &CatalogPayload,
+    model: &str,
+    root: &Path,
+) -> Result<(), String> {
+    let release = catalog
+        .models
+        .iter()
+        .find(|release| release.id == model)
+        .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+    refuse_in_process(release)?;
+    let runtime = local_hardware(root)
+        .and_then(|hardware| signed_runtime_for(catalog, &hardware, release))
+        .inspect_err(|error| {
+            let _ = service.record_failure(model, error);
+        })?;
+    if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
+        let _ = service.record_failure(model, error.to_string());
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 /// The signed catalog, this machine's recommendation and installed models,
 /// as the JSON snapshot Settings renders.
 fn local_snapshot(
     root: &PathBuf,
-    catalog_path: &PathBuf,
-    key_path: &PathBuf,
+    catalog_path: &Path,
+    key_path: &Path,
     format: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<String, String> {
     if format != "json" {
         return Err("snapshot supports only --format json".into());
     }
-    let catalog = load_catalog(catalog_path, key_path)?;
+    let catalog = if artifact_dir.is_some() {
+        local_model_service::catalog::VerifiedCatalog::load_developer_offline(
+            catalog_path,
+            key_path,
+        )
+        .map(local_model_service::catalog::VerifiedCatalog::into_payload)?
+    } else {
+        load_catalog(catalog_path, key_path)?
+    };
     let service = LocalModelService::open(
         root,
-        ReqwestTransport::new().map_err(|error| error.to_string())?,
+        ManagerTransport::new(artifact_dir, &catalog).map_err(|error| error.to_string())?,
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
-    let hardware = local_hardware();
+    let hardware = local_hardware(root)?;
     let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
         Ok((model, kind)) => (Some(package(model)), Ok(kind)),
         Err(reason) => (None, Err(reason)),
@@ -1421,29 +1262,73 @@ fn local_snapshot(
             catalog
                 .models
                 .iter()
-                .find(|model| &model.id == id)
+                .find(|model| &model.id == id && !model.runs_in_process())
                 .map(|model| InstalledLocalModel {
                     package: package(model),
                     phase: phase(&managed.status),
                 })
         })
         .collect();
-    let payload = LocalModelSnapshot {
-        hardware: recommendation(&hardware, runtime, recommended.is_some()),
-        recommendation: recommended,
-        models,
-        accelerator_setup: accelerator_setup_snapshot(),
+    let payload = ServiceSnapshot {
+        snapshot: LocalModelSnapshot {
+            hardware: recommendation(&hardware, runtime, recommended.is_some()),
+            recommendation: recommended,
+            models,
+            in_process: in_process_models(&catalog.models, service.state()),
+            accelerator_setup: accelerator_setup_snapshot(),
+        },
+        runtime_observations: service.runtime_observations(),
+        retained_run_observations: match local_model_service::run_observation::retained(root) {
+            local_model_service::run_observation::Observed::Actual { value }
+                if value.is_empty() =>
+            {
+                None
+            }
+            retained => Some(retained),
+        },
     };
     serde_json::to_string(&payload).map_err(|error| error.to_string())
 }
 
+/// Every signed in-process model with its install state. These do not
+/// depend on the hardware probe: they are small and run on any CPU.
+fn in_process_models(
+    models: &[LocalModelRelease],
+    state: &local_model_service::ServiceState,
+) -> Vec<InProcessLocalModel> {
+    models
+        .iter()
+        .filter(|model| model.runs_in_process())
+        .map(|model| InProcessLocalModel {
+            package: package(model),
+            phase: state
+                .models
+                .get(&model.id)
+                .map(|managed| phase(&managed.status)),
+        })
+        .collect()
+}
+
+fn refuse_in_process(release: &LocalModelRelease) -> Result<(), String> {
+    if release.runs_in_process() {
+        Err(format!(
+            "{} runs inside the apps that use it; there is nothing to start or stop",
+            release.label
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Install then start one signed release in the detached worker, recording
-/// any failure in the service state Settings observes.
+/// any failure in the service state Settings observes. An in-process model
+/// is only installed: no runtime, hardware gate or service applies to it.
 fn run_install_worker(
-    service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
     catalog: &CatalogPayload,
     model: &str,
     revision: Option<&String>,
+    root: &Path,
 ) -> Result<(), String> {
     let release = catalog
         .models
@@ -1452,7 +1337,18 @@ fn run_install_worker(
             release.id == model && revision.is_none_or(|revision| revision == &release.version)
         })
         .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
-    let runtime = signed_runtime_for(catalog, &local_hardware(), release)?;
+    if release.runs_in_process() {
+        if let Err(error) = service.install_in_process_with_progress(release) {
+            let _ = service.record_failure(model, error.to_string());
+            return Err(error.to_string());
+        }
+        return Ok(());
+    }
+    let runtime = local_hardware(root)
+        .and_then(|hardware| signed_runtime_for(catalog, &hardware, release))
+        .inspect_err(|error| {
+            let _ = service.record_failure(model, error);
+        })?;
     if let Err(error) = service
         .install_with_runtime_progress(runtime, release)
         .and_then(|_| {
@@ -1477,6 +1373,7 @@ fn enqueue_worker(
     keys: &PathBuf,
     model: &str,
     revision: Option<&str>,
+    artifact_dir: Option<&Path>,
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
@@ -1492,7 +1389,7 @@ fn enqueue_worker(
         .arg(executable);
     // The transient worker retains the selected developer store only outside
     // elevated mode. Packaged Settings never supplies these overrides.
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)
@@ -1500,6 +1397,9 @@ fn enqueue_worker(
             .arg(catalog)
             .arg("--keys")
             .arg(keys);
+    }
+    if let Some(dir) = artifact_dir {
+        command.arg("--artifact-dir").arg(dir);
     }
     command.args(["worker", "--model", model]);
     if let Some(revision) = revision {
@@ -1519,6 +1419,7 @@ fn enqueue_start_worker(
     catalog: &PathBuf,
     keys: &PathBuf,
     model: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
@@ -1529,7 +1430,7 @@ fn enqueue_start_worker(
         .arg(&unit)
         .arg("--")
         .arg(executable);
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)
@@ -1537,6 +1438,9 @@ fn enqueue_start_worker(
             .arg(catalog)
             .arg("--keys")
             .arg(keys);
+    }
+    if let Some(dir) = artifact_dir {
+        command.arg("--artifact-dir").arg(dir);
     }
     command.args(["worker-start", "--model", model]);
     let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
@@ -1551,7 +1455,475 @@ fn enqueue_start_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_provider_config::local::RuntimeKind;
+    use agent_provider_config::local::{LocalEndpoint, RuntimeKind};
+
+    #[test]
+    fn offline_developer_cli_requires_complete_unconfined_direct_mode() {
+        let args = [
+            "manager",
+            "--root",
+            "/private/store",
+            "--catalog",
+            "/private/catalog",
+            "--keys",
+            "/private/keys",
+            "--artifact-dir",
+            "/private/artifacts",
+            "worker",
+            "--model",
+            "pinned",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(validate_developer_inputs(&cli, 1000, false).is_ok());
+        assert!(validate_developer_inputs(&cli, 0, false).is_err());
+        assert!(validate_developer_inputs(&cli, 1000, true).is_err());
+        for missing in ["--root", "--catalog", "--keys"] {
+            let mut filtered = Vec::new();
+            let mut skip = false;
+            for arg in args {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                if arg == missing {
+                    skip = true;
+                    continue;
+                }
+                filtered.push(arg);
+            }
+            assert!(
+                validate_developer_inputs(&Cli::try_parse_from(filtered).unwrap(), 1000, false)
+                    .is_err()
+            );
+        }
+        let serve = Cli::try_parse_from([
+            "manager",
+            "--root",
+            "/private/store",
+            "--catalog",
+            "/private/catalog",
+            "--keys",
+            "/private/keys",
+            "--artifact-dir",
+            "/private/artifacts",
+            "serve",
+            "--socket",
+            "/private/socket",
+        ])
+        .unwrap();
+        assert!(validate_developer_inputs(&serve, 1000, false).is_err());
+        let plain = cli_for_rpc(RpcAction::Snapshot);
+        assert!(plain.artifact_dir.is_none());
+    }
+
+    #[test]
+    fn orphan_recovery_has_no_app_rpc_or_confined_operator_route() {
+        let cli = Cli::try_parse_from([
+            "manager",
+            "--root",
+            "/private/store",
+            "recover-orphan",
+            "--run-id",
+            &"b".repeat(64),
+        ])
+        .unwrap();
+        assert!(validate_developer_inputs(&cli, 1000, false).is_ok());
+        assert!(validate_developer_inputs(&cli, 1000, true).is_err());
+        assert!(validate_developer_inputs(&cli, 0, false).is_err());
+        assert!(rpc_action(&cli.command).is_err());
+        let no_root =
+            Cli::try_parse_from(["manager", "recover-orphan", "--run-id", &"b".repeat(64)])
+                .unwrap();
+        assert!(validate_developer_inputs(&no_root, 1000, false).is_err());
+    }
+
+    #[test]
+    fn checked_in_catalog_signature_survives_speech_format_support() {
+        let image_inputs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/system-extensions");
+        let catalog = load_catalog(
+            &image_inputs.join("local-model-catalog.json"),
+            &image_inputs.join("local-model-keys.json"),
+        )
+        .expect("the existing image catalogue must retain its trusted signature");
+        assert!(catalog.models.iter().any(|model| model.segmentation));
+    }
+
+    #[test]
+    fn readiness_requires_healthy_http_and_exact_model_identity() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                ("/health", 503, r#"{"error":"Loading model"}"#),
+                ("/health", 200, r#"{"status":"ok"}"#),
+                ("/v1/models", 200, r#"{"data":[{"id":"foreign-model"}]}"#),
+                ("/health", 200, r#"{"status":"ok"}"#),
+                ("/v1/models", 200, r#"{"data":[{"id":"selected-model"}]}"#),
+            ];
+            for (path, status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..count])
+                        .starts_with(&format!("GET {path} HTTP/1.1"))
+                );
+                write!(stream, "HTTP/1.1 {status} response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let client = tilo_net::http::blocking_client()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let endpoint = LocalEndpoint {
+            url: format!("http://{address}/v1"),
+            model_id: "selected-model".into(),
+        };
+        for url in [
+            "http://example.invalid/v1",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:80/other",
+        ] {
+            assert!(!model_endpoint_ready(
+                &client,
+                &LocalEndpoint {
+                    url: url.into(),
+                    model_id: endpoint.model_id.clone()
+                }
+            ));
+        }
+        assert!(
+            !model_endpoint_ready(&client, &endpoint),
+            "listening while loading must remain pending"
+        );
+        assert!(
+            !model_endpoint_ready(&client, &endpoint),
+            "healthy wrong alias must remain pending"
+        );
+        assert!(model_endpoint_ready(&client, &endpoint));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn snapshot_observation_fields_are_absent_for_legacy_empty_state() {
+        let payload = ServiceSnapshot {
+            snapshot: LocalModelSnapshot {
+                hardware: recommendation(
+                    &HardwareSnapshot::default(),
+                    Err("unavailable".into()),
+                    false,
+                ),
+                recommendation: None,
+                models: Vec::new(),
+                in_process: Vec::new(),
+                accelerator_setup: None,
+            },
+            runtime_observations: BTreeMap::new(),
+            retained_run_observations: None,
+        };
+        let wire = serde_json::to_value(payload).unwrap();
+        assert!(wire.get("runtime_observations").is_none());
+        assert!(wire.get("retained_run_observations").is_none());
+        let old = serde_json::json!({"models":{}, "accepted_licenses":{}});
+        let state: local_model_service::ServiceState = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), old);
+    }
+
+    fn catalog_fixture() -> CatalogPayload {
+        let inputs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/system-extensions");
+        load_catalog(
+            &inputs.join("local-model-catalog.json"),
+            &inputs.join("local-model-keys.json"),
+        )
+        .unwrap()
+    }
+
+    fn signed_selector_runtime() -> SignedRuntime {
+        use agent_provider_config::local::{PinnedArtifact, RuntimeExecution, RuntimeRelease};
+        let pin = PinnedArtifact {
+            url: "https://artifacts.example.invalid/runtime".into(),
+            sha256: "a".repeat(64),
+            size_bytes: 10,
+        };
+        let manifest = system_extension::ExtensionManifest {
+            schema_version: system_extension::SCHEMA_VERSION,
+            id: "selector-runtime".into(),
+            kind: system_extension::ExtensionKind::LocalModelRuntime,
+            version: "test".into(),
+            artifact: system_extension::PinnedArtifact {
+                source: pin.url.clone(),
+                sha256: pin.sha256.clone(),
+                size_bytes: pin.size_bytes,
+            },
+            target: system_extension::ImageConstraint {
+                base_image_digest: format!("sha256:{}", "b".repeat(64)),
+                architecture: None,
+                kernel_abi: None,
+            },
+            requires_reboot: false,
+        };
+        let signed = system_extension::SignedExtensionManifest::sign(
+            manifest,
+            "selector-test-key",
+            &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
+        )
+        .unwrap();
+        let runtime = SignedRuntime {
+            accepted: system_extension::AcceptedExtension {
+                signed,
+                artifact: system_extension::ArtifactReceipt {
+                    sha256: pin.sha256.clone(),
+                    size_bytes: pin.size_bytes,
+                },
+                committed_revision: 1,
+            },
+            release: RuntimeRelease {
+                id: "selector-runtime".into(),
+                kind: RuntimeKind::NvidiaCuda,
+                version: "test".into(),
+                artifact: pin,
+                oci_image: format!("registry.example.invalid/llama@sha256:{}", "b".repeat(64)),
+                execution: Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 4096,
+                    gpu_layers: 8,
+                    parallel_slots: None,
+                }),
+            },
+        };
+        runtime.validate().unwrap();
+        runtime
+    }
+
+    #[test]
+    fn explicit_signed_engine_selection_and_recommendation_use_model_memory() {
+        use agent_provider_config::local::{ModelArtifactFormat, RuntimeExecution};
+        // Mutated release metadata is confined to this selector fixture. Catalog
+        // trust verification remains exercised separately on the image inputs.
+        let mut catalog = catalog_fixture();
+        let mut model = runtime_model();
+        model.required_accelerator_mib = 4096;
+        model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        catalog.models = vec![model];
+        catalog.runtimes = vec![signed_selector_runtime()];
+        let mut hardware = HardwareSnapshot {
+            cpu_threads: 8,
+            memory_mib: 32768,
+            free_storage_mib: 1024,
+            accelerators: vec![
+                Accelerator::Amd {
+                    vram_mib: 512,
+                    rocm: None,
+                },
+                Accelerator::Nvidia {
+                    vram_mib: 8188,
+                    driver: "615.71.09".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            signed_runtime_for(&catalog, &hardware, &catalog.models[0])
+                .unwrap()
+                .release
+                .kind,
+            RuntimeKind::NvidiaCuda
+        );
+        assert_eq!(
+            recommended_model(&catalog, &hardware).unwrap().1,
+            RuntimeKind::NvidiaCuda
+        );
+        catalog.models[0].required_accelerator_mib = 8189;
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+        assert!(recommended_model(&catalog, &hardware).is_err());
+        catalog.models[0].required_accelerator_mib = 4096;
+        catalog.runtimes[0].release.execution = None;
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+        catalog.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 8,
+            parallel_slots: None,
+        });
+        // Free storage must fit the complete installed artifact, rounded up.
+        catalog.models[0].installed_size_bytes = 1024 * 1024 + 1;
+        hardware.free_storage_mib = 1;
+        assert!(recommended_model(&catalog, &hardware).is_err());
+        hardware.free_storage_mib = 2;
+        assert!(recommended_model(&catalog, &hardware).is_ok());
+    }
+
+    #[test]
+    fn runtime_selection_and_snapshot_fit_use_effective_slice_capacity() {
+        use agent_provider_config::local::ModelArtifactFormat;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("user.slice/app.slice")).unwrap();
+        std::fs::write(root.path().join("cgroup.controllers"), "memory\n").unwrap();
+        std::fs::write(root.path().join("user.slice/memory.max"), "max\n").unwrap();
+        let limit = root.path().join("user.slice/app.slice/memory.max");
+        std::fs::write(&limit, "21474836480\n").unwrap();
+        let properties = "LoadState=loaded\nControlGroup=/user.slice/app.slice\n";
+        let meminfo = "MemTotal: 33554432 kB\nMemAvailable: 1024 kB\n";
+        let mut model = runtime_model();
+        model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        model.required_memory_mib = 24576;
+        let mut catalog = catalog_fixture();
+        catalog.models = vec![model];
+        catalog.runtimes = vec![signed_selector_runtime()];
+        let mut hardware = HardwareSnapshot {
+            cpu_threads: 8,
+            memory_mib: memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap(),
+            free_storage_mib: 1024,
+            accelerators: vec![Accelerator::Nvidia {
+                vram_mib: 8188,
+                driver: "test".into(),
+            }],
+        };
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+        assert!(recommended_model(&catalog, &hardware).is_err());
+        let report = recommendation(
+            &hardware,
+            Err("Insufficient runtime memory capacity".into()),
+            false,
+        );
+        assert!(matches!(report.fit, HardwareFit::Unsupported));
+        assert_eq!(report.memory_gib, 20);
+        // Unlimited limits restore physical capacity, not the 1 MiB headroom.
+        std::fs::write(limit, "max\n").unwrap();
+        hardware.memory_mib =
+            memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap();
+        assert_eq!(
+            signed_runtime_for(&catalog, &hardware, &catalog.models[0])
+                .unwrap()
+                .release
+                .kind,
+            RuntimeKind::NvidiaCuda
+        );
+        assert_eq!(
+            recommended_model(&catalog, &hardware).unwrap().1,
+            RuntimeKind::NvidiaCuda
+        );
+    }
+
+    #[test]
+    fn capacity_probes_selected_store_and_only_bounded_normal_missing_parents() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = temporary.path().join("selected-store");
+        std::fs::create_dir(&store).unwrap();
+        // Record the one actual probe used by each production-path invocation.
+        // Free bytes can change between independent statvfs calls on a live store.
+        let expected = std::cell::Cell::new(None);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut probe = |path: &Path| {
+            assert_eq!(path, store);
+            calls.borrow_mut().push(path.to_owned());
+            let available = free_storage_mib(path).expect("actual filesystem must be observable");
+            assert!(available > 0);
+            expected.set(Some(available));
+            Some(available)
+        };
+        let observed = store_free_storage_mib_with(&store, &mut probe);
+        assert_eq!(observed, expected.get());
+        assert_eq!(calls.borrow().as_slice(), std::slice::from_ref(&store));
+        let observed = store_free_storage_mib_with(&store.join("not-created/models"), &mut probe);
+        assert_eq!(observed, expected.get());
+        assert_eq!(calls.borrow().as_slice(), [store.clone(), store.clone()]);
+        let file = temporary.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        assert_eq!(store_free_storage_mib(&file), None);
+        assert_eq!(store_free_storage_mib(&file.join("child")), None);
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(&store, &link).unwrap();
+        assert_eq!(store_free_storage_mib(&link), None);
+        assert_eq!(store_free_storage_mib(Path::new("relative/models")), None);
+        assert_eq!(store_free_storage_mib(&store.join("../other")), None);
+        let deep = (0..33).fold(store, |path, _| path.join("absent"));
+        assert_eq!(store_free_storage_mib(&deep), None);
+    }
+
+    fn runtime_model() -> LocalModelRelease {
+        let mut model = release("chat", false);
+        model.allowed_runtimes = [
+            RuntimeKind::Cpu,
+            RuntimeKind::NvidiaCuda,
+            RuntimeKind::AmdRocm,
+        ]
+        .into();
+        model
+    }
+
+    fn release(id: &str, in_process: bool) -> LocalModelRelease {
+        LocalModelRelease {
+            id: id.into(),
+            label: id.into(),
+            description: "test".into(),
+            version: "d".repeat(64),
+            artifact: agent_provider_config::local::PinnedArtifact {
+                url: format!("https://artifacts.example.invalid/{}/model", "d".repeat(64)),
+                sha256: "e".repeat(64),
+                size_bytes: 10,
+            },
+            artifact_format: if in_process {
+                agent_provider_config::local::ModelArtifactFormat::OnnxFile
+            } else {
+                agent_provider_config::local::ModelArtifactFormat::VllmGguf
+            },
+            license_id: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.invalid/LICENSE".into(),
+            requires_acceptance: false,
+            installed_size_bytes: 10,
+            allowed_runtimes: if in_process {
+                std::collections::BTreeSet::new()
+            } else {
+                [RuntimeKind::Cpu].into()
+            },
+            required_memory_mib: 1,
+            required_accelerator_mib: 0,
+            context_window: if in_process { 0 } else { 4096 },
+            vision: false,
+            face_recognition: false,
+            segmentation: in_process,
+        }
+    }
+
+    /// Every in-process catalog model is offered with its install state —
+    /// absent until set up — and runtime models never join that list or
+    /// accept a start for an in-process one.
+    #[test]
+    fn the_snapshot_offers_every_in_process_model_with_its_state() {
+        let models = [
+            release("chat", false),
+            release("subject", true),
+            release("other-subject", true),
+        ];
+        let mut state = local_model_service::ServiceState::default();
+        state.models.insert(
+            "subject".into(),
+            local_model_service::ManagedModel {
+                model_sha256: "e".repeat(64),
+                status: LocalModelStatus::Installed,
+                process: None,
+                in_process: None,
+            },
+        );
+        let listed = in_process_models(&models, &state);
+        let json = serde_json::to_value(&listed).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["package"]["id"], "subject");
+        assert_eq!(json[0]["package"]["in_process"], true);
+        assert_eq!(json[0]["package"]["segmentation"], true);
+        assert_eq!(json[0]["phase"]["state"], "ready");
+        assert_eq!(json[0]["phase"]["running"], false);
+        assert_eq!(json[1]["package"]["id"], "other-subject");
+        assert!(json[1]["phase"].is_null());
+        assert!(refuse_in_process(&models[1]).is_err());
+        assert!(refuse_in_process(&models[0]).is_ok());
+    }
 
     /// The RPC wire bytes are pinned and one service connection serves two sequential requests.
     #[test]
@@ -1629,7 +2001,7 @@ mod tests {
                 args: vec!["serve".into(), "/models/model".into()],
                 model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
                 model_container_path: "/models/model".into(),
-                endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
+                endpoint: LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
                 runtime_extension_id: "runtime".into(),
             };
             let argv = podman_vllm_argv(&command);
@@ -1662,10 +2034,16 @@ mod tests {
                 }],
             };
             assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap(),
+                runtime_kind_for(
+                    &hardware,
+                    &runtime_model(),
+                    [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]
+                )
+                .unwrap(),
                 RuntimeKind::NvidiaCuda
             );
-            let error = runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap_err();
+            let error =
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::Cpu]).unwrap_err();
             assert!(error.contains("boot pack"));
         }
 
@@ -1681,7 +2059,7 @@ mod tests {
                 }],
             };
             assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::AmdRocm]).unwrap(),
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::AmdRocm]).unwrap(),
                 RuntimeKind::AmdRocm
             );
             let mut missing_driver = hardware;
@@ -1689,7 +2067,8 @@ mod tests {
                 vram_mib: 16 * 1024,
                 rocm: None,
             }];
-            let error = runtime_kind_for(&missing_driver, [RuntimeKind::Cpu]).unwrap_err();
+            let error = runtime_kind_for(&missing_driver, &runtime_model(), [RuntimeKind::Cpu])
+                .unwrap_err();
             assert!(error.contains("boot pack"));
         }
 
@@ -1702,7 +2081,7 @@ mod tests {
                 accelerators: vec![],
             };
             assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap(),
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::Cpu]).unwrap(),
                 RuntimeKind::Cpu
             );
         }

@@ -11,17 +11,20 @@ use super::{
     SpeechFactory, UriOpener, answered,
 };
 use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
-use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+use crate::clipboard::{ClipboardBackend, ClipboardImage, ClipboardTarget, InProcessClipboard};
 use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
 };
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct Log {
     copies: Vec<(ClipboardTarget, String)>,
+    /// What another app last copied, when it was an image.
+    clipboard_image: Option<ClipboardImage>,
     opened_uris: Vec<String>,
     pick_requests: Vec<PickRequest>,
     launch_requests: Vec<LaunchRequest>,
@@ -55,14 +58,18 @@ pub struct HostRecorder {
 
 impl HostRecorder {
     fn log(&self) -> MutexGuard<'_, Log> {
-        self.log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.log.lock_recover()
     }
 
     /// Every text copy, in order.
     pub fn copies(&self) -> Vec<(ClipboardTarget, String)> {
         self.log().copies.clone()
+    }
+
+    /// Another app copies `image`, as a screenshot tool does: the next paste
+    /// reads it, until something copies text.
+    pub fn copy_image_elsewhere(&self, image: ClipboardImage) {
+        self.log().clipboard_image = Some(image);
     }
 
     /// Every URI handed to the opener, in order.
@@ -108,11 +115,6 @@ impl HostRecorder {
     /// How many location fixes were requested.
     pub fn location_requests(&self) -> usize {
         self.log().location_requests
-    }
-
-    /// Answer the next screen-capture request with `outcome`.
-    pub fn respond_to_screen_capture(&self, outcome: ScreenCaptureOutcome) {
-        self.log().screen_capture_outcomes.push_back(outcome);
     }
 
     /// Every screen-capture request, in order.
@@ -170,12 +172,25 @@ struct RecordingClipboard {
 
 impl ClipboardBackend for RecordingClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
-        self.recorder.log().copies.push((target, text.to_string()));
+        {
+            let mut log = self.recorder.log();
+            log.copies.push((target, text.to_string()));
+            if target == ClipboardTarget::Clipboard {
+                log.clipboard_image = None;
+            }
+        }
         self.buffer.set_text(target, text)
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
+        if target == ClipboardTarget::Clipboard && self.recorder.log().clipboard_image.is_some() {
+            return None;
+        }
         self.buffer.text(target)
+    }
+
+    fn image(&self) -> Option<ClipboardImage> {
+        self.recorder.log().clipboard_image.clone()
     }
 
     fn name(&self) -> &'static str {

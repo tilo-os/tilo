@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn prose_nests_below_prose_without_changing_identity_or_inline_marks() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Parent"),
+        Block::paragraph("é😀 child"),
+    ]);
+    editor.blocks[1]
+        .line
+        .set_marks(vec![MarkSpan::new(0..6, Mark::Bold)]);
+    let id = editor.blocks[1].id.clone();
+    editor.focus_block(1, CursorPlacement::Byte(6));
+    assert!(editor.try_indent(1, 1));
+    assert_eq!(editor.blocks[1].indent(), 1);
+    assert_eq!(editor.blocks[1].id, id);
+    assert_eq!(editor.blocks[1].text(), "é😀 child");
+    assert_eq!(editor.blocks[1].line.cursor_pos(), 6);
+    assert_eq!(
+        editor.blocks[1].line.marks(),
+        &[MarkSpan::new(0..6, Mark::Bold)]
+    );
+    assert!(editor.try_indent(1, -1));
+    assert_eq!(editor.blocks[1].indent(), 0);
+}
+
+#[test]
+fn joining_blocks_keeps_marks_on_both_sides_of_the_unicode_boundary() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("é"), Block::paragraph("😀 child")]);
+    editor.blocks[0]
+        .line
+        .set_marks(vec![MarkSpan::new(0..2, Mark::Italic)]);
+    editor.blocks[1]
+        .line
+        .set_marks(vec![MarkSpan::new(0..4, Mark::Bold)]);
+    editor.merge_with_previous(1);
+    assert_eq!(editor.blocks[0].text(), "é😀 child");
+    assert_eq!(editor.blocks[0].line.cursor_pos(), 2);
+    assert_eq!(
+        editor.blocks[0].line.marks(),
+        &[
+            MarkSpan::new(0..2, Mark::Italic),
+            MarkSpan::new(2..6, Mark::Bold),
+        ]
+    );
+}
+
+#[test]
+fn selecting_a_parent_and_one_child_still_indents_all_its_descendants() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Before"),
+        Block::bullet(0, "Parent"),
+        Block::bullet(1, "Selected child"),
+        Block::checklist(1, true, "Unselected child"),
+        Block::paragraph("After"),
+    ]);
+    editor.focus_block(1, CursorPlacement::Start);
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 2, byte: 2 },
+    );
+    assert!(editor.try_indent_selection(1));
+    assert_eq!(
+        editor.blocks.iter().map(Block::indent).collect::<Vec<_>>(),
+        [0, 1, 2, 2, 0]
+    );
+}
+
+#[test]
 fn moving_outline_blocks_carries_subtrees_and_code_runs() {
     fn moving_list_parent_moves_its_entire_subtree_past_the_next_subtree() {
         let mut editor = BlockEditor::new();

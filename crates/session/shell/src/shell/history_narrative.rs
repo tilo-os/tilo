@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
 use ui::{GroundedNarrative, NarrativeRequest};
 
 pub struct LocalHistoryNarrator {
@@ -87,9 +88,7 @@ impl LocalHistoryNarrator {
         let running = Arc::clone(&self.running);
         std::thread::spawn(move || {
             if let Some(narrative) = generate(&prompt) {
-                *pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, narrative));
+                *pending.lock_recover() = Some((key, narrative));
             }
             running.store(false, Ordering::Release);
         });
@@ -109,8 +108,7 @@ impl LocalHistoryNarrator {
         let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
             .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .take()
             .and_then(|(key, narrative)| (key == expected).then_some(narrative));
         if narrative.is_some() {

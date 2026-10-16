@@ -61,7 +61,7 @@ extern "C" fn control_flow_begin_handler(
                     // trace!("Triggered `CFRunLoopAfterWaiting`");
                     ApplicationDelegate::get(MainThreadMarker::new().unwrap()).wakeup(panic_info);
                     // trace!("Completed `CFRunLoopAfterWaiting`");
-                },
+                }
                 _ => unreachable!(),
             }
         });
@@ -83,7 +83,7 @@ extern "C" fn control_flow_end_handler(
                     // trace!("Triggered `CFRunLoopBeforeWaiting`");
                     ApplicationDelegate::get(MainThreadMarker::new().unwrap()).cleared(panic_info);
                     // trace!("Completed `CFRunLoopBeforeWaiting`");
-                },
+                }
                 kCFRunLoopExit => (), // unimplemented!(), // not expected to ever happen
                 _ => unreachable!(),
             }
@@ -268,7 +268,11 @@ impl EventLoopWaker {
                 ptr::null_mut(),
             );
             CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
-            Self { timer, start_instant: Instant::now(), next_fire_date: None }
+            Self {
+                timer,
+                start_instant: Instant::now(),
+                next_fire_date: None,
+            }
         }
     }
 
@@ -291,7 +295,7 @@ impl EventLoopWaker {
         match instant {
             Some(instant) if now >= instant => {
                 self.start();
-            },
+            }
             Some(instant) => {
                 if self.next_fire_date != Some(instant) {
                     self.next_fire_date = Some(instant);
@@ -303,10 +307,10 @@ impl EventLoopWaker {
                         CFRunLoopTimerSetNextFireDate(self.timer, current + fsecs)
                     }
                 }
-            },
+            }
             None => {
                 self.stop();
-            },
+            }
         }
     }
 }

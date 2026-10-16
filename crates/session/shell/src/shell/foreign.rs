@@ -8,8 +8,9 @@
 //! ```text
 //!  client commit
 //!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
-//!      └─ dmabuf  ──► commit Barrier ─► capture worker ───┤
-//!                                      │ GPU / CPU import  ▼
+//!      └─ dmabuf  ──► commit Barrier ─► fence (loop) ─► capture worker
+//!           shared: drawn from the held buffer itself ───┤ or GPU / CPU import
+//!                                                        ▼
 //!                                            ForeignFrameStore (per surface)
 //!                                                        │  snapshot on seq change
 //!                                                        ▼
@@ -26,17 +27,24 @@
 //!
 //! dmabuf capture is coalesced per surface and runs outside the compositor
 //! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
-//! the compositor until its worker read completes; the pixels are published
-//! only when that exact commit is subsequently applied. The worker tries GPU
+//! the compositor until its read completes; the pixels are published only
+//! when that exact commit is subsequently applied. No thread waits on a
+//! client's GPU: a buffer still being rendered is parked until the compositor
+//! loop sees its implicit fence signal ([`dmabuf_fence_signalled`]), so a slow
+//! client delays only its own commits. On the shared route the worker imports
+//! the buffer (once per buffer) and copies nothing: the frame is drawn from the
+//! buffer itself, so once its commit applies the compositor holds the buffer
+//! ([`ForeignFrameStore::take_unheld_frame`]) and gives it back only after
+//! the last frame that drew it finished (`gpu_frames`). The worker tries GPU
 //! ([`crate::compositor::gpu_import`], the only route for a Vulkan
 //! client whose swapchain images refuse `mmap`), then CPU mmap
 //! ([`import_dmabuf_rgba`], for CPU-visible linear buffers or a box with
 //! no EGL device) — together covering the whole advertised set
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
-#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
@@ -68,15 +76,20 @@ use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Extend, Fill, ImageBrush, ImageData};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
-    OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
+    OwnedShmFrame, ReadbackError, ShmCopy, ShmRegion, ShmShape, apply_owned_shm, buffer_to_rgba,
+    copy_shm_damage,
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
+use ui::TextRole;
 
+mod commit_damage;
+mod scale;
 mod sheets;
+pub use scale::SurfaceScale;
 pub use sheets::{PointRoute, SheetLink};
 
 /// Wayland `wl_surface` protocol id, widened — same key space the rest of the compositor uses for foreign surfaces.
@@ -197,6 +210,67 @@ enum CpuLayout {
     P010,
 }
 
+/// Whether `dmabuf` can be drawn by this compositor: the CPU reads it
+/// ([`validate_importable`]), or it is a single plane of an 8-bit RGB format
+/// whose tiled or compressed layout the presenting GPU was confirmed to sample
+/// ([`crate::shell::gpu_frames::sampleable`]), which is imported without a
+/// copy. A layout the probe did not list is refused here, where the client
+/// can still be told no.
+///
+/// # Errors
+///
+/// The reason it can be drawn neither way: [`validate_importable`]'s.
+#[cfg(target_os = "linux")]
+pub fn validate_composable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
+    let refused = match validate_importable(dmabuf) {
+        Ok(()) => return Ok(()),
+        Err(refused) => refused,
+    };
+    let format = dmabuf.format();
+    if dmabuf.num_planes() == 1
+        && crate::shell::gpu_frames::sampleable(format.code, format.modifier)
+    {
+        return Ok(());
+    }
+    Err(refused)
+}
+
+/// Whether the importer composites a client buffer of `code` under `modifier`:
+/// the same two checks [`validate_importable`] applies to it.
+#[cfg(target_os = "linux")]
+pub fn composites(code: Fourcc, modifier: Modifier) -> bool {
+    modifier_is_cpu_readable(modifier) && CpuLayout::for_fourcc(code).is_some()
+}
+
+/// Every format the importer composites, as the compositor advertises it: the
+/// single list behind `zwp_linux_dmabuf_v1` feedback, so a client can only pick
+/// what [`CpuLayout::for_fourcc`] reads. Each is `Linear`
+/// ([`modifier_is_cpu_readable`]).
+#[cfg(target_os = "linux")]
+pub fn importable_formats() -> Vec<smithay::backend::allocator::Format> {
+    use smithay::backend::allocator::Format;
+    [
+        Fourcc::Argb8888,
+        Fourcc::Xrgb8888,
+        Fourcc::Abgr8888,
+        Fourcc::Xbgr8888,
+        Fourcc::Abgr2101010,
+        Fourcc::Xbgr2101010,
+        Fourcc::Argb2101010,
+        Fourcc::Xrgb2101010,
+        Fourcc::Abgr16161616f,
+        Fourcc::Xbgr16161616f,
+        Fourcc::P010,
+    ]
+    .into_iter()
+    .filter(|code| composites(*code, Modifier::Linear))
+    .map(|code| Format {
+        code,
+        modifier: Modifier::Linear,
+    })
+    .collect()
+}
+
 #[cfg(any(test, target_os = "linux"))]
 impl CpuLayout {
     #[cfg(target_os = "linux")]
@@ -244,6 +318,7 @@ impl CpuLayout {
 
 #[cfg(any(test, target_os = "linux"))]
 use crate::shell::hdr_surface::half_to_f32;
+use tilo_lock::MutexRecover as _;
 
 /// Append one row of a 10-bit or half-float buffer to `texels` as the
 /// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
@@ -691,8 +766,28 @@ fn sync_dmabuf(fd: libc::c_int, flags: u64) {
 
 /// Per-surface capture + placement state.
 struct ForeignEntry {
-    /// Most recent frame, row-major RGBA (`width*height*4` bytes) — reused across commits so a steady-state client costs no reallocation.
-    rgba: Vec<u8>,
+    /// A real compositor toplevel was adopted; a layout-only placeholder is not live.
+    adopted: bool,
+    damage_history: commit_damage::History,
+    #[cfg(any(test, target_os = "linux"))]
+    capture_damage: HashMap<u64, u64>,
+    /// Most recent frame, row-major RGBA (`width*height*4` bytes). Shared,
+    /// never written once published: a snapshot or the tile's image holds it
+    /// without a copy, and a new frame replaces the `Arc` under the lock
+    /// rather than copying pixels there.
+    rgba: Arc<Vec<u8>>,
+    /// The last commit seen on this surface, when it was an SHM buffer the
+    /// capture worker builds: the next SHM commit's damage is relative to
+    /// exactly that commit, so only damaged pixels are copied out of the
+    /// client's pool, tagged with its generation for the worker to verify.
+    /// `None` (any other commit, an unmap, a failure, a frame published by
+    /// another route) makes the next copy whole.
+    #[cfg(target_os = "linux")]
+    shm_base: Option<ShmBaseCommit>,
+    /// Bumped whenever `shm_base` is cleared, so a copy started against a
+    /// base that was cleared meanwhile does not reinstate it.
+    #[cfg(target_os = "linux")]
+    shm_epoch: u64,
     width: u32,
     height: u32,
     /// Monotonic frame counter (`0` = no frame yet), bumped on capture *and* unmap so a sequence comparison always notices a transition.
@@ -715,6 +810,8 @@ struct ForeignEntry {
     max_size: (i32, i32),
     /// What the client declared its window to be with `xdg_surface.set_window_geometry` — everything outside it is shadow or resize border, which a tile never shows.
     geometry: Option<WindowGeometry>,
+    /// How the client's buffer lies on the surface, as its last commit said.
+    scale: SurfaceScale,
     /// When this surface was first heard of (toplevel adoption) — start of the window [`ForeignFrameStore::mark_presented`] waits before giving up.
     first_seen: Instant,
     /// Whether the client has committed a non-null buffer. This is deliberately
@@ -736,18 +833,116 @@ struct ForeignEntry {
     /// is applied. Publishing earlier would expose pending state as current.
     #[cfg(any(test, target_os = "linux"))]
     ready_captures: HashMap<u64, ReadyCapture>,
+    /// Shm commits queued for the capture worker, and the latest it is done
+    /// with. The worker keeps only a surface's newest job, so it can finish
+    /// fewer than were queued; the newest one finished is what counts.
+    shm_queued: u64,
+    shm_done: u64,
+    activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
     hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    /// The current frame when it stayed on the GPU; `rgba` is then empty and
+    /// read back only on demand.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
+    /// `gpu`, while it is drawn from a client buffer the compositor has not
+    /// taken hold of yet: set when its commit applies, taken by the commit
+    /// handler that holds the buffer ([`ForeignFrameStore::take_unheld_frame`]).
+    unheld: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
 }
 
 impl ForeignEntry {
+    /// Make `frame` the current GPU frame. The one it replaces is superseded:
+    /// its buffer goes back once nothing draws it any more.
+    fn set_gpu(&mut self, frame: Option<Arc<crate::shell::gpu_frames::GpuFrame>>) {
+        self.unheld = None;
+        if let Some(replaced) = std::mem::replace(&mut self.gpu, frame) {
+            replaced.note_superseded();
+        }
+    }
+
+    /// Drop the CPU frame; the next SHM commit then copies its whole buffer.
+    /// Returned to be freed outside the lock.
+    /// Make `pixels`, a captured `size` frame, the current one. Returns the
+    /// frame it replaces, for the caller to drop outside the lock.
+    #[cfg(target_os = "linux")]
+    fn publish_frame(
+        &mut self,
+        pixels: Arc<Vec<u8>>,
+        (width, height): (u32, u32),
+        generation: u64,
+        gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
+    ) -> Arc<Vec<u8>> {
+        let replaced = std::mem::replace(&mut self.rgba, pixels);
+        // Protocol commit/unmap owns mapping. A late worker completion
+        // cannot map a pending buffer early or remap a detached surface.
+        self.hdr = None;
+        // Drawn from its texture on the presenting device when it has one;
+        // `pixels` stay for everything that reads the frame on the CPU.
+        self.set_gpu(gpu);
+        self.width = width;
+        self.height = height;
+        self.seq = self.seq.wrapping_add(1);
+        self.damage_history
+            .publish(self.seq, generation, (width, height));
+        self.last_error = None;
+        replaced
+    }
+
+    /// The last capture failed: drop the stale frame and keep `reason`.
+    /// Returns the pixels it held, for the caller to drop outside the lock.
+    fn fail(&mut self, reason: String) -> Arc<Vec<u8>> {
+        let released = self.take_pixels();
+        self.hdr = None;
+        self.set_gpu(None);
+        self.width = 0;
+        self.height = 0;
+        self.seq = self.seq.wrapping_add(1);
+        self.last_error = Some(reason);
+        released
+    }
+
+    fn take_pixels(&mut self) -> Arc<Vec<u8>> {
+        #[cfg(target_os = "linux")]
+        self.forget_shm_base();
+        std::mem::take(&mut self.rgba)
+    }
+
+    /// The next SHM commit is not laid over the last one: it copies whole.
+    #[cfg(target_os = "linux")]
+    fn forget_shm_base(&mut self) {
+        if self.shm_base.take().is_some() {
+            self.shm_epoch = self.shm_epoch.wrapping_add(1);
+            // The worker can now release the frame it kept to build on.
+            if let Some(Ok(worker)) = ASYNC_SHM_CAPTURE.get() {
+                worker.poke();
+            }
+        }
+    }
+
+    /// A committed buffer whose pixels are not this entry's yet.
+    fn capturing(&self) -> bool {
+        #[cfg(any(test, target_os = "linux"))]
+        if !self.capture_tokens.is_empty() {
+            return true;
+        }
+        self.shm_queued > self.shm_done
+    }
+
     fn new() -> Self {
         Self {
-            rgba: Vec::new(),
+            adopted: false,
+            damage_history: commit_damage::History::default(),
+            #[cfg(any(test, target_os = "linux"))]
+            capture_damage: HashMap::new(),
+            rgba: Arc::default(),
+            #[cfg(target_os = "linux")]
+            shm_base: None,
+            #[cfg(target_os = "linux")]
+            shm_epoch: 0,
             width: 0,
             height: 0,
             seq: 0,
@@ -759,51 +954,50 @@ impl ForeignEntry {
             min_size: (0, 0),
             max_size: (0, 0),
             geometry: None,
+            scale: SurfaceScale::default(),
             first_seen: Instant::now(),
             mapped: false,
             presented: false,
             colorimetry: None,
             hdr: None,
+            gpu: None,
+            unheld: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
             ready_captures: HashMap::new(),
+            shm_queued: 0,
+            shm_done: 0,
+            activated_capture: None,
         }
     }
 }
 
-/// A toplevel's declared window geometry together with what it takes to
-/// find that rectangle in the buffer: geometry is in surface-local logical
-/// pixels, the buffer is in its own, and the two differ by the viewport
-/// destination (fractional scaling) or else the integer buffer scale.
+/// A toplevel's declared window geometry (`xdg_surface.set_window_geometry`),
+/// in surface-local logical pixels. Where that rectangle is in an image
+/// depends on the image's density; see [`SurfaceScale`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowGeometry {
     pub x: i32,
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    /// `wp_viewport.set_destination`, when the client uses one.
-    pub logical_size: Option<(i32, i32)>,
-    /// `wl_surface.set_buffer_scale`.
-    pub buffer_scale: i32,
 }
 
 impl WindowGeometry {
     /// The declared window as a `(x, y, width, height)` crop of a
-    /// `buffer_w`×`buffer_h` buffer, or `None` when it covers the whole buffer
-    /// or does not describe any part of it.
-    fn crop(&self, buffer_w: u32, buffer_h: u32) -> Option<(u32, u32, u32, u32)> {
+    /// `buffer_w`×`buffer_h` image of the surface at `(factor_x, factor_y)`
+    /// image pixels per logical pixel, or `None` when it covers the whole
+    /// image or does not describe any part of it.
+    fn crop(
+        &self,
+        buffer_w: u32,
+        buffer_h: u32,
+        (factor_x, factor_y): (f64, f64),
+    ) -> Option<(u32, u32, u32, u32)> {
         if self.width <= 0 || self.height <= 0 || buffer_w == 0 || buffer_h == 0 {
             return None;
         }
-        let fallback = f64::from(self.buffer_scale.max(1));
-        let (factor_x, factor_y) = match self.logical_size {
-            Some((lw, lh)) if lw > 0 && lh > 0 => (
-                f64::from(buffer_w) / f64::from(lw),
-                f64::from(buffer_h) / f64::from(lh),
-            ),
-            _ => (fallback, fallback),
-        };
         let (x0, x1) = crop_span(self.x, self.width, factor_x, buffer_w);
         let (y0, y1) = crop_span(self.y, self.height, factor_y, buffer_h);
         let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
@@ -832,12 +1026,21 @@ fn crop_span(origin: i32, extent: i32, factor: f64, limit: u32) -> (u32, u32) {
 }
 
 impl ForeignEntry {
-    /// The part of the buffer that is the window: the declared geometry when
-    /// there is one, otherwise all of it. `(x, y, width, height)` in buffer pixels.
-    fn content(&self) -> (u32, u32, u32, u32) {
-        self.geometry
-            .and_then(|geometry| geometry.crop(self.width, self.height))
-            .unwrap_or((0, 0, self.width, self.height))
+    /// How the current buffer lies on the surface; `None` without one.
+    fn buffer_placement(&self) -> Option<scale::BufferPlacement> {
+        self.scale.place(self.width, self.height)
+    }
+
+    /// The window's logical size: the declared geometry, or else the whole
+    /// surface. `None` until a buffer gives the surface a size.
+    fn window_size(&self) -> Option<(f64, f64)> {
+        let placed = self.buffer_placement()?;
+        Some(match self.geometry {
+            Some(geometry) if geometry.width > 0 && geometry.height > 0 => {
+                (f64::from(geometry.width), f64::from(geometry.height))
+            }
+            _ => placed.logical,
+        })
     }
 
     /// Where in `tile` the window belongs: all of it, unless the client's
@@ -890,7 +1093,20 @@ pub struct FrameSnapshot {
     pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
-fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
+/// A subsurface's pixels, tightly packed RGBA.
+struct ChildPixels<'a> {
+    rgba: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+/// Where a subsurface's pixels are.
+enum ChildSource {
+    Cpu(Arc<Vec<u8>>),
+    Gpu(Arc<crate::shell::gpu_frames::GpuFrame>),
+}
+
+fn composite_child_rgba(root: &mut FrameSnapshot, child: &ChildPixels<'_>, x: i32, y: i32) {
     if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
         return;
     }
@@ -927,30 +1143,88 @@ fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, 
             ) else {
                 continue;
             };
-            let (Ok(&[sr, sg, sb, sa]), Ok([dr, dg, db, da])) = (
+            let (Ok(&source), Ok(destination)) = (
                 <&[u8; 4]>::try_from(source),
                 <&mut [u8; 4]>::try_from(destination),
             ) else {
                 continue;
             };
-            let alpha = u32::from(sa);
-            let inverse = 255_u32.saturating_sub(alpha);
-            let blend = |over: u8, under: u8| {
-                u8::try_from(
-                    u32::from(over)
-                        .saturating_mul(alpha)
-                        .saturating_add(u32::from(under).saturating_mul(inverse))
-                        / 255,
-                )
-                .unwrap_or(u8::MAX)
-            };
-            *dr = blend(sr, *dr);
-            *dg = blend(sg, *dg);
-            *db = blend(sb, *db);
-            *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
-                .unwrap_or(u8::MAX);
+            blend_over(destination, source);
         }
     }
+}
+
+/// How `id`'s image is made, read from `entries`: the canvas it and its
+/// `children` are flattened onto, and the window cut out of it.
+fn layout_of(
+    entries: &HashMap<SurfaceId, ForeignEntry>,
+    id: SurfaceId,
+    children: &[ChildFrame],
+) -> Option<scale::FrameLayout> {
+    let root = entries.get(&id)?;
+    let placed = root.buffer_placement()?;
+    let canvas = scale::Canvas::new(
+        &placed,
+        (root.width, root.height),
+        children
+            .iter()
+            .filter_map(|child| entries.get(&child.surface)?.buffer_placement()),
+    );
+    Some(scale::FrameLayout {
+        canvas,
+        content: canvas.window(root.geometry),
+    })
+}
+
+/// The whole canvas pixel a `width`×`height` subsurface buffer `placed` at
+/// `destination` starts on, when it lands there pixel for pixel; it is then
+/// copied rather than filtered.
+fn pixel_aligned(
+    placed: &scale::BufferPlacement,
+    destination: &scale::PixelRect,
+    (width, height): (u32, u32),
+) -> Option<(i32, i32)> {
+    let same = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let whole = placed.source == scale::PixelRect::whole(width, height);
+    (whole
+        && same(destination.width, f64::from(width))
+        && same(destination.height, f64::from(height))
+        && same(destination.x, destination.x.round())
+        && same(destination.y, destination.y.round()))
+    .then(|| (whole_pixel(destination.x), whole_pixel(destination.y)))
+}
+
+/// `value`, an integral canvas coordinate, as one.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounded and clamped into the i32 range first, so the cast neither truncates a \
+              fraction nor wraps"
+)]
+fn whole_pixel(value: f64) -> i32 {
+    value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+/// Lay subsurface pixel `[r, g, b, a]` over `destination`.
+fn blend_over(destination: &mut [u8; 4], [sr, sg, sb, sa]: [u8; 4]) {
+    let [dr, dg, db, da] = destination;
+    let alpha = u32::from(sa);
+    let inverse = 255_u32.saturating_sub(alpha);
+    let blend = |over: u8, under: u8| {
+        u8::try_from(
+            u32::from(over)
+                .saturating_mul(alpha)
+                .saturating_add(u32::from(under).saturating_mul(inverse))
+                / 255,
+        )
+        .unwrap_or(u8::MAX)
+    };
+    *dr = blend(sr, *dr);
+    *dg = blend(sg, *dg);
+    *db = blend(sb, *db);
+    *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
+        .unwrap_or(u8::MAX);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -968,6 +1242,8 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    painted_frames: Mutex<HashMap<SurfaceId, u64>>,
+    presentation_viewport: Mutex<Option<Rect>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Transient toplevels drawn on their parent's tile, bottom to top.
     sheets: Mutex<Vec<SheetLink>>,
@@ -980,6 +1256,12 @@ pub struct ForeignFrameStore {
     /// Which surfaces a capture must draw as a placeholder — see
     /// [`crate::shell::capture_protection`].
     capture_protection: Mutex<CaptureProtection>,
+    /// Advanced after every change to [`Self::capture_protection`], so the
+    /// compositor can tell that nothing changed without taking the lock.
+    capture_protection_epoch: AtomicU64,
+    /// The size, in logical pixels, other devices of the person show each
+    /// streamed window at. A window not shown here is configured to it.
+    remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -1008,6 +1290,9 @@ pub enum DmabufRoute {
     Gpu,
     /// The plane fd was CPU-mapped directly — only linear, CPU-visible buffers, but needs no GL context.
     CpuMmap,
+    /// Imported on the presenting GPU and copied into a compositor-owned
+    /// texture; no pixel crossed the CPU.
+    Shared,
 }
 
 /// Which capture route a commit took, for logging + tests.
@@ -1036,6 +1321,25 @@ struct CaptureJob<T> {
     payload: T,
     barrier: Barrier,
     client: Client,
+    /// The client's rendering into the buffer is known to be done. `false`
+    /// only when its fence could not be watched on the compositor loop; the
+    /// worker then waits for it.
+    readable: bool,
+    /// The commit declared every pixel opaque ([`DmabufCommit::opaque`]).
+    opaque: bool,
+}
+
+/// A dmabuf a surface commit attaches, with what the commit says about it.
+#[cfg(target_os = "linux")]
+pub struct DmabufCommit {
+    pub buffer: Dmabuf,
+    /// The surface's colour description, if it has one.
+    pub colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    /// The commit's opaque region covers the whole surface
+    /// ([`crate::compositor::opaque_region`]): the buffer's alpha channel is
+    /// padding. The frame is drawn ignoring it, as an `X` format is, and a
+    /// fullscreen one may be scanned out as its `X` twin.
+    pub opaque: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1044,7 +1348,139 @@ type DmabufJob = CaptureJob<Dmabuf>;
 #[cfg(target_os = "linux")]
 struct ShmJob {
     surface: SurfaceId,
-    payload: OwnedShmFrame,
+    /// The surface's shm capture count when this job was queued.
+    generation: u64,
+    damage_generation: u64,
+    /// The copies of every queued commit the worker has not applied yet,
+    /// oldest first. Only the first can be whole: a whole copy makes every
+    /// older one moot. A damaged-only copy is laid over the frame before it,
+    /// so a newer commit cannot simply replace one.
+    patches: Vec<ShmPatch>,
+}
+
+/// The entry `job` was queued for, unless its surface went while the job
+/// ran. A client that commits and closes its window at once leaves the worker
+/// building a frame for a surface that is gone; `forget` removed the entry,
+/// but a closing tile still placing itself makes an empty one again, and
+/// publishing into that would keep a whole frame nothing frees. That entry has
+/// queued no SHM job, so the job's generation tells it apart.
+#[cfg(target_os = "linux")]
+fn shm_job_entry<'a>(
+    entries: &'a mut HashMap<SurfaceId, ForeignEntry>,
+    job: &ShmJob,
+) -> Option<&'a mut ForeignEntry> {
+    entries
+        .get_mut(&job.surface)
+        .filter(|entry| job.generation != 0 && job.generation <= entry.shm_queued)
+}
+
+/// One SHM commit's copy, and what it was copied against.
+#[cfg(target_os = "linux")]
+struct ShmPatch {
+    frame: OwnedShmFrame,
+    /// The commit's capture generation.
+    generation: u64,
+    /// For a damaged-only copy, the generation of the SHM commit its damage
+    /// is relative to. The worker lays it only over exactly that commit's
+    /// frame; any other base drops it rather than guess.
+    based_on: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+impl ShmJob {
+    fn copied_bytes(&self) -> usize {
+        self.patches
+            .iter()
+            .map(|patch| patch.frame.copied_bytes())
+            .fold(0, usize::saturating_add)
+    }
+
+    /// What this job's frame changes against the frame its first copy was
+    /// laid over, in buffer pixels; `None` when a copy is whole.
+    fn changed_regions(&self) -> Option<Vec<crate::shell::gpu_frames::FrameRegion>> {
+        let mut changed = Vec::new();
+        for patch in &self.patches {
+            patch.based_on?;
+            changed.extend(patch.frame.regions()?.iter().map(|region| {
+                let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+                (
+                    to_u32(region.x),
+                    to_u32(region.y),
+                    to_u32(region.width),
+                    to_u32(region.height),
+                )
+            }));
+        }
+        Some(changed)
+    }
+
+    fn starts_whole(&self) -> bool {
+        self.patches
+            .first()
+            .is_none_or(|patch| patch.frame.regions().is_none())
+    }
+
+    /// Take `older`, still queued, in front of this job's copies. Returns the
+    /// copies that no longer matter.
+    fn absorb(&mut self, older: Self) -> Vec<ShmPatch> {
+        if self.starts_whole() {
+            return older.patches;
+        }
+        let mut patches = older.patches;
+        patches.append(&mut self.patches);
+        self.patches = patches;
+        Vec::new()
+    }
+}
+
+/// A surface's SHM base as a copy read it, before the copy was made.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+struct ShmBaseRead {
+    base: Option<ShmBaseCommit>,
+    /// The base epoch then: a copy only becomes the next base if no clear
+    /// happened in between.
+    epoch: u64,
+}
+
+/// Bytes of a tightly packed RGBA frame of `shape`.
+#[cfg(target_os = "linux")]
+fn frame_bytes(shape: ShmShape) -> usize {
+    shape.width.saturating_mul(shape.height).saturating_mul(4)
+}
+
+/// The SHM commit a surface's next damaged commit is laid over.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShmBaseCommit {
+    shape: ShmShape,
+    generation: u64,
+}
+
+/// What the SHM worker keeps of one surface: the frame its last SHM commit
+/// built, which the next damaged commit is laid over. It is independent of
+/// what the frame store shows, which a dmabuf or an unmap may have replaced
+/// meanwhile; only a commit tagged with `generation` is laid over it.
+#[cfg(target_os = "linux")]
+struct ShmSurface {
+    pixels: Arc<Vec<u8>>,
+    shape: ShmShape,
+    generation: u64,
+    /// The frame `pixels` replaced, written into next instead of a full copy
+    /// when nothing draws it any more.
+    spare: Option<ShmSpare>,
+    /// The textures the frames are drawn from on the presenting device.
+    textures: crate::shell::gpu_frames::UploadRing,
+}
+
+/// A frame kept for reuse after a newer one replaced it.
+#[cfg(target_os = "linux")]
+struct ShmSpare {
+    pixels: Arc<Vec<u8>>,
+    /// The regions it lacks against its successor; `None`: unknown, all.
+    stale: Option<Vec<ShmRegion>>,
+    /// When it was replaced: a surface that stopped committing drops it.
+    since: Instant,
 }
 
 #[derive(Debug)]
@@ -1053,6 +1489,8 @@ struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
     hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    /// The frame, when it stayed on the GPU; `rgba` is then empty.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -1099,11 +1537,17 @@ impl<T> LatestJobs<T> {
 #[cfg(target_os = "linux")]
 struct AsyncDmabufCapture {
     pending: Arc<Mutex<LatestJobs<DmabufJob>>>,
+    /// Commits whose buffer the client's GPU is still rendering, the newest
+    /// per surface. The compositor loop watches each buffer's implicit fence
+    /// and moves the job to `pending` when it signals
+    /// ([`dmabuf_fence_signalled`]), so no thread waits on a client's GPU and
+    /// a slow client never holds up another surface's frames.
+    awaiting_fence: Mutex<LatestJobs<DmabufJob>>,
     completed: Arc<Mutex<HashMap<ClientId, Client>>>,
-    /// Pixel allocations handed back after a newer frame becomes current.
-    /// Readback and painting never alias: the main thread returns the old
-    /// frame only after replacing it in the store.
-    recycled: Arc<Mutex<HashMap<SurfaceId, Vec<u8>>>>,
+    /// Frames handed back after a newer frame becomes current. A snapshot or
+    /// the tile's image may still share one; the worker reuses it only once
+    /// it holds the last reference, so readback and painting never alias.
+    recycled: Arc<Mutex<HashMap<SurfaceId, Arc<Vec<u8>>>>>,
     wake: SyncSender<()>,
     completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
 }
@@ -1111,6 +1555,13 @@ struct AsyncDmabufCapture {
 #[cfg(target_os = "linux")]
 struct AsyncShmCapture {
     pending: Arc<Mutex<LatestJobs<ShmJob>>>,
+    /// Copy allocations the worker is done with, for the compositor thread's
+    /// next copy out of a client pool: a steady client then copies into
+    /// memory that is already mapped.
+    scratch: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// The frame each surface's last SHM commit built, which the worker lays
+    /// that surface's next damaged commit over.
+    surfaces: Arc<Mutex<HashMap<SurfaceId, ShmSurface>>>,
     wake: SyncSender<()>,
     completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
 }
@@ -1122,16 +1573,28 @@ fn signal_capture_barrier(barrier: &Barrier) {
 
 #[cfg(target_os = "linux")]
 fn mark_capture_complete(client: Client, completed: &Mutex<HashMap<ClientId, Client>>) {
-    completed
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(client.id(), client);
+    completed.lock_recover().insert(client.id(), client);
 }
 
 #[cfg(target_os = "linux")]
 fn release_superseded<T>(job: CaptureJob<T>, completed: &Mutex<HashMap<ClientId, Client>>) {
     signal_capture_barrier(&job.barrier);
     mark_capture_complete(job.client, completed);
+}
+
+/// Let a captured commit apply, and wake the compositor loop to apply it.
+#[cfg(target_os = "linux")]
+fn complete_capture(
+    barrier: &Barrier,
+    client: Client,
+    completed: &Mutex<HashMap<ClientId, Client>>,
+    ping: &Mutex<Option<smithay::reexports::calloop::ping::Ping>>,
+) {
+    signal_capture_barrier(barrier);
+    mark_capture_complete(client, completed);
+    if let Some(ping) = ping.lock_recover().as_ref() {
+        ping.ping();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1142,13 +1605,13 @@ impl AsyncDmabufCapture {
         let worker_pending = Arc::clone(&pending);
         let completed = Arc::new(Mutex::new(HashMap::new()));
         let worker_completed = Arc::clone(&completed);
-        let recycled = Arc::new(Mutex::new(HashMap::new()));
+        let recycled = Arc::new(Mutex::new(HashMap::<SurfaceId, Arc<Vec<u8>>>::new()));
         let worker_recycled = Arc::clone(&recycled);
         let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
         let worker_completion_ping = Arc::clone(&completion_ping);
         // Capacity one is only a wake edge, never a job queue. The authoritative
         // queue is the latest-only map above, so `try_send` cannot block the
-        // compositor even while the worker is stuck on a GPU fence.
+        // compositor even while the worker is busy.
         let (wake, wakes) = sync_channel::<()>(1);
         std::thread::Builder::new()
             .name("tilo-foreign-capture".into())
@@ -1156,48 +1619,39 @@ impl AsyncDmabufCapture {
                 let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
                 while wakes.recv().is_ok() {
                     loop {
-                        let job = worker_pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop();
+                        let job = worker_pending.lock_recover().pop();
                         let Some(job) = job else { break };
                         let rgba = scratch.entry(job.surface).or_default();
-                        if rgba.is_empty()
-                            && let Some(previous) = worker_recycled
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .remove(&job.surface)
+                        let recycled = worker_recycled.lock_recover().remove(&job.surface);
+                        // Still drawn somewhere: whoever holds it frees it.
+                        if rgba.capacity() == 0
+                            && let Some(mut previous) =
+                                recycled.and_then(|pixels| Arc::try_unwrap(pixels).ok())
                         {
+                            previous.clear();
                             *rgba = previous;
                         }
-                        let colorimetry = store().colorimetry(job.surface);
-                        let mut hdr = None;
-                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
-                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
-                        );
-                        let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+                        let surface = job.surface;
+                        let (accepted, barrier, client) = capture_dmabuf_job(job, rgba);
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
                             // the worker's per-surface scratch map forever.
-                            scratch.remove(&job.surface);
+                            scratch.remove(&surface);
                         }
-                        signal_capture_barrier(&job.barrier);
-                        mark_capture_complete(job.client, &worker_completed);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
-                            ping.ping();
-                        }
+                        complete_capture(
+                            &barrier,
+                            client,
+                            &worker_completed,
+                            &worker_completion_ping,
+                        );
                     }
                 }
             })
             .map_err(|error| format!("could not start foreign-window capture worker: {error}"))?;
         Ok(Self {
             pending,
+            awaiting_fence: Mutex::new(LatestJobs::default()),
             completed,
             recycled,
             wake,
@@ -1205,12 +1659,46 @@ impl AsyncDmabufCapture {
         })
     }
 
+    /// A job whose buffer is still being rendered: it runs once
+    /// [`dmabuf_fence_signalled`] says the client's GPU is done with it.
+    fn park(&self, job: DmabufJob) {
+        let replaced = self.awaiting_fence.lock_recover().push(job.surface, job);
+        if let Some(replaced) = replaced {
+            // As in `enqueue`: only the newest commit can become visible, and
+            // the older one never read its buffer.
+            release_superseded(replaced, &self.completed);
+        }
+    }
+
+    /// Run the parked job of `surface` for commit `token`, if it is still the
+    /// newest. `readable` is `false` when its fence could not be watched.
+    fn unpark(&self, surface: SurfaceId, token: u64, readable: bool) {
+        let job = {
+            let mut awaiting = self.awaiting_fence.lock_recover();
+            if awaiting
+                .jobs
+                .get(&surface)
+                .is_some_and(|job| job.token == token)
+            {
+                awaiting.remove(surface)
+            } else {
+                None
+            }
+        };
+        if let Some(mut job) = job {
+            job.readable = readable;
+            self.enqueue(job);
+        }
+    }
+
     fn enqueue(&self, job: DmabufJob) {
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
+        // Tokens grow with every commit, so a job still waiting for its fence
+        // belongs to an older commit of this surface.
+        let parked = self.awaiting_fence.lock_recover().remove(job.surface);
+        if let Some(parked) = parked {
+            release_superseded(parked, &self.completed);
+        }
+        let replaced = self.pending.lock_recover().push(job.surface, job);
         if let Some(replaced) = replaced {
             // The newer commit is the only pending frame that can become
             // visible. Release the superseded transaction deliberately; a
@@ -1223,41 +1711,54 @@ impl AsyncDmabufCapture {
     }
 
     fn drain_completed(&self) -> Vec<Client> {
-        std::mem::take(
-            &mut *self
-                .completed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-        .into_values()
-        .collect()
+        std::mem::take(&mut *self.completed.lock_recover())
+            .into_values()
+            .collect()
     }
 
-    fn recycle_pixels(&self, surface: SurfaceId, mut rgba: Vec<u8>) {
-        rgba.clear();
+    fn recycle_pixels(&self, surface: SurfaceId, rgba: Arc<Vec<u8>>) {
         if rgba.capacity() == 0 {
             return;
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(surface, rgba);
+        self.recycled.lock_recover().insert(surface, rgba);
     }
 
     fn forget_surface(&self, surface: SurfaceId) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
+        let pending = self.pending.lock_recover().remove(surface);
         if let Some(pending) = pending {
             release_superseded(pending, &self.completed);
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&surface);
+        let parked = self.awaiting_fence.lock_recover().remove(surface);
+        if let Some(parked) = parked {
+            release_superseded(parked, &self.completed);
+        }
+        self.recycled.lock_recover().remove(&surface);
     }
+}
+
+/// Capture one readable dmabuf on the worker: share it on the GPU, or read it
+/// back. Returns whether the surface still took the frame, and the commit's
+/// barrier and client to let it apply: the shared route reads nothing here
+/// (the frame is drawn from the buffer itself, which the compositor holds
+/// from the commit on), the readback route is done reading.
+#[cfg(target_os = "linux")]
+fn capture_dmabuf_job(job: DmabufJob, rgba: &mut Vec<u8>) -> (bool, Barrier, Client) {
+    if !job.readable {
+        crate::shell::gpu_frames::wait_readable(&job.payload);
+    }
+    if let Some(frame) = share_dmabuf(&job.payload, job.surface, job.opaque) {
+        let accepted = store().stage_gpu_capture(job.surface, job.token, frame);
+        return (accepted, job.barrier, job.client);
+    }
+    let colorimetry = store().colorimetry(job.surface);
+    let mut hdr = None;
+    let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+        .map(|(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)));
+    if result.is_ok() && hdr.is_none() && job.opaque {
+        declare_opaque(job.payload.format().code, rgba);
+    }
+    let accepted = store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+    (accepted, job.barrier, job.client)
 }
 
 #[cfg(target_os = "linux")]
@@ -1267,59 +1768,390 @@ impl AsyncShmCapture {
         let worker_pending = Arc::clone(&pending);
         let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
         let worker_completion_ping = Arc::clone(&completion_ping);
+        let scratch = Arc::new(Mutex::new(Vec::new()));
+        let worker_scratch = Arc::clone(&scratch);
+        let surfaces = Arc::new(Mutex::new(HashMap::new()));
+        let worker_surfaces = Arc::clone(&surfaces);
         let (wake, wakes) = sync_channel::<()>(1);
         std::thread::Builder::new()
             .name("tilo-shm-capture".into())
             .spawn(move || {
-                let mut rgba = Vec::new();
-                while wakes.recv().is_ok() {
-                    loop {
-                        let job = worker_pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop();
-                        let Some(job) = job else { break };
-                        match owned_shm_to_rgba(&job.payload, &mut rgba) {
-                            Ok((width, height)) => {
-                                store().publish_rgba(job.surface, &rgba, width, height);
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    target: "shell::compositor::foreign_capture",
-                                    surface_id = job.surface,
-                                    %error,
-                                    "foreign shm readback failed"
-                                );
-                                store().note_failure(job.surface, error.to_string());
-                            }
+                let worker = ShmWorker {
+                    pending: &worker_pending,
+                    surfaces: &worker_surfaces,
+                    scratch: &worker_scratch,
+                };
+                loop {
+                    // A spare frame is only worth keeping while its surface
+                    // keeps committing; a worker holding none blocks without
+                    // a timeout.
+                    let woken = if worker.holds_spares() {
+                        match wakes.recv_timeout(SHM_SPARE_IDLE) {
+                            Ok(()) => true,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         }
+                    } else if wakes.recv().is_ok() {
+                        true
+                    } else {
+                        break;
+                    };
+                    worker.release_idle_spares();
+                    if !woken {
+                        continue;
+                    }
+                    while let Some(job) = worker.next_job() {
+                        worker.run(job);
                         SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
+                        if let Some(ping) = worker_completion_ping.lock_recover().as_ref() {
                             ping.ping();
                         }
                     }
+                    worker.release_unanchored();
                 }
             })
             .map_err(|error| format!("could not start SHM capture worker: {error}"))?;
         Ok(Self {
             pending,
+            scratch,
+            surfaces,
             wake,
             completion_ping,
         })
     }
 
-    fn enqueue(&self, job: ShmJob) {
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
-        drop(replaced);
+    fn enqueue(&self, mut job: ShmJob) {
+        let mut pending = self.pending.lock_recover();
+        let moot = pending
+            .remove(job.surface)
+            .map_or_else(Vec::new, |older| job.absorb(older));
+        pending.push(job.surface, job);
+        drop(pending);
+        recycle_shm_scratch(&self.scratch, moot);
+        self.poke();
+    }
+
+    /// Wake the worker; it then also releases frames no commit can build on.
+    fn poke(&self) {
+        // Full means a wake is already waiting; disconnected means the worker
+        // failed after startup. Neither may stall Wayland dispatch.
         let _ = self.wake.try_send(());
+    }
+
+    /// Bytes `surface` has queued and the worker has not taken yet.
+    fn queued_bytes(&self, surface: SurfaceId) -> usize {
+        self.pending
+            .lock_recover()
+            .jobs
+            .get(&surface)
+            .map_or(0, ShmJob::copied_bytes)
+    }
+
+    /// An allocation to copy the next commit into: the smallest returned one
+    /// holding `needed` bytes, the largest when the size is unknown, or a
+    /// fresh one when none fits.
+    fn take_scratch(&self, needed: Option<usize>) -> Vec<u8> {
+        let mut scratch = self.scratch.lock_recover();
+        let chosen = match needed {
+            Some(needed) => scratch
+                .iter()
+                .enumerate()
+                .filter(|(_, bytes)| bytes.capacity() >= needed)
+                .min_by_key(|(_, bytes)| bytes.capacity())
+                .map(|(index, _)| index),
+            None => scratch
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, bytes)| bytes.capacity())
+                .map(|(index, _)| index),
+        };
+        let taken = chosen.map(|index| scratch.swap_remove(index));
+        drop(scratch);
+        taken.unwrap_or_default()
+    }
+
+    fn forget_surface(&self, surface: SurfaceId) {
+        let pending = self.pending.lock_recover().remove(surface);
+        let built = self.surfaces.lock_recover().remove(&surface);
+        drop(built);
+        if let Some(job) = pending {
+            recycle_shm_scratch(&self.scratch, job.patches);
+        }
+    }
+}
+
+/// How long a worker with nothing to do keeps spare frames for reuse.
+#[cfg(target_os = "linux")]
+const SHM_SPARE_IDLE: Duration = Duration::from_secs(1);
+
+/// The SHM capture worker's view of its shared state.
+#[cfg(target_os = "linux")]
+struct ShmWorker<'a> {
+    pending: &'a Mutex<LatestJobs<ShmJob>>,
+    surfaces: &'a Mutex<HashMap<SurfaceId, ShmSurface>>,
+    scratch: &'a Mutex<Vec<Vec<u8>>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ShmWorker<'_> {
+    fn next_job(&self) -> Option<ShmJob> {
+        self.pending.lock_recover().pop()
+    }
+
+    fn surfaces(&self) -> std::sync::MutexGuard<'_, HashMap<SurfaceId, ShmSurface>> {
+        self.surfaces.lock_recover()
+    }
+
+    /// Build one job's frame and publish it, or record why not.
+    fn run(&self, mut job: ShmJob) {
+        let mut previous = self.surfaces().remove(&job.surface);
+        let textures = previous
+            .as_mut()
+            .map(|previous| std::mem::take(&mut previous.textures))
+            .unwrap_or_default();
+        match build_shm_frame(&job, previous) {
+            Ok(mut built) => {
+                let size = (
+                    u32::try_from(built.shape.width).unwrap_or(u32::MAX),
+                    u32::try_from(built.shape.height).unwrap_or(u32::MAX),
+                );
+                // Only what changed since the frame the textures were last
+                // written from goes to the GPU.
+                built.textures = textures;
+                let gpu = built.textures.upload(
+                    job.surface,
+                    &built.pixels,
+                    size,
+                    job.changed_regions().as_deref(),
+                );
+                let published =
+                    store().publish_shm_frame(&job, Arc::clone(&built.pixels), size, gpu);
+                // A surface forgotten meanwhile stays forgotten.
+                if published {
+                    let replaced = self.surfaces().insert(job.surface, built);
+                    drop(replaced);
+                }
+            }
+            Err(ShmBuildError::Readback(error)) => {
+                tracing::warn!(
+                    target: "shell::compositor::foreign_capture",
+                    surface_id = job.surface,
+                    %error,
+                    "foreign shm readback failed"
+                );
+                store().note_shm_failure(&job, error.to_string());
+            }
+            Err(ShmBuildError::Unanchored) => {
+                // Its damage is relative to a frame this worker no longer
+                // has; only a failed capture before it gets here. Laid over
+                // another frame it would corrupt the window, so the surface
+                // keeps what it shows and its next commit copies whole.
+                tracing::debug!(
+                    target: "shell::compositor::foreign_capture",
+                    surface_id = job.surface,
+                    "dropped an SHM commit whose damage has no base frame"
+                );
+                store().reset_shm_base(job.surface);
+            }
+        }
+        store().note_shm_done(job.surface, job.generation);
+        recycle_shm_scratch(self.scratch, std::mem::take(&mut job.patches));
+    }
+
+    fn holds_spares(&self) -> bool {
+        self.surfaces()
+            .values()
+            .any(|surface| surface.spare.is_some())
+    }
+
+    /// Drop the spare frames of surfaces that stopped committing.
+    fn release_idle_spares(&self) {
+        let released: Vec<ShmSpare> = self
+            .surfaces()
+            .values_mut()
+            .filter_map(|surface| {
+                surface
+                    .spare
+                    .take_if(|spare| spare.since.elapsed() >= SHM_SPARE_IDLE)
+            })
+            .collect();
+        drop(released);
+    }
+
+    /// Drop the frames of surfaces whose next commit cannot be laid over
+    /// them: their last commit was not an SHM one this worker built (a
+    /// dmabuf, an unmap, a forgotten surface), and nothing is queued.
+    fn release_unanchored(&self) {
+        let ids: Vec<SurfaceId> = self.surfaces().keys().copied().collect();
+        // The base is read before the queue: a damaged commit is queued before
+        // the base it was copied against is cleared, so one built on a frame
+        // released here is still seen queued.
+        let unanchored = store().without_shm_base(&ids);
+        if unanchored.is_empty() {
+            return;
+        }
+        let pending = self.pending.lock_recover();
+        let idle: Vec<SurfaceId> = unanchored
+            .into_iter()
+            .filter(|id| !pending.jobs.contains_key(id))
+            .collect();
+        drop(pending);
+        let mut surfaces = self.surfaces();
+        let released: Vec<_> = idle.iter().filter_map(|id| surfaces.remove(id)).collect();
+        drop(surfaces);
+        drop(released);
+    }
+}
+
+/// Why a job's frame was not built.
+#[cfg(target_os = "linux")]
+enum ShmBuildError {
+    /// The copied pixels could not be converted.
+    Readback(ReadbackError),
+    /// A damaged-only copy whose base frame is not the one it was copied
+    /// against: missing, of another commit, size or format.
+    Unanchored,
+}
+
+/// Build the frame one SHM job describes on `previous`, the surface's last
+/// built frame. Damaged-only copies are laid only over exactly the commit
+/// they were copied against; the frame `previous` replaced is written into
+/// when nothing draws it any more, so a small commit touches only what
+/// changed instead of copying the whole frame.
+#[cfg(target_os = "linux")]
+fn build_shm_frame(
+    job: &ShmJob,
+    previous: Option<ShmSurface>,
+) -> Result<ShmSurface, ShmBuildError> {
+    let first = job.patches.first().ok_or(ShmBuildError::Unanchored)?;
+    let shape = first.frame.shape();
+    let bytes = frame_bytes(shape);
+    let (mut pixels, mut anchor, mut stale, replaced) = match (first.based_on, previous) {
+        (None, previous) => {
+            let (spare, replaced) = previous.map_or((None, None), |previous| {
+                (
+                    previous.spare.map(|spare| spare.pixels),
+                    Some(previous.pixels),
+                )
+            });
+            // Every pixel is about to be written; any content will do.
+            let target = spare
+                .and_then(|pixels| Arc::try_unwrap(pixels).ok())
+                .filter(|pixels| pixels.len() == bytes)
+                .unwrap_or_else(|| vec![0; bytes]);
+            (target, None, None, replaced)
+        }
+        (Some(base), Some(previous))
+            if previous.generation == base
+                && previous.shape == shape
+                && previous.pixels.len() == bytes =>
+        {
+            let target = damaged_target(&previous.pixels, previous.spare, shape.width);
+            (target, Some(base), Some(Vec::new()), Some(previous.pixels))
+        }
+        (Some(_), _) => return Err(ShmBuildError::Unanchored),
+    };
+    for patch in &job.patches {
+        if patch.frame.shape() != shape {
+            return Err(ShmBuildError::Unanchored);
+        }
+        match (patch.based_on, patch.frame.regions()) {
+            // Damage with nothing to lay it over.
+            (None, Some(_)) => return Err(ShmBuildError::Unanchored),
+            (Some(base), _) if anchor != Some(base) => return Err(ShmBuildError::Unanchored),
+            (Some(_), Some(regions)) => {
+                if let Some(stale) = stale.as_mut() {
+                    stale.extend_from_slice(regions);
+                }
+            }
+            (_, None) => stale = None,
+        }
+        apply_owned_shm(&patch.frame, &mut pixels).map_err(ShmBuildError::Readback)?;
+        anchor = Some(patch.generation);
+    }
+    let stale = stale.filter(|regions| regions.len() <= 128);
+    Ok(ShmSurface {
+        pixels: Arc::new(pixels),
+        shape,
+        generation: anchor.unwrap_or(job.generation),
+        spare: replaced.map(|pixels| ShmSpare {
+            pixels,
+            stale,
+            since: Instant::now(),
+        }),
+        textures: crate::shell::gpu_frames::UploadRing::default(),
+    })
+}
+
+/// A copy of `current` to lay damage over: the spare frame brought up to
+/// date when nothing else holds it, a full copy otherwise.
+#[cfg(target_os = "linux")]
+fn damaged_target(current: &Arc<Vec<u8>>, spare: Option<ShmSpare>, width: usize) -> Vec<u8> {
+    let reusable = spare
+        .and_then(|spare| Some((Arc::try_unwrap(spare.pixels).ok()?, spare.stale)))
+        .filter(|(pixels, _)| pixels.len() == current.len());
+    match reusable {
+        Some((mut pixels, Some(stale))) => {
+            copy_rgba_regions(current, &mut pixels, width, &stale);
+            pixels
+        }
+        Some((mut pixels, None)) => {
+            pixels.copy_from_slice(current);
+            pixels
+        }
+        None => current.as_ref().clone(),
+    }
+}
+
+/// Copy allocations kept for reuse. Two cover a client copying while the
+/// worker converts; each can be a whole 4K frame, so no more are kept.
+#[cfg(target_os = "linux")]
+const SHM_SCRATCH_KEPT: usize = 2;
+
+/// Keep the largest of `patches`' allocations for the next copies.
+#[cfg(target_os = "linux")]
+fn recycle_shm_scratch(scratch: &Mutex<Vec<Vec<u8>>>, patches: Vec<ShmPatch>) {
+    if patches.is_empty() {
+        return;
+    }
+    let mut dropped = Vec::new();
+    let mut kept = scratch.lock_recover();
+    for patch in patches {
+        let bytes = patch.frame.into_bytes();
+        if bytes.capacity() == 0 {
+            continue;
+        }
+        kept.push(bytes);
+        if kept.len() > SHM_SCRATCH_KEPT
+            && let Some(smallest) = kept
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, bytes)| bytes.capacity())
+                .map(|(index, _)| index)
+        {
+            dropped.push(kept.swap_remove(smallest));
+        }
+    }
+    drop(kept);
+    drop(dropped);
+}
+
+/// Copy `regions` of one tightly packed RGBA image of `width` pixels a row
+/// into another of the same size.
+#[cfg(target_os = "linux")]
+fn copy_rgba_regions(from: &[u8], to: &mut [u8], width: usize, regions: &[ShmRegion]) {
+    let row_bytes = width.saturating_mul(4);
+    for region in regions {
+        let span = region.width.saturating_mul(4);
+        for row in region.y..region.y.saturating_add(region.height) {
+            let start = row
+                .saturating_mul(row_bytes)
+                .saturating_add(region.x.saturating_mul(4));
+            let range = start..start.saturating_add(span);
+            if let (Some(source), Some(target)) = (from.get(range.clone()), to.get_mut(range)) {
+                target.copy_from_slice(source);
+            }
+        }
     }
 }
 
@@ -1359,9 +2191,7 @@ pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
     .into_iter()
     .flatten()
     {
-        *slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ping.clone());
+        *slot.lock_recover() = Some(ping.clone());
     }
 }
 
@@ -1379,13 +2209,167 @@ pub fn drain_completed_dmabuf_captures() -> Vec<Client> {
         .map_or_else(Vec::new, AsyncDmabufCapture::drain_completed)
 }
 
+/// Client buffers the compositor holds because frames are drawn from them,
+/// counted per buffer: a buffer re-attached while still held is held by each
+/// of its frames and goes back once, after the last.
 #[cfg(any(test, target_os = "linux"))]
-fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
+#[derive(Debug)]
+struct BufferHolds<B> {
+    held: HashMap<B, usize>,
+    /// Holds whose frame went, waiting to be counted off on the loop.
+    returned: Vec<B>,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl<B: std::hash::Hash + Eq + Clone> BufferHolds<B> {
+    fn new() -> Self {
+        Self {
+            held: HashMap::new(),
+            returned: Vec::new(),
+        }
+    }
+
+    fn hold(&mut self, buffer: B) {
+        let count = self.held.entry(buffer).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
+    /// Count off every returned hold; the buffers no frame holds any more.
+    fn give_back(&mut self) -> Vec<B> {
+        let mut free = Vec::new();
+        for buffer in std::mem::take(&mut self.returned) {
+            match self.held.get_mut(&buffer) {
+                Some(count) if *count > 1 => *count = count.saturating_sub(1),
+                Some(_) => {
+                    self.held.remove(&buffer);
+                    free.push(buffer);
+                }
+                // Never held, or already given back: not ours to release.
+                None => {}
+            }
+        }
+        free
+    }
+}
+
+#[cfg(target_os = "linux")]
+static BUFFER_HOLDS: std::sync::LazyLock<Mutex<BufferHolds<WlBuffer>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BufferHolds::new()));
+
+/// Hold `buffer` for `frame`, which is drawn from it: the client gets it
+/// back (`wl_buffer.release`) on the compositor loop once `frame` is gone and
+/// the GPU finished reading it ([`crate::shell::gpu_frames::BufferLease`]).
+#[cfg(target_os = "linux")]
+pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame) {
+    BUFFER_HOLDS.lock_recover().hold(buffer.clone());
+    frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
+        BUFFER_HOLDS.lock_recover().returned.push(buffer);
+        if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get()
+            && let Some(ping) = worker.completion_ping.lock_recover().as_ref()
+        {
+            ping.ping();
+        }
+    }));
+}
+
+/// On the compositor loop: give every buffer no frame holds any more back to
+/// its client.
+#[cfg(target_os = "linux")]
+pub fn give_back_released_buffers() {
+    let free = BUFFER_HOLDS.lock_recover().give_back();
+    for buffer in free {
+        // A buffer its client already destroyed takes no event.
+        buffer.release();
+    }
+}
+
+/// Make a read-back frame of an alpha format opaque: its commit declared
+/// every pixel opaque, so its alpha is padding and is drawn as an `X`
+/// format's is, the same as the GPU route draws it
+/// ([`crate::shell::gpu_frames::import_dmabuf`]).
+#[cfg(target_os = "linux")]
+fn declare_opaque(fourcc: Fourcc, rgba: &mut [u8]) {
+    if !matches!(fourcc, Fourcc::Argb8888 | Fourcc::Abgr8888) {
+        return;
+    }
+    for texel in rgba.chunks_exact_mut(4) {
+        if let Some(alpha) = texel.get_mut(3) {
+            *alpha = u8::MAX;
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Arc<Vec<u8>>) {
     #[cfg(not(target_os = "linux"))]
     let _ = (surface, rgba);
     #[cfg(target_os = "linux")]
     if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
         worker.recycle_pixels(surface, rgba);
+    }
+}
+
+/// A dmabuf commit's capture, as [`ForeignFrameStore::prepare_dmabuf_capture`]
+/// queued it.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct PreparedDmabufCapture {
+    /// Names the commit's frame when the commit applies.
+    pub token: u64,
+    /// Attach to the same commit: it holds the commit, and so the buffer it
+    /// replaces, until the capture is done.
+    pub barrier: Barrier,
+    /// The buffer's implicit fence, when the client's GPU was still writing
+    /// the buffer. Insert it into the compositor loop with a callback that
+    /// calls [`dmabuf_fence_signalled`]; the capture starts then. If it cannot
+    /// be inserted, call [`dmabuf_fence_unwatched`]. `None` when the buffer
+    /// was readable and the capture is already queued.
+    pub fence: Option<smithay::backend::allocator::dmabuf::DmabufSource>,
+}
+
+/// The fence of commit `token`'s buffer on `surface` signalled: the client's
+/// rendering into it is done, so its capture may read it. Nothing happens if
+/// a newer commit superseded it or the surface is gone.
+#[cfg(target_os = "linux")]
+pub fn dmabuf_fence_signalled(surface: SurfaceId, token: u64) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.unpark(surface, token, true);
+    }
+}
+
+/// The fence of commit `token`'s buffer could not be watched on the
+/// compositor loop: capture it anyway, waiting for the fence on the worker.
+#[cfg(target_os = "linux")]
+pub fn dmabuf_fence_unwatched(surface: SurfaceId, token: u64) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.unpark(surface, token, false);
+    }
+}
+
+/// Keep an SDR client frame on the GPU: import it on the presenting device
+/// (once per buffer) and draw it from that import.
+/// `None` sends it down the readback route instead (no presenting GPU yet, a
+/// 10-bit, half-float or YUV buffer, or a layout the import cannot describe),
+/// reported once per reason. An 8-bit buffer is shown as it is on either route.
+#[cfg(target_os = "linux")]
+fn share_dmabuf(
+    dmabuf: &Dmabuf,
+    surface: SurfaceId,
+    opaque: bool,
+) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+    static REPORTED: Mutex<Vec<crate::shell::gpu_frames::ImportFallback>> = Mutex::new(Vec::new());
+    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
+        Ok(frame) => Some(frame),
+        Err(reason) => {
+            let mut reported = REPORTED.lock_recover();
+            if !reported.contains(&reason) && reported.len() < 32 {
+                eprintln!(
+                    "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
+                );
+                reported.push(reason);
+            }
+            None
+        }
     }
 }
 
@@ -1472,17 +2456,13 @@ impl ForeignFrameStore {
     #[cfg(target_os = "linux")]
     fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
         self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|entry| entry.colorimetry)
     }
 
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
@@ -1492,6 +2472,72 @@ impl ForeignFrameStore {
     }
 
     /// Buffer imports since process start, across every surface/route — read by the repaint-cost test (see the field's doc for why it must not track paints).
+    /// The shm capture worker finished the job queued as `generation`.
+    #[cfg(target_os = "linux")]
+    fn note_shm_done(&self, id: SurfaceId, generation: u64) {
+        let mut guard = self.entries.lock_recover();
+        if let Some(entry) = guard.get_mut(&id) {
+            entry.shm_done = entry.shm_done.max(generation);
+        }
+    }
+
+    /// Whether a buffer some surface of the client `client_index` committed
+    /// is still being captured, so its pixels are not yet what a screenshot
+    /// shows. `client_index` is the high half of a [`SurfaceId`].
+    pub fn capturing_for_client(&self, client_index: u32) -> bool {
+        let guard = self.entries.lock_recover();
+        guard
+            .iter()
+            .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
+    }
+
+    pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
+        let entries = self.entries.lock_recover();
+        let entry = entries.get(&id)?;
+        let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
+            .then_some(entry.seq);
+        drop(entries);
+        result
+    }
+
+    /// Exact completed pixel generation; pending/superseded captures are not proof.
+    pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        self.presentation_capture_state(id).0
+    }
+
+    /// Observe completed pixels and an exact surface's pending capture under
+    /// one lock. Pending capture is neither pixels nor presentation authority.
+    pub fn presentation_capture_state(&self, id: SurfaceId) -> (Option<(u64, u64)>, bool) {
+        let entries = self.entries.lock_recover();
+        let Some(entry) = entries.get(&id) else {
+            return (None, false);
+        };
+        let pending = entry.capturing();
+        let pixels = (!pending && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+            .then_some((entry.seq, entry.shm_done));
+        drop(entries);
+        (pixels, pending)
+    }
+
+    pub fn begin_presentation_frame(&self, viewport: Rect) {
+        *self.presentation_viewport.lock_recover() = Some(viewport);
+        self.painted_frames.lock_recover().clear();
+    }
+
+    pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
+        std::mem::take(&mut *self.painted_frames.lock_recover())
+    }
+
+    fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
+        let visible = self
+            .presentation_viewport
+            .lock_recover()
+            .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
+        if visible && !crate::shell::capture_protection::painting_for_capture() {
+            self.painted_frames.lock_recover().insert(id, seq);
+        }
+    }
+
     pub fn import_count(&self) -> u64 {
         self.imports.load(Ordering::Relaxed)
     }
@@ -1513,34 +2559,39 @@ impl ForeignFrameStore {
         buffer: &WlBuffer,
         capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        note_client_pump();
         if let Some(token) = capture_token {
             self.with_entry(id, |entry| entry.mapped = true);
             return self
                 .activate_dmabuf_capture_token(id, token)
                 .unwrap_or(CaptureOutcome::Queued);
         }
-        let shm_result = self.with_entry(id, |e| {
+        // Converted outside the frame-store lock: painting takes it too.
+        let mut pixels = Vec::new();
+        let converted = buffer_to_rgba(buffer, &mut pixels);
+        let (shm_result, replaced) = self.with_entry(id, |e| {
             // A non-null buffer commit maps the xdg surface even when its
             // pixels cannot yet be captured or do not fit its latest
             // configure. Input readiness must follow this protocol fact, not
             // the later visual-presentation decision.
             e.mapped = true;
-            let r = buffer_to_rgba(buffer, &mut e.rgba);
-            match r {
+            e.forget_shm_base();
+            match converted {
                 Ok((w, h)) => {
+                    let replaced = std::mem::replace(&mut e.rgba, Arc::new(pixels));
                     e.hdr = None;
+                    e.set_gpu(None);
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
                     e.last_error = None;
-                    Ok((w, h))
+                    (Ok((w, h)), Some(replaced))
                 }
-                Err(err) => {
-                    // Leave the previous frame intact — the dmabuf branch below may still succeed; a genuine failure clears it via `note_failure`.
-                    Err(err)
-                }
+                // Leave the previous frame intact — the dmabuf branch below may still succeed; a genuine failure clears it via `note_failure`.
+                Err(err) => (Err(err), None),
             }
         });
+        drop(replaced);
         match shm_result {
             Ok((w, h)) => {
                 self.note_import();
@@ -1570,6 +2621,10 @@ impl ForeignFrameStore {
     /// barrier that must be attached to that same commit. This is the lifetime
     /// contract: Smithay cannot release/reuse the buffer until capture has
     /// completed or the job has been explicitly superseded.
+    ///
+    /// When the client's GPU is still rendering into the buffer the capture
+    /// waits for its implicit fence, which the caller watches on the
+    /// compositor loop: see [`PreparedDmabufCapture::fence`].
     #[cfg(target_os = "linux")]
     pub fn prepare_dmabuf_capture(
         &self,
@@ -1577,7 +2632,28 @@ impl ForeignFrameStore {
         client: Client,
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
-    ) -> Option<(u64, Barrier)> {
+    ) -> Option<PreparedDmabufCapture> {
+        let commit = DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque: false,
+        };
+        self.prepare_dmabuf_capture_with_damage(id, client, commit, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn prepare_dmabuf_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        client: Client,
+        commit: DmabufCommit,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<PreparedDmabufCapture> {
+        let DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        } = commit;
         let token = self
             .next_capture
             .fetch_add(1, Ordering::Relaxed)
@@ -1585,24 +2661,45 @@ impl ForeignFrameStore {
         self.with_entry(id, |entry| {
             entry.capture_tokens.push_back(token);
             entry.colorimetry = colorimetry;
+            let generation = entry.damage_history.begin(damage);
+            entry.capture_damage.insert(token, generation);
         });
         let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
         match worker {
             Ok(worker) => {
                 let barrier = Barrier::new(false);
-                worker.enqueue(DmabufJob {
+                // Already readable unless the buffer still carries an
+                // unsignalled write fence; asking does not wait.
+                let fence = smithay::backend::allocator::dmabuf::DmabufSource::new(
+                    dmabuf.clone(),
+                    smithay::reexports::calloop::Interest::READ,
+                )
+                .ok();
+                let job = DmabufJob {
                     surface: id,
                     token,
                     payload: dmabuf,
                     barrier: barrier.clone(),
                     client,
-                });
-                Some((token, barrier))
+                    readable: true,
+                    opaque,
+                };
+                if fence.is_some() {
+                    worker.park(job);
+                } else {
+                    worker.enqueue(job);
+                }
+                Some(PreparedDmabufCapture {
+                    token,
+                    barrier,
+                    fence,
+                })
             }
             Err(reason) => {
                 // No worker owns this token, so it must not remain at the
                 // head of the per-commit queue and steal a later result.
                 self.with_entry(id, |entry| {
+                    entry.capture_damage.remove(&token);
                     if let Some(position) = entry.capture_tokens.iter().position(|v| *v == token) {
                         entry.capture_tokens.remove(position);
                     }
@@ -1614,21 +2711,168 @@ impl ForeignFrameStore {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
-        let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
-        match worker {
+    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> Option<u64> {
+        self.prepare_shm_capture_with_damage(id, frame, None)
+    }
+
+    /// A validated SHM buffer commit maps the protocol surface immediately.
+    /// Pixel conversion may finish later; it must not decide input eligibility.
+    #[cfg(target_os = "linux")]
+    pub fn note_shm_committed(&self, id: SurfaceId, generation: u64) -> bool {
+        self.with_entry(id, |entry| {
+            if generation == 0 || generation > entry.shm_queued {
+                return false;
+            }
+            entry.mapped = true;
+            true
+        })
+    }
+
+    /// Queue an SHM copy made outside [`Self::capture_shm_commit`] for the
+    /// capture worker, returning its generation. It is anchored exactly as
+    /// the production route anchors its copies.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_shm_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        frame: OwnedShmFrame,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<u64> {
+        match ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) {
             Ok(worker) => {
-                worker.enqueue(ShmJob {
-                    surface: id,
-                    payload: frame,
-                });
-                true
+                let read = self.read_shm_base(id);
+                Some(self.queue_shm_frame(worker, id, (frame, read), damage))
             }
             Err(reason) => {
                 self.note_failure(id, reason.clone());
-                false
+                None
             }
         }
+    }
+
+    /// Copy what an SHM commit changed out of `buffer`'s pool (on the
+    /// compositor thread, inside Smithay's guarded mapping) and queue it for
+    /// the capture worker. `damage` is the commit's buffer damage, `regions`
+    /// the same in whole pixels. Only those pixels are copied when the
+    /// surface's previous commit was an SHM buffer of the same size and
+    /// format, and the copy is tagged with that commit for the worker to
+    /// verify. Returns the capture generation, or `None` once the failure is
+    /// recorded.
+    #[cfg(target_os = "linux")]
+    pub fn capture_shm_commit(
+        &self,
+        id: SurfaceId,
+        buffer: &WlBuffer,
+        damage: Option<Vec<Rect>>,
+        regions: Option<&[ShmRegion]>,
+    ) -> Option<u64> {
+        let worker = match ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) {
+            Ok(worker) => worker,
+            Err(reason) => {
+                self.note_failure(id, reason.clone());
+                return None;
+            }
+        };
+        let read = self.read_shm_base(id);
+        // A surface whose queued copies already add up to a frame copies
+        // whole, which supersedes them: what a slow worker holds stays bounded.
+        let base = read
+            .base
+            .filter(|base| worker.queued_bytes(id) < frame_bytes(base.shape));
+        let request = ShmCopy {
+            damage: regions,
+            base: base.map(|base| base.shape),
+        };
+        let scratch = worker.take_scratch(request.expected_bytes());
+        match copy_shm_damage(buffer, &request, scratch) {
+            Ok(frame) => Some(self.queue_shm_frame(worker, id, (frame, read), damage)),
+            Err(error) => {
+                self.note_failure(id, error.to_string());
+                None
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_shm_base(&self, id: SurfaceId) -> ShmBaseRead {
+        self.with_entry(id, |entry| ShmBaseRead {
+            base: entry.shm_base,
+            epoch: entry.shm_epoch,
+        })
+    }
+
+    /// Queue `frame`, copied after `read`, as the surface's next SHM commit.
+    /// A damaged-only copy is tagged with the commit it is relative to: the
+    /// base it read, when that has the copy's size and format; otherwise
+    /// nothing, and the worker drops it. The commit becomes the next base
+    /// unless the base was cleared since `read`: a clear the copy did not see
+    /// makes the next commit copy whole.
+    #[cfg(target_os = "linux")]
+    fn queue_shm_frame(
+        &self,
+        worker: &AsyncShmCapture,
+        id: SurfaceId,
+        (frame, read): (OwnedShmFrame, ShmBaseRead),
+        damage: Option<Vec<Rect>>,
+    ) -> u64 {
+        let shape = frame.shape();
+        let based_on = frame
+            .regions()
+            .and(read.base)
+            .filter(|base| base.shape == shape)
+            .map(|base| base.generation);
+        let (generation, damage_generation) = self.with_entry(id, |entry| {
+            entry.shm_queued = entry.shm_queued.wrapping_add(1);
+            if entry.shm_epoch == read.epoch {
+                entry.shm_base = Some(ShmBaseCommit {
+                    shape,
+                    generation: entry.shm_queued,
+                });
+            }
+            (entry.shm_queued, entry.damage_history.begin(damage))
+        });
+        worker.enqueue(ShmJob {
+            surface: id,
+            generation,
+            damage_generation,
+            patches: vec![ShmPatch {
+                frame,
+                generation,
+                based_on,
+            }],
+        });
+        generation
+    }
+
+    /// The next SHM commit copies its whole buffer: the last commit was not
+    /// one the SHM worker builds (a dmabuf, an unmap, a commit not captured),
+    /// or its frame is gone.
+    #[cfg(target_os = "linux")]
+    pub fn reset_shm_base(&self, id: SurfaceId) {
+        let mut guard = self.entries.lock_recover();
+        if let Some(entry) = guard.get_mut(&id) {
+            entry.forget_shm_base();
+        }
+        drop(guard);
+    }
+
+    /// Whether `id`'s next SHM commit may be laid over its last one.
+    #[cfg(all(test, target_os = "linux"))]
+    fn has_shm_base(&self, id: SurfaceId) -> bool {
+        self.without_shm_base(&[id]).is_empty()
+    }
+
+    /// Those of `ids` whose next SHM commit cannot be laid over their last.
+    #[cfg(target_os = "linux")]
+    fn without_shm_base(&self, ids: &[SurfaceId]) -> Vec<SurfaceId> {
+        let entries = self.entries.lock_recover();
+        let unanchored = ids
+            .iter()
+            .copied()
+            .filter(|id| entries.get(id).is_none_or(|entry| entry.shm_base.is_none()))
+            .collect();
+        drop(entries);
+        unanchored
     }
 
     #[cfg(any(test, target_os = "linux"))]
@@ -1640,10 +2884,7 @@ impl ForeignFrameStore {
         rgba: &mut Vec<u8>,
         hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -1657,7 +2898,37 @@ impl ForeignFrameStore {
             ReadyCapture {
                 rgba: captured,
                 hdr,
+                gpu: None,
                 result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    /// Stage a frame that stayed on the GPU for the commit `token` belongs to.
+    #[cfg(target_os = "linux")]
+    fn stage_gpu_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> bool {
+        let mut guard = self.entries.lock_recover();
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let size = (frame.width(), frame.height());
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: Vec::new(),
+                hdr: None,
+                gpu: Some(frame),
+                result: Ok((size.0, size.1, CaptureRoute::Dmabuf(DmabufRoute::Shared))),
             },
         );
         drop(guard);
@@ -1670,24 +2941,35 @@ impl ForeignFrameStore {
         id: SurfaceId,
         expected_token: u64,
     ) -> Option<CaptureOutcome> {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let entry = guard.get_mut(&id)?;
         let token = entry.capture_tokens.front().copied()?;
         if token != expected_token {
             return None;
         }
         entry.capture_tokens.pop_front();
+        let damage_generation = entry.capture_damage.remove(&token);
         let ready = entry.ready_captures.remove(&token)?;
-        let (outcome, imported, recycled) = match ready.result {
+        let (outcome, imported, recycled, released) = match ready.result {
             Ok((width, height, route)) => {
-                let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
+                #[cfg(target_os = "linux")]
+                entry.forget_shm_base();
+                let previous = std::mem::replace(&mut entry.rgba, Arc::new(ready.rgba));
                 entry.hdr = ready.hdr.map(Arc::new);
+                let shared = matches!(route, CaptureRoute::Dmabuf(DmabufRoute::Shared));
+                entry.set_gpu(ready.gpu);
+                if shared {
+                    entry.unheld.clone_from(&entry.gpu);
+                }
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
+                let generation =
+                    damage_generation.unwrap_or_else(|| entry.damage_history.begin(None));
+                entry
+                    .damage_history
+                    .publish(entry.seq, generation, (width, height));
+                entry.activated_capture = Some(token);
                 entry.last_error = None;
                 let outcome = match route {
                     CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
@@ -1696,19 +2978,23 @@ impl ForeignFrameStore {
                         route,
                     },
                 };
-                (outcome, true, previous)
+                (outcome, true, previous, None)
             }
             Err(reason) => {
-                entry.rgba.clear();
+                let previous = entry.take_pixels();
                 entry.hdr = None;
+                entry.set_gpu(None);
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
                 entry.last_error = Some(reason.clone());
-                (CaptureOutcome::Failed(reason), false, ready.rgba)
+                let outcome = CaptureOutcome::Failed(reason);
+                (outcome, false, Arc::new(ready.rgba), Some(previous))
             }
         };
         drop(guard);
+        // Freed, or handed back for reuse, outside the lock painting takes too.
+        drop(released);
         recycle_dmabuf_pixels(id, recycled);
         if imported {
             self.note_import();
@@ -1719,6 +3005,42 @@ impl ForeignFrameStore {
     #[cfg(test)]
     fn activate_dmabuf_capture(&self, id: SurfaceId) -> Option<CaptureOutcome> {
         let token = self.with_entry(id, |entry| entry.capture_tokens.front().copied())?;
+        self.activate_dmabuf_capture_token(id, token)
+    }
+
+    /// Activate a completed owned GPU copy through the ordinary capture-token path.
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> Option<CaptureOutcome> {
+        self.publish_damaged_gpu_for_test(id, frame, None)
+    }
+
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_damaged_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<CaptureOutcome> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(token);
+            if let Some(damage) = damage {
+                let generation = entry.damage_history.begin(Some(damage));
+                entry.capture_damage.insert(token, generation);
+            }
+        });
+        if !self.stage_gpu_capture(id, token, frame) {
+            return None;
+        }
         self.activate_dmabuf_capture_token(id, token)
     }
 
@@ -1747,16 +3069,119 @@ impl ForeignFrameStore {
         height: u32,
         hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
     ) {
-        self.with_entry(id, |e| {
+        // Copied before the lock: painting takes it too.
+        let pixels = Arc::new(rgba.to_vec());
+        let replaced = self.with_entry(id, |e| {
+            #[cfg(target_os = "linux")]
+            e.forget_shm_base();
             e.mapped = true;
             e.hdr = hdr;
-            e.rgba.clear();
-            e.rgba.extend_from_slice(rgba);
+            e.set_gpu(None);
+            let replaced = std::mem::replace(&mut e.rgba, pixels);
             e.width = width;
             e.height = height;
             e.seq = e.seq.wrapping_add(1);
+            let generation = e.damage_history.begin(None);
+            e.damage_history.publish(e.seq, generation, (width, height));
             e.last_error = None;
+            replaced
         });
+        drop(replaced);
+    }
+
+    /// Make a frame the SHM worker built for `job` current: the pixels
+    /// change hands, they are not copied under the lock. Returns `false`,
+    /// publishing nothing, when the job's surface went meanwhile.
+    #[cfg(target_os = "linux")]
+    fn publish_shm_frame(
+        &self,
+        job: &ShmJob,
+        pixels: Arc<Vec<u8>>,
+        size: (u32, u32),
+        gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
+    ) -> bool {
+        let mut guard = self.entries.lock_recover();
+        let Some(entry) = shm_job_entry(&mut guard, job) else {
+            return false;
+        };
+        let replaced = entry.publish_frame(pixels, size, job.damage_generation, gpu);
+        drop(guard);
+        drop(replaced);
+        true
+    }
+
+    /// Record that the SHM worker could not read `job`'s buffer, unless the
+    /// job's surface went meanwhile.
+    #[cfg(target_os = "linux")]
+    fn note_shm_failure(&self, job: &ShmJob, reason: String) {
+        let mut guard = self.entries.lock_recover();
+        let released = shm_job_entry(&mut guard, job).map(|entry| entry.fail(reason));
+        drop(guard);
+        drop(released);
+    }
+
+    /// Publish a captured frame into `id`'s entry, as the SHM worker does,
+    /// without a queued job. `false` when `id` is not tracked.
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    fn publish_captured_rgba(
+        &self,
+        id: SurfaceId,
+        pixels: Arc<Vec<u8>>,
+        size: (u32, u32),
+        generation: u64,
+    ) -> bool {
+        let mut guard = self.entries.lock_recover();
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        let replaced = entry.publish_frame(pixels, size, generation, None);
+        drop(guard);
+        drop(replaced);
+        true
+    }
+
+    /// Exercise the identical capture publication/history seam from pixel
+    /// oracles. Production damage provenance is independently wire-tested.
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_damaged_rgba_for_test(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        size: (u32, u32),
+        damage: Vec<Rect>,
+    ) {
+        let generation = self.with_entry(id, |entry| entry.damage_history.begin(Some(damage)));
+        self.publish_captured_for_test(id, rgba, size, generation);
+    }
+
+    /// Publish `rgba` as the SHM worker does for commit `generation`.
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    fn publish_captured_for_test(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        size: (u32, u32),
+        generation: u64,
+    ) {
+        self.publish_captured_rgba(id, Arc::new(rgba.to_vec()), size, generation);
+    }
+
+    /// Buffer-pixel damage across every captured frame since a previous paint.
+    /// Missing/coalesced metadata, extent changes and history overflow return
+    /// None so callers retain the whole-image damage fallback.
+    pub fn frame_damage_between(
+        &self,
+        id: SurfaceId,
+        previous: u64,
+        current: u64,
+        size: (u32, u32),
+    ) -> Option<Vec<Rect>> {
+        self.with_entry(id, |entry| {
+            entry.damage_history.between(previous, current, size)
+        })
     }
 
     /// Record that the last capture failed and drop the stale frame.
@@ -1764,77 +3189,109 @@ impl ForeignFrameStore {
     /// Two things read it: the window stops waiting (shown at once rather
     /// than held back for a frame that isn't coming), and `ForeignSurfaceWidget::unshowable_text` chooses the words shown, leaving `reason` here for debugging.
     pub fn note_failure(&self, id: SurfaceId, reason: String) {
-        self.with_entry(id, |e| {
-            e.rgba.clear();
-            e.rgba.shrink_to_fit();
-            e.hdr = None;
-            e.width = 0;
-            e.height = 0;
-            e.seq = e.seq.wrapping_add(1);
-            e.last_error = Some(reason);
-        });
+        let released = self.with_entry(id, |e| e.fail(reason));
+        drop(released);
     }
 
     /// The client detached its buffer (`attach(NULL)`): unmap it and drop the
     /// frame, while keeping placement bookkeeping until the toplevel is
     /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
-        self.with_entry(id, |e| {
+        note_client_pump();
+        let released = self.with_entry(id, |e| {
             e.mapped = false;
-            e.rgba.clear();
-            e.rgba.shrink_to_fit();
+            let released = e.take_pixels();
             e.hdr = None;
+            e.set_gpu(None);
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
             e.last_error = None;
+            released
         });
+        drop(released);
     }
 
     /// Record that the app behind authenticated shell-ui `connection` does
     /// (or no longer does) want its windows withheld from captures. Covers
     /// windows it maps later too, so a new window is never briefly exposed.
     pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
-        let mut guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if protected {
-            guard.apps.insert(connection, app_id.to_string());
-        } else {
-            guard.apps.remove(&connection);
+        let changed = {
+            let mut guard = self.capture_protection.lock_recover();
+            if protected {
+                guard.apps.insert(connection, app_id.to_string()).as_deref() != Some(app_id)
+            } else {
+                guard.apps.remove(&connection).is_some()
+            }
+        };
+        if changed {
+            self.advance_capture_protection_epoch();
+        }
+    }
+
+    /// Keep the last displayed protected buffer private when its control
+    /// connection disappears. Toplevel destruction clears this surface latch.
+    pub fn retain_surface_capture_protection(&self, id: SurfaceId, app_id: &str) {
+        if self.is_capture_protected(id, app_id) {
+            self.set_surface_capture_protected(id, true);
         }
     }
 
     /// The connection closed: its request goes with it.
     pub fn release_capture_protection(&self, connection: u64) {
-        self.capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let released = self
+            .capture_protection
+            .lock_recover()
             .apps
-            .remove(&connection);
+            .remove(&connection)
+            .is_some();
+        if released {
+            self.advance_capture_protection_epoch();
+        }
     }
 
     /// Protect (or stop protecting) one surface regardless of its app.
     pub fn set_surface_capture_protected(&self, id: SurfaceId, protected: bool) {
-        let mut guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if protected {
-            guard.surfaces.insert(id);
-        } else {
-            guard.surfaces.remove(&id);
+        self.set_surfaces_capture_protected(&[(id, protected)]);
+    }
+
+    /// [`Self::set_surface_capture_protected`] for several surfaces under
+    /// one acquisition of the lock.
+    pub fn set_surfaces_capture_protected(&self, surfaces: &[(SurfaceId, bool)]) {
+        let changed = {
+            let mut guard = self.capture_protection.lock_recover();
+            surfaces.iter().fold(false, |changed, &(id, protected)| {
+                let flipped = if protected {
+                    guard.surfaces.insert(id)
+                } else {
+                    guard.surfaces.remove(&id)
+                };
+                changed | flipped
+            })
+        };
+        if changed {
+            self.advance_capture_protection_epoch();
         }
+    }
+
+    /// Changes to which apps and surfaces are protected so far. Equal values
+    /// read at two moments mean nothing was protected or released in
+    /// between. Takes no lock.
+    pub fn capture_protection_epoch(&self) -> u64 {
+        self.capture_protection_epoch.load(Ordering::Acquire)
+    }
+
+    /// Called after a change lands, so a reader that loaded the epoch
+    /// before reading the protection state sees a new epoch next time.
+    fn advance_capture_protection_epoch(&self) {
+        self.capture_protection_epoch
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a
     /// placeholder.
     pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
-        let guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.capture_protection.lock_recover();
         guard.surfaces.contains(&id)
             || guard.apps.values().any(|app| app == app_id)
             || crate::shell::capture_protection::holds_secrets(app_id)
@@ -1842,21 +3299,19 @@ impl ForeignFrameStore {
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
-        self.capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .surfaces
-            .remove(&id);
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.remove(&id);
+        self.set_surface_capture_protected(id, false);
+        let mut guard = self.entries.lock_recover();
+        let forgotten = guard.remove(&id);
         drop(guard);
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mut entry) = forgotten {
+            entry.set_gpu(None);
+            drop(entry);
+            // Its frames are gone, and Vello drops the last one from its
+            // atlas a couple of paints later: give that memory back.
+            crate::shell::heap_trim::window_closed();
+        }
+        crate::shell::gpu_frames::forget_surface(id);
+        let mut children = self.children.lock_recover();
         children.remove(&id);
         for tree in children.values_mut() {
             tree.retain(|child| child.surface != id);
@@ -1867,6 +3322,37 @@ impl ForeignFrameStore {
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
             worker.forget_surface(id);
         }
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(worker)) = ASYNC_SHM_CAPTURE.get() {
+            worker.forget_surface(id);
+        }
+    }
+
+    /// Surfaces whose frame counter moved since `seen` last recorded it, as
+    /// the surface that owns the tile: a subsurface or popup reports its
+    /// parent. `seen` is updated and pruned to live surfaces. Frame-trace
+    /// attribution only (which app made an idle desktop repaint), so it runs
+    /// only while a trace is recording.
+    pub fn surfaces_advanced(&self, seen: &mut HashMap<SurfaceId, u64>) -> Vec<SurfaceId> {
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .children
+            .lock_recover()
+            .iter()
+            .flat_map(|(parent, children)| children.iter().map(|child| (child.surface, *parent)))
+            .collect();
+        let entries = self.entries.lock_recover();
+        seen.retain(|id, _| entries.contains_key(id));
+        let mut moved = Vec::new();
+        for (id, entry) in &*entries {
+            if seen.insert(*id, entry.seq) != Some(entry.seq) {
+                let owner = parents.get(id).copied().unwrap_or(*id);
+                if !moved.contains(&owner) {
+                    moved.push(owner);
+                }
+            }
+        }
+        drop(entries);
+        moved
     }
 
     /// Current frame counter for `id`, its subsurfaces and the sheets on
@@ -1879,15 +3365,11 @@ impl ForeignFrameStore {
     fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
         let children = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let mut seq = guard.get(&id).map_or(0, |e| e.seq);
         for child in children {
             seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
@@ -1899,60 +3381,178 @@ impl ForeignFrameStore {
     /// for Wayland seat focus. Unlike [`Self::is_presented`], this does not
     /// wait for a captured frame to match the tab's configured size.
     pub fn is_mapped(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.mapped)
     }
 
-    /// Copy out the current frame, or `None` when the surface has no pixels staged.
-    pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let e = guard.get(&id)?;
-        let content = e.content();
-        let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
-            None
-        } else {
-            Some(FrameSnapshot {
-                rgba: e.rgba.clone(),
-                width: e.width,
-                height: e.height,
-                seq: e.seq,
-                hdr: e.hdr.clone(),
-            })
-        };
-        drop(guard);
-        let mut snapshot = snapshot?;
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
+    /// The frame the commit just applied on `id` published, when it is drawn
+    /// from the client's buffer and nothing holds that buffer yet. The caller
+    /// takes hold of the buffer for it ([`crate::shell::gpu_frames::GpuFrame::hold`])
+    /// before anything can draw it, or withdraws it
+    /// ([`Self::withdraw_unheld_frame`]).
+    pub fn take_unheld_frame(
+        &self,
+        id: SurfaceId,
+    ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+        self.entries.lock_recover().get_mut(&id)?.unheld.take()
+    }
+
+    /// Stop showing `frame` on `id`: its buffer could not be held, so it must
+    /// not be drawn from.
+    pub fn withdraw_unheld_frame(
+        &self,
+        id: SurfaceId,
+        frame: &Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) {
+        self.with_entry(id, |entry| {
+            if entry
+                .gpu
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, frame))
+            {
+                entry.set_gpu(None);
+                entry.width = 0;
+                entry.height = 0;
+                entry.seq = entry.seq.wrapping_add(1);
+            }
+        });
+    }
+
+    /// `root`'s subsurfaces, bottom to top.
+    fn children_of(&self, root: SurfaceId) -> Vec<ChildFrame> {
+        self.children
+            .lock_recover()
+            .get(&root)
             .cloned()
-            .unwrap_or_default();
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for child in children {
-            let Some(frame) = guard.get(&child.surface) else {
+            .unwrap_or_default()
+    }
+
+    /// How `id`'s image is made: the canvas it and its subsurfaces are
+    /// flattened onto, and the window cut out of it. `None` without a frame.
+    fn layout(&self, id: SurfaceId) -> Option<scale::FrameLayout> {
+        let children = self.children_of(id);
+        let guard = self.entries.lock_recover();
+        let layout = layout_of(&guard, id, &children);
+        drop(guard);
+        layout
+    }
+
+    /// Copy out the current frame, or `None` when the surface has no pixels staged.
+    ///
+    /// The toplevel and its subsurfaces are flattened onto one canvas at the
+    /// densest one's density, each resampled to where its logical position
+    /// and size put it, and the window is cut out of that.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one snapshot assembled from every layer of the surface"
+    )]
+    pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
+        let children = self.children_of(id);
+        let guard = self.entries.lock_recover();
+        let e = guard.get(&id)?;
+        let layout = layout_of(&guard, id, &children)?;
+        let root_placed = e.buffer_placement()?;
+        let root_size = (e.width, e.height);
+        let gpu = if e.rgba.is_empty() {
+            Some(e.gpu.clone()?)
+        } else {
+            None
+        };
+        // Shared under the lock, copied after it.
+        let cpu = Arc::clone(&e.rgba);
+        let (seq, hdr) = (e.seq, e.hdr.clone());
+        let child_frames: Vec<_> = children
+            .iter()
+            .filter_map(|child| {
+                let frame = guard.get(&child.surface)?;
+                let pixels = if frame.rgba.is_empty() {
+                    frame.gpu.clone().map(ChildSource::Gpu)
+                } else {
+                    Some(ChildSource::Cpu(Arc::clone(&frame.rgba)))
+                };
+                Some((
+                    (child.x, child.y),
+                    frame.buffer_placement(),
+                    (frame.width, frame.height),
+                    frame.seq,
+                    pixels,
+                ))
+            })
+            .collect();
+        drop(guard);
+        // A frame that stayed on the GPU is read back here, on demand.
+        let pixels = match gpu {
+            Some(gpu) => gpu.rgba()?,
+            None => cpu,
+        };
+        let canvas = layout.canvas;
+        let mut snapshot = FrameSnapshot {
+            rgba: Vec::new(),
+            width: canvas.size.0,
+            height: canvas.size.1,
+            seq,
+            hdr,
+        };
+        if canvas.root_is_canvas {
+            snapshot.rgba.clone_from(pixels.as_ref());
+        } else {
+            let bytes = u64::from(canvas.size.0)
+                .saturating_mul(u64::from(canvas.size.1))
+                .saturating_mul(4);
+            snapshot.rgba = vec![0; usize::try_from(bytes).unwrap_or(0)];
+            scale::draw_resampled(
+                &mut snapshot,
+                &ChildPixels {
+                    rgba: &pixels,
+                    width: root_size.0,
+                    height: root_size.1,
+                },
+                root_placed.source,
+                scale::PixelRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::from(canvas.size.0),
+                    height: f64::from(canvas.size.1),
+                },
+                scale::Blend::Replace,
+            );
+            // The full-precision plane is the buffer's, not the canvas's.
+            snapshot.hdr = None;
+        }
+        for (position, placed, (width, height), seq, pixels) in child_frames {
+            let pixels = match pixels {
+                Some(ChildSource::Cpu(rgba)) => Some(rgba),
+                Some(ChildSource::Gpu(gpu)) => gpu.rgba(),
+                None => None,
+            };
+            snapshot.seq = snapshot.seq.wrapping_add(seq);
+            let (Some(rgba), Some(placed)) = (pixels.filter(|rgba| !rgba.is_empty()), placed)
+            else {
                 continue;
             };
-            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
-            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            let child = ChildPixels {
+                rgba: &rgba,
+                width,
+                height,
+            };
+            let destination = canvas.destination(position, &placed);
+            match pixel_aligned(&placed, &destination, (width, height)) {
+                Some((x, y)) => composite_child_rgba(&mut snapshot, &child, x, y),
+                None => scale::draw_resampled(
+                    &mut snapshot,
+                    &child,
+                    placed.source,
+                    destination,
+                    scale::Blend::Over,
+                ),
+            }
             // Subsurfaces live only in the SDR rendition; a window with any
             // is shown through it.
-            if !frame.rgba.is_empty() {
-                snapshot.hdr = None;
-            }
+            snapshot.hdr = None;
         }
-        drop(guard);
-        // Subsurfaces are positioned against the whole buffer, so the window
+        // Subsurfaces are positioned against the whole surface, so the window
         // is cut out only after they are composited onto it.
+        let content = layout.content;
         if content != (0, 0, snapshot.width, snapshot.height) {
             snapshot.rgba = crop_rgba(&snapshot.rgba, snapshot.width, content);
             snapshot.hdr = snapshot
@@ -1965,10 +3565,84 @@ impl ForeignFrameStore {
         Some(snapshot)
     }
 
+    /// The image a tile draws for `id`: straight from the GPU texture when the
+    /// frame stayed there and nothing is composited onto it on the CPU,
+    /// otherwise from [`Self::snapshot`]. Also the frame's HDR plane, if any.
+    pub fn frame_image(
+        &self,
+        id: SurfaceId,
+    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+        let has_children = self
+            .children
+            .lock_recover()
+            .get(&id)
+            .is_some_and(|children| !children.is_empty());
+        if !has_children {
+            let shared = {
+                let guard = self.entries.lock_recover();
+                guard.get(&id).and_then(|e| {
+                    // A buffer that needs resampling is drawn from a snapshot.
+                    let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+                    // A frame on the GPU is drawn from its texture, also an
+                    // SHM frame that keeps its pixels on the CPU too.
+                    if let Some(gpu) = e.gpu.clone() {
+                        return Some(SharedFrame::Gpu(gpu, layout.content));
+                    }
+                    if e.rgba.is_empty() {
+                        return None;
+                    }
+                    // A CPU frame shown whole is drawn from the stored pixels
+                    // themselves; a cropped one is cut out of a snapshot.
+                    let whole = (0, 0, e.width, e.height);
+                    (layout.content == whole).then(|| {
+                        SharedFrame::Cpu(Arc::clone(&e.rgba), (e.width, e.height), e.hdr.clone())
+                    })
+                })
+            };
+            match shared {
+                Some(SharedFrame::Gpu(gpu, content)) => {
+                    if content.2 == 0 || content.3 == 0 {
+                        return None;
+                    }
+                    return Some((gpu.image(content), None));
+                }
+                Some(SharedFrame::Cpu(pixels, (width, height), hdr)) => {
+                    return Some((rgba_image(pixels, width, height), hdr));
+                }
+                None => {}
+            }
+        }
+        let snapshot = self.snapshot(id)?;
+        let hdr = snapshot.hdr.clone();
+        Some((frame_image(snapshot), hdr))
+    }
+
+    /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
+    /// its client declared (no shadow or resize border), as tiles show it.
+    /// Unchanged without a declared geometry.
+    pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let crop = self
+            .entries
+            .lock_recover()
+            .get(&id)
+            .and_then(|e| Some((e.geometry?, e.scale.density(width, height)?)))
+            .and_then(|(geometry, density)| geometry.crop(width, height, density));
+        match crop {
+            Some(content) => crop_rgba(&rgba, width, content),
+            None => rgba,
+        }
+    }
+
     /// Record the client's declared window geometry (`None` clears it), read
     /// from the state each commit applied.
     pub fn note_window_geometry(&self, id: SurfaceId, geometry: Option<WindowGeometry>) {
         self.with_entry(id, |e| e.geometry = geometry);
+    }
+
+    /// Record how `id`'s buffer lies on the surface — buffer scale and
+    /// viewport — as the commit just applied them.
+    pub fn note_surface_scale(&self, id: SurfaceId, scale: SurfaceScale) {
+        self.with_entry(id, |e| e.scale = scale);
     }
 
     /// Record the client's minimum and maximum size (logical pixels, `0` for
@@ -1983,57 +3657,71 @@ impl ForeignFrameStore {
     /// The box inside `tile` that `id`'s window is drawn into: the whole tile,
     /// or a centred box when the client's maximum size keeps it smaller.
     pub fn target_box(&self, id: SurfaceId, tile: Rect) -> Rect {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).map_or(tile, |e| e.target_box(tile))
     }
 
-    /// The point surface-local `(0, 0)` lands on when `id` is shown in
-    /// `tile` — the origin every pointer and touch coordinate for it is
-    /// measured from. Drawing puts the window's geometry at the corner of
-    /// [`Self::target_box`], so the surface origin is that corner less the
-    /// geometry's offset into the buffer (its shadow, say).
-    pub fn surface_origin(&self, id: SurfaceId, tile: Rect) -> (f64, f64) {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let placed = guard.get(&id).map(|e| (e.target_box(tile), e.content()));
-        drop(guard);
-        let Some((target, (x, y, _, _))) = placed else {
-            return (tile.x0, tile.y0);
+    /// Exact current captured-image presentation, using the same fit as the
+    /// native foreign-surface painter. No frame means no painted geometry.
+    pub(crate) fn painted_frame_rect(&self, id: SurfaceId, tile: Rect) -> Option<Rect> {
+        let (width, height) = self.frame_size(id)?;
+        fit_into(self.target_box(id, tile), width, height)
+    }
+
+    /// Where desktop point `at` falls on `id`'s surface, in surface-local
+    /// logical pixels, when `id` is shown in `tile` — the inverse of how the
+    /// tile draws it. The window's geometry is drawn at the corner of
+    /// [`Self::target_box`], so a shadow or resize border the client keeps
+    /// around it lies off the tile, and the image is scaled as
+    /// [`ForeignSurfaceWidget::fit_rect`] scales it.
+    pub fn surface_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> (f64, f64) {
+        let target = self.target_box(id, tile);
+        let Some(layout) = self.layout(id) else {
+            return (x - target.x0, y - target.y0);
         };
-        (target.x0 - f64::from(x), target.y0 - f64::from(y))
+        let (_, _, width, height) = layout.content;
+        let Some(drawn) = fit_into(target, width, height) else {
+            return (x - target.x0, y - target.y0);
+        };
+        let scale_x = drawn.width() / f64::from(width);
+        let scale_y = drawn.height() / f64::from(height);
+        layout.to_surface(((x - drawn.x0) / scale_x, (y - drawn.y0) / scale_y))
+    }
+
+    /// The origin to hand the seat with a pointer or touch at desktop point
+    /// `at` on `id` shown in `tile`: `at` less [`Self::surface_point`], so
+    /// that `at - origin` is the surface-local point. A window drawn scaled
+    /// has no one origin for all points, so it is asked per point.
+    pub fn surface_origin(&self, id: SurfaceId, tile: Rect, at: (f64, f64)) -> (f64, f64) {
+        let (x, y) = self.surface_point(id, tile, at);
+        (at.0 - x, at.1 - y)
+    }
+
+    /// [`Self::surface_origin`] for the tile's own top-left corner: where
+    /// surface-local `(0, 0)` lands when `id` is drawn unscaled, as the
+    /// state dump reports it. A window drawn scaled has one origin per point.
+    pub fn corner_origin(&self, id: SurfaceId, tile: Rect) -> (f64, f64) {
+        self.surface_origin(id, tile, (tile.x0, tile.y0))
     }
 
     pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
-        self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(root, children);
+        self.children.lock_recover().insert(root, children);
     }
 
     pub fn child_at(&self, root: SurfaceId, x: f64, y: f64) -> Option<(SurfaceId, f64, f64)> {
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&root)
-            .cloned()?;
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let children = self.children.lock_recover().get(&root).cloned()?;
+        let entries = self.entries.lock_recover();
+        // Both the point and a subsurface's extent are logical, whatever
+        // density its buffer is drawn at.
         children.iter().rev().find_map(|child| {
             let frame = entries.get(&child.surface)?;
+            let (width, height) = frame.buffer_placement()?.logical;
             let local_x = x - f64::from(child.x);
             let local_y = y - f64::from(child.y);
             (local_x >= 0.0
                 && local_y >= 0.0
-                && local_x < f64::from(frame.width)
-                && local_y < f64::from(frame.height)
+                && local_x < width
+                && local_y < height
                 && frame.mapped)
                 .then_some((child.surface, local_x, local_y))
         })
@@ -2043,23 +3731,42 @@ impl ForeignFrameStore {
     /// it; `None` when nothing has landed. Exists so a harness can compare
     /// what the client drew against the tab it was drawn into — disagreeing is what a visibly resizing window *is*, unlike a frame counter alone.
     pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let e = guard.get(&id)?;
-        let (_, _, w, h) = e.content();
-        let size = (w > 0 && h > 0).then_some((w, h));
+        let (_, _, w, h) = self.layout(id)?.content;
+        (w > 0 && h > 0).then_some((w, h))
+    }
+
+    /// Numeric, read-only evidence for diagnosing client-buffer scaling.
+    /// `frame_size` describes the cropped image; this also preserves the raw
+    /// allocation and the protocol sizes that determine that crop and fit.
+    pub fn frame_geometry(&self, id: SurfaceId) -> Option<serde_json::Value> {
+        let guard = self.entries.lock_recover();
+        let entry = guard.get(&id)?;
+        let (width, height, configured_extent, min_size, max_size, geometry) = (
+            entry.width,
+            entry.height,
+            entry.configured_extent,
+            entry.min_size,
+            entry.max_size,
+            entry.geometry,
+        );
         drop(guard);
-        size
+        let (x, y, w, h) = self.layout(id)?.content;
+        Some(serde_json::json!({
+            "raw_buffer": {"w": width, "h": height},
+            "content_crop": {"x": x, "y": y, "w": w, "h": h},
+            "configured_extent": configured_extent.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+            "min_size": {"w": min_size.0, "h": min_size.1},
+            "max_size": {"w": max_size.0, "h": max_size.1},
+            "window_geometry": geometry.map(|geometry| serde_json::json!({
+                "x": geometry.x, "y": geometry.y,
+                "w": geometry.width, "h": geometry.height,
+            })),
+        }))
     }
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
@@ -2068,10 +3775,7 @@ impl ForeignFrameStore {
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
@@ -2099,17 +3803,24 @@ impl ForeignFrameStore {
     /// [`flush_configures`] and the presentation grace in
     /// [`Self::mark_presented`] — run from that instant.
     pub fn note_adopted(&self, id: SurfaceId) {
-        self.with_entry(id, |_| {});
+        self.with_entry(id, |entry| entry.adopted = true);
+    }
+
+    /// A real toplevel remains available to answer a close decision. The
+    /// compositor records adoption even before the first buffer and forgets
+    /// the entry on destruction; layout-only restored tabs remain placeholders.
+    pub fn is_adopted(&self, id: SurfaceId) -> bool {
+        self.entries
+            .lock_recover()
+            .get(&id)
+            .is_some_and(|entry| entry.adopted)
     }
 
     /// Whether this surface has waited longer than
     /// `OPENING_CONFIGURE_GRACE` since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
@@ -2117,10 +3828,7 @@ impl ForeignFrameStore {
 
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
@@ -2142,20 +3850,14 @@ impl ForeignFrameStore {
 
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.pinned.is_some())
     }
 
     /// Where the surface is: a pinned rectangle, else the tab rectangle last
     /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
@@ -2208,6 +3910,48 @@ impl ForeignFrameStore {
         })
     }
 
+    /// A fullscreen client was configured to `size` (logical) by the
+    /// fullscreen overlay rather than by its tab. The tab's last configure
+    /// would otherwise stay the extent, and the overlay would draw the window
+    /// at the tile's size, centred, instead of over the whole output.
+    pub fn note_fullscreen_extent(&self, id: SurfaceId, size: (i32, i32)) {
+        self.with_entry(id, |e| {
+            e.configured = Some(size);
+            e.configured_extent = Some((f64::from(size.0), f64::from(size.1)));
+        });
+    }
+
+    /// Replace the sizes the person's other devices show streamed windows at.
+    pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
+        *self.remote_extents.lock_recover() = extents;
+    }
+
+    /// The size another device shows `id` at, if it is streamed to one.
+    pub fn remote_extent(&self, id: SurfaceId) -> Option<(i32, i32)> {
+        self.remote_extents.lock_recover().get(&id).copied()
+    }
+
+    /// [`Self::take_pending_configure`] for a window only other devices
+    /// show: the size they show it at, within the client's limits, iff it
+    /// differs from the last sent.
+    pub fn take_remote_configure(&self, id: SurfaceId, extent: (i32, i32)) -> Option<(i32, i32)> {
+        self.with_entry(id, |e| {
+            if extent.0 <= 0 || extent.1 <= 0 {
+                return None;
+            }
+            let logical = (
+                honour_size_limits(extent.0, e.min_size.0, e.max_size.0),
+                honour_size_limits(extent.1, e.min_size.1, e.max_size.1),
+            );
+            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
+            if e.configured == Some(logical) {
+                return None;
+            }
+            e.configured = Some(logical);
+            Some(logical)
+        })
+    }
+
     /// Forget the size last sent, so the next [`Self::take_pending_configure`]
     /// sends the tab size again even though the layout did not change: the
     /// client was configured to something else in between.
@@ -2238,7 +3982,11 @@ impl ForeignFrameStore {
             }
             let waited = e.first_seen.elapsed();
             let backstop = waited >= PRESENT_GRACE;
-            let (_, _, content_w, content_h) = e.content();
+            // Judged in logical pixels, which the tab is in, whatever
+            // density the client drew at.
+            let (content_w, content_h) = e
+                .window_size()
+                .map_or((0, 0), |(w, h)| (logical_extent(w), logical_extent(h)));
             if e.last_error.is_none()
                 && !fills(content_w, content_h, e.target_box(tile))
                 && !backstop
@@ -2354,6 +4102,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    floating_input_rect: Option<Rect>,
     last_draw: Option<std::time::Instant>,
 }
 
@@ -2371,6 +4120,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            floating_input_rect: None,
             last_draw: None,
         }
     }
@@ -2380,6 +4130,20 @@ impl ForeignSurfaceWidget {
             preserve_transparency: true,
             ..Self::new(surface_id, app_id)
         }
+    }
+
+    pub fn set_floating_input_rect(&mut self, rect: Option<Rect>) {
+        self.floating_input_rect = rect;
+    }
+
+    pub fn floating_input_contains(&self, point: Point) -> bool {
+        self.floating_input_rect
+            .unwrap_or(self.rect)
+            .contains(point)
+    }
+
+    pub fn floating_input_rect(&self) -> Option<Rect> {
+        self.floating_input_rect
     }
 
     /// The app's name, as the tab above this surface says it.
@@ -2421,6 +4185,30 @@ impl ForeignSurfaceWidget {
             Instant::now(),
             &self.app_id,
         );
+    }
+
+    /// Draw the surface as [`Widget::draw`] does and return every pixel it
+    /// painted, in scene coordinates, when all of it stays inside the
+    /// surface's rect: the client's picture over its card. `None` when it
+    /// may have painted past the rect: the words standing in for a picture
+    /// that has not arrived, a capture's placeholder, an agent's activity.
+    pub fn draw_bounded(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
+        let marked = presence.has_visible_interactions(Instant::now());
+        self.draw(scene, transform, text_renderer, theme, presence);
+        let marked = marked || presence.has_visible_interactions(Instant::now());
+        let pictured = self
+            .cached
+            .as_ref()
+            .is_some_and(|image| self.fit_rect(image.width, image.height).is_some());
+        (pictured && !marked && !crate::shell::capture_protection::painting_for_capture())
+            .then(|| transform.transform_rect_bbox(self.rect).inflate(1.0, 1.0))
     }
 
     pub fn surface_id(&self) -> SurfaceId {
@@ -2480,13 +4268,17 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        let snapshot = store().snapshot(self.surface_id);
-        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
-        self.cached = snapshot.map(frame_image);
+        let frame = store().frame_image(self.surface_id);
+        if store().frame_seq(self.surface_id) != seq {
+            self.cached_seq = 0;
+            return false;
+        }
+        self.cached_hdr = frame.as_ref().and_then(|(_, hdr)| hdr.clone());
+        self.cached = frame.map(|(image, _)| image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
-            .filter_map(|link| Some((link, frame_image(store().snapshot(link.surface)?))))
+            .filter_map(|link| Some((link, store().frame_image(link.surface)?.0)))
             .collect();
         true
     }
@@ -2506,13 +4298,7 @@ impl ForeignSurfaceWidget {
         let sy = dst.height() / f64::from(image.height.max(1));
         for (link, sheet) in &self.sheet_images {
             if link.modal {
-                crate::shell::overlay_host::fill_scrim(
-                    scene,
-                    transform,
-                    self.rect,
-                    crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
-                    theme,
-                );
+                ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             }
             let Some(local) = store().sheet_rect_in_root(self.surface_id, link.surface) else {
                 continue;
@@ -2532,6 +4318,22 @@ impl ForeignSurfaceWidget {
                 &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
             );
         }
+    }
+
+    fn record_foreign_damage(
+        &self,
+        image: &ImageData,
+        brush_transform: Affine,
+        transform: Affine,
+        dst: Rect,
+    ) {
+        super::foreign_damage::record(
+            self.surface_id,
+            image,
+            self.cached_seq,
+            brush_transform,
+            transform.transform_rect_bbox(self.rect.union(dst)),
+        );
     }
 
     /// Register the frame's full-precision plane, when it has one, for the
@@ -2583,45 +4385,70 @@ impl ForeignSurfaceWidget {
     /// subtracting the tile origin from the global cursor
     /// (`client_input::surface_local`), so a *centred* draw instead would slide every pixel while input kept addressing the un-slid position.
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
-        if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
         }
         // A window whose maximum size keeps it smaller than the tab is fitted
-        // into its centred box instead; `surface_origin` shifts input to match.
-        let bounds = store().target_box(self.surface_id, self.rect);
-        let iw = f64::from(img_w);
-        let ih = f64::from(img_h);
-        let scale = (bounds.width() / iw).min(bounds.height() / ih);
-        let dw = iw * scale;
-        let dh = ih * scale;
-        let dx = bounds.x0;
-        let dy = bounds.y0;
-        Some(Rect::new(dx, dy, dx + dw, dy + dh))
+        // into its centred box instead; `surface_point` maps input the same way.
+        fit_into(store().target_box(self.surface_id, self.rect), img_w, img_h)
     }
+}
+
+/// An `img_w`×`img_h` image scaled to fit `bounds` with its aspect ratio
+/// kept, anchored at the top-left corner: how a tile draws its window, and so
+/// what input inverts.
+fn fit_into(bounds: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+    if img_w == 0 || img_h == 0 || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return None;
+    }
+    let iw = f64::from(img_w);
+    let ih = f64::from(img_h);
+    let scale = (bounds.width() / iw).min(bounds.height() / ih);
+    Some(Rect::new(
+        bounds.x0,
+        bounds.y0,
+        bounds.x0 + iw * scale,
+        bounds.y0 + ih * scale,
+    ))
+}
+
+/// A logical extent in whole pixels, as [`fills`] compares them.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded and clamped into [0, u32::MAX] first, so the cast neither truncates a \
+              fraction nor loses a sign"
+)]
+fn logical_extent(value: f64) -> u32 {
+    if value.is_nan() {
+        return 0;
+    }
+    value.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
 /// A captured frame as a GPU-uploadable image.
 fn frame_image(frame: FrameSnapshot) -> ImageData {
-    ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    }
+    rgba_image(Arc::new(frame.rgba), frame.width, frame.height)
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
+/// Tightly packed RGBA `pixels` as a GPU-uploadable image, sharing them.
+fn rgba_image(pixels: Arc<Vec<u8>>, width: u32, height: u32) -> ImageData {
+    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+    ui::raster::rgba8_premultiplied(Blob::new(pixels), width, height)
+}
+
+/// The current frame of a surface with nothing composited onto it, shared
+/// with the frame store rather than copied.
+enum SharedFrame {
+    Gpu(
+        Arc<crate::shell::gpu_frames::GpuFrame>,
+        (u32, u32, u32, u32),
+    ),
+    Cpu(
+        Arc<Vec<u8>>,
+        (u32, u32),
+        Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    ),
 }
 
 /// `base` composed with a translation to `(dx, dy)` and then a non-uniform
@@ -2650,18 +4477,18 @@ pub fn paint_output_presentation_surface(
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
-    let Some(frame) = store().snapshot(surface_id) else {
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &rect,
+    );
+    let Some((image, _)) = store().frame_image(surface_id) else {
         return;
     };
-    let image = ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    };
-    if image.width == 0 || image.height == 0 {
+    let (width, height) = (image.width, image.height);
+    if width == 0 || height == 0 {
         return;
     }
     let transform = translated_and_scaled(
@@ -2677,7 +4504,7 @@ pub fn paint_output_presentation_surface(
         transform,
         &brush,
         None,
-        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
 }
 
@@ -2691,31 +4518,11 @@ impl Widget for ForeignSurfaceWidget {
         // `new_leaf` can't fail in practice for a single-node insert; a
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap_or(NodeId::new(0));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let x = origin.x + f64::from(l.location.x);
-        let y = origin.y + f64::from(l.location.y);
-        let next_rect = Rect::new(
-            x,
-            y,
-            x + f64::from(l.size.width),
-            y + f64::from(l.size.height),
-        );
+        let next_rect = ui::widget::layout_rect(taffy, node, origin);
         if self.rect != next_rect {
             self.rect = next_rect;
             self.placement_dirty = true;
@@ -2739,7 +4546,7 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.xl);
+        let radius = f64::from(theme.tokens.radii.tile);
         if crate::shell::capture_protection::painting_for_capture()
             && self.capture_protected_rect().is_some()
         {
@@ -2753,9 +4560,15 @@ impl Widget for ForeignSurfaceWidget {
         if let Some(image) = self.cached.clone()
             && let Some(dst) = self.fit_rect(image.width, image.height)
         {
+            store().note_painted_frame(
+                self.surface_id,
+                self.cached_seq,
+                transform.transform_rect_bbox(self.rect),
+            );
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+            self.record_foreign_damage(&image, brush_transform, transform, dst);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {
@@ -2805,34 +4618,31 @@ impl Widget for ForeignSurfaceWidget {
         // Fixed ramp indices were a guess about which way round the card
         // is, not an answer: `neutral[1]` is near-black on the dark ramp
         // and the card is `#16171b`, so the app's own name measured 1.03:1 and was invisible. `on_card` derives both tiers from the card's actual luminance instead.
-        let tiers = theme.tokens.colors.on_card();
+        let tiers = theme.tokens.colors.on_content();
         let on_card = tiers.ink;
         let on_card_dim = tiers.ink_dim;
-        let size = theme.tokens.typography.scale.xl;
-        let (tw, _) = text_renderer.measure(&headline, size, None);
+        let style = theme.text(TextRole::Title);
+        let (tw, _) = text_renderer.measure_style(&headline, None, &style);
         let cx = self.rect.center().x;
-        let y = self.rect.center().y - f64::from(size) / 2.0;
-        text_renderer.draw_text(
+        let y = self.rect.center().y - f64::from(style.size) / 2.0;
+        text_renderer.draw_style(
             scene,
             &headline,
-            size,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
+            &style,
         );
-        let sm = theme.tokens.typography.scale.sm;
-        let (dw, _) = text_renderer.measure(&detail, sm, None);
-        text_renderer.draw_text(
+        let sm = theme.text(TextRole::Caption);
+        let (dw, _) = text_renderer.measure_style(&detail, None, &sm);
+        text_renderer.draw_style(
             scene,
             &detail,
-            sm,
             on_card_dim,
-            translated(
-                transform,
-                cx - f64::from(dw) / 2.0,
-                y + f64::from(size) + 8.0,
-            ),
+            transform
+                .pre_translate((cx - f64::from(dw) / 2.0, y + f64::from(style.size) + 8.0).into()),
             None,
+            &sm,
         );
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
@@ -2873,6 +4683,10 @@ impl Widget for ForeignSurfaceWidget {
         self.awaiting_first_paint()
     }
 
+    fn animation_detail(&self) -> Option<String> {
+        Some(ForeignSurfaceWidget::animation_detail(self))
+    }
+
     fn needs_redraw(&self) -> bool {
         self.placement_dirty
             || self.awaiting_first_paint()
@@ -2899,9 +4713,6 @@ impl AppWidget for ForeignSurfaceWidget {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 
@@ -3129,7 +4940,8 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        if store().is_sheet(id) {
+        state.classify_opening_dialog(&toplevel);
+        if store().is_sheet(id) || state.is_system_modal(id) {
             // A sheet sizes itself; its bounds were staged when it attached.
             if !toplevel.is_initial_configure_sent() {
                 toplevel.send_configure();
@@ -3152,11 +4964,24 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        let scale = state.surface_scale(id);
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
+        // A window only the person's other devices show renders at the
+        // size they show it, not at its hidden tab's.
+        if toplevel.is_initial_configure_sent()
+            && let Some(extent) = store().remote_extent(id)
+            && !is_visible_tab(&state.workspace_tree.read(), id)
+        {
+            if let Some((w, h)) = store().take_remote_configure(id, extent) {
+                configure_to(&toplevel, id, (w, h), scale, tiled);
+                sent = sent.saturating_add(1);
+            }
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
-            configure_to(&toplevel, w, h, tiled);
+            configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -3174,7 +4999,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h, tiled);
+        configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -3193,8 +5018,30 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+fn configure_to(
+    toplevel: &ToplevelSurface,
+    id: SurfaceId,
+    size: (i32, i32),
+    scale: f64,
+    tiled: bool,
+) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+    let (w, h) = within_client_texture_limit(size, scale);
+    if (w, h) != size {
+        // Whatever laid the tab out this large is a defect: say so, but
+        // still send a size the client can render, since past the limit it
+        // loses its drawing surface and closes the window.
+        tracing::error!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            requested_width = size.0,
+            requested_height = size.1,
+            width = w,
+            height = h,
+            scale,
+            "a tab was laid out larger than a client can render; configuring it to the largest size it can draw",
+        );
+    }
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
         // A tile has a neighbour or the screen edge on every side. Saying so
@@ -3214,6 +5061,29 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
         }
     });
     toplevel.send_configure();
+}
+
+/// Widest and tallest buffer, in physical pixels, a client is asked to
+/// render: the 2D texture limit every GPU guarantees (WebGPU's default
+/// `max_texture_dimension_2d`). A toolkit sized past it cannot create its
+/// drawing surface at all.
+pub const CLIENT_TEXTURE_LIMIT_PX: i32 = 8192;
+
+/// `size` (logical pixels) kept within [`CLIENT_TEXTURE_LIMIT_PX`] once the
+/// client renders it at `scale`.
+#[must_use]
+pub fn within_client_texture_limit(size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the limit over a positive scale is at most the limit itself, well inside i32"
+    )]
+    let limit = ((f64::from(CLIENT_TEXTURE_LIMIT_PX) / scale).floor() as i32).max(1);
+    (size.0.min(limit), size.1.min(limit))
 }
 
 /// The size to configure an opening toplevel to when its tab was never
@@ -3246,18 +5116,16 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 /// their next buffer; without this pass a client renders one frame and
 /// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
 /// and for a window the compositor asked to close, whose tab is already gone.
+/// A window's subsurfaces and popups are drawn with it, so they are answered
+/// with it: a toolkit that draws its menu on its own swapchain waits on that
+/// surface's callback before it draws anything else.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
-    for toplevel in toplevels {
-        let surface = toplevel.wl_surface();
-        if !frame_throttle_releases(state, surface) {
-            continue;
-        }
-        if state.release_frame_callbacks(surface) {
+    for surface in throttled_surfaces(state) {
+        if state.release_frame_callbacks(&surface) {
             signalled = signalled.saturating_add(1);
         }
     }
@@ -3265,31 +5133,129 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 /// Whether a surface [`release_frame_throttle`] serves is waiting for
-/// `wl_surface.frame`. The loop must paint for it: a callback can arrive
-/// on a commit without a new buffer (a configure ack, a title), which
-/// changes nothing on screen, and the client draws nothing until it fires.
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
 #[cfg(target_os = "linux")]
 pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
+    throttled_surfaces(state).iter().any(|surface| {
+        smithay::wayland::compositor::with_states(surface, |states| {
+            !states
+                .cached_state
+                .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                .current()
+                .frame_callbacks
+                .is_empty()
+        })
+    })
+}
+
+/// Every surface whose frame callbacks [`release_frame_throttle`] answers:
+/// each shown toplevel with its subsurfaces, and the popups (and their
+/// subsurfaces) of a shown toplevel.
+#[cfg(target_os = "linux")]
+fn throttled_surfaces(
+    state: &crate::compositor::state::State,
+) -> Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+    use smithay::desktop::{PopupKind, find_popup_root_surface};
+    let mut surfaces = Vec::new();
+    for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+        let surface = toplevel.wl_surface();
+        if frame_throttle_releases(state, surface) {
+            push_surface_tree(surface, &mut surfaces);
+        }
+    }
+    for popup in state.xdg_popups() {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            continue;
+        };
+        if frame_throttle_releases(state, &root) {
+            push_surface_tree(popup.wl_surface(), &mut surfaces);
+        }
+    }
+    surfaces
+}
+
+/// The toplevels shown on screen: each group's visible tab, the on-screen
+/// keyboard, floating windows.
+#[cfg(target_os = "linux")]
+pub fn shown_toplevel_surfaces(
+    state: &crate::compositor::state::State,
+) -> Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
     state
         .xdg_shell_state
         .toplevel_surfaces()
         .iter()
         .map(ToplevelSurface::wl_surface)
         .filter(|surface| frame_throttle_releases(state, surface))
-        .any(|surface| {
-            smithay::wayland::compositor::with_states(surface, |states| {
-                !states
-                    .cached_state
-                    .get::<smithay::wayland::compositor::SurfaceAttributes>()
-                    .current()
-                    .frame_callbacks
-                    .is_empty()
-            })
-        })
+        .cloned()
+        .collect()
+}
+
+/// The toplevel whose surface is `id`.
+#[cfg(target_os = "linux")]
+pub fn toplevel_surface(
+    state: &crate::compositor::state::State,
+    id: SurfaceId,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+    state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(ToplevelSurface::wl_surface)
+        .find(|surface| crate::compositor::state::surface_id(surface) == id)
+        .cloned()
+}
+
+/// `surface` and its subsurfaces, parents first.
+#[cfg(target_os = "linux")]
+fn push_surface_tree(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    out: &mut Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+) {
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, ()| TraversalAction::DoChildren(()),
+        |surface, _, ()| out.push(surface.clone()),
+        |_, _, ()| true,
+    );
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
+}
+
+/// Bumped when a client commit changes something the frame pump must see
+/// (a buffer, a title, a new toplevel). A `wl_surface.frame` on its own does
+/// not: answering it must not schedule another shell tick.
+static CLIENT_PUMP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn note_client_pump() {
+    CLIENT_PUMP_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+pub fn client_pump_epoch() -> u64 {
+    CLIENT_PUMP_EPOCH.load(Ordering::Acquire)
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen
-/// keyboard, floating windows and windows asked to close.
+/// keyboard, floating windows, windows asked to close and windows streamed
+/// to a viewer.
 #[cfg(target_os = "linux")]
 fn frame_throttle_releases(
     state: &crate::compositor::state::State,
@@ -3300,10 +5266,13 @@ fn frame_throttle_releases(
         let tree = state.workspace_tree.read();
         is_visible_tab(&tree, store().sheet_root(id))
     };
+    // A window streamed to another device paints there, so it keeps its
+    // frame clock even while no tab here shows it.
     visible_tab
         || state.osk_surface == Some(id)
         || state.is_floating_toplevel(id)
         || state.is_closing_toplevel(id)
+        || state.active_sessions.contains_key(&id)
 }
 
 #[cfg(test)]
@@ -3318,6 +5287,29 @@ mod tests {
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {
         900_000u64.saturating_add(n)
+    }
+
+    #[test]
+    fn a_held_buffer_goes_back_once_after_its_last_frame() {
+        let mut holds = BufferHolds::new();
+        // Phase `a_re_attached_buffer_is_held_by_each_frame`.
+        holds.hold("a");
+        holds.hold("a");
+        holds.hold("b");
+        holds.returned.push("a");
+        assert!(
+            holds.give_back().is_empty(),
+            "the newer frame still draws it"
+        );
+        // Phase `the_last_frame_gives_it_back_once`.
+        holds.returned.extend(["a", "b"]);
+        assert_eq!(holds.give_back(), vec!["a", "b"]);
+        holds.returned.push("a");
+        assert!(
+            holds.give_back().is_empty(),
+            "a buffer is released once, and one never held is not ours"
+        );
+        assert!(holds.held.is_empty());
     }
 
     #[test]
@@ -4015,8 +6007,6 @@ mod tests {
             y,
             width,
             height,
-            logical_size: None,
-            buffer_scale: 1,
         }
     }
 
@@ -4049,7 +6039,15 @@ mod tests {
             }
         }
 
+        // A shared window's stream is cut the same way from the buffer it commits.
+        assert_eq!(
+            store().crop_to_window(id, rgba.clone(), w, h),
+            frame.rgba,
+            "the stream shows what the tile shows"
+        );
+
         store().note_window_geometry(id, None);
+        assert_eq!(store().crop_to_window(id, rgba.clone(), w, h), rgba);
         let whole = store().snapshot(id).expect("frame");
         assert_eq!(
             (whole.width, whole.height),
@@ -4063,28 +6061,44 @@ mod tests {
     /// at whatever ratio the viewport destination sets for fractional scaling.
     #[test]
     fn window_geometry_is_found_in_scaled_buffers() {
-        let integer = WindowGeometry {
-            buffer_scale: 2,
-            ..geometry(10, 5, 100, 80)
-        };
-        assert_eq!(integer.crop(240, 180), Some((20, 10, 200, 160)));
-
-        let fractional = WindowGeometry {
-            logical_size: Some((120, 90)),
-            ..geometry(10, 5, 100, 80)
-        };
-        assert_eq!(fractional.crop(180, 135), Some((15, 8, 150, 120)));
+        let window = geometry(10, 5, 100, 80);
+        assert_eq!(window.crop(240, 180, (2.0, 2.0)), Some((20, 10, 200, 160)));
+        assert_eq!(window.crop(180, 135, (1.5, 1.5)), Some((15, 8, 150, 120)));
 
         assert_eq!(
-            geometry(0, 0, 120, 90).crop(120, 90),
+            geometry(0, 0, 120, 90).crop(120, 90, (1.0, 1.0)),
             None,
             "geometry covering the whole buffer is no crop"
         );
         assert_eq!(
-            geometry(500, 500, 10, 10).crop(120, 90),
+            geometry(500, 500, 10, 10).crop(120, 90, (1.0, 1.0)),
             None,
             "geometry outside the buffer must not blank the window"
         );
+
+        // The store finds the density in what the commit said: the buffer
+        // scale, or the viewport destination for fractional scaling.
+        let frames = ForeignFrameStore::default();
+        let id = sid(63);
+        frames.publish_rgba(id, &numbered_frame(240, 180), 240, 180);
+        frames.note_window_geometry(id, Some(window));
+        frames.note_surface_scale(
+            id,
+            SurfaceScale {
+                buffer_scale: 2,
+                ..SurfaceScale::default()
+            },
+        );
+        assert_eq!(frames.frame_size(id), Some((200, 160)));
+        frames.publish_rgba(id, &numbered_frame(180, 135), 180, 135);
+        frames.note_surface_scale(
+            id,
+            SurfaceScale {
+                destination: Some((120, 90)),
+                ..SurfaceScale::default()
+            },
+        );
+        assert_eq!(frames.frame_size(id), Some((150, 120)));
     }
 
     /// Pixels are drawn with the window geometry at the tile corner, so input
@@ -4095,16 +6109,24 @@ mod tests {
         store().forget(id);
         let tile = Rect::new(100.0, 50.0, 300.0, 250.0);
         store().publish_rgba(id, &numbered_frame(240, 240), 240, 240);
-        assert_eq!(store().surface_origin(id, tile), (100.0, 50.0));
+        assert_eq!(
+            store().surface_origin(id, tile, (100.0, 50.0)),
+            (100.0, 50.0)
+        );
         store().note_window_geometry(id, Some(geometry(20, 20, 200, 200)));
         assert_eq!(
-            store().surface_origin(id, tile),
+            store().surface_origin(id, tile, (100.0, 50.0)),
             (80.0, 30.0),
             "the shadow's 20px lie left of and above the tile, out of sight"
         );
         let mut widget = ForeignSurfaceWidget::new(id, "x".into());
         widget.rect = tile;
         let dst = widget.fit_rect(200, 200).expect("fit");
+        assert_eq!(
+            store().painted_frame_rect(id, tile),
+            Some(dst),
+            "marker publication observes the same cropped frame as the native painter"
+        );
         assert_eq!(
             (dst.x0 - 80.0, dst.y0 - 30.0),
             (20.0, 20.0),
@@ -4134,7 +6156,12 @@ mod tests {
             Some(target),
             "drawn 1:1 in its centred box, not stretched across the tab"
         );
-        assert_eq!(store().surface_origin(id, tile), (300.0, 0.0));
+        assert_eq!(
+            store().painted_frame_rect(id, tile),
+            widget.fit_rect(600, 800),
+            "marker projection follows the actually painted centred window"
+        );
+        assert_eq!(store().surface_origin(id, tile, (300.0, 0.0)), (300.0, 0.0));
         assert!(
             store().mark_presented(id, tile),
             "a frame answering the clamped configure is the window's answer"
@@ -4147,6 +6174,164 @@ mod tests {
             "a minimum above the tab is honoured too"
         );
         assert_eq!(store().target_box(id, tile), tile);
+        store().forget(id);
+    }
+
+    /// An opaque `w`x`h` frame of one colour.
+    fn solid_frame(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        [rgb[0], rgb[1], rgb[2], 255].repeat(usize::try_from(w.saturating_mul(h)).expect("fits"))
+    }
+
+    fn scaled(buffer_scale: i32) -> SurfaceScale {
+        SurfaceScale {
+            buffer_scale,
+            ..SurfaceScale::default()
+        }
+    }
+
+    /// A browser renders its page into a subsurface at its own scale. At 1x
+    /// inside a 2x toplevel it must still cover its logical rectangle, not a
+    /// quarter of it: subsurface offsets and sizes are logical.
+    #[test]
+    fn a_subsurface_at_a_lower_density_fills_its_logical_rect() {
+        let frames = ForeignFrameStore::default();
+        let (root, page) = (sid(64), sid(65));
+        frames.publish_rgba(root, &solid_frame(240, 240, [0, 0, 200]), 240, 240);
+        frames.note_surface_scale(root, scaled(2));
+        frames.publish_rgba(page, &solid_frame(60, 60, [200, 0, 0]), 60, 60);
+        frames.note_surface_scale(page, scaled(1));
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: page,
+                x: 10,
+                y: 10,
+            }],
+        );
+
+        let snapshot = frames.snapshot(root).expect("composited frame");
+        assert_eq!((snapshot.width, snapshot.height), (240, 240));
+        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 240 + x) * 4..][..4];
+        for (x, y) in [(20, 20), (139, 20), (20, 139), (139, 139), (80, 80)] {
+            assert_eq!(pixel(x, y), &[200, 0, 0, 255], "page at ({x}, {y})");
+        }
+        for (x, y) in [(19, 20), (20, 19), (140, 139), (139, 140), (200, 200)] {
+            assert_eq!(pixel(x, y), &[0, 0, 200, 255], "toplevel at ({x}, {y})");
+        }
+
+        // Input finds the page by its logical extent too.
+        assert_eq!(frames.child_at(root, 69.5, 10.5), Some((page, 59.5, 0.5)));
+        assert_eq!(frames.child_at(root, 70.5, 10.5), None);
+    }
+
+    /// The other way round, and through a viewport: a dense subsurface on a
+    /// sparse toplevel raises the image to its density rather than being
+    /// cropped to the toplevel's buffer, and is hit-tested logically.
+    #[test]
+    fn a_denser_subsurface_raises_the_image_to_its_density() {
+        let frames = ForeignFrameStore::default();
+        let (root, page) = (sid(66), sid(67));
+        // A single pixel stretched over a 100x50 window (Chromium's root).
+        frames.publish_rgba(root, &solid_frame(1, 1, [0, 0, 200]), 1, 1);
+        frames.note_surface_scale(
+            root,
+            SurfaceScale {
+                destination: Some((100, 50)),
+                ..SurfaceScale::default()
+            },
+        );
+        // The page: a 2x buffer declared at 60x30 through the viewport.
+        frames.publish_rgba(page, &solid_frame(120, 60, [200, 0, 0]), 120, 60);
+        frames.note_surface_scale(
+            page,
+            SurfaceScale {
+                destination: Some((60, 30)),
+                ..SurfaceScale::default()
+            },
+        );
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: page,
+                x: 20,
+                y: 10,
+            }],
+        );
+
+        assert_eq!(frames.frame_size(root), Some((200, 100)));
+        let snapshot = frames.snapshot(root).expect("composited frame");
+        assert_eq!((snapshot.width, snapshot.height), (200, 100));
+        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 200 + x) * 4..][..4];
+        assert_eq!(pixel(40, 20), &[200, 0, 0, 255]);
+        assert_eq!(pixel(159, 79), &[200, 0, 0, 255]);
+        assert_eq!(pixel(39, 20), &[0, 0, 200, 255]);
+        assert_eq!(pixel(160, 79), &[0, 0, 200, 255]);
+        assert_eq!(
+            pixel(199, 99),
+            &[0, 0, 200, 255],
+            "the stretched root fills it"
+        );
+
+        assert_eq!(frames.child_at(root, 79.0, 39.0), Some((page, 59.0, 29.0)));
+        assert_eq!(
+            frames.child_at(root, 81.0, 20.0),
+            None,
+            "60 logical pixels wide, not its 120-pixel buffer"
+        );
+    }
+
+    /// Pixels show the window geometry at the tile corner. At 2x the
+    /// geometry's offset is twice as many buffer pixels as logical ones, and
+    /// input must take the logical offset off, not the pixel one.
+    #[test]
+    fn input_follows_the_window_geometry_offset_at_scale_two() {
+        let id = sid(68);
+        store().forget(id);
+        let tile = Rect::new(100.0, 50.0, 300.0, 250.0);
+        store().publish_rgba(id, &numbered_frame(480, 480), 480, 480);
+        store().note_surface_scale(id, scaled(2));
+        store().note_window_geometry(id, Some(geometry(10, 20, 200, 200)));
+
+        assert_eq!(store().frame_size(id), Some((400, 400)));
+        let mut widget = ForeignSurfaceWidget::new(id, "x".into());
+        widget.rect = tile;
+        assert_eq!(
+            widget.fit_rect(400, 400),
+            Some(tile),
+            "a 2x window at its tab's size is drawn over exactly the tab"
+        );
+        assert_eq!(store().surface_point(id, tile, (100.0, 50.0)), (10.0, 20.0));
+        assert_eq!(
+            store().surface_point(id, tile, (150.0, 150.0)),
+            (60.0, 120.0)
+        );
+        assert_eq!(
+            store().surface_origin(id, tile, (150.0, 150.0)),
+            (90.0, 30.0),
+            "the geometry's logical (10, 20) lies left of and above the tile"
+        );
+        store().forget(id);
+    }
+
+    /// A frame that does not answer its tab is drawn scaled into it, and
+    /// input lands on what is drawn under the pointer, not on the unscaled spot.
+    #[test]
+    fn input_follows_a_frame_drawn_scaled_into_its_tab() {
+        let id = sid(69);
+        store().forget(id);
+        let tile = Rect::new(0.0, 0.0, 400.0, 400.0);
+        store().publish_rgba(id, &numbered_frame(200, 100), 200, 100);
+        let mut widget = ForeignSurfaceWidget::new(id, "x".into());
+        widget.rect = tile;
+        assert_eq!(
+            widget.fit_rect(200, 100),
+            Some(Rect::new(0.0, 0.0, 400.0, 200.0))
+        );
+        assert_eq!(
+            store().surface_point(id, tile, (200.0, 100.0)),
+            (100.0, 50.0)
+        );
+        assert_eq!(store().surface_point(id, tile, (0.0, 0.0)), (0.0, 0.0));
         store().forget(id);
     }
 
@@ -4171,6 +6356,35 @@ mod tests {
 
             store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
             assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+            store().forget(id);
+        }
+
+        fn a_window_shown_only_elsewhere_takes_the_size_shown_there() {
+            let id = sid(5);
+            store().forget(id);
+            store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            assert_eq!(
+                store().take_remote_configure(id, (1280, 720)),
+                Some((1280, 720))
+            );
+            assert_eq!(store().take_remote_configure(id, (1280, 720)), None);
+            store().note_size_limits(id, (0, 0), (1000, 0));
+            assert_eq!(
+                store().take_remote_configure(id, (1440, 900)),
+                Some((1000, 900)),
+                "the client's own limits still bound it"
+            );
+            // Shown here again, it goes back to its tab's size.
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            let mut extents = HashMap::new();
+            extents.insert(id, (800, 600));
+            store().set_remote_extents(extents);
+            assert_eq!(store().remote_extent(id), Some((800, 600)));
+            store().set_remote_extents(HashMap::new());
+            assert_eq!(store().remote_extent(id), None);
             store().forget(id);
         }
 
@@ -4261,10 +6475,7 @@ mod tests {
             let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
             let root = taffy.parent_node(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(1200.0),
-                        height: taffy::Dimension::length(800.0),
-                    },
+                    size: taffy::Size::from_lengths(1200.0, 800.0),
                     ..Default::default()
                 },
                 &[node],
@@ -4296,6 +6507,7 @@ mod tests {
         }
 
         pending_configure_fires_once_per_size_change();
+        a_window_shown_only_elsewhere_takes_the_size_shown_there();
         widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
@@ -4324,6 +6536,11 @@ mod tests {
         store().forget(id);
     }
 
+    /// Tests that drive the process-wide SHM capture worker: its
+    /// "published" flag is global, so they take turns.
+    #[cfg(target_os = "linux")]
+    static SHM_WORKER_TESTS: Mutex<()> = Mutex::new(());
+
     /// An idle desktop paints only when the loop sees a change, and frame
     /// callbacks are released only after a paint. An SHM frame the worker
     /// published without reporting it left the client waiting for
@@ -4331,11 +6548,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_published_shm_frame_is_reported_to_the_loop() {
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(72);
         store().forget(id);
         let _ = take_published_shm_frames();
         assert!(
-            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            store()
+                .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+                .is_some()
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !take_published_shm_frames() {
@@ -4348,6 +6568,487 @@ mod tests {
         assert_ne!(store().frame_seq(id), 0, "reported only once published");
         assert!(!take_published_shm_frames(), "reported once");
         store().forget(id);
+    }
+
+    /// A client that commits and closes its window at once leaves the shm
+    /// worker building a frame for a surface that is gone. A closing tile
+    /// still placing itself makes an empty entry for it again; publishing
+    /// into that kept a whole frame nothing freed: a window's worth of
+    /// compositor memory per close.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_shm_frame_finished_after_its_surface_went_is_dropped() {
+        let frames = ForeignFrameStore::default();
+        let queue = |id: SurfaceId| {
+            let (generation, damage_generation) = frames.with_entry(id, |entry| {
+                entry.shm_queued = entry.shm_queued.wrapping_add(1);
+                (entry.shm_queued, entry.damage_history.begin(None))
+            });
+            ShmJob {
+                surface: id,
+                generation,
+                damage_generation,
+                patches: Vec::new(),
+            }
+        };
+        let tracked = |id: SurfaceId| {
+            frames
+                .entries
+                .lock_recover()
+                .get(&id)
+                .map(|entry| entry.rgba.len())
+        };
+        let pixels = || Arc::new(vec![0x40; 64 * 64 * 4]);
+
+        let gone = sid(74);
+        let job = queue(gone);
+        frames.forget(gone);
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64), None));
+        assert_eq!(
+            tracked(gone),
+            None,
+            "the late frame brought the surface back"
+        );
+
+        frames.note_placement(gone, Rect::new(0.0, 0.0, 64.0, 64.0));
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64), None));
+        frames.note_shm_failure(&job, "late".into());
+        assert_eq!(
+            tracked(gone),
+            Some(0),
+            "the late frame filled a re-created entry"
+        );
+        assert_eq!(frames.last_error(gone), None, "the late failure reached it");
+        frames.forget(gone);
+
+        let live = sid(75);
+        let job = queue(live);
+        assert!(frames.publish_shm_frame(&job, pixels(), (64, 64), None));
+        let snapshot = frames
+            .snapshot(live)
+            .expect("a live surface gets its frame");
+        assert_eq!((snapshot.width, snapshot.height), (64, 64));
+        frames.forget(live);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shm_readback_cannot_map_a_pending_or_detached_surface() {
+        let id = sid(73);
+        store().forget(id);
+        let first = store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            .expect("queue the first SHM readback");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store().frame_seq(id) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the actual SHM worker must publish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!store().is_mapped(id), "readback is not a protocol commit");
+        assert!(!store().note_shm_committed(id, first + 1));
+        assert!(!store().is_mapped(id), "a generation not queued cannot map");
+        assert!(store().note_shm_committed(id, first));
+        assert!(store().is_mapped(id));
+        store().clear_frame(id);
+        let sequence = store().frame_seq(id);
+        let second = store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![255, 0, 0, 255], 1, 1))
+            .expect("queue readback while the surface is detached");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store().frame_seq(id) == sequence {
+            assert!(
+                Instant::now() < deadline,
+                "the second actual SHM readback must publish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !store().is_mapped(id),
+            "worker completion cannot remap a detached surface"
+        );
+        assert!(store().note_shm_committed(id, second));
+        assert!(
+            store().is_mapped(id),
+            "only the new buffer commit remaps it"
+        );
+        store().forget(id);
+    }
+
+    /// The tile draws a CPU frame from the stored pixels themselves: painting
+    /// copies nothing, and the frame store's lock never guards a copy.
+    #[test]
+    fn frame_image_shares_the_published_frame() {
+        let id = sid(586);
+        store().forget(id);
+        store().publish_rgba(id, &[1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
+        let (first, _) = store().frame_image(id).expect("frame image");
+        let (second, _) = store().frame_image(id).expect("frame image");
+        assert_eq!(first.data.data(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            first.data.data().as_ptr(),
+            second.data.data().as_ptr(),
+            "both images share the stored pixels"
+        );
+        assert!(
+            std::ptr::eq(
+                first.data.data().as_ptr(),
+                store().with_entry(id, |entry| entry.rgba.as_ptr())
+            ),
+            "the image is the frame store's own allocation"
+        );
+        store().publish_rgba(id, &[9; 8], 2, 1);
+        assert_eq!(
+            first.data.data(),
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            "a newer frame never writes into pixels an image still draws"
+        );
+        store().forget(id);
+    }
+
+    /// A damaged-only SHM copy is laid over the current frame, and the frame
+    /// it replaced is written into next instead of a fresh full copy.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn damaged_shm_commits_build_on_the_current_frame_and_reuse_the_spare() {
+        fn wait_seq(id: SurfaceId, seq: u64) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while store().frame_seq(id) < seq {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the SHM worker never published commit {seq}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        fn pixels(id: SurfaceId) -> Vec<u8> {
+            store().snapshot(id).expect("published frame").rgba
+        }
+        fn stored(id: SurfaceId) -> *const u8 {
+            store().with_entry(id, |entry| entry.rgba.as_ptr())
+        }
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(587);
+        store().forget(id);
+        // A 3×2 frame; wire bytes are [B, G, R, A].
+        let red = [0, 0, 255, 255].repeat(6);
+        store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(red, 3, 2))
+            .expect("worker");
+        wait_seq(id, 1);
+        let first = stored(id);
+        store()
+            .prepare_shm_capture(id, damaged_pixel(1, 0, [255, 0, 0, 255]))
+            .expect("worker");
+        wait_seq(id, 2);
+        let red_rgba = [255, 0, 0, 255];
+        let blue_rgba = [0, 0, 255, 255];
+        let green_rgba = [0, 255, 0, 255];
+        assert_eq!(
+            pixels(id),
+            [red_rgba, blue_rgba, red_rgba, red_rgba, red_rgba, red_rgba].concat()
+        );
+        assert_ne!(stored(id), first, "the current frame was never written");
+        store()
+            .prepare_shm_capture(id, damaged_pixel(2, 1, [0, 255, 0, 255]))
+            .expect("worker");
+        wait_seq(id, 3);
+        assert_eq!(
+            pixels(id),
+            [
+                red_rgba, blue_rgba, red_rgba, red_rgba, red_rgba, green_rgba
+            ]
+            .concat(),
+            "the spare caught up on the damage it missed"
+        );
+        assert_eq!(
+            stored(id),
+            first,
+            "the frame nothing drew any more was written into again"
+        );
+        store().forget(id);
+    }
+
+    /// Commits the worker has not reached yet are kept as a chain of copies:
+    /// a newer damaged copy cannot stand in for an older one, a whole one can.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn queued_shm_copies_chain_until_a_whole_copy() {
+        let job = |patches| ShmJob {
+            surface: sid(588),
+            generation: 0,
+            damage_generation: 0,
+            patches,
+        };
+        let whole = |fill, generation| ShmPatch {
+            frame: OwnedShmFrame::argb8888(vec![fill; 16], 2, 2),
+            generation,
+            based_on: None,
+        };
+        let mut newer = job(vec![ShmPatch {
+            frame: OwnedShmFrame::argb8888_damage(vec![1; 4], (2, 2), vec![pixel_region(0, 0)]),
+            generation: 2,
+            based_on: Some(1),
+        }]);
+        let moot = newer.absorb(job(vec![whole(2, 1)]));
+        assert!(moot.is_empty());
+        assert_eq!(newer.patches.len(), 2);
+        assert!(
+            newer.patches[0].based_on.is_none(),
+            "older whole copy first"
+        );
+        assert_eq!(newer.copied_bytes(), 20);
+        let mut latest = job(vec![whole(3, 3)]);
+        let moot = latest.absorb(newer);
+        assert_eq!(moot.len(), 2, "a whole copy supersedes everything older");
+        assert_eq!(latest.patches.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pixel_region(x: usize, y: usize) -> crate::compositor::surface_readback::ShmRegion {
+        crate::compositor::surface_readback::ShmRegion {
+            x,
+            y,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    /// A 1-pixel damaged-only `Argb8888` copy of a 3×2 buffer.
+    #[cfg(target_os = "linux")]
+    fn damaged_pixel(x: usize, y: usize, bgra: [u8; 4]) -> OwnedShmFrame {
+        OwnedShmFrame::argb8888_damage(bgra.to_vec(), (3, 2), vec![pixel_region(x, y)])
+    }
+
+    /// Wait until the SHM worker is done with every commit queued for `id`.
+    #[cfg(target_os = "linux")]
+    fn wait_shm_done(id: SurfaceId) {
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .expect("a deadline five seconds out");
+        while store().with_entry(id, |entry| entry.shm_queued > entry.shm_done) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the SHM worker never finished the queued commits"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// A damaged SHM commit after a dmabuf commit is relative to the dmabuf
+    /// frame, which the SHM worker never built: laying it over the last SHM
+    /// frame would show that frame's stale pixels. It is dropped, the
+    /// dmabuf frame stays, and the next SHM commit copies whole.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_damaged_shm_commit_after_a_dmabuf_frame_is_never_laid_over_the_old_shm_frame() {
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(589);
+        store().forget(id);
+        let red = [0, 0, 255, 255].repeat(6);
+        store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(red, 3, 2))
+            .expect("worker");
+        wait_shm_done(id);
+        // A dmabuf commit read back on the CPU, activated as its commit applies.
+        store().with_entry(id, |entry| entry.capture_tokens.push_back(589));
+        let mut green = [0, 255, 0, 255].repeat(6);
+        assert!(store().stage_dmabuf_capture(
+            id,
+            589,
+            Ok((3, 2, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut green,
+            None,
+        ));
+        assert!(store().activate_dmabuf_capture_token(id, 589).is_some());
+        assert!(
+            !store().has_shm_base(id),
+            "a dmabuf frame clears the SHM base"
+        );
+        let shown = store().snapshot(id).expect("dmabuf frame").rgba;
+        store()
+            .prepare_shm_capture(id, damaged_pixel(1, 0, [255, 0, 0, 255]))
+            .expect("worker");
+        wait_shm_done(id);
+        assert_eq!(
+            store().snapshot(id).expect("frame").rgba,
+            shown,
+            "damage with no base frame is never published"
+        );
+        assert!(
+            !store().has_shm_base(id),
+            "the next SHM commit copies whole"
+        );
+        store().forget(id);
+    }
+
+    /// After an unmap or a failed capture there is nothing to lay damage
+    /// over: a damaged-only commit is dropped, not drawn over zeros, and it
+    /// does not map the surface again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn damage_after_an_unmap_or_failure_is_dropped_not_zero_filled() {
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(590);
+        for reset in [(|id| store().clear_frame(id)) as fn(SurfaceId), |id| {
+            store().note_failure(id, "test failure".into());
+        }] {
+            store().forget(id);
+            store()
+                .prepare_shm_capture(id, OwnedShmFrame::argb8888([7; 24].to_vec(), 3, 2))
+                .expect("worker");
+            wait_shm_done(id);
+            reset(id);
+            let seq = store().frame_seq(id);
+            let mapped = store().with_entry(id, |entry| entry.mapped);
+            store()
+                .prepare_shm_capture(id, damaged_pixel(0, 0, [1, 2, 3, 255]))
+                .expect("worker");
+            wait_shm_done(id);
+            assert_eq!(store().frame_seq(id), seq, "nothing was published");
+            assert!(store().snapshot(id).is_none());
+            assert_eq!(store().with_entry(id, |entry| entry.mapped), mapped);
+        }
+        store().forget(id);
+    }
+
+    /// A copy made against a base that was cleared before it was queued
+    /// does not reinstate that base: the commit that cleared it came later.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_base_cleared_while_a_commit_is_copied_stays_cleared() {
+        let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
+            panic!("the SHM capture worker must start");
+        };
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(591);
+        store().forget(id);
+        store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888([7; 24].to_vec(), 3, 2))
+            .expect("worker");
+        wait_shm_done(id);
+        let read = store().read_shm_base(id);
+        assert!(read.base.is_some(), "an SHM commit is a base");
+        // Cleared between reading the base and queueing the copy.
+        store().reset_shm_base(id);
+        let frame = damaged_pixel(2, 1, [1, 2, 3, 255]);
+        store().queue_shm_frame(worker, id, (frame, read), None);
+        assert!(
+            !store().has_shm_base(id),
+            "a stale copy must not make itself the next commit's base"
+        );
+        wait_shm_done(id);
+        assert!(!store().has_shm_base(id));
+        store().forget(id);
+    }
+
+    /// The worker lays damage only over the exact commit it was copied
+    /// against; any other generation drops it and forces a whole copy.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn damage_against_another_commit_is_dropped() {
+        let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
+            panic!("the SHM capture worker must start");
+        };
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(592);
+        store().forget(id);
+        store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888([7; 24].to_vec(), 3, 2))
+            .expect("worker");
+        wait_shm_done(id);
+        let shown = store().snapshot(id).expect("frame").rgba;
+        let read = store().read_shm_base(id);
+        let base = read.base.expect("an SHM commit is a base");
+        let older = ShmBaseRead {
+            base: Some(ShmBaseCommit {
+                generation: base.generation.wrapping_sub(1),
+                ..base
+            }),
+            ..read
+        };
+        store().queue_shm_frame(
+            worker,
+            id,
+            (damaged_pixel(0, 0, [1, 2, 3, 255]), older),
+            None,
+        );
+        wait_shm_done(id);
+        assert_eq!(store().snapshot(id).expect("frame").rgba, shown);
+        assert!(
+            !store().has_shm_base(id),
+            "the next SHM commit copies whole"
+        );
+        store().forget(id);
+    }
+
+    /// Damage relative to a buffer of another format is never laid over it:
+    /// an `X` buffer's pixels were forced opaque, an `A` buffer's were not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn damage_against_a_buffer_of_another_format_is_dropped() {
+        let _worker = SHM_WORKER_TESTS.lock_recover();
+        let id = sid(593);
+        store().forget(id);
+        store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888([7; 24].to_vec(), 3, 2))
+            .expect("worker");
+        wait_shm_done(id);
+        let shown = store().snapshot(id).expect("frame").rgba;
+        let xrgb =
+            OwnedShmFrame::xrgb8888_damage(vec![1, 2, 3, 0], (3, 2), vec![pixel_region(0, 0)]);
+        store().prepare_shm_capture(id, xrgb).expect("worker");
+        wait_shm_done(id);
+        assert_eq!(store().snapshot(id).expect("frame").rgba, shown);
+        assert!(
+            !store().has_shm_base(id),
+            "the next SHM commit copies whole"
+        );
+        store().forget(id);
+    }
+
+    #[test]
+    fn surfaces_advanced_names_each_committing_tile_once_and_only_after_a_new_frame() {
+        let (tile, popup, quiet) = (sid(71), sid(72), sid(73));
+        for id in [tile, popup, quiet] {
+            store().forget(id);
+        }
+        store().publish_rgba(tile, &[1; 4], 1, 1);
+        store().publish_rgba(quiet, &[1; 4], 1, 1);
+        store().set_children(
+            tile,
+            vec![ChildFrame {
+                surface: popup,
+                x: 0,
+                y: 0,
+            }],
+        );
+        let mut seen = HashMap::new();
+        let first = store().surfaces_advanced(&mut seen);
+        assert!(first.contains(&tile) && first.contains(&quiet));
+        let again = store().surfaces_advanced(&mut seen);
+        assert!(
+            !again.contains(&tile) && !again.contains(&quiet),
+            "no new frame, nothing to attribute: {again:?}"
+        );
+        store().publish_rgba(popup, &[2; 4], 1, 1);
+        let moved = store().surfaces_advanced(&mut seen);
+        assert!(
+            moved.contains(&tile),
+            "a popup's frame is its tile's: {moved:?}"
+        );
+        assert!(!moved.contains(&popup) && !moved.contains(&quiet));
+        store().set_children(tile, Vec::new());
+        for id in [tile, popup, quiet] {
+            store().forget(id);
+        }
+        let _ = store().surfaces_advanced(&mut seen);
+        assert!(
+            !seen.contains_key(&tile) && !seen.contains_key(&quiet),
+            "forgotten surfaces are pruned"
+        );
     }
 
     #[test]
@@ -4722,6 +7423,7 @@ mod tests {
                 tabs: vec![moved],
                 width: crate::shell::state::WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
 
             reconcile_foreign_tabs(&source, &mut rendered);
@@ -4899,7 +7601,7 @@ mod tests {
                 .apply_changes(&bootstrap)
                 .expect("rendered tree accepts its shared baseline");
             rendered.persist_path = Some(state_path.clone());
-            rendered.flush_to_disk();
+            rendered.queue_save();
 
             // This is the durable close route used by both the close button and
             // Super+W after their event handlers resolve the exact tab.
@@ -4954,7 +7656,7 @@ mod tests {
             // A state round-trip may not revive the closed group; live Wayland
             // surfaces intentionally do not survive a compositor restart because
             // their surface ids belong to the old process.
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("the post-revision layout restarts cleanly");
             assert!(
@@ -5185,7 +7887,7 @@ mod tests {
                 "closing an external client must not remove the hosted sibling"
             );
 
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("interleaved layout remains restartable");
             assert_eq!(tabs_for_surface(&restarted, surface), 0);
@@ -5321,5 +8023,104 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Wait until `barrier` is signalled, failing past the hang bound.
+    #[cfg(target_os = "linux")]
+    fn await_release(barrier: &Barrier, what: &str) {
+        let started = Instant::now();
+        while !barrier.is_signaled() {
+            assert!(started.elapsed() < tilo_test_env::hang_bound(), "{what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_buffer_still_being_rendered_holds_only_its_own_commit() {
+        use smithay::backend::allocator::dmabuf::DmabufFlags;
+        use smithay::reexports::wayland_server::backend::ClientData;
+        use std::os::fd::{FromRawFd as _, OwnedFd};
+
+        struct NoClientData;
+        impl ClientData for NoClientData {}
+
+        let display = smithay::reexports::wayland_server::Display::<()>::new().expect("display");
+        let (server_end, _client_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let client = display
+            .handle()
+            .insert_client(server_end, Arc::new(NoClientData))
+            .expect("client");
+        let buffer = |fd: OwnedFd| {
+            let mut builder = Dmabuf::builder(
+                (1, 1),
+                Fourcc::Argb8888,
+                Modifier::Linear,
+                DmabufFlags::empty(),
+            );
+            assert!(builder.add_plane(fd, 0, 0, 4));
+            builder.build().expect("dmabuf")
+        };
+        // An empty pipe polls unreadable, as a buffer whose write fence has
+        // not signalled; a memfd polls readable, as a rendered buffer.
+        let mut ends = [0; 2];
+        // SAFETY: `ends` has room for the two descriptors pipe2 writes.
+        assert_eq!(
+            unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two new descriptors nothing else owns.
+        let (rendering, _writer) =
+            unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        // SAFETY: a static nul-terminated name and MFD_CLOEXEC.
+        let raw = unsafe { libc::memfd_create(c"foreign-fence-test".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(
+            raw >= 0,
+            "memfd_create: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: memfd_create returned a new descriptor nothing else owns.
+        let rendered = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+        rendered.set_len(4).expect("size memfd");
+
+        let (slow, fast) = (sid(200), sid(201));
+        // Phase `a_rendering_buffer_waits_for_its_fence_on_the_loop`.
+        let held = store()
+            .prepare_dmabuf_capture(slow, client.clone(), buffer(rendering), None)
+            .expect("slow capture");
+        assert!(
+            held.fence.is_some(),
+            "an unsignalled buffer is handed to the loop to watch"
+        );
+        // Phase `another_surface_is_captured_meanwhile`.
+        let ready = store()
+            .prepare_dmabuf_capture(fast, client, buffer(rendered.into()), None)
+            .expect("fast capture");
+        assert!(
+            ready.fence.is_none(),
+            "a rendered buffer is captured at once"
+        );
+        await_release(
+            &ready.barrier,
+            "a surface's commit waited behind another surface's unsignalled fence",
+        );
+        assert!(
+            !held.barrier.is_signaled(),
+            "nothing captured the slow buffer before its fence signalled"
+        );
+        // Phase `the_signalled_fence_starts_the_capture`.
+        dmabuf_fence_signalled(slow, held.token.wrapping_add(1));
+        assert!(
+            !held.barrier.is_signaled(),
+            "a fence of another commit does not start this one"
+        );
+        dmabuf_fence_signalled(slow, held.token);
+        await_release(
+            &held.barrier,
+            "the signalled buffer's commit was never released",
+        );
+        store().forget(slow);
+        store().forget(fast);
     }
 }

@@ -3,7 +3,7 @@
 //! [`tilo_desktop_model::service_member`].
 
 use collab_types::Ed25519PublicKey;
-use collab_types::caps::{Principal, Subject, Verb};
+use tilo_action_policy::{GrantId, KindSet, Subject};
 pub use tilo_desktop_model::service_member::{
     MAX_PURPOSE_CHARS, ServiceMember, service_device, service_members, service_membership,
     service_principal, service_purpose,
@@ -11,22 +11,29 @@ pub use tilo_desktop_model::service_member::{
 
 use super::state::{WorkspaceId, WorkspaceTree};
 
-/// Grant `device` membership of `workspace`'s channels as `grantor`, a room
-/// administrator, replicated to peers and persisted like any other grant.
-/// Returns the grant id to revoke it by when the job ends.
+/// Grant `device` membership of `workspace`'s channels as `grantor`, who
+/// must be allowed to grant in the room, replicated to peers and persisted
+/// like any other grant. Returns the grant id to revoke it by when the job
+/// ends.
 pub fn grant_service_member(
     tree: &mut WorkspaceTree,
     workspace: WorkspaceId,
     grantor: &str,
     device: &Ed25519PublicKey,
     purpose: &str,
-    verb: Verb,
+    kinds: KindSet,
     expires_at: Option<u64>,
-) -> Option<String> {
+) -> Option<GrantId> {
     let room = tree.room_of(workspace)?;
-    let cap = service_membership(&room.to_string(), device, purpose, verb, expires_at)
-        .granted_by(Principal::Person(grantor.to_string()));
-    tree.grant_in_workspace(workspace, &grantor.to_string(), cap)
+    let grant = service_membership(
+        &room.to_string(),
+        device,
+        purpose,
+        kinds,
+        expires_at,
+        Subject::person(grantor),
+    );
+    tree.grant_in_workspace(workspace, &grantor.to_string(), grant)
 }
 
 /// End a service member's access: every grant its principal holds in the
@@ -37,19 +44,16 @@ pub fn revoke_service_member(
     revoker: &str,
     device: &Ed25519PublicKey,
 ) -> usize {
-    let principal = service_principal(device);
-    let ids: Vec<String> = tree
+    let subject = Subject::agent(service_principal(device));
+    let ids: Vec<GrantId> = tree
         .desktop
         .workspaces
         .iter()
         .find(|candidate| candidate.id == workspace)
         .map(|ws| {
-            ws.capabilities
-                .iter()
-                .filter(|cap| {
-                    matches!(&cap.subject, Subject::Principal(Principal::Agent(id)) if *id == principal)
-                })
-                .map(|cap| cap.id.clone())
+            ws.policy
+                .grants_of(&subject)
+                .map(|grant| grant.id.clone())
                 .collect()
         })
         .unwrap_or_default();
@@ -88,7 +92,7 @@ mod tests {
             &owner,
             &agent_run,
             "Cloud agent: summarise the brief",
-            Verb::Write,
+            KindSet::READ_UNDOABLE,
             Some(2_000),
         )
         .expect("an administrator grants");
@@ -104,7 +108,7 @@ mod tests {
             vec![ServiceMember {
                 device: agent_run,
                 purpose: "Cloud agent: summarise the brief".into(),
-                verb: Verb::Write,
+                kinds: KindSet::READ_UNDOABLE,
                 expires_at: Some(2_000),
                 grant_id: grant,
             }]
@@ -128,7 +132,7 @@ mod tests {
                 "stranger",
                 &device(10),
                 "search",
-                Verb::Read,
+                KindSet::READ,
                 None
             )
             .is_none()
@@ -149,6 +153,32 @@ mod tests {
             service_device(&service_principal(&agent_run)),
             Some(agent_run)
         );
+    }
+
+    // The workspace's policy, re-checked on the steward's own (simulated)
+    // interval: the process-wide announcements and expiry timers run on
+    // the real clock, which the pumps below outrun, so they are not what
+    // decides when the grant ends here.
+    struct Polled(crate::shell::channel_policy::WorkspaceChannelDirectory);
+    impl crate::shell::channel_encryption::ChannelDirectory for Polled {
+        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
+            self.0.governs(room)
+        }
+        fn steward_of(
+            &self,
+            room: crate::shell::state::RoomId,
+        ) -> Option<collab_types::Ed25519PublicKey> {
+            self.0.steward_of(room)
+        }
+        fn allowed_devices(
+            &self,
+            room: crate::shell::state::RoomId,
+            channel: collab_types::ChannelId,
+            route: Option<&collab_types::ChannelRoute>,
+            now: u64,
+        ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+            self.0.allowed_devices(room, channel, route, now)
+        }
     }
 
     /// A cloud agent run is granted temporary membership, joins, reads the
@@ -210,10 +240,10 @@ mod tests {
         let mut steward = open(
             OWNER,
             steward_dir.path(),
-            Box::new(WorkspaceChannelDirectory::new(
+            Box::new(Polled(WorkspaceChannelDirectory::new(
                 tree.clone(),
                 Box::new(|_| Vec::new()),
-            )),
+            ))),
         );
         let mut service = open(
             SERVICE,
@@ -270,7 +300,7 @@ mod tests {
             &owner,
             &public(SERVICE),
             "Cloud agent: summarise the brief",
-            Verb::Write,
+            KindSet::READ_UNDOABLE,
             Some(2_000),
         )
         .unwrap();

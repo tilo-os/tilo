@@ -5,12 +5,13 @@ use std::ops::Range;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use qdoc::snapshot::BlockView;
-use qdoc_rich_text::{ChangeCursor, RichText, RichTextAction, RichTextState};
+use tilo_doc::snapshot::BlockView;
+use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
+use ui::widget::Edits;
 use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EditScope, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
@@ -94,7 +95,9 @@ impl Default for RichTextSurface {
 }
 
 fn default_editor() -> BlockEditor {
-    BlockEditor::new().with_wrap_lines(true)
+    let mut editor = BlockEditor::new().with_wrap_lines(true);
+    editor.set_find_replace_enabled(true);
+    editor
 }
 
 impl RichTextSurface {
@@ -104,9 +107,9 @@ impl RichTextSurface {
     }
 }
 
-impl<A: ui::tilo_actions::Action + serde::Serialize> RichTextSurface<RichTextField<A>> {
+impl RichTextSurface<RichTextField> {
     /// An editor over rich text stored in a field of another resource.
-    pub fn field(field: RichTextField<A>) -> Self {
+    pub fn field(field: RichTextField) -> Self {
         Self::over(field)
     }
 }
@@ -130,7 +133,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Present the document in an editor configured by the caller (its
     /// empty hint, spacing, image store).
     #[must_use]
-    pub fn with_editor(mut self, editor: BlockEditor) -> Self {
+    pub fn with_editor(mut self, mut editor: BlockEditor) -> Self {
+        editor.set_find_replace_enabled(true);
         self.editor = editor;
         self.revision = None;
         self.cursor = None;
@@ -157,18 +161,18 @@ impl<S: RichTextSource> RichTextSurface<S> {
 
     /// Put `text` at the caret as the person typing would (an emoji picked
     /// from a menu), through the source's edits.
-    pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    pub fn insert_text(&mut self, edits: &mut Edits<'_>, text: &str) {
         if self.editor.insert_text(text) {
-            self.commit(doc);
+            self.commit(edits);
         }
     }
 
     /// Put a mention of the participant `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
-    pub fn insert_mention(&mut self, doc: &mut AutoCommit, id: &str, label: &str) {
+    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
         if self.editor.insert_mention(id, label) {
-            self.commit(doc);
+            self.commit(edits);
         }
     }
 
@@ -264,6 +268,159 @@ impl<S: RichTextSource> RichTextSurface<S> {
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
         self.editor.note_edit_anywhere();
         &mut self.editor
+    }
+
+    /// Author a validated image replacement for the host to wrap together with
+    /// asset storage. No text or history changes until that one action applies.
+    ///
+    /// # Errors
+    /// Refuses read-only, composing, missing or changed selection targets.
+    pub fn image_paste_action(
+        &mut self,
+        doc: &AutoCommit,
+        target: &ui::widget::block_editor::ImagePasteTarget,
+        text: String,
+    ) -> Result<RichTextAction, ActionError> {
+        if self.source.read_only() || self.is_composing() {
+            return Err(ActionError::Refused("image paste is not editable".into()));
+        }
+        let placeholder = self.presented.is_empty()
+            && self.editor.blocks().len() == 1
+            && self.editor.blocks().first().is_some_and(|block| {
+                block.text().is_empty()
+                    && matches!(target, ui::widget::block_editor::ImagePasteTarget::After(id) if *id == block.id)
+            });
+        self.source.sync(doc);
+        self.source
+            .with_state(|state| {
+                if placeholder && state.body().is_empty() {
+                    Some(RichTextAction::AppendParagraph { text })
+                } else {
+                    crate::image_paste::plan(state, target, text)
+                }
+            })
+            .flatten()
+            .ok_or_else(|| {
+                ActionError::Refused("this selection cannot be replaced with an image".into())
+            })
+    }
+
+    fn replace_find_match(&mut self, edits: &mut Edits<'_>) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        let Some((target, replacement)) = self.editor.find_replace_request() else {
+            return false;
+        };
+        self.source.sync(edits.doc());
+        let action = self
+            .source
+            .with_state(|state| {
+                let current = state.block(&target.block.id)?;
+                if content_of(current) != target.block
+                    || state.body().position(&current.id).is_none()
+                {
+                    return None;
+                }
+                let at = crate::convert::char_of_byte(&current.text, target.start_byte);
+                let end = crate::convert::char_of_byte(&current.text, target.end_byte);
+                Some(RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
+                    block: current.id.clone(),
+                    at,
+                    del: end.saturating_sub(at),
+                    ins: replacement.clone(),
+                })
+            })
+            .flatten();
+        let Some(action) = action else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(edits, &action) {
+            tracing::debug!(%error, "find replacement refused");
+            return false;
+        }
+        self.source.sync(edits.doc());
+        self.present_state(None);
+        self.editor.finish_find_replace(&target, replacement.len());
+        true
+    }
+
+    fn replace_all_find_matches(&mut self, edits: &mut Edits<'_>) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        let Some(batch) = self.editor.find_replace_all_request() else {
+            return false;
+        };
+        self.source.sync(edits.doc());
+        let action = self
+            .source
+            .with_state(|state| {
+                if state.body().len() != batch.blocks.len() {
+                    return None;
+                }
+                for (index, captured) in batch.blocks.iter().enumerate() {
+                    if state.body().id_at(index)? != captured.id
+                        || content_of(state.block(&captured.id)?) != *captured
+                    {
+                        return None;
+                    }
+                }
+                let mut previous = None;
+                let mut byte = 0;
+                let mut character = 0usize;
+                let spans = batch
+                    .matches
+                    .iter()
+                    .map(|(index, range)| {
+                        let block = batch.blocks.get(*index)?;
+                        if previous != Some(*index) {
+                            previous = Some(*index);
+                            byte = 0;
+                            character = 0;
+                        }
+                        // Search ranges are ordered. Count each source character
+                        // once even when a long paragraph has many matches.
+                        let gap = block.text.get(byte..range.start)?.chars().count();
+                        let matched = block.text.get(range.clone())?.chars().count();
+                        let start = character.saturating_add(gap);
+                        character = start.saturating_add(matched);
+                        byte = range.end;
+                        Some(tilo_document::action::Span {
+                            block: block.id.clone(),
+                            start,
+                            end: character,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(RichTextAction::ReplaceMatches {
+                    region: tilo_document::action::RegionKind::Body,
+                    spans,
+                    ins: batch.replacement,
+                })
+            })
+            .flatten();
+        let Some(action) = action else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(edits, &action) {
+            tracing::debug!(%error, "find replace all refused");
+            return false;
+        }
+        self.source.sync(edits.doc());
+        self.present_state(None);
+        self.editor.finish_find_replace_all();
+        true
+    }
+
+    fn drain_find_replace(&mut self, edits: &mut Edits<'_>) {
+        if self.editor.take_find_replace_all_request() {
+            self.replace_all_find_matches(edits);
+        }
+        if self.editor.take_find_replace_request() {
+            self.replace_find_match(edits);
+        }
     }
 
     /// Where the text comes from.
@@ -429,10 +586,144 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
+    fn is_composing(&self) -> bool {
+        self.editor.is_composing()
+    }
+
+    fn move_selected_blocks(&mut self, edits: &mut Edits<'_>, up: bool) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        self.commit(edits);
+        self.source.sync(edits.doc());
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        let Some((range, boundary)) = self.editor.selected_block_move(up) else {
+            return false;
+        };
+        let blocks = self.editor.blocks();
+        let Some(selected) = blocks.get(range) else {
+            return false;
+        };
+        let ids: Vec<String> = selected.iter().map(|block| block.id.clone()).collect();
+        let selection = self.editor.document_selection();
+        let reverse = selection.is_some_and(|selection| selection.anchor > selection.cursor);
+        let after = boundary
+            .checked_sub(1)
+            .and_then(|index| blocks.get(index))
+            .map(|block| block.id.clone());
+        let action = RichTextAction::MoveBlocks {
+            blocks: ids.clone(),
+            after,
+        };
+        if let Err(error) = self.source.apply(edits, &action) {
+            tracing::debug!(%error, "block movement refused");
+            return false;
+        }
+        self.source.sync(edits.doc());
+        self.present_state(None);
+        if selection.is_some() {
+            self.editor.retain_block_selection(ids, reverse);
+        }
+        true
+    }
+
+    fn move_key(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> Option<bool> {
+        use ui::winit::{
+            event::ElementState,
+            keyboard::{Key, NamedKey},
+        };
+        let held = modifiers.state();
+        if !self.editor.is_focused()
+            || self.editor.has_open_popup()
+            || self.is_composing()
+            || !held.alt_key()
+            || held.control_key()
+            || held.super_key()
+        {
+            return None;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => Some(true),
+                    Key::Named(NamedKey::ArrowDown) => Some(false),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn duplicate_blocks(&mut self, edits: &mut Edits<'_>, target: Option<&str>) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        self.commit(edits);
+        self.source.sync(edits.doc());
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        let range = match target {
+            Some(id) => self
+                .editor
+                .blocks()
+                .iter()
+                .position(|block| block.id == id)
+                .and_then(|index| self.editor.block_group_range(index)),
+            None => self.editor.selected_block_range(),
+        };
+        let Some(range) = range else {
+            return false;
+        };
+        let focus = target
+            .and_then(|id| self.editor.blocks().iter().position(|block| block.id == id))
+            .or_else(|| self.editor.focused_index())
+            .filter(|index| range.contains(index))
+            .unwrap_or(range.start);
+        let copied_focus = range.end.saturating_add(focus.saturating_sub(range.start));
+        let Some(action) = crate::block_commands::duplicate(&self.sources, range) else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(edits, &action) {
+            tracing::debug!(%error, "block duplication refused");
+            return false;
+        }
+        self.source.sync(edits.doc());
+        self.editor.clear_document_selection();
+        self.present_state(None);
+        self.editor
+            .focus_block(copied_focus, ui::widget::CursorPlacement::End);
+        true
+    }
+
+    fn is_duplicate_key(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> bool {
+        use ui::winit::{event::ElementState, keyboard::Key};
+        let held = modifiers.state();
+        self.editor.is_focused()
+            && !self.editor.has_open_popup()
+            && !self.is_composing()
+            && (held.control_key() || held.super_key())
+            && !held.alt_key()
+            && !held.shift_key()
+            && matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("d")))
+    }
+
     /// Replace the text with `text`, a paragraph per line, as an edit: the
     /// editor's paragraphs keep their ids where there are as many, so the
     /// document sees text replaced rather than paragraphs recreated.
-    fn set_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    fn set_text(&mut self, edits: &mut Edits<'_>, text: &str) {
         let ids: Vec<String> = self
             .editor
             .blocks()
@@ -458,13 +749,13 @@ impl<S: RichTextSource> RichTextSurface<S> {
             .collect();
         self.editor.present_blocks(&lines);
         self.editor.note_edit_anywhere();
-        self.commit(doc);
+        self.commit(edits);
     }
 
     /// Apply what the person did since the last presentation, then show the
     /// document as the edit left it. A participant who may only view is
     /// shown the document again, as if their edit never happened.
-    fn commit(&mut self, doc: &mut AutoCommit) {
+    fn commit(&mut self, edits: &mut Edits<'_>) {
         let Some((start, presented_end, edited_end)) = self.changed() else {
             return;
         };
@@ -484,13 +775,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
                 .iter()
                 .map(Block::content)
                 .collect();
-            let author = self.editor.local_author().map(str::to_owned);
-            let mut host = Through(&mut self.source, author);
-            match edit::commit(&mut host, doc, presented, &edited) {
+            let mut host = Through(&mut self.source, std::marker::PhantomData);
+            match edit::commit(&mut host, edits, presented, &edited) {
                 Ok(renames) => rename(&mut self.editor, &renames),
                 Err(error) => tracing::debug!(%error, "rich-text edit not applied"),
             }
-            self.source.sync(doc);
+            self.source.sync(edits.doc());
         }
         let local = (presented_end == edited_end).then_some(start..edited_end);
         self.present_state(local.as_ref());
@@ -562,20 +852,23 @@ fn rename(editor: &mut BlockEditor, renames: &[(String, String)]) {
 }
 
 /// A source as the edit host: edits applied through it, results read back.
-struct Through<'a, S>(&'a mut S, Option<String>);
+/// The source, applying to the document a pass lends as `Edits<'e>`.
+struct Through<'a, 'e, S>(&'a mut S, std::marker::PhantomData<fn(&'e ())>);
 
-impl<S: RichTextSource> Host for Through<'_, S> {
-    fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
-        self.0.apply(doc, action)
+impl<'e, S: RichTextSource> Host for Through<'_, 'e, S> {
+    type Doc = Edits<'e>;
+
+    fn apply(&mut self, edits: &mut Edits<'e>, action: &RichTextAction) -> Result<(), ActionError> {
+        self.0.apply(edits, action)
     }
 
-    fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        self.0.sync(doc);
+    fn read<T>(
+        &mut self,
+        edits: &mut Edits<'e>,
+        read: impl FnOnce(&RichTextState) -> T,
+    ) -> Option<T> {
+        self.0.sync(edits.doc());
         self.0.with_state(read)
-    }
-
-    fn author(&self) -> Option<&str> {
-        self.1.as_deref()
     }
 }
 
@@ -595,7 +888,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
-    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints; inner = editor);
+    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
 
     type Inner = BlockEditor;
 
@@ -607,11 +900,29 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::theme::Theme,
+        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        let node = self.editor.build_layout(taffy, theme, nodes);
+        // Synthetic block actions belong to this canonical document surface.
+        ui::widget::decorator::register_node(nodes, node, self);
+        node
+    }
+
+    /// An edit made outside an input event (a programmatic change of the
+    /// editor, a find-and-replace asked for) is written here.
+    fn settle(&mut self, edits: &mut Edits<'_>, path: &ui::automerge::ObjId) {
+        self.commit(edits);
+        self.drain_find_replace(edits);
+        self.editor.settle(edits, path);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
-        // An edit made outside an input event (an accessibility action).
-        self.commit(state);
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -624,8 +935,121 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             *ctx.handled = true;
             return;
         }
+        if self.is_duplicate_key(event, *ctx.modifiers) {
+            self.duplicate_blocks(&mut ctx.edits(), None);
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(up) = self.move_key(event, *ctx.modifiers) {
+            self.move_selected_blocks(&mut ctx.edits(), up);
+            *ctx.handled = true;
+            return;
+        }
         self.editor.handle_event(event, ctx);
-        self.commit(ctx.state);
+        let mut edits = ctx.edits();
+        self.commit(&mut edits);
+        self.drain_find_replace(&mut edits);
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Decorator::accessibility_shared(self).map(ui::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// The editor's tree, each block's row with its Duplicate button, which
+    /// the editor keeps with the row while the button is the same.
+    fn accessibility_shared(&self) -> Option<ui::a11y::SharedAccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let disabled = self.source.read_only() || self.is_composing();
+        let duplicate_label = ui::i18n!("widget-block-duplicate");
+        let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(duplicate_label.clone())
+                .with_action_target(format!("notes.block-duplicate:{id}"))
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
+                .with_bounds(bounds)
+        };
+        let mut tree =
+            self.editor
+                .accessibility_shared_with(Some(&ui::widget::block_editor::RowControl {
+                    key: u64::from(disabled),
+                    build: &duplicate,
+                }))?;
+        let selection_disabled = disabled || self.editor.selected_block_range().is_none();
+        let mut duplicate = AccessNode::new(Role::Button)
+            .with_name(ui::i18n!("widget-block-duplicate-selection"))
+            .with_action_target("notes.editor:duplicate")
+            .with_state(
+                AccessState::new()
+                    .focusable(!selection_disabled)
+                    .disabled(selection_disabled),
+            );
+        duplicate.bounds = tree.node.bounds;
+        tree.children.push(std::sync::Arc::new(duplicate));
+        for up in [true, false] {
+            let disabled = disabled || self.editor.selected_block_move(up).is_none();
+            let mut movement = AccessNode::new(Role::Button)
+                .with_name(if up {
+                    ui::i18n!("widget-block-move-selection-up")
+                } else {
+                    ui::i18n!("widget-block-move-selection-down")
+                })
+                .with_action_target(if up {
+                    "notes.editor:move-up"
+                } else {
+                    "notes.editor:move-down"
+                })
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            movement.bounds = tree.node.bounds;
+            tree.children.push(std::sync::Arc::new(movement));
+        }
+        Some(tree)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if target == "notes.find:replace-all" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_all_find_matches(state);
+        }
+        if target == "notes.find:replace" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_find_match(state);
+        }
+        if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.move_selected_blocks(state, target.ends_with(":move-up"));
+        }
+        if target == "notes.editor:duplicate" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, None);
+        }
+        if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, Some(id));
+        }
+        // What the action edited is written by the settle pass that follows.
+        self.editor
+            .perform_semantic_action(target, action, state, path)
     }
 
     // Every edit is an action bounded into undo steps by its source or the
@@ -637,7 +1061,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        _key_path: &[u64],
+        state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -653,55 +1078,68 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 self.set_text(state, text);
                 true
             }
-            _ => self.editor.perform_action(action, state, path),
+            // What the action edited is written by the settle pass that
+            // follows.
+            _ => self.editor.perform_action(action, &[], state, path),
         }
     }
 }
 
-impl<S: RichTextSource + 'static> ui::undo::UndoPoints for RichTextSurface<S> {
-    fn needs_commit(&self) -> bool {
-        false
-    }
-}
-
+// Every edit is a dispatcher's, whose undo boundaries the app's root
+// reports; the editor itself never brackets a step.
 impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface<S> {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.source.take_committed()
-    }
-    fn keeps_undo_step_open(&self) -> bool {
-        self.source.keeps_step_open()
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_rich_text::RICH_TEXT_ACTION_TYPE;
     use ui::automerge::ROOT;
-    use ui::headless::FrameHarness;
-    use ui::tilo_actions::Action;
+    use ui::framework::testing::TestApp;
+    use ui::framework::{ResourceApp, ViewCx};
+    use ui::tilo_resource::Invoke;
+
+    /// A document edited as a field: the rich text at its root, through a
+    /// child dispatcher of the document itself.
+    struct FieldApp;
+
+    impl ResourceApp for FieldApp {
+        type Resource = RichText;
+        const ID: &'static str = "so.tilo.rich-text-field-work";
+        const TITLE: &'static str = "Field";
+
+        fn view(cx: &mut ViewCx<RichText>) -> ui::widget::Element {
+            let body = cx.child::<RichText>("tilo.rich-text/body", |edit| edit);
+            Box::new(RichTextSurface::field(RichTextField::new(body, |_| {
+                Some(ROOT)
+            })))
+        }
+    }
 
     /// Blocks compared and paragraphs presented while typing `typed` into
     /// the first of `paragraphs` paragraphs.
     fn typing_work(paragraphs: usize, typed: &str) -> (usize, usize) {
-        let mut state = ui::State::new();
-        RichText::initialize_under(&mut state.doc, &ROOT).unwrap();
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<FieldApp>::new().unwrap();
         let mut markdown = String::new();
         for index in 0..paragraphs {
             use std::fmt::Write as _;
             let _ = write!(markdown, "Paragraph {index} of a long note.\n\n");
         }
-        RichTextAction::ReplaceBody { markdown }
-            .apply(&mut state.doc)
+        app.invoke(Invoke::<RichText>::apply(&RichTextAction::ReplaceBody { markdown }).unwrap())
             .unwrap();
-        state.doc.commit();
-        let field = RichTextField::new(RICH_TEXT_ACTION_TYPE, |_| Some(ROOT), |edit| edit);
-        let surface = RichTextSurface::field(field);
-        let mut harness = FrameHarness::new(state, Box::new(surface), (800, 600));
-        harness.click_at(40.0, 10.0);
-        harness.type_text("warm ");
+        let rect = app
+            .harness()
+            .targets()
+            .get("block_editor")
+            .copied()
+            .unwrap();
+        app.harness().click_at(rect.x0 + 40.0, rect.y0 + 10.0);
+        app.harness().type_text("warm ");
         WORK.with(|work| work.set((0, 0)));
-        harness.type_text(typed);
+        app.harness().type_text(typed);
         WORK.with(std::cell::Cell::get)
     }
 

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 #[path = "support/native_fixture.rs"]
 mod native_fixture;
@@ -77,14 +77,10 @@ fn native_snapshot_observes_real_scroll_and_focused_edit_without_body_text() {
         .unwrap()
         .clone();
     let coord = |index: usize| rect.get(index).unwrap().as_f64().unwrap();
-    app.harness()
-        .send(&ui::winit::event::WindowEvent::CursorMoved {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            position: ui::winit::dpi::PhysicalPosition::new(
-                f64::midpoint(coord(0), coord(2)),
-                f64::midpoint(coord(1), coord(3)),
-            ),
-        });
+    app.harness().send(&ui::synthetic_input::cursor_moved(
+        f64::midpoint(coord(0), coord(2)),
+        f64::midpoint(coord(1), coord(3)),
+    ));
     let before = snapshot(&mut app)["offset_y"].as_f64().unwrap();
     app.harness().scroll(0.0, -3.0);
     let after = snapshot(&mut app)["offset_y"].as_f64().unwrap();

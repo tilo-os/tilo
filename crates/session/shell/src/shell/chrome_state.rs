@@ -8,10 +8,10 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLockReadGuard;
 use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
@@ -64,10 +64,7 @@ struct PendingTabRecordCreation {
 }
 
 fn visual_notification_alerts_enabled() -> bool {
-    settings_store::load_section("accessibility")
-        .get("visual_alerts")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+    tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
 
 #[cfg(test)]
@@ -95,7 +92,6 @@ mod dropped_content_startup_tests {
             chrome.borrow().hosted_inputs.document(tab),
             Some(HostedDocumentState::Ready(opened))
                 if opened.path == document.canonicalize().unwrap()
-                    && opened.text == "carried words\n"
         ));
         let state = chrome.borrow();
         let tree = state.tree();
@@ -108,18 +104,59 @@ mod dropped_content_startup_tests {
         drop(tree);
         drop(state);
     }
+
+    /// A Wayland drop is handled on the compositor loop, and a file dropped
+    /// from the workspace mount hydrates from a peer on its first read. The
+    /// drop opens the editor on the file without reading it: a file whose
+    /// bytes never arrive (a FIFO nobody writes) still opens at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_a_file_never_reads_it_on_the_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
+            chrome
+                .borrow_mut()
+                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+        });
+        assert!(!read, "the drop read the file on the loop");
+        let tab = tab.expect("the drop opened a tab");
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+        ));
+    }
 }
 
 fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
+/// What a [`PendingPrompt`] asks the person.
+#[derive(Debug)]
+pub enum PromptRequest {
+    /// An app asks for a capability.
+    Capability(Capability),
+    /// A client in this login asks to work in a workspace as an agent
+    /// (the session's agent door).
+    AgentAdmission(crate::shell::agent_admission::AgentAdmission),
+}
+
 /// One capability request waiting for the user to answer it. Dropping
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
 pub struct PendingPrompt {
+    /// Session-local identity; a stale answer must never consume another request.
+    pub id: uuid::Uuid,
+    /// Who asks: an app id, or an agent door client's description.
     pub app_id: AppId,
-    pub capability: Capability,
+    pub request: PromptRequest,
     /// Reply channel to a blocked portal request; `None` for
     /// shell-originated prompts nobody is waiting on.
     pub reply: Option<tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>>,
@@ -129,8 +166,9 @@ impl PendingPrompt {
     /// The shell asking on its own behalf; nobody is blocked on this.
     pub fn new(app_id: AppId, capability: Capability) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: None,
         }
     }
@@ -141,24 +179,65 @@ impl PendingPrompt {
         reply: tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>,
     ) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: Some(reply),
         }
     }
 
+    /// An agent door client waiting to be admitted.
+    pub fn agent_admission(admission: crate::shell::agent_admission::AgentAdmission) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            app_id: admission.facts.subject(),
+            request: PromptRequest::AgentAdmission(admission),
+            reply: None,
+        }
+    }
+
+    /// The capability asked for, when an app asks for one.
+    pub fn capability(&self) -> Option<&Capability> {
+        match &self.request {
+            PromptRequest::Capability(capability) => Some(capability),
+            PromptRequest::AgentAdmission(_) => None,
+        }
+    }
+
     pub fn answer(&mut self, outcome: crate::portal::PromptOutcome) {
+        self.answer_as(outcome, None);
+    }
+
+    /// Answer, admitting an agent door client as `member` when the person
+    /// named one; other prompts ignore it.
+    pub fn answer_as(
+        &mut self,
+        outcome: crate::portal::PromptOutcome,
+        member: Option<crate::shell::agent_admission::MemberChoice>,
+    ) {
         if let Some(tx) = self.reply.take() {
             let _ = tx.send(outcome);
         }
+        if let PromptRequest::AgentAdmission(admission) = &mut self.request {
+            admission.answer(outcome, member);
+        }
+    }
+
+    /// Whether whoever asked has stopped waiting: the prompt is withdrawn.
+    pub fn is_retired(&self) -> bool {
+        self.reply
+            .as_ref()
+            .is_some_and(tokio::sync::oneshot::Sender::is_closed)
+            || matches!(&self.request, PromptRequest::AgentAdmission(admission) if admission.is_retired())
     }
 }
 
 impl std::fmt::Debug for PendingPrompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingPrompt")
+            .field("id", &self.id)
             .field("app_id", &self.app_id)
-            .field("capability", &self.capability)
+            .field("request", &self.request)
             .field("awaiting_portal_reply", &self.reply.is_some())
             .finish()
     }
@@ -204,18 +283,30 @@ pub struct OverlayFlags {
     pub clock: bool,
 }
 
+/// Who the display sheet is open for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionFollow {
+    /// The person opened it, or has used it since: it is a picker they
+    /// close themselves.
+    Person,
+    /// A `display.layout.*` action opened it while its layout is stored.
+    Staging,
+    /// A `display.layout.*` action opened it for this display change; it
+    /// closes once the change is kept, reverted, refused or replaced.
+    Transaction(u64),
+}
+
+/// The live activity Clocks shows outside its windows: the timer or
+/// stopwatch running, and a due timer to announce once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "this is a backwards-compatible JSON snapshot produced by the Clocks app; active, stopwatch, paused, and overlay are independent wire fields, and replacing them with enums would change the external schema"
+    reason = "active, stopwatch, paused, and overlay are independent fields of the activity Clocks shows"
 )]
 pub struct ClockActivity {
-    #[serde(default)]
-    pub version: u8,
     #[serde(default = "clock_activity_active_default")]
     pub active: bool,
-    /// UUID of the exact timer represented by this snapshot. Older Clocks
-    /// builds omit it; the singleton stopwatch intentionally has no ID.
+    /// The timer shown; `None` is the stopwatch.
     #[serde(default)]
     pub activity_id: Option<String>,
     pub label: String,
@@ -225,10 +316,6 @@ pub struct ClockActivity {
     pub paused: bool,
     #[serde(default)]
     pub overlay: bool,
-    #[serde(default)]
-    pub generation: u64,
-    #[serde(default)]
-    pub producer_pid: u32,
     #[serde(default)]
     pub notification_id: Option<String>,
     #[serde(default)]
@@ -350,8 +437,9 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// Read-only kernel battery snapshot for the quick status row.
-    pub battery: os_actions::BatteryInfo,
+    /// The top bar's battery reading — same type, same sysfs parser — so
+    /// the panel and the tray cannot disagree about the charge.
+    pub battery: tilo_power_mgmt::BatterySnapshot,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -370,6 +458,8 @@ pub struct QuickSettingsState {
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
+    /// A typed radio mutation is admitted but has not completed.
+    pub radio_change_pending: bool,
     /// Last discovery failure, kept separate from an honest empty result.
     pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
@@ -385,6 +475,9 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+    /// The profiles the power daemon offers on this machine; empty until
+    /// read. The power row cycles only through these.
+    pub power_profiles: Vec<PowerProfile>,
     /// Apps currently keeping the screen awake (an idle inhibitor held
     /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
     /// as they asked. Shown on the power row so a screen that never locks
@@ -439,32 +532,26 @@ impl Default for QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/tilo-power-supply",
-            )),
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
@@ -485,16 +572,7 @@ impl QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo {
-                present: false,
-                capacity: 0,
-                status: String::new(),
-                cycle_count: None,
-                on_ac: false,
-                full_capacity: None,
-                design_capacity: None,
-                charge_limit: None,
-            },
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -507,11 +585,13 @@ impl QuickSettingsState {
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
@@ -546,6 +626,16 @@ impl QuickSettingsState {
     }
 }
 
+/// The loop's wake, as [`ChromeState`] keeps it for its record store.
+#[derive(Clone)]
+struct RecordsWake(crate::session_runtime::Wake);
+
+impl std::fmt::Debug for RecordsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordsWake")
+    }
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -555,13 +645,17 @@ impl QuickSettingsState {
 pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
+    pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
-    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
     /// instead of silently borrowing the wrong thing; use
     /// [`Self::tree`] / [`Self::tree_mut`].
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
+    /// Who the open display sheet belongs to: the person, or the display
+    /// change an action opened it for. See [`ProjectionFollow`].
+    pub(crate) projection_follow: ProjectionFollow,
     pub quick_settings: QuickSettingsState,
     /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
@@ -582,6 +676,10 @@ pub struct ChromeState {
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
+    /// What an action that left nothing to see confirms in passing
+    /// ("Enrollment token copied"): one short-lived pill, never a
+    /// notification. Painted and announced beside the OSD.
+    pub acknowledger: ui::widget::acknowledgement::Acknowledger,
     /// What a tablet pad's controls do, while its mode button (or the
     /// button its settings pick) is held. See [`crate::shell::pad_map`].
     pub pad_map: Option<crate::shell::pad_map::PadMap>,
@@ -598,6 +696,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Which chrome this is, unique in the process. [`Self::revision`]
+    /// counts from zero in every chrome, so a cache keyed on it names the
+    /// chrome too.
+    instance: u64,
     /// Bumped when an appearance action writes the store so the live frame
     /// applies theme and locale on the next paint without waiting for the
     /// settings-file poll.
@@ -609,14 +711,18 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
+    history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for `is_active_workspace_owner`. `None` is
-    /// production behaviour (always owner, no logged-in-user identity
-    /// yet); `Some(false)` exercises the disabled-Revoke path.
+    /// production behaviour: ownership is computed from the active
+    /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
+    /// path. It only decides which controls are offered; member role changes
+    /// and removals are authorized by `crate::shell::membership` whatever it
+    /// says.
     pub test_only_owner_override: Option<bool>,
     /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
@@ -663,6 +769,10 @@ pub struct ChromeState {
     /// actions, waiting for the overlay host's session executor — the same
     /// one the power flyout's rows reach.
     session_action_requests: Vec<os_actions::SessionAction>,
+    notification_launch_requests: Vec<crate::shell::notification::NotificationLaunch>,
+    notification_action_requests:
+        HashMap<u64, (Option<u64>, bool, crate::notifications::ScheduledAction)>,
+    notification_action_results: HashMap<u64, Result<(), String>>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
@@ -701,20 +811,26 @@ pub struct ChromeState {
     records: RecordStore,
     pending_tab_records: VecDeque<PendingTabRecordCreation>,
     failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
+    /// Wakes the loop when the record store has opened a document this
+    /// thread declined to wait for ([`Self::open_records_without_waiting`]).
+    records_wake: Option<RecordsWake>,
+    /// Set by that wake: tabs refused while their document was opening ask
+    /// again on the next resync.
+    records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
     record_request_results: BTreeMap<u64, Result<(), String>>,
     next_record_request_id: u64,
-    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    /// Terminal results of tracked peer-sync requests: `Null` for one that
+    /// only presented something, the action output for a network request.
+    peer_sync_request_results: BTreeMap<u64, Result<serde_json::Value, String>>,
     next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
@@ -728,10 +844,18 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    topbar_editor_requested: bool,
+    /// Compositor-only remaining paints after overview / workspace switch
+    /// (W16). The host's crossfade demand still clears when the curve
+    /// settles — this count is not `needs_animation_frame`.
+    transition_paints_remaining: u32,
     /// Window-management operations an action asked for. The overlay host
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
     shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    cancel_tab_drag_requested: bool,
+    axis_navigation_enabled: bool,
+    axis_gather_requested: bool,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -747,11 +871,12 @@ pub struct ChromeState {
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
-    /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
+    /// Recently closed tabs, for the Reopen Closed Tab action.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
-    /// Close toasts still offering Undo: notification id -> closed entry.
-    /// They never enter notification history.
-    undo_toasts: BTreeMap<u64, u64>,
+    pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
+    /// Toasts that undo a workspace deletion, by toast id: where the
+    /// workspace was and what it held.
+    workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
 }
 
 #[derive(Debug)]
@@ -764,6 +889,17 @@ impl IdentitySource {
     fn local_user_for_room(&self, room: &crate::shell::state::RoomId) -> String {
         match self {
             Self::SessionRegistry => crate::shell::state::local_user_id_for_room(room),
+            Self::Explicit(principal) => principal.clone(),
+        }
+    }
+
+    /// [`Self::local_user_for_room`] for callers on the input and frame loop,
+    /// which ask on every key and frame: it never waits for the identity
+    /// directory after the first answer. Whoever records ownership asks
+    /// the exact one.
+    fn local_user_for_room_prompt(&self, room: &crate::shell::state::RoomId) -> String {
+        match self {
+            Self::SessionRegistry => crate::shell::state::local_user_id_for_room_prompt(room),
             Self::Explicit(principal) => principal.clone(),
         }
     }
@@ -815,8 +951,10 @@ impl ChromeState {
         Rc::new(RefCell::new(Self {
             tree_handle,
             hosted_inputs,
+            native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
+            projection_follow: ProjectionFollow::Person,
             quick_settings,
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
@@ -826,16 +964,22 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
             workspace_view_request: None,
+            history_action_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -853,6 +997,9 @@ impl ChromeState {
             active_exposures: Vec::new(),
             session_lock_requested: false,
             session_action_requests: Vec::new(),
+            notification_launch_requests: Vec::new(),
+            notification_action_requests: HashMap::new(),
+            notification_action_results: HashMap::new(),
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
@@ -864,7 +1011,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -873,17 +1019,25 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            topbar_editor_requested: false,
+            transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
+            cancel_tab_drag_requested: false,
+            axis_navigation_enabled: false,
+            axis_gather_requested: false,
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
-            undo_toasts: BTreeMap::new(),
+            pending_closed_tabs: Vec::new(),
+            workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
+            records_wake: None,
+            records_opened: std::sync::Arc::default(),
         }))
     }
 
@@ -955,7 +1109,7 @@ impl ChromeState {
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,
-        result: Result<(), String>,
+        result: Result<serde_json::Value, String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
     }
@@ -979,15 +1133,8 @@ impl ChromeState {
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<serde_json::Value, String>> {
         self.peer_sync_request_results.remove(&request_id)
-    }
-
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
     }
 
     /// Queue an authorized record import against its exact workspace target.
@@ -1010,11 +1157,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
@@ -1044,13 +1186,65 @@ impl ChromeState {
         self.bump();
     }
 
+    pub fn request_topbar_editor(&mut self) {
+        self.topbar_editor_requested = true;
+        self.bump();
+    }
+
+    pub fn take_topbar_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.topbar_editor_requested)
+    }
+
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
+    /// Ask the compositor to paint at least `n` frames. Does not bump:
+    /// host animation demand stays the crossfade, not this count.
+    pub fn request_transition_paints(&mut self, n: u32) {
+        self.transition_paints_remaining = self.transition_paints_remaining.max(n);
+    }
+
+    #[must_use]
+    pub fn transition_paints_remaining(&self) -> u32 {
+        self.transition_paints_remaining
+    }
+
+    pub fn consume_transition_paint(&mut self) {
+        self.transition_paints_remaining = self.transition_paints_remaining.saturating_sub(1);
+    }
+
+    pub fn axis_navigation_enabled(&self) -> bool {
+        self.axis_navigation_enabled
+    }
+
+    /// Experimental local view policy. Never persisted or shared with peers.
+    pub fn set_axis_navigation_enabled(&mut self, enabled: bool) {
+        self.axis_navigation_enabled = enabled;
+        self.axis_gather_requested = enabled;
+        self.bump();
+    }
+
+    pub fn request_axis_gather(&mut self) {
+        self.axis_gather_requested = self.axis_navigation_enabled;
+        self.bump();
+    }
+
+    pub fn take_axis_gather_request(&mut self) -> bool {
+        std::mem::take(&mut self.axis_gather_requested)
+    }
+
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
+    #[track_caller]
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        tracing::info!(
+            target: "tilo::shortcut",
+            ?action,
+            queued = self.shortcut_action_requests.len(),
+            from = %std::panic::Location::caller(),
+            "shortcut action requested"
+        );
         self.shortcut_action_requests.push(action);
         self.bump();
     }
@@ -1059,6 +1253,16 @@ impl ChromeState {
         &mut self,
     ) -> Vec<settings_store::hardware::ShortcutAction> {
         std::mem::take(&mut self.shortcut_action_requests)
+    }
+
+    /// Cancel the shell's pending tab gesture through the same path as Escape.
+    pub fn request_tab_drag_cancel(&mut self) {
+        self.cancel_tab_drag_requested = true;
+        self.bump();
+    }
+
+    pub fn take_tab_drag_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_tab_drag_requested)
     }
 
     pub fn request_input_source(&mut self, index: usize) {
@@ -1138,6 +1342,7 @@ impl ChromeState {
     }
 
     /// Cheap (~10 ns uncontended on `parking_lot::RwLock`).
+    #[track_caller]
     pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
         self.tree_handle.read()
     }
@@ -1164,7 +1369,32 @@ impl ChromeState {
         &self,
         room: &crate::shell::state::RoomId,
     ) -> crate::shell::state::UserId {
-        self.identity_source.local_user_for_room(room)
+        self.identity_source.local_user_for_room_prompt(room)
+    }
+
+    /// Hand the workspaces made before this session had an identity to the
+    /// identity first-login setup just provisioned. Until then the session
+    /// acted as the OS `account` name; the new key-derived principal is no
+    /// member of a workspace that name owns, so every app opened there would
+    /// be refused its collaboration route. Boot does the same for a session
+    /// that starts with an identity already in place.
+    pub fn adopt_provisioned_identity(&mut self, account: &str) -> usize {
+        if matches!(self.identity_source, IdentitySource::SessionRegistry) {
+            self.local_user_id = crate::shell::state::local_user_id();
+        }
+        let rebound = self
+            .tree_mut()
+            .rebind_account_owned_workspaces(account, |room| {
+                self.identity_source.local_user_for_room(room)
+            })
+            .len();
+        if rebound > 0 {
+            tracing::info!(
+                "capabilities: {rebound} workspace(s) created before first-login setup now belong to its identity"
+            );
+            self.bump();
+        }
+        rebound
     }
 
     /// Person principal selected for the active workspace, or the session
@@ -1174,6 +1404,11 @@ impl ChromeState {
             || self.local_user_id.clone(),
             |workspace| self.local_user_for_room(&workspace.room),
         )
+    }
+
+    /// What this host hands the apps it mounts.
+    pub fn hosted_inputs(&self) -> &super::hosted_inputs::HostedTileInputs {
+        &self.hosted_inputs
     }
 
     pub fn records(&self) -> &RecordStore {
@@ -1186,7 +1421,29 @@ impl ChromeState {
         self.pending_tab_records.clear();
         self.failed_tab_records.clear();
         self.records = records;
+        self.install_records_wake();
         self.bump();
+    }
+
+    /// Never wait on the disk to open or create a tab's record: this runs on
+    /// the compositor's loop, where a `mkdir` stuck behind the journal froze
+    /// the desktop. The store's own thread opens the document; a tab asks
+    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
+        self.records_wake = Some(RecordsWake(wake));
+        self.install_records_wake();
+    }
+
+    fn install_records_wake(&self) {
+        let Some(RecordsWake(wake)) = self.records_wake.clone() else {
+            return;
+        };
+        let opened = std::sync::Arc::clone(&self.records_opened);
+        self.records
+            .open_without_waiting(std::sync::Arc::new(move || {
+                opened.store(true, std::sync::atomic::Ordering::Release);
+                wake();
+            }));
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.
@@ -1197,7 +1454,9 @@ impl ChromeState {
         };
         match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
             Ok(()) => {}
-            Err(ui::record::RecordOpenError::Busy) => {
+            // Retried by `retry_new_tab_records`; an opening document wakes
+            // the loop for it.
+            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                 self.pending_tab_records
                     .push_back(PendingTabRecordCreation {
                         identity,
@@ -1220,6 +1479,14 @@ impl ChromeState {
             TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
         });
         let mut changed = self.failed_tab_records.len() != before;
+        // A document the store finished opening: tabs that were refused
+        // while it opened bind again on the resync this bump causes.
+        if self
+            .records_opened
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            changed = true;
+        }
         self.pending_tab_records.retain(|pending| {
             TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
                 == Some(&pending.identity)
@@ -1234,7 +1501,7 @@ impl ChromeState {
                 pending.identity.tab,
             ) {
                 Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy) => {
+                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                     self.pending_tab_records.push_back(pending);
                 }
                 Err(error) => {
@@ -1265,7 +1532,8 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
-    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+    #[track_caller]
+    pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
 
@@ -1301,7 +1569,7 @@ impl ChromeState {
                 if let Some(active_room) = tree
                     .desktop
                     .active_workspace()
-                    .filter(|workspace| workspace.owner.is_none())
+                    .filter(|workspace| workspace.owner().is_none())
                     .map(|workspace| workspace.room)
                 {
                     tree.adopt_ownerless_workspaces_with(|room| {
@@ -1332,7 +1600,7 @@ impl ChromeState {
                     // label and a peer cannot immediately write it back.
                     tree.sync_room_doc(room);
                     tree.seed_doc_from_cache();
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
             }
             self.bump();
@@ -1352,6 +1620,49 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Open the display sheet for the person: a sheet they asked for stays
+    /// until they close it, whatever happens to the layouts chosen in it.
+    pub(crate) fn open_projection(&mut self) {
+        self.overlays.projection = true;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// Close the display sheet and forget any change it followed.
+    pub(crate) fn close_projection(&mut self) {
+        self.overlays.projection = false;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// A `display.layout.*` action began staging a layout: show it in the
+    /// sheet, and follow it there unless the person has the sheet open.
+    pub(crate) fn open_projection_for_action(&mut self) {
+        if !self.overlays.projection || self.projection_follow != ProjectionFollow::Person {
+            self.overlays.projection = true;
+            self.projection_follow = ProjectionFollow::Staging;
+        }
+    }
+
+    /// The layout an action staged was stored as `transaction`: the sheet it
+    /// opened now follows that change.
+    pub(crate) fn projection_staged(&mut self, transaction: u64) {
+        if self.overlays.projection && self.projection_follow == ProjectionFollow::Staging {
+            self.projection_follow = ProjectionFollow::Transaction(transaction);
+        }
+    }
+
+    /// The layout an action was staging was refused before it took effect:
+    /// the sheet it opened for it closes, as there is nothing to answer.
+    pub(crate) fn projection_refused(&mut self) {
+        if self.projection_follow == ProjectionFollow::Staging {
+            self.close_projection();
+        }
+    }
+
+    /// This chrome's identity, unique in the process; see `instance`.
+    pub(crate) fn instance(&self) -> u64 {
+        self.instance
+    }
+
     /// Persist-side appearance change: chrome rebuilds, and the live frame
     /// applies the configured theme and locale on the next paint instead of
     /// waiting for the settings-file poll.
@@ -1368,6 +1679,7 @@ impl ChromeState {
             return false;
         }
         self.observed_external_tree_revision = external;
+        self.publish_completed_closes();
         self.bump();
         true
     }
@@ -1461,6 +1773,52 @@ impl ChromeState {
         self.activity_focus_request.take()
     }
 
+    /// Open Activity and run a selected-row history action (`history.compare`,
+    /// `history.undo`, `history.restore`) on the next paint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `id` is not a recognised history action.
+    pub fn request_history_selection_action(&mut self, id: &str) -> Result<(), String> {
+        match id {
+            tilo_desktop::activity::HISTORY_COMPARE
+            | tilo_desktop::activity::HISTORY_UNDO
+            | tilo_desktop::activity::HISTORY_RESTORE
+            | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
+            | tilo_desktop::activity::ACTIVITY_TASKS
+            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
+            _ if [
+                tilo_desktop::activity::morning::MORNING_OPEN,
+                tilo_desktop::activity::morning::MORNING_REMOVE,
+                tilo_desktop::activity::morning::MORNING_REFRESH,
+                tilo_desktop::activity::morning::MORNING_DRAFT,
+                tilo_desktop::activity::morning::MORNING_NEXT,
+            ]
+            .iter()
+            .any(|prefix| tilo_desktop::activity::morning::decode_action(id, prefix).is_some()) => {
+            }
+            _ => return Err("Unknown history action".into()),
+        }
+        let request = if id == tilo_desktop::activity::morning::MORNING_SOURCE {
+            let room = self
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "Workspace unavailable".to_string())?;
+            format!("{id}.{room}")
+        } else {
+            id.to_string()
+        };
+        self.open_room_activity(None);
+        self.history_action_request = Some(request);
+        self.bump();
+        Ok(())
+    }
+
+    pub fn take_history_action_request(&mut self) -> Option<String> {
+        self.history_action_request.take()
+    }
+
     /// Reveal one authoritative workspace-settings destination. All shell
     /// entry points use this instead of independently coordinating a tab and
     /// overlay. Device Quick Settings and the workspace lens share the same
@@ -1530,12 +1888,12 @@ impl ChromeState {
                 .and_then(|w| w.strips.iter_mut().find(|s| s.id == strip))
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
             {
-                g.active_tab = tab;
+                g.activate_tab(tab);
             }
             // Focus is part of the serialized local session view. Commit
             // the complete address together so a compositor restart cannot
             // reopen the right layout with an older window selected.
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         self.bump();
     }
@@ -1587,47 +1945,149 @@ impl ChromeState {
         Some(suggestion)
     }
 
-    /// Remember a close so it can be undone, and say so with a short toast
-    /// whose activation puts the tab back.
+    /// Publish the reopen entry only after removal. A live client may
+    /// refuse its close request and keep the tab present.
+    pub fn remember_closed_tab_after_removal(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) {
+        if self.pending_closed_tabs.iter().any(|pending| {
+            pending
+                .tabs
+                .iter()
+                .map(|content| content.tab.id)
+                .eq(entry.tabs.iter().map(|content| content.tab.id))
+        }) {
+            return;
+        }
+        self.pending_closed_tabs.push(entry);
+        self.publish_completed_closes();
+    }
+
+    fn publish_completed_closes(&mut self) {
+        let present: std::collections::HashSet<_> = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
+        let entries = std::mem::take(&mut self.pending_closed_tabs);
+        for entry in entries {
+            if entry
+                .tabs
+                .iter()
+                .any(|content| present.contains(&content.tab.id))
+            {
+                self.pending_closed_tabs.push(entry);
+            } else {
+                self.remember_closed_tab(entry);
+            }
+        }
+    }
+
+    /// Remember a close for the normal Reopen Closed Tab action. Closing is
+    /// direct visual feedback; it must not create an interruption or history.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
+        self.closed_tabs.push(entry)
+    }
+
+    /// Delete the workspace on screen, here and on the person's other
+    /// devices, and offer to undo it. The last workspace stays. Returns
+    /// whether it was deleted.
+    pub fn delete_active_workspace(&mut self) -> bool {
         use crate::shell::i18n::{t, t_args};
 
-        let heading = if entry.tabs.len() > 1 {
-            t_args(
-                "tab-closed-group-toast",
-                &[("count", entry.tabs.len().into())],
-            )
-        } else {
-            t_args("tab-closed-toast", &[("title", entry.title().into())])
+        let removed = {
+            let mut tree = self.tree_mut();
+            let active = tree.desktop.active;
+            tree.delete_workspace(active)
         };
-        let hint = settings_store::hardware::ShortcutConfig::load()
-            .bindings
-            .get(&settings_store::hardware::ShortcutAction::ReopenClosedTab)
-            .map_or_else(
-                || t("tab-closed-undo-hint-unbound"),
-                |chord| {
-                    t_args(
-                        "tab-closed-undo-hint",
-                        &[(
-                            "chord",
-                            crate::shell::keyboard_shortcuts::chord_text(chord).into(),
-                        )],
-                    )
-                },
-            );
-        let serial = self.closed_tabs.push(entry);
-        let mut toast = Notification::new(heading, hint)
-            .with_severity(NotificationSeverity::Info)
-            .with_icon_kind(NotificationIconKind::Generic);
+        let Some((index, workspace)) = removed else {
+            return false;
+        };
+        let mut toast = Notification::new(
+            t_args(
+                "workspace-deleted-toast",
+                &[("name", workspace.name.clone().into())],
+            ),
+            t("workspace-deleted-toast-hint"),
+        )
+        .with_severity(NotificationSeverity::Info)
+        .with_icon_kind(NotificationIconKind::Generic);
         toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
-        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
-        // A direct answer to the person's own action, not an interruption.
+        toast.actions = vec![("default".into(), t("workspace-deleted-undo"))];
         toast.bypass_dnd = true;
         toast.show_on_lock_screen = false;
-        let id = toast.id;
-        self.undo_toasts.insert(id, serial);
+        self.workspace_undo_toasts
+            .insert(toast.id, (index, workspace));
         self.push_notification_full(toast);
-        serial
+        self.bump();
+        true
+    }
+
+    /// The deletion toast's Undo: put the workspace back where it was, on
+    /// screen. The person's other devices get it back with the next list.
+    pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
+        let Some((index, workspace)) = self.workspace_undo_toasts.remove(&toast) else {
+            return false;
+        };
+        let restored = self.tree_mut().restore_workspace(index, workspace);
+        self.bump();
+        restored
+    }
+
+    /// Move the workspace on screen one place earlier or later in the
+    /// person's list.
+    pub fn move_active_workspace(&mut self, step: i32) -> bool {
+        let moved = {
+            let mut tree = self.tree_mut();
+            let active = tree.desktop.active;
+            tree.move_workspace(active, step)
+        };
+        if moved {
+            self.bump();
+        }
+        moved
+    }
+
+    /// Show the workspace on screen on the `index`th of the person's devices
+    /// in its menu, or keep it off there.
+    pub fn toggle_active_workspace_device(&mut self, index: usize) -> bool {
+        let queued = {
+            let mut tree = self.tree_mut();
+            let Some(room) = tree
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room)
+            else {
+                return false;
+            };
+            let Some(choice) = tree
+                .personal_device_choices
+                .get(&room)
+                .and_then(|choices| choices.get(index))
+                .cloned()
+            else {
+                return false;
+            };
+            tree.personal_device_requests
+                .push((room, choice.device, !choice.shown));
+            if let Some(choice) = tree
+                .personal_device_choices
+                .get_mut(&room)
+                .and_then(|choices| choices.get_mut(index))
+            {
+                choice.shown = !choice.shown;
+            }
+            drop(tree);
+            true
+        };
+        self.bump();
+        queued
     }
 
     /// Reopen the most recently closed tab in the active workspace, at its
@@ -1641,37 +2101,18 @@ impl ChromeState {
         self.restore_closed_tab(entry?)
     }
 
-    /// The close toast's Undo: reopen exactly that close.
-    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
-        let entry = self.closed_tabs.take(serial)?;
-        self.restore_closed_tab(entry)
-    }
-
     fn restore_closed_tab(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,
     ) -> Option<crate::shell::state::TabId> {
-        let serial = entry.serial;
         let reopened = {
             let mut tree = self.tree_mut();
             let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
             if reopened.is_some() {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             reopened
         };
-        // The toast would now undo nothing.
-        let stale: Vec<u64> = self
-            .undo_toasts
-            .iter()
-            .filter(|(_, candidate)| **candidate == serial)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in stale {
-            self.undo_toasts.remove(&id);
-            self.notification_log
-                .discard_active_where(|toast| toast.id == id);
-        }
         self.bump();
         reopened
     }
@@ -1743,11 +2184,13 @@ impl ChromeState {
                             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
                     });
                 if is_editor {
+                    // The size is metadata; the bytes are the editor's to
+                    // read. A drop from the workspace mount would hydrate
+                    // the file from a peer, which the loop must not wait for.
                     if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
                         return None;
                     }
-                    hosted_document =
-                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                    hosted_document = Some(canonical);
                 } else {
                     files_directory = canonical.parent().map(std::path::Path::to_path_buf);
                 }
@@ -1783,13 +2226,12 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
-        if let Some((path, text)) = hosted_document {
+        if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,
                 super::hosted_inputs::HostedDocument {
                     provider_id: "org.tilo.Editor",
                     path: path.clone(),
-                    text,
                 },
             );
             self.tree_mut().native_document_tabs.insert(
@@ -1838,7 +2280,7 @@ impl ChromeState {
 
     /// The tab's canonical app id — see
     /// [`tilo_desktop_model::apps::canonical_app_id`].
-    fn tab_app_id(
+    pub(crate) fn tab_app_id(
         &self,
         strip_id: StripId,
         group_id: GroupId,
@@ -1975,7 +2417,7 @@ impl ChromeState {
                 return false;
             }
             tree.desktop.active_strip.insert(ws_id, sid);
-            tree.flush_to_disk();
+            tree.queue_save();
             drop(tree);
             (true, name)
         };
@@ -2044,7 +2486,7 @@ impl ChromeState {
             );
             let id = strip.id;
             ws.strips.push(strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             id
         };
         self.bump();
@@ -2079,7 +2521,7 @@ impl ChromeState {
                 tree.desktop.active_strip.insert(ws_id, first);
             }
             tree.desktop.active_group.remove(&strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             true
         };
         if removed {
@@ -2097,6 +2539,7 @@ impl ChromeState {
                 _ => false,
             }
         };
+        tracing::info!(target: "tilo::shortcut", dir, changed, "workspace switch");
         if changed {
             self.bump();
         }
@@ -2107,6 +2550,13 @@ impl ChromeState {
 
     pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
         crate::shell::osd::raise(&mut self.osd, osd);
+        self.bump();
+    }
+
+    /// Confirm in passing an action whose result is out of sight, such as
+    /// a copy to the clipboard. Replaces whatever pill was showing.
+    pub fn acknowledge(&mut self, text: impl Into<String>) {
+        self.acknowledger.say(text);
         self.bump();
     }
 
@@ -2182,7 +2632,7 @@ impl ChromeState {
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
         // An Undo that has lapsed is not something to find later.
-        if self.undo_toasts.remove(&n.id).is_some() {
+        if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
         self.notification_log.retain(n);
@@ -2259,9 +2709,12 @@ impl ChromeState {
         let Some(removed) = self.notification_log.take_active(id) else {
             return false;
         };
-        if let Some(serial) = self.undo_toasts.remove(&id) {
-            self.undo_closed_tab(serial);
+        if self.workspace_undo_toasts.contains_key(&id) {
+            self.undo_deleted_workspace(id);
             return true;
+        }
+        if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {
+            self.notification_launch_requests.push(request);
         }
         if let Some(command) = removed
             .default_action_key()
@@ -2353,11 +2806,6 @@ impl ChromeState {
         self.notification_log.history()
     }
 
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
-    }
-
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
@@ -2437,7 +2885,9 @@ impl ChromeState {
         let Some(store) = self.notification_history_store.as_ref() else {
             return;
         };
-        if let Err(error) = store.save(self.notification_log.history()) {
+        // The write's fsyncs run on the state writer: under I/O pressure they
+        // take seconds, and this runs on the compositor's loop.
+        if let Err(error) = store.save_in_background(self.notification_log.history()) {
             tracing::warn!(
                 path = %store.path().display(),
                 "could not save notification history: {error}"
@@ -2455,29 +2905,33 @@ impl ChromeState {
             return HistoryActivation::Missing;
         };
         let key = notification.default_action_key();
-        let outcome = if notification.remote_route.is_some() {
-            match key.and_then(|key| remote_action_command(notification, &key)) {
-                Some(command) => {
-                    self.queue_remote_notification_command(command);
-                    HistoryActivation::Invoked
+        let outcome =
+            if let Some(request) = crate::shell::notification::scheduled_launch(notification) {
+                self.notification_launch_requests.push(request);
+                HistoryActivation::Invoked
+            } else if notification.remote_route.is_some() {
+                match key.and_then(|key| remote_action_command(notification, &key)) {
+                    Some(command) => {
+                        self.queue_remote_notification_command(command);
+                        HistoryActivation::Invoked
+                    }
+                    None => HistoryActivation::Unavailable,
                 }
-                None => HistoryActivation::Unavailable,
-            }
-        } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
-            self.notification_bridge.as_ref(),
-            notification.sender_id,
-            key,
-        ) {
-            bridge.note_action(dbus_id, key);
-            HistoryActivation::Invoked
-        } else if let Some(app_id) = notification.app_id.clone() {
-            HistoryActivation::OpenApp {
-                label: tilo_desktop::notifications::group_label(notification),
-                app_id,
-            }
-        } else {
-            HistoryActivation::Unavailable
-        };
+            } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
+                self.notification_bridge.as_ref(),
+                notification.sender_id,
+                key,
+            ) {
+                bridge.note_action(dbus_id, key);
+                HistoryActivation::Invoked
+            } else if let Some(app_id) = notification.app_id.clone() {
+                HistoryActivation::OpenApp {
+                    label: tilo_desktop::notifications::group_label(notification),
+                    app_id,
+                }
+            } else {
+                HistoryActivation::Unavailable
+            };
         if matches!(
             outcome,
             HistoryActivation::Invoked | HistoryActivation::OpenApp { .. }
@@ -2555,6 +3009,7 @@ impl ChromeState {
             id: format!("notification:{}", uuid::Uuid::new_v4()),
             kind: "notification".to_string(),
             label: notification.title.clone(),
+            agent_request: None,
         };
         let room = self
             .tree()
@@ -2662,7 +3117,7 @@ impl ChromeState {
             .focus
             .active_until(local_minute, weekday_from_monday)
             .map(|end| {
-                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
     }
@@ -2767,12 +3222,191 @@ impl ChromeState {
         std::mem::take(&mut self.session_action_requests)
     }
 
+    pub(crate) fn take_notification_launch_requests(
+        &mut self,
+    ) -> Vec<crate::shell::notification::NotificationLaunch> {
+        std::mem::take(&mut self.notification_launch_requests)
+    }
+
+    pub(crate) fn alarm_actions_available(&self) -> bool {
+        self.notification_bridge
+            .as_ref()
+            .is_some_and(crate::notifications::NotificationBridge::scheduled_actions_available)
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<crate::notifications::SnoozedAlarm> {
+        self.notification_bridge
+            .as_ref()
+            .map_or_else(Vec::new, |bridge| bridge.snoozed_alarms(room))
+    }
+
+    fn alarm_action_capacity(&self) -> Result<(), String> {
+        if self
+            .notification_action_requests
+            .len()
+            .saturating_add(self.notification_action_results.len())
+            >= 64
+        {
+            Err("too many pending alarm actions".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn alarm_target_authorized(
+        &self,
+        target: &tilo_desktop::notifications::ScheduledNotificationTarget,
+        address: &str,
+    ) -> bool {
+        self.tree().desktop.workspaces.iter().any(|workspace| {
+            if workspace.room.to_string() != target.room {
+                return false;
+            }
+            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
+            crate::shell::search::providers::actions::shell_action_authorized_for(
+                workspace, &actor, address,
+            )
+        })
+    }
+
+    pub(crate) fn request_snoozed_alarm_dismiss(
+        &mut self,
+        source: &crate::notifications::SnoozedAlarm,
+    ) -> Result<u64, String> {
+        self.alarm_action_capacity()?;
+        let address = crate::shell::notification::snoozed_alarm_dismiss_id(&source.target);
+        if !source.target.valid()
+            || !source.target.calendar_alarm
+            || !self.alarm_target_authorized(&source.target, &address)
+        {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let action = crate::notifications::ScheduledAction::Dismiss;
+        let request = bridge.request_scheduled_action(
+            source.app_id.clone(),
+            source.target.clone(),
+            action,
+        )?;
+        self.notification_action_requests
+            .insert(request, (None, true, action));
+        self.bump();
+        Ok(request)
+    }
+
+    pub(crate) fn alarm_action_authorized(&self, notification: &Notification) -> bool {
+        let Some(request) = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+        else {
+            return false;
+        };
+        self.alarm_target_authorized(
+            &request.target,
+            &format!("notification.{}.snooze", notification.id),
+        )
+    }
+
+    pub(crate) fn request_alarm_action(
+        &mut self,
+        id: u64,
+        action: crate::notifications::ScheduledAction,
+        retain_result: bool,
+    ) -> Result<u64, String> {
+        self.alarm_action_capacity()?;
+        let notification = self
+            .notification_log
+            .active()
+            .iter()
+            .find(|notice| notice.id == id)
+            .or_else(|| self.notification_log.history_entry(id))
+            .ok_or("alarm notification is no longer available")?;
+        let request = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+            .ok_or("notification is not a host calendar alarm")?;
+        if !self.alarm_action_authorized(notification) {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let request_id = bridge.request_scheduled_action(request.app_id, request.target, action)?;
+        self.notification_action_requests
+            .insert(request_id, (Some(id), retain_result, action));
+        self.bump();
+        Ok(request_id)
+    }
+
+    pub(crate) fn take_alarm_action_result(&mut self, id: u64) -> Option<Result<(), String>> {
+        self.notification_action_results.remove(&id)
+    }
+
+    fn finish_alarm_card_action(&mut self, id: u64, action: crate::notifications::ScheduledAction) {
+        let removed = if let Some(removed) = self.notification_log.take_active(id) {
+            self.emit_closed(&removed, CloseReason::Dismissed);
+            Some(removed)
+        } else {
+            self.notification_log.take_history(id)
+        };
+        if action == crate::notifications::ScheduledAction::Snooze
+            && let Some(mut notice) = removed
+        {
+            if let Some(target) = notice.scheduled_target.as_mut() {
+                if !target.snoozed {
+                    let status = tilo_desktop::notifications::alarm_snoozed_label();
+                    notice.body = if notice.body.is_empty() {
+                        status
+                    } else {
+                        format!("{}\n\n{status}", notice.body)
+                    };
+                }
+                target.snoozed = true;
+            }
+            self.notification_log.retain(notice);
+        }
+    }
+
+    fn pump_alarm_action_results(&mut self, bridge: &crate::notifications::NotificationBridge) {
+        let requests: Vec<_> = self.notification_action_requests.keys().copied().collect();
+        for request in requests {
+            let Some(result) = bridge.take_scheduled_action_result(request) else {
+                continue;
+            };
+            let Some((id, retain_result, action)) =
+                self.notification_action_requests.remove(&request)
+            else {
+                continue;
+            };
+            if result.is_ok() {
+                if let Some(id) = id {
+                    self.finish_alarm_card_action(id, action);
+                }
+            } else if let Err(error) = &result
+                && !retain_result
+            {
+                tracing::warn!(%error, "alarm notification action failed");
+                self.push_warning_notification(
+                    tilo_desktop::notifications::alarm_action_failed_label(),
+                    tilo_desktop::notifications::alarm_action_retry_label(),
+                );
+            }
+            if retain_result {
+                self.notification_action_results.insert(request, result);
+            }
+            self.bump();
+        }
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
+        self.pump_alarm_action_results(&bridge);
         let refresh_policy = self
             .notification_policy_checked
             .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
@@ -2787,6 +3421,7 @@ impl ChromeState {
         }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
+            let scheduled_target = bridge.take_scheduled_target(dbus_id, inc.caller.as_ref());
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notification_log
                 .discard_active_where(|n| n.sender_id == Some(dbus_id));
@@ -2810,6 +3445,7 @@ impl ChromeState {
                 u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
             );
             let mut notification = crate::shell::notification::from_incoming(inc);
+            notification.scheduled_target = scheduled_target;
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
             if effective.cross_device
@@ -3056,9 +3692,7 @@ mod active_tab_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
 
     fn tree_with(active_tab_id: u64) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
@@ -3090,6 +3724,7 @@ mod active_tab_tests {
                 active_tab: active_tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
@@ -3113,21 +3748,21 @@ mod active_tab_tests {
     #[test]
     fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
         fn active_app_title_follows_group_active_tab() {
-            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
         fn active_tab_id_matches_the_active_tab_pointer() {
-            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), Some(100));
         }
 
         fn no_active_returns_none_instead_of_first_group() {
-            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3137,7 +3772,7 @@ mod active_tab_tests {
         fn without_active_strip_returns_none_not_first_strip() {
             let mut tree = tree_with(100);
             tree.desktop.active_strip.clear();
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3250,10 +3885,11 @@ mod active_tab_tests {
                     active_tab: 300,
                     width: StateWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree.persist_path = Some(path.clone());
-            tree.flush_to_disk();
+            tree.queue_save();
             let chrome = ChromeState::new(tree);
 
             chrome
@@ -3284,7 +3920,7 @@ mod active_tab_tests {
             let room = tree.desktop.workspaces[0].room;
             tree.persist_path = Some(path.clone());
             tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
-            tree.flush_to_disk();
+            tree.queue_save();
 
             // Establish a real shared-room lineage before the rename. Merely
             // assigning the same RoomId to two independently-seeded documents
@@ -3293,6 +3929,8 @@ mod active_tab_tests {
             let mut replica = tree_with(100);
             let replica_workspace = replica.desktop.active;
             assert!(replica.set_room(replica_workspace, room));
+            // The host's invite pins it (hub 1) as the room's governor.
+            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
                 .export_room_changes_since(room, &[])
                 .expect("host room baseline");
@@ -3358,6 +3996,7 @@ mod active_tab_tests {
                 active_tab: tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
@@ -3426,7 +4065,7 @@ mod active_tab_tests {
                 surface_id: 77,
             });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3470,7 +4109,7 @@ mod active_tab_tests {
                     label: "notes.ts".into(),
                 });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3560,5 +4199,46 @@ mod active_tab_tests {
         assert_eq!(state.local_user_id, "renderer");
         assert_eq!(state.local_user_for_room(&room), "renderer");
         assert_eq!(state.active_local_user(), "renderer");
+    }
+}
+
+#[cfg(test)]
+mod provisioned_identity_tests {
+    use super::*;
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    #[test]
+    fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(5), "Home");
+        workspace.set_owner("quickuser".to_string());
+        let room = workspace.room;
+        tree.desktop.workspaces.push(workspace);
+        let chrome = ChromeState::new(tree);
+        let person = "ab".repeat(32);
+        chrome.borrow_mut().act_as(person.clone());
+
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
+            1
+        );
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .expect("workspace");
+        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
+        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of("quickuser"), None);
+        drop(tree);
+        drop(state);
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
+            0
+        );
     }
 }

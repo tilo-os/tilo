@@ -1,0 +1,86 @@
+[
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/search-example-before.png",
+    "file_id": "file_00000000a9a08230a762cecef82039d7",
+    "library_file_id": "libfile_2e1d89b4b2d48191aed5fdb5b3e0219b",
+    "file_name": "search-example-before.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 2374655,
+    "sha256": "9b5e2f84f7d1a5d56bed09b242195649effdaac7b59e2f072ac9919129f11bd7",
+    "dimensions": [
+      1600,
+      900
+    ],
+    "compositor_revision": "8f628b5154a0ae5b1de044e97bbba266e9bac2cd",
+    "script_revision": "held-key legacy Super+K probe",
+    "journey_variant": "legacy Super+K before"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/search-example-after.png",
+    "file_id": "file_000000004f90823093d9dce4605fdbb5",
+    "library_file_id": "libfile_7729410b32d88191a9c5e31d0013a2dc",
+    "file_name": "search-example-after.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 1265314,
+    "sha256": "564ff3857ced5001f803cc8558ce8309687f3d6787cde6af0144e2108e4e0ba4",
+    "dimensions": [
+      1600,
+      900
+    ],
+    "compositor_revision": "8f628b5154a0ae5b1de044e97bbba266e9bac2cd",
+    "script_revision": "76d7dfbce45b8b8535d1f32ec5e5637cab2140ee",
+    "journey_variant": "tracked current Super+Space example"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/search-example-cancelled.png",
+    "file_id": "file_00000000c1088230862fbf171787b7d5",
+    "library_file_id": "libfile_b0a776c60bc48191ad52077b4f96ad11",
+    "file_name": "search-example-cancelled.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 2374690,
+    "sha256": "a6db6be179b2f0cdfb843cd1986133d0e10a5e1890499ffa05aadea255dce00a",
+    "dimensions": [
+      1600,
+      900
+    ],
+    "compositor_revision": "8f628b5154a0ae5b1de044e97bbba266e9bac2cd",
+    "script_revision": "76d7dfbce45b8b8535d1f32ec5e5637cab2140ee",
+    "journey_variant": "tracked current Super+Space example"
+  }
+]

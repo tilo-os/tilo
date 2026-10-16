@@ -12,9 +12,10 @@ repo.
 * In production, a `MediaItem.path` like `media/Drone_Coastline.mov` resolves
   to `/var/workspace/media/Drone_Coastline.mov` on the P2P FUSE — the bytes
   hydrate on demand from peers.
-* In `--shots` / dev, the binary sets `TILO_VE_MEDIA_DIR` to **this directory**
-  (see `main.rs`), so `media::resolve("media/Drone_Coastline.mov")` finds the
-  stand-in here and reports `Hydration::Local`. That exercises the hydration
+* In `--shots`, the capture serves **this directory** as sample media
+  (`VideoEditor::fixture`, `media::serve_sample_media`), so
+  `media::resolve("media/Drone_Coastline.mov")` finds the stand-in here and
+  reports `Hydration::Local`. That exercises the hydration
   branch deterministically.
 
 The two audio stand-ins (`VO_Take3.wav`, `Ambient_Pad.wav`) are **16-bit PCM
@@ -35,8 +36,9 @@ decode.
 * **Import** — the editor's "Import…" action opens the shared XDG file portal
   (`ui::portal`, compiled into every build) and probes each picked file for
   metadata (duration / dimensions / codec / fps) via `src/probe.rs`,
-  with no decoder. A picked file becomes a clip in the bin. `--import PATH`
-  seeds one deterministically for `--shots`/tests.
+  with no decoder. A picked file becomes a clip in the bin. Launching the editor on a
+  file (`video-editor PATH`, also under `--shots`) imports it the same way
+  and places it on the timeline.
 * **Decode / export** run through GStreamer and are checked against
   encoded clips: the `decode` and `gst` tests **generate** an
   H.264 clip at test time with `gst-launch-1.0 videotestsrc … ! openh264enc !

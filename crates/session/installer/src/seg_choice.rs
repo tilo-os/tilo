@@ -1,23 +1,22 @@
-//! [`SegChoice`] — a CRDT-backed segmented (single-choice) selector.
+//! [`SegChoice`] — a segmented (single-choice) selector over a published
+//! action.
 //!
-//! `ui::ToggleGroup` keeps its selection on the widget and reports it via a
-//! `FnMut(usize)` callback — neither of which survives the installer's
-//! per-step widget-tree rebuilds nor reaches the CRDT. `SegChoice` follows
-//! the same rising-edge flag pattern as [`crate::disk_row::DiskRow`]: each
-//! segment owns a boolean flag path, clicking (or arrowing onto) a segment
-//! raises its flag, and the [`crate::installer_app::InstallerApp`] consumes
-//! the rising edge on the next `sync` and feeds the resolved index back in
-//! as `selected` when it rebuilds. The widget itself is stateless beyond
-//! the highlight.
+//! `ui::ToggleGroup` keeps its selection on the widget, which does not
+//! survive the installer's per-step widget-tree rebuilds. `SegChoice` works
+//! like [`crate::disk_row::DiskRow`]: each segment owns the [`Control`]
+//! choosing it, clicking (or arrowing onto) a segment fires that control,
+//! and the [`crate::installer_app::InstallerApp`] runs the action and feeds
+//! the resulting index back in as `selected` when it rebuilds. The widget
+//! itself is stateless beyond the highlight.
 //!
 //! It is focusable: Left/Right move the selection while focused; clicks
 //! pick a segment directly. All colours come from the [`Theme`].
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -29,13 +28,15 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::control::Control;
+
 const HEIGHT: f32 = 40.0;
 const LABEL_SIZE: f32 = 14.0;
 
 pub struct SegChoice {
     labels: Vec<String>,
-    /// Per-segment CRDT flag path; index-aligned with `labels`.
-    select_paths: Vec<String>,
+    /// Per-segment control choosing it; index-aligned with `labels`.
+    controls: Vec<Control>,
     selected: usize,
     /// Stable name for E2E click targeting (`Widget::test_id`). Defaults to
     /// `filesystem_choice`; override via [`SegChoice::with_test_id`] when the
@@ -48,11 +49,11 @@ pub struct SegChoice {
 }
 
 impl SegChoice {
-    pub fn new(labels: Vec<String>, select_paths: Vec<String>, selected: usize) -> Self {
+    pub fn new(labels: Vec<String>, controls: Vec<Control>, selected: usize) -> Self {
         let n = labels.len();
         Self {
             labels,
-            select_paths,
+            controls,
             selected: if n == 0 {
                 0
             } else {
@@ -73,51 +74,27 @@ impl SegChoice {
         self
     }
 
-    fn fire(&self, idx: usize, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(path) = self.select_paths.get(idx) {
-            let _ = state.put(root, path.as_str(), true);
+    fn fire(&self, idx: usize) {
+        if let Some(control) = self.controls.get(idx) {
+            control.fire();
         }
     }
 }
 
 impl Widget for SegChoice {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(crate::full_width_row(HEIGHT), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.segment_rects.clear();
         let n = self.labels.len();
         if n == 0 {
@@ -154,9 +131,9 @@ impl Widget for SegChoice {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &outer);
         for (i, seg) in self.segment_rects.iter().enumerate() {
             let fill = if i == self.selected {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             } else {
-                theme.bg_primary
+                theme.tokens.colors.surfaces.raised
             };
             scene.fill(Fill::NonZero, transform, fill, None, seg);
         }
@@ -215,10 +192,7 @@ impl Widget for SegChoice {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor.set(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor.set(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -231,7 +205,7 @@ impl Widget for SegChoice {
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                         if i != self.selected {
-                            self.fire(i, ctx.state, ctx.path);
+                            self.fire(i);
                         }
                         break;
                     }
@@ -258,7 +232,7 @@ impl Widget for SegChoice {
                     _ => None,
                 };
                 if let Some(t) = target {
-                    self.fire(t, ctx.state, ctx.path);
+                    self.fire(t);
                     *ctx.handled = true;
                 }
             }
@@ -286,5 +260,62 @@ impl Widget for SegChoice {
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+}
+
+impl ui::widget::controls::ActionControls for SegChoice {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        // Every segment runs the same action with its own argument.
+        self.controls
+            .first()
+            .map(|control| control.metadata(&self.test_id))
+            .into_iter()
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::{AutoCommit, ROOT, ReadDoc};
+
+    use super::*;
+    use crate::control::{Press, Presses};
+
+    use ui::synthetic_input::named_key;
+
+    #[test]
+    fn arrowing_fires_the_neighbouring_segments_action() {
+        let presses = Presses::default();
+        let controls = ["btrfs", "ext4", "xfs"]
+            .iter()
+            .map(|fs| {
+                presses.control(Press::new(
+                    "installer.options",
+                    "set-filesystem",
+                    serde_json::json!({ "filesystem": fs }),
+                ))
+            })
+            .collect();
+        let labels = vec!["btrfs".into(), "ext4".into(), "xfs".into()];
+        let mut choice = SegChoice::new(labels, controls, 1);
+        choice.set_focus(true);
+        let mut doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = choice.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let mut keys = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node);
+        for (key, expected) in [
+            (NamedKey::ArrowRight, "xfs"),
+            (NamedKey::ArrowLeft, "btrfs"),
+        ] {
+            let handled = keys.send(&mut choice, &named_key(key)).handled;
+            assert!(handled);
+            let press = presses.take().expect("a segment action");
+            assert_eq!(press.address.action, "set-filesystem");
+            assert_eq!(press.args["filesystem"], expected);
+        }
+        assert_eq!(doc.length(ROOT), 0, "a segment never writes the document");
     }
 }

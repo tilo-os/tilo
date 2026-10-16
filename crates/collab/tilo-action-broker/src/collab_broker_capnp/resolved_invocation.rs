@@ -6,7 +6,7 @@ use super::{
     InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
     Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
     invocation_target_peer, published_directory_action, validate_directory_identifier,
-    validate_directory_target_input, validate_directory_text, write_directory_row,
+    validate_directory_target_input, validate_directory_text,
 };
 
 struct CapturedResolution {
@@ -267,7 +267,8 @@ impl CapnpBrokerState {
                 action,
             )
             .await?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = captured.resolution else {
+        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
+        else {
             return Err("directory revision or action changed".into());
         };
         let published = published_directory_action(&row).map_err(|error| error.to_string())?;
@@ -382,7 +383,7 @@ pub(super) fn resolve(
             && !revision.is_empty()
             && matches!(
                 &captured.resolution,
-                runtime_collab::ActionDirectoryResolution::Found(_)
+                runtime_collab::ActionDirectoryResolution::Found { .. }
             ) {
             // Missing journal/stream/worker custody permits browsing only.
             captured.binding(state, peer).ok()
@@ -390,20 +391,10 @@ pub(super) fn resolve(
             None
         };
         let mut out = results.get();
-        match &captured.resolution {
-            runtime_collab::ActionDirectoryResolution::Found(row) => {
-                write_directory_row(out.reborrow().init_resolution().init_found(), row);
-            }
-            runtime_collab::ActionDirectoryResolution::NotFound => {
-                out.reborrow().init_resolution().set_not_found(());
-            }
-            runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                out.reborrow().init_resolution().set_stale_revision(());
-            }
-            runtime_collab::ActionDirectoryResolution::Unavailable => {
-                out.reborrow().init_resolution().set_unavailable(());
-            }
-        }
+        runtime_collab::write_action_directory_resolution(
+            out.reborrow().init_resolution(),
+            &captured.resolution,
+        )?;
         if let Some(binding) = binding {
             let mut target = out.init_invocation_binding();
             target.set_host(&binding.host);
@@ -621,6 +612,10 @@ fn invoke_checked(
                 peer,
                 offered,
                 InvocationInputs {
+                    original_request: None,
+                    requested: None,
+                    caller: None,
+                    execution: None,
                     argument: argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

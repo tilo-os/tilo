@@ -40,6 +40,10 @@ pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 /// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
 pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 
+/// Most text one remote input-method commit may carry: a dictated paragraph
+/// fits, a pasted document does not (paste goes through the clipboard).
+pub const MAX_REMOTE_TEXT_BYTES: usize = 4096;
+
 /// evdev keycodes the scrubber names directly.
 mod keycode {
     pub const DELETE: u32 = 111;
@@ -93,6 +97,8 @@ pub enum Denial {
     /// A local client holds the pointer locked or confined; a peer's
     /// pointer would move the shared seat and break (or steer) it.
     PointerHeld,
+    /// Committed text that is empty or longer than [`MAX_REMOTE_TEXT_BYTES`].
+    TextSize,
 }
 
 impl Denial {
@@ -115,6 +121,7 @@ impl Denial {
             Denial::RateLimited => "rate-limited",
             Denial::ClickBurst => "click-burst",
             Denial::PointerHeld => "pointer-held",
+            Denial::TextSize => "text-size",
         }
     }
 }
@@ -130,6 +137,10 @@ impl Denial {
 pub struct ShellView {
     /// Foreign tiles front-to-back, as [`crate::shell::input_policy::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
+    /// Compositor grip regions over these surfaces; never remote client input.
+    chrome_regions: Vec<(SurfaceId, Rect)>,
+    /// Optional interactive bounds; the full tile remains the coordinate basis.
+    input_regions: Vec<(SurfaceId, Rect)>,
     /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
     /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
@@ -154,6 +165,8 @@ impl ShellView {
     ) -> Self {
         Self {
             tiles,
+            chrome_regions: Vec::new(),
+            input_regions: Vec::new(),
             keyboard_focus,
             chrome_captures,
             overlay_open,
@@ -161,6 +174,20 @@ impl ShellView {
             observed: true,
             pointer_held: false,
         }
+    }
+
+    /// Preserve surface geometry while excluding compositor-owned pointer grips.
+    #[must_use]
+    pub fn chrome_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.chrome_regions = regions;
+        self
+    }
+
+    /// Restrict pointer hit testing without changing surface-local coordinates.
+    #[must_use]
+    pub fn input_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.input_regions = regions;
+        self
     }
 
     /// Mark the session locked; the lock surface isn't part of the tiled tree, so this stops a remote peer driving what's underneath it directly.
@@ -206,7 +233,18 @@ impl ShellView {
         let p = Point::new(point.0, point.1);
         self.tiles
             .iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(id, rect)| {
+                rect.contains(p)
+                    && self
+                        .input_regions
+                        .iter()
+                        .find(|(owner, _)| owner == id)
+                        .is_none_or(|(_, input)| input.contains(p))
+                    && !self
+                        .chrome_regions
+                        .iter()
+                        .any(|(owner, grip)| owner == id && grip.contains(p))
+            })
             .map(|(id, _)| *id)
     }
 }
@@ -299,6 +337,12 @@ impl RemoteInputFirewall {
         &self.view
     }
 
+    /// Reconcile the seat's focus after an accepted headless-host focus
+    /// transition, without replacing any visibility or host-override flags.
+    pub(crate) fn set_keyboard_focus(&mut self, focus: Option<SurfaceId>) {
+        self.view.keyboard_focus = focus;
+    }
+
     /// Re-resolve a participant's last accepted surface-local pointer
     /// position against the current compositor view. Button events carry no
     /// coordinates, so the shared Wayland pointer must be restored here when
@@ -322,14 +366,14 @@ impl RemoteInputFirewall {
         self.peers.clear();
     }
 
+    /// Whether the kill switch is latched.
+    pub fn kill_switch_engaged(&self) -> bool {
+        self.kill_switch
+    }
+
     /// Release the kill switch.
     pub fn clear_kill_switch(&mut self) {
         self.kill_switch = false;
-    }
-
-    /// Whether remote input is currently killed.
-    pub fn kill_switch_engaged(&self) -> bool {
-        self.kill_switch
     }
 
     /// Forget a peer's budget and held modifiers — call when it disconnects.
@@ -399,7 +443,11 @@ impl RemoteInputFirewall {
                 InputEvent::PointerButton { .. }
                 | InputEvent::PointerEnter { .. }
                 | InputEvent::KeyboardFocus { .. }
-                | InputEvent::Key { .. } => {}
+                | InputEvent::Key { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::ClipboardText { .. }
+                | InputEvent::Close
+                | InputEvent::Text { .. } => {}
             }
         }
         outcome
@@ -494,7 +542,48 @@ impl RemoteInputFirewall {
                 }
                 Ok(event.clone())
             }
+            InputEvent::PointerAxis { .. } => {
+                // Scrolls where this peer's pointer last was, which must still
+                // be over the window.
+                let Some((cursor_surface, local)) = self.peer_mut(peer).cursor else {
+                    return Err(Denial::NoPointerPosition);
+                };
+                if cursor_surface != surface {
+                    return Err(Denial::SurfaceMismatch);
+                }
+                self.locate(surface, local)?;
+                self.spend_budget(peer, now, false)?;
+                Ok(event.clone())
+            }
+            InputEvent::ClipboardText { .. } | InputEvent::Close => {
+                // Each changes the session (its clipboard, the window's
+                // life) as a press would.
+                self.spend_budget(peer, now, true)?;
+                Ok(event.clone())
+            }
+            InputEvent::Text { text } => {
+                self.check_text(peer, surface, text, now)?;
+                Ok(event.clone())
+            }
         }
+    }
+
+    /// Committed text is typing, so the keyboard's focus guard applies: it
+    /// lands only in the shared window, and only while that has focus.
+    fn check_text(
+        &mut self,
+        peer: PeerId,
+        surface: SurfaceId,
+        text: &str,
+        now: Instant,
+    ) -> Result<(), Denial> {
+        if self.view.chrome_captures || self.view.keyboard_focus != Some(surface) {
+            return Err(Denial::FocusMuted);
+        }
+        if text.is_empty() || text.len() > MAX_REMOTE_TEXT_BYTES {
+            return Err(Denial::TextSize);
+        }
+        self.spend_budget(peer, now, true)
     }
 
     /// Region + z-order for one surface-local coordinate; returns the global point to inject.
@@ -741,6 +830,78 @@ mod tests {
                 Err(Denial::Occluded),
             );
         }
+    }
+
+    /// Text an input method committed is typing: it needs the shared
+    /// window to hold the keyboard, and it is bounded like one commit.
+    #[test]
+    fn remote_text_lands_only_in_the_focused_shared_window() {
+        let now = Instant::now();
+        let text = InputEvent::Text {
+            text: "grüße".into(),
+        };
+        assert_eq!(
+            firewall().review(PEER, SHARED, &text, now),
+            Ok(text.clone())
+        );
+
+        let mut unfocused = RemoteInputFirewall::new();
+        unfocused.publish_view(ShellView::new(
+            vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
+            Some(PRIVATE),
+            false,
+            false,
+        ));
+        assert_eq!(
+            unfocused.review(PEER, SHARED, &text, now),
+            Err(Denial::FocusMuted)
+        );
+        for size in [0, MAX_REMOTE_TEXT_BYTES + 1] {
+            assert_eq!(
+                firewall().review(
+                    PEER,
+                    SHARED,
+                    &InputEvent::Text {
+                        text: "a".repeat(size),
+                    },
+                    now,
+                ),
+                Err(Denial::TextSize)
+            );
+        }
+    }
+
+    /// The wheel scrolls where the peer's pointer is, so it needs one over
+    /// the window, like a button; a paste and a close need none.
+    #[test]
+    fn the_wheel_needs_a_coordinate_and_a_paste_or_close_does_not() {
+        let mut fw = firewall();
+        let now = Instant::now();
+        let scroll = InputEvent::PointerAxis { dx: 0.0, dy: 30.0 };
+        assert_eq!(
+            fw.review(PEER, SHARED, &scroll, now),
+            Err(Denial::NoPointerPosition)
+        );
+        fw.review(
+            PEER,
+            SHARED,
+            &InputEvent::PointerMotion { x: 10.0, y: 20.0 },
+            now,
+        )
+        .expect("accepted motion");
+        assert_eq!(fw.review(PEER, SHARED, &scroll, now), Ok(scroll.clone()));
+        assert_eq!(
+            fw.review(PEER, PRIVATE, &scroll, now),
+            Err(Denial::SurfaceMismatch)
+        );
+        let paste = InputEvent::ClipboardText {
+            text: "hello".into(),
+        };
+        assert_eq!(fw.review(PEER, SHARED, &paste, now), Ok(paste.clone()));
+        assert_eq!(
+            fw.review(PEER, SHARED, &InputEvent::Close, now),
+            Ok(InputEvent::Close)
+        );
     }
 
     #[test]
@@ -1211,7 +1372,8 @@ mod tests {
 /// Denials proven through the production injection path, against a real
 /// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
 /// move — a return-value-only check would pass even if the refusal happened after injection.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod production_path {
     use super::*;
     use crate::compositor::state::State;

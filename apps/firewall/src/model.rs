@@ -6,23 +6,31 @@
 //! **services**, and a list of **rules** (port openings + rich,
 //! source-scoped accept/reject entries).
 //!
-//! Everything is plain data + small pure helpers — no IO, no rendering,
-//! no automerge. The CRDT bridge lives in `doc.rs`; the live
-//! `firewall-cmd`/`nft` apply path lives in `backend.rs`. Keeping this
-//! layer pure means the whole model round-trips through serde and is
-//! unit-testable without a document or a GPU.
+//! Everything is plain data + small pure helpers — no IO, no rendering.
+//! [`Firewall`] is the stored record (`#[derive(Model)]`): zones keyed by
+//! name, each with its membership sets and an ordered collection of rules.
+//! [`FirewallConfig`] is the configuration as the window and firewalld read
+//! it, made from the record. The live `firewall-cmd`/`nft` apply path lives
+//! in `backend.rs`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, Json, JsonSchema, Model, Refusal, Set};
 use uuid::Uuid;
 
 /// Stable identifier for a single rule. Backs selection + edit/delete.
 pub type RuleId = Uuid;
 
 /// The nine stock firewalld zones. `Public` is the conventional default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Model, JsonSchema, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ZoneKind {
     Drop,
     Block,
+    #[default]
     Public,
     External,
     Dmz,
@@ -69,17 +77,38 @@ impl ZoneKind {
         ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
     }
 
+    /// The zone as people read it: sentence case, with the acronym kept.
+    pub fn title(self) -> &'static str {
+        match self {
+            ZoneKind::Drop => "Drop",
+            ZoneKind::Block => "Block",
+            ZoneKind::Public => "Public",
+            ZoneKind::External => "External",
+            ZoneKind::Dmz => "DMZ",
+            ZoneKind::Work => "Work",
+            ZoneKind::Home => "Home",
+            ZoneKind::Internal => "Internal",
+            ZoneKind::Trusted => "Trusted",
+        }
+    }
+
     /// One-line description shown under the zone title in the summary.
     pub fn description(self) -> &'static str {
         match self {
-            ZoneKind::Drop => "Incoming packets are dropped with no reply. Outgoing allowed.",
-            ZoneKind::Block => "Incoming rejected with icmp-host-prohibited. Outgoing allowed.",
-            ZoneKind::Public => "For untrusted public networks. Only selected services accepted.",
-            ZoneKind::External => "For routers with masquerading enabled. Untrusted networks.",
-            ZoneKind::Dmz => "For a demilitarized zone — limited internal access, public-facing.",
-            ZoneKind::Work => "For mostly-trusted work networks.",
-            ZoneKind::Home => "For trusted home networks. Peers mostly allowed.",
-            ZoneKind::Internal => "For internal networks. Peers mostly trusted.",
+            ZoneKind::Drop => {
+                "Incoming traffic is dropped without a reply. Outgoing traffic is allowed."
+            }
+            ZoneKind::Block => "Incoming connections are refused. Outgoing traffic is allowed.",
+            ZoneKind::Public => {
+                "For untrusted public networks. Only the services you allow are reachable."
+            }
+            ZoneKind::External => "For the outside of a router that masquerades your network.",
+            ZoneKind::Dmz => "For public-facing hosts with limited access to the internal network.",
+            ZoneKind::Work => "For work networks where you mostly trust the other computers.",
+            ZoneKind::Home => "For home networks where you mostly trust the other computers.",
+            ZoneKind::Internal => {
+                "For internal networks where you mostly trust the other computers."
+            }
             ZoneKind::Trusted => "All network connections are accepted.",
         }
     }
@@ -101,9 +130,10 @@ impl ZoneKind {
 }
 
 /// A zone's default target — what happens to traffic no rule matched.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
     /// firewalld `default` — reject with an ICMP error.
+    #[default]
     Default,
     /// Accept everything not otherwise denied (trusted zone).
     Accept,
@@ -132,6 +162,15 @@ impl Target {
         }
     }
 
+    /// What happens to traffic no rule matched, as a sentence-case value.
+    pub fn outcome(self) -> &'static str {
+        match self {
+            Target::Default | Target::Reject => "Rejected",
+            Target::Accept => "Accepted",
+            Target::Drop => "Dropped",
+        }
+    }
+
     pub const ALL: [Target; 4] = [
         Target::Default,
         Target::Accept,
@@ -154,6 +193,13 @@ impl Proto {
             Proto::Udp => "udp",
         }
     }
+    /// The protocol as it is written in prose: an acronym.
+    pub fn title(self) -> &'static str {
+        match self {
+            Proto::Tcp => "TCP",
+            Proto::Udp => "UDP",
+        }
+    }
     pub const ALL: [Proto; 2] = [Proto::Tcp, Proto::Udp];
     #[must_use]
     pub fn next(self) -> Proto {
@@ -165,8 +211,9 @@ impl Proto {
 }
 
 /// What a rule does with matching traffic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    #[default]
     Allow,
     Deny,
 }
@@ -176,6 +223,13 @@ impl Action {
         match self {
             Action::Allow => "allow",
             Action::Deny => "deny",
+        }
+    }
+    /// The action as a sentence-case word.
+    pub fn title(self) -> &'static str {
+        match self {
+            Action::Allow => "Allow",
+            Action::Deny => "Deny",
         }
     }
     pub const ALL: [Action; 2] = [Action::Allow, Action::Deny];
@@ -189,12 +243,19 @@ impl Action {
 }
 
 /// What a rule matches: a named service, or an explicit port + protocol.
+/// Stored whole: a rule's match changes as one value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Matcher {
     /// A named service from the catalog (e.g. `https`).
     Service(String),
     /// An explicit port (or port range like `8000-8080`) + protocol.
     Port { port: String, proto: Proto },
+}
+
+impl Default for Matcher {
+    fn default() -> Self {
+        Self::Service(String::new())
+    }
 }
 
 impl Matcher {
@@ -206,15 +267,21 @@ impl Matcher {
         }
     }
 
-    pub fn proto_label(&self) -> String {
+    /// What the rule matches as people read it: the service's name, or
+    /// the port (range); the protocol has a column of its own.
+    pub fn title(&self) -> String {
         match self {
-            Matcher::Service(s) => ServiceCatalog::proto_of(s).to_string(),
-            Matcher::Port { proto, .. } => proto.label().to_string(),
+            Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
+            Matcher::Port { port, .. } => format!("Port {port}"),
         }
     }
 
-    pub fn is_service(&self) -> bool {
-        matches!(self, Matcher::Service(_))
+    /// The protocol column: acronyms, both named when a service uses both.
+    pub fn proto_title(&self) -> &'static str {
+        match self {
+            Matcher::Service(s) => ServiceCatalog::proto_title(ServiceCatalog::proto_of(s)),
+            Matcher::Port { proto, .. } => proto.title(),
+        }
     }
 }
 
@@ -282,17 +349,6 @@ impl Zone {
         self.services.iter().any(|s| s == id)
     }
 
-    /// Toggle a named service on/off. Returns the new state.
-    pub fn toggle_service(&mut self, id: &str) -> bool {
-        if let Some(idx) = self.services.iter().position(|s| s == id) {
-            self.services.remove(idx);
-            false
-        } else {
-            self.services.push(id.to_string());
-            true
-        }
-    }
-
     /// Count of rules that allow vs deny — used by the posture summary.
     pub fn rule_counts(&self) -> (usize, usize) {
         let allow = self
@@ -337,6 +393,28 @@ impl FirewallConfig {
         self.zones.iter_mut().find(|z| z.kind == kind)
     }
 
+    /// This configuration as the document reads it back once written whole:
+    /// zones in their stock order, membership sets sorted without repeats,
+    /// rules in their order. The form two devices compare a configuration in.
+    #[must_use]
+    pub fn canonical(&self) -> Self {
+        let mut zones = Vec::new();
+        for kind in ZoneKind::ALL {
+            if let Some(zone) = self.zone(kind) {
+                let mut zone = zone.clone();
+                zone.interfaces.sort();
+                zone.interfaces.dedup();
+                zone.services.sort();
+                zone.services.dedup();
+                zones.push(zone);
+            }
+        }
+        Self {
+            zones,
+            ..self.clone()
+        }
+    }
+
     /// JSON encode for the CRDT text blob.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -377,6 +455,165 @@ impl FirewallConfig {
     }
 }
 
+/// One rule as the document stores it; its item id is the rule's uuid.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct StoredRule {
+    /// What it matches
+    pub matcher: Json<Matcher>,
+    /// What it does
+    pub action: Action,
+    /// Source address
+    pub source: String,
+    /// Enabled
+    pub enabled: bool,
+}
+
+/// One zone as the document stores it, keyed by its zone name.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct StoredZone {
+    /// Default policy
+    pub target: Target,
+    /// Interfaces
+    pub interfaces: Set<String>,
+    /// Allowed services
+    pub services: Set<String>,
+    /// Rules, in the order they apply.
+    pub rules: Collection<StoredRule>,
+    /// Masquerade
+    pub masquerade: bool,
+    /// Rules deleted from this zone: a deletion wins over a concurrent edit
+    /// and an import never brings the rule back.
+    #[model(readonly)]
+    pub deleted_rules: Set<String>,
+}
+
+/// The stored firewall configuration: what every device running the app
+/// projects onto its own firewalld.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Firewall::valid)]
+pub struct Firewall {
+    /// Running: started and stopped by verbs.
+    #[model(readonly)]
+    pub enabled: bool,
+    /// Panic mode: entered and left by verbs.
+    #[model(readonly)]
+    pub panic_mode: bool,
+    /// Active zone
+    pub default_zone: ZoneKind,
+    /// The configured zones, by zone name.
+    pub zones: BTreeMap<String, StoredZone>,
+}
+
+impl Firewall {
+    /// A configured firewall is one firewalld can be handed safely.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.zones.is_empty() {
+            return Ok(());
+        }
+        self.config().validate().map_err(Refusal::new)
+    }
+
+    /// The item id of rule `id`.
+    pub fn rule(id: RuleId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// The configuration the record holds: stock zones in order, each
+    /// membership sorted, rules in order without the deleted ones.
+    pub fn config(&self) -> FirewallConfig {
+        let zones = ZoneKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let stored = self.zones.get(kind.name())?;
+                let rules = stored
+                    .rules
+                    .iter()
+                    .filter(|(id, _)| !stored.deleted_rules.contains(&id.as_str().to_owned()))
+                    .filter_map(|(id, rule)| {
+                        Some(Rule {
+                            id: id.as_str().parse().ok()?,
+                            matcher: rule.matcher.0.clone(),
+                            action: rule.action,
+                            source: rule.source.clone(),
+                            enabled: rule.enabled,
+                        })
+                    })
+                    .collect();
+                Some(Zone {
+                    kind,
+                    target: stored.target,
+                    interfaces: stored.interfaces.iter().cloned().collect(),
+                    services: stored.services.iter().cloned().collect(),
+                    rules,
+                    masquerade: stored.masquerade,
+                })
+            })
+            .collect();
+        FirewallConfig {
+            enabled: self.enabled,
+            panic_mode: self.panic_mode,
+            default_zone: self.default_zone,
+            zones,
+        }
+    }
+
+    /// Take in what firewalld reported: members it lacks turn off, rules it
+    /// lacks are deleted, a deleted rule stays deleted, and the rest is
+    /// written where it differs.
+    pub fn take_in(&mut self, config: &FirewallConfig) {
+        self.enabled = config.enabled;
+        self.panic_mode = config.panic_mode;
+        self.default_zone = config.default_zone;
+        for incoming in &config.zones {
+            let zone = self
+                .zones
+                .entry(incoming.kind.name().to_owned())
+                .or_default();
+            zone.target = incoming.target;
+            zone.masquerade = incoming.masquerade;
+            zone.interfaces = incoming.interfaces.iter().cloned().collect();
+            zone.services = incoming.services.iter().cloned().collect();
+            let wanted: Vec<Id> = incoming
+                .rules
+                .iter()
+                .map(|rule| Self::rule(rule.id))
+                .collect();
+            let gone: Vec<Id> = zone
+                .rules
+                .ids()
+                .filter(|id| !wanted.contains(id))
+                .cloned()
+                .collect();
+            for id in gone {
+                zone.rules.remove(&id);
+                zone.deleted_rules.insert(id.as_str().to_owned());
+            }
+            for rule in &incoming.rules {
+                let id = Self::rule(rule.id);
+                if zone.deleted_rules.contains(&id.as_str().to_owned()) {
+                    continue;
+                }
+                let stored = StoredRule {
+                    matcher: Json(rule.matcher.clone()),
+                    action: rule.action,
+                    source: rule.source.clone(),
+                    enabled: rule.enabled,
+                };
+                match zone.rules.get_mut(&id) {
+                    Some(existing) => {
+                        if *existing != stored {
+                            *existing = stored;
+                        }
+                    }
+                    None => {
+                        zone.rules.push(id, stored);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Validate a user-authored port or inclusive port range. Firewalld itself is
 /// still authoritative, but rejecting malformed values here keeps invalid
 /// shared state and misleading dry-run plans out of the system.
@@ -388,7 +625,7 @@ impl FirewallConfig {
 pub fn validate_port(port: &str) -> Result<(), String> {
     let value = port.trim();
     if value.is_empty() {
-        return Err("port is required".into());
+        return Err("Enter a port or a port range.".into());
     }
     let (first, last) = match value.split_once('-') {
         Some(range) => range,
@@ -398,12 +635,12 @@ pub fn validate_port(port: &str) -> Result<(), String> {
         part.parse::<u16>()
             .ok()
             .filter(|number| *number > 0)
-            .ok_or_else(|| "use a port from 1 to 65535".into())
+            .ok_or_else(|| "Use a port from 1 to 65535.".into())
     };
     let first = parse(first)?;
     let last = parse(last)?;
     if first > last {
-        return Err("a port range must run from low to high".into());
+        return Err("Start a port range with the lower port.".into());
     }
     Ok(())
 }
@@ -425,14 +662,14 @@ pub fn validate_source(source: &str) -> Result<(), String> {
         .split_once('/')
         .map_or((value, None), |(ip, p)| (ip, Some(p)));
     if address.parse::<std::net::Ipv4Addr>().is_err() {
-        return Err("source must be an IPv4 address or CIDR".into());
+        return Err("Enter an IPv4 address or network, such as 192.168.1.0/24.".into());
     }
     if let Some(prefix) = prefix {
         prefix
             .parse::<u8>()
             .ok()
             .filter(|prefix| *prefix <= 32)
-            .ok_or_else(|| "CIDR prefix must be from /0 to /32".to_string())?;
+            .ok_or_else(|| "Use a network prefix from /0 to /32.".to_string())?;
     }
     Ok(())
 }
@@ -479,21 +716,21 @@ impl ServiceCatalog {
             name: "SSH",
             ports: "22",
             proto: "tcp",
-            description: "Secure Shell remote login",
+            description: "Remote login over Secure Shell",
         },
         ServiceDef {
             id: "http",
             name: "HTTP",
             ports: "80",
             proto: "tcp",
-            description: "Web server (cleartext)",
+            description: "Unencrypted web server",
         },
         ServiceDef {
             id: "https",
             name: "HTTPS",
             ports: "443",
             proto: "tcp",
-            description: "Web server (TLS)",
+            description: "Encrypted web server",
         },
         ServiceDef {
             id: "dns",
@@ -507,11 +744,11 @@ impl ServiceCatalog {
             name: "mDNS",
             ports: "5353",
             proto: "udp",
-            description: "Multicast DNS / service discovery",
+            description: "Service discovery on the local network",
         },
         ServiceDef {
             id: "dhcpv6-client",
-            name: "DHCPv6 Client",
+            name: "DHCPv6 client",
             ports: "546",
             proto: "udp",
             description: "IPv6 address autoconfiguration",
@@ -521,11 +758,11 @@ impl ServiceCatalog {
             name: "Samba",
             ports: "137-139,445",
             proto: "tcp/udp",
-            description: "Windows file & printer sharing",
+            description: "Windows file and printer sharing",
         },
         ServiceDef {
             id: "samba-client",
-            name: "Samba Client",
+            name: "Samba client",
             ports: "137-138",
             proto: "udp",
             description: "Browse Windows shares",
@@ -542,7 +779,7 @@ impl ServiceCatalog {
             name: "IPP",
             ports: "631",
             proto: "tcp",
-            description: "Internet printing protocol",
+            description: "Network printing",
         },
         ServiceDef {
             id: "nfs",
@@ -563,14 +800,14 @@ impl ServiceCatalog {
             name: "NTP",
             ports: "123",
             proto: "udp",
-            description: "Network time sync",
+            description: "Network time",
         },
         ServiceDef {
             id: "ftp",
             name: "FTP",
             ports: "21",
             proto: "tcp",
-            description: "File transfer (legacy)",
+            description: "Unencrypted file transfer",
         },
     ];
 
@@ -586,10 +823,13 @@ impl ServiceCatalog {
         Self::get(id).map_or("tcp", |s| s.proto)
     }
 
-    /// The list of catalog ids — used to seed the service dropdown in the
-    /// add-rule form.
-    pub fn ids() -> Vec<String> {
-        Self::ALL.iter().map(|s| s.id.to_string()).collect()
+    /// A catalog protocol (`tcp`, `udp`, `tcp/udp`) as it reads in prose.
+    pub fn proto_title(proto: &str) -> &'static str {
+        match proto {
+            "tcp/udp" => "TCP and UDP",
+            "udp" => "UDP",
+            _ => "TCP",
+        }
     }
 }
 
@@ -597,19 +837,9 @@ impl ServiceCatalog {
 mod tests {
     use super::*;
 
-    /// The config toggles services idempotently, splits rule counts and lists every zone in order.
+    /// The config splits rule counts and lists every zone in order.
     #[test]
-    fn config_model_toggles_and_counts() {
-        // --- phase: toggle_service_is_idempotent_pair ---
-        {
-            let mut z = Zone::new(ZoneKind::Public, Target::Default);
-            assert!(!z.has_service("ssh"));
-            assert!(z.toggle_service("ssh"));
-            assert!(z.has_service("ssh"));
-            assert!(!z.toggle_service("ssh"));
-            assert!(!z.has_service("ssh"));
-        }
-
+    fn config_model_counts_rules_and_lists_zones() {
         // --- phase: rule_counts_split_allow_deny ---
         {
             let mut z = Zone::new(ZoneKind::Public, Target::Default);

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Launch Xwayland on startup of wayland session
+Comment=this ensures that ibus-x11, needed for ibus-mozc, is started
+Type=Application
+Exec=/usr/libexec/mozc/ibus-mozc-launch-xwayland.sh
+TryExec=xrefresh
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-Desktop-File-Install-Version=0.28

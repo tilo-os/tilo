@@ -58,7 +58,8 @@ refuses its own boot artefacts. `tilo-secureboot enroll` therefore refuses unles
 
 1. the keys exist,
 2. **every** artefact the firmware will check already verifies against `db`,
-3. `tilo-secureboot-sign.path` and `.service` are enabled, so the next OS update
+3. `tilo-secureboot-sign.path`, `tilo-secureboot-sign.timer` and
+   `tilo-secureboot-sign-shutdown.service` are enabled, so the next OS update
    cannot stage a kernel that nothing signs, and
 4. the firmware is in **setup mode** — which is the only state that accepts these
    writes, and a state the owner has to reach deliberately.
@@ -72,9 +73,12 @@ a hard failure, never a successful zero-artifact pass.
 Three things keep the artefacts signed, in decreasing order of how much they are
 relied on:
 
-- **`tilo-secureboot-sign.path`** watches `/boot/EFI/Linux`, where a `bootc upgrade`
-  writes the incoming generation's UKI, so it gets signed immediately rather than at
-  the next boot — which would be the boot the firmware refuses. It also watches
+- **`tilo-secureboot-sign.path`** watches `/boot/EFI/Linux/bootc`, where the
+  composefs backend's `bootc upgrade` writes the incoming generation's UKI, so it
+  gets signed immediately rather than at the next boot — which would be the boot
+  the firmware refuses. A path watch is not recursive, so the unit names that
+  subdirectory itself as well as `/boot/EFI/Linux`, where the image build's UKI
+  sits; `tilo-secureboot sign` scans both. It also watches
   `/boot/EFI/systemd` and `/boot/EFI/BOOT` for whatever replaces the loaders there,
   a change with no natural second chance. Both mount points are watched
   (`/boot/EFI/…` and `/boot/efi/EFI/…`) because the ESP is at `/boot` on the sealed
@@ -336,6 +340,16 @@ that already requires root, which can change the system in other ways too.
 Only the unsealed development image (`os/Containerfile.dev`) unmasks
 `systemd-sysext.service`, for its development layers.
 
+The one caller that merges on purpose is `tilo-extension-activate.service`,
+for the downloaded extensions the owner turned on (the media codecs, say). At
+every boot and after every change it verifies each kept manifest against the
+image's extension-manifest key (`/usr/share/tilo/extensions.pub`, a KMS key
+separate from the OS release key), each kept artifact against
+the manifest's SHA-256, rebuilds every part from those bytes alone, and merges
+nothing if anything else is in the sysext search path. A file written to `/var`
+therefore still never reaches `/usr` across a reboot: it is replaced, or the
+merge is refused. See `os/usr/share/tilo/system-extensions/README.md`.
+
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
 Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot
@@ -373,7 +387,7 @@ by `tilo-secureboot sign`. What it does **not** cover:
   firmware certainly does not.
 - **The command line.** It lives in a Boot Loader Specification entry, an
   editable text file next to the kernel. Every hardening karg
-  (`lockdown=integrity`, `init_on_free=1`, …) can be removed by anything that can
+  (`lockdown=integrity`, `init_on_alloc=1`, …) can be removed by anything that can
   write the ESP or `/boot`.
 
 So owner-enrolled Secure Boot here buys a verified *kernel*, and that is worth
@@ -464,6 +478,15 @@ and `tilo.generation=` reach the sealed command line through the same mechanism
 that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
 and it fails the build if the generation did not make it into the seal.
 
+The board images (`os/Containerfile.board`) and the dev installer base
+(`os/Containerfile.dev-installer-base`) seal the same way, with the same
+`uki-tools` and `uki` stages. The tools come from one list,
+`os/dev/uki-tools.packages`, and every `uki` stage declares the same seal inputs
+(`TILO_CFS_DIGEST`, `TILO_SEAL_GENERATION`). `tools/policy/check_uki_pipeline.py`
+fails when one copy changes alone, and when a `final` stage adds anything but
+the UKI. The composefs probe under `os/dev/composefs/` is deliberately separate,
+and its header says why.
+
 Two details matter at the release boundary:
 
 - **An ordinary development build does not sign the UKI.** Published release
@@ -527,20 +550,24 @@ bootloader — was available all along and deliberately not taken: a file on the
 outside any signature, editable by anything that can write there, would look like
 compliance and provide none of it.
 
-**The unlock hook.** An encrypted
-install made by `tilo-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
-that is what dracut derives from the `rd.luks.uuid=` karg. So the key file the
-hook must write is:
+**The unlock hook.** The sealed command line carries no `rd.luks.uuid=`; it
+carries `root=tilo-auto`. In the initramfs, `tilo-root-generator` starts
+`tilo-root-discover`, which finds the one Tilo root on the boot ESP's disk and
+attaches it as the fixed mapping `root` (see "Target-independent enrollment"
+below). Before attaching, it runs `tilo-rollback-initrd-unlock` for that
+volume, so the key file the hook writes is:
 
 ```
-/run/cryptsetup-keys.d/luks-<LUKS-UUID>.key
+/run/cryptsetup-keys.d/root.key
 ```
 
 `systemd-cryptsetup` consults that path before it tries any token. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
-key, plus a systemd generator that orders a per-volume unlock service after the
-LUKS device appears and before its cryptsetup unit. It asks for the PIN only when
-the LUKS header actually contains a `tilo-rollback` token. A cancelled or failed
+key, the root generator and the discovery helper. The hook asks for the PIN only
+when the LUKS header actually contains a `tilo-rollback` token. A command line
+that still names the volume with `rd.luks.uuid=` (an older layout) is served by
+`tilo-rollback-unlock-generator`, which writes
+`/run/cryptsetup-keys.d/luks-<LUKS-UUID>.key` instead. A cancelled or failed
 unseal removes partial key material and returns control to the independent
 recovery-key, passphrase, or FIDO2 prompt instead of making boot an emergency.
 
@@ -649,7 +676,9 @@ An optional FIDO2 security key adds another slot to any row. Selecting it is a
 requirement: enrollment failure stops installation with an actionable retry
 message rather than silently finishing without the requested factor. The sealed
 target UKI carries both `tpm2-device=auto` and `fido2-device=auto` in its
-per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
+`rd.luks.options=` argument, which names no volume and so applies to the root
+(`os/usr/lib/bootc/kargs.d/00-root.toml`); `tilo-root-discover` passes the same
+options when it attaches the root. LUKS2 metadata tells systemd-cryptsetup
 which of those handlers has enrolled material; without the FIDO2 boot option a
 security key could be successfully enrolled yet never tried by the initramfs.
 
@@ -810,6 +839,10 @@ initrd generation to the image build.
 
 Tilo supports local roots only. The signed initramfs therefore explicitly omits
 Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+The `tilo-sibling-unlock` module (`docs/device-reach.md`) carries the image's
+NetworkManager binary for its own unit instead, which only a root whose LUKS2
+header holds a `tilo-sibling-unlock` token starts; it parses no network-root
+command line.
 Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
 cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
 

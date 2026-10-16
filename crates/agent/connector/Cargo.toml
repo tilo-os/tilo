@@ -1,0 +1,38 @@
+[package]
+name = "tilo-connector"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "How a room host talks to a connector's outside worker, and the host-private log of the events it reports"
+
+[features]
+# Builds the scripted stand-in worker the process tests start.
+test-worker = []
+
+[dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "rt", "sync", "time", "macros"] }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+
+[dev-dependencies]
+blake3.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+
+[[bin]]
+name = "scripted-connector-worker"
+path = "tests/bin/scripted_worker.rs"
+test = false
+required-features = ["test-worker"]
+
+[lints]
+workspace = true

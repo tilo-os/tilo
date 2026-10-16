@@ -79,17 +79,24 @@ mod platform {
 
             // Either get the last context used or create a new one.
             let mut gc = gc.borrow_mut();
-            let surface =
-                gc.get_or_insert_with(|| GraphicsContext::new(window)).create_surface(window);
+            let surface = gc
+                .get_or_insert_with(|| GraphicsContext::new(window))
+                .create_surface(window);
 
             // Fill a buffer with a solid color.
             const DARK_GRAY: u32 = 0xff181818;
 
-            surface.resize(width, height).expect("Failed to resize the softbuffer surface");
+            surface
+                .resize(width, height)
+                .expect("Failed to resize the softbuffer surface");
 
-            let mut buffer = surface.buffer_mut().expect("Failed to get the softbuffer buffer");
+            let mut buffer = surface
+                .buffer_mut()
+                .expect("Failed to get the softbuffer buffer");
             buffer.fill(DARK_GRAY);
-            buffer.present().expect("Failed to present the softbuffer buffer");
+            buffer
+                .present()
+                .expect("Failed to present the softbuffer buffer");
         })
     }
 

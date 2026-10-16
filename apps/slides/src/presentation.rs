@@ -7,25 +7,25 @@
 use ui::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Vec2};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::keyboard::{Key, NamedKey};
 
+use vello::kurbo::Point;
+
+use ui::TextRole;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{ProgressBar, Widget};
 
 use ui::i18n::ArgValue;
 
 use crate::assets::ImageStore;
 use crate::model::{Deck, Palette, PaletteKind, SLIDE_H, SLIDE_W};
+use crate::render;
 use crate::render::DeckAssets;
 use crate::strings::{tr, tr_args};
-use crate::{chrome, render};
-
-const TRANSITION_MS: u128 = 240;
-/// The presentation / presenter stage ground every frame and panel sits on.
-const STAGE: Color = Color::BLACK;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Blank {
@@ -56,6 +56,8 @@ pub(crate) struct Presentation {
     paused_elapsed: Option<Duration>,
     paused_total: Duration,
     transition: Option<(usize, Instant)>,
+    /// How long a slide change cross-fades: the theme's base motion.
+    fade: Duration,
     blank: Blank,
     presenter_view: bool,
     /// A real, host-owned audience toplevel is live. The app's original
@@ -147,6 +149,7 @@ impl Default for Presentation {
             paused_elapsed: None,
             paused_total: Duration::ZERO,
             transition: None,
+            fade: Theme::dark().tokens.motion.durations.base(),
             blank: Blank::None,
             presenter_view: false,
             external_audience: false,
@@ -180,6 +183,12 @@ impl Presentation {
         self.audience_cache = None;
     }
 
+    /// Follow the theme's motion: a slide change fades over its base
+    /// duration.
+    pub(crate) fn set_fade(&mut self, fade: Duration) {
+        self.fade = fade;
+    }
+
     pub(crate) fn start_transition(&mut self, from: usize) {
         self.transition = Some((from, ui::time::now()));
         self.blank = Blank::None;
@@ -189,7 +198,7 @@ impl Presentation {
         if reduce_motion
             || self
                 .transition
-                .is_some_and(|(_, at)| at.elapsed().as_millis() >= TRANSITION_MS)
+                .is_some_and(|(_, at)| at.elapsed() >= self.fade)
         {
             self.transition = None;
         }
@@ -201,7 +210,8 @@ impl Presentation {
         }
         match self.transition {
             Some((_, at)) => {
-                let p = at.elapsed().as_millis().min(TRANSITION_MS) as f32 / TRANSITION_MS as f32;
+                let fade = self.fade.as_secs_f32().max(f32::EPSILON);
+                let p = (at.elapsed().as_secs_f32() / fade).min(1.0);
                 (p * p * (3.0 - 2.0 * p)).clamp(0.0, 1.0)
             }
             None => 1.0,
@@ -355,14 +365,35 @@ impl Presentation {
 
     /// Draw a blanked audience surface. Returns true when it fully owns the
     /// frame, allowing the caller to skip deck rendering.
-    pub(crate) fn draw_blank(&self, scene: &mut Scene, transform: Affine, rect: Rect) -> bool {
+    pub(crate) fn draw_blank(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        theme: &Theme,
+    ) -> bool {
         let background = match self.blank {
             Blank::None => return false,
+            // A white-out lights the room: the projector shows pure white.
             Blank::White => Color::WHITE,
-            Blank::Black => Color::BLACK,
+            Blank::Black => theme.tokens.colors.media.letterbox,
         };
-        chrome::fill_rect(scene, transform, rect, background);
+        ui::paint::fill_rect(scene, transform, rect, background);
         true
+    }
+
+    /// Where the slide sits on a stage of `area`: as large as it fits with
+    /// the content gutter round it, centred.
+    fn stage_dest(area: Rect, theme: &Theme) -> Rect {
+        let gutter = f64::from(theme.tokens.spacing.s6);
+        let available_width = (area.width() - 2.0 * gutter).max(1.0);
+        let available_height = (area.height() - 2.0 * gutter).max(1.0);
+        let scale = (available_width / SLIDE_W).min(available_height / SLIDE_H);
+        let width = SLIDE_W * scale;
+        let height = SLIDE_H * scale;
+        let x = area.x0 + (area.width() - width) / 2.0;
+        let y = area.y0 + (area.height() - height) / 2.0;
+        Rect::new(x, y, x + width, y + height)
     }
 
     pub(crate) fn draw(
@@ -379,8 +410,14 @@ impl Presentation {
             return;
         }
 
-        chrome::fill_rect(scene, transform, frame.rect, STAGE);
-        if self.draw_blank(scene, transform, frame.rect) {
+        // The slide is media on a letterbox, the same in every theme.
+        ui::paint::fill_rect(
+            scene,
+            transform,
+            frame.rect,
+            theme.tokens.colors.media.letterbox,
+        );
+        if self.draw_blank(scene, transform, frame.rect, theme) {
             return;
         }
 
@@ -398,15 +435,32 @@ impl Presentation {
         } else {
             (frame.rect, None)
         };
-        let available_width = area.width() - 48.0;
-        let available_height = area.height() - 48.0;
-        let scale = (available_width / SLIDE_W).min(available_height / SLIDE_H);
-        let width = SLIDE_W * scale;
-        let height = SLIDE_H * scale;
-        let x = area.x0 + (area.width() - width) / 2.0;
-        let y = area.y0 + (area.height() - height) / 2.0;
-        let destination = Rect::new(x, y, x + width, y + height);
+        let destination = Self::stage_dest(area, theme);
+        self.draw_stage_slide(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            frame,
+            &palette,
+            destination,
+            false,
+        );
 
+        if let Some(panel) = notes_panel {
+            self.draw_notes_panel(scene, transform, text, theme, frame, &palette, panel);
+        }
+    }
+
+    /// The current slide (cross-fading from the previous one) at
+    /// `destination`, from the settled cache once the fade is over.
+    fn draw_stage_slide(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        frame: &PresentationFrame<'_>,
+        palette: &Palette,
+        destination: Rect,
+        audience: bool,
+    ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let alpha = self.transition_alpha(theme.reduce_motion);
         if let Some((from, _)) = self.transition
             && alpha < 1.0
@@ -415,7 +469,7 @@ impl Presentation {
             render::draw_slide(
                 &mut PaintCtx::new(scene, transform, text, theme),
                 DeckAssets {
-                    palette: &palette,
+                    palette,
                     images: frame.images,
                 },
                 previous,
@@ -435,7 +489,7 @@ impl Presentation {
                 render::draw_slide(
                     &mut PaintCtx::new(scene, transform, text, theme),
                     DeckAssets {
-                        palette: &palette,
+                        palette,
                         images: frame.images,
                     },
                     slide,
@@ -445,20 +499,21 @@ impl Presentation {
                 scene.pop_layer();
             }
         } else {
+            let cache = if audience {
+                &mut self.audience_cache
+            } else {
+                &mut self.cache
+            };
             Self::append_settled_slide(
-                &mut self.cache,
+                cache,
                 scene,
                 transform,
                 text,
                 theme,
                 frame,
-                &palette,
+                palette,
                 destination,
             );
-        }
-
-        if let Some(panel) = notes_panel {
-            self.draw_notes_panel(scene, transform, text, theme, frame, &palette, panel);
         }
     }
 
@@ -526,69 +581,27 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
     ) {
         let palette = Palette::resolve(frame.deck.palette, theme);
-        chrome::fill_rect(scene, transform, frame.rect, STAGE);
-        if self.draw_blank(scene, transform, frame.rect) {
+        ui::paint::fill_rect(
+            scene,
+            transform,
+            frame.rect,
+            theme.tokens.colors.media.letterbox,
+        );
+        if self.draw_blank(scene, transform, frame.rect, theme) {
             return;
         }
-        let available_width = frame.rect.width() - 48.0;
-        let available_height = frame.rect.height() - 48.0;
-        let scale = (available_width / SLIDE_W).min(available_height / SLIDE_H);
-        let width = SLIDE_W * scale;
-        let height = SLIDE_H * scale;
-        let x = frame.rect.x0 + (frame.rect.width() - width) / 2.0;
-        let y = frame.rect.y0 + (frame.rect.height() - height) / 2.0;
-        let destination = Rect::new(x, y, x + width, y + height);
-        let alpha = self.transition_alpha(theme.reduce_motion);
-        if let Some((from, _)) = self.transition
-            && alpha < 1.0
-            && let Some(previous) = frame.deck.slides.get(from)
-        {
-            render::draw_slide(
-                &mut PaintCtx::new(scene, transform, text, theme),
-                DeckAssets {
-                    palette: &palette,
-                    images: frame.images,
-                },
-                previous,
-                destination,
-                0.0,
-            );
-        }
-        if alpha < 1.0 {
-            if let Some(slide) = frame.slide() {
-                scene.push_layer(
-                    Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &destination,
-                );
-                render::draw_slide(
-                    &mut PaintCtx::new(scene, transform, text, theme),
-                    DeckAssets {
-                        palette: &palette,
-                        images: frame.images,
-                    },
-                    slide,
-                    destination,
-                    0.0,
-                );
-                scene.pop_layer();
-            }
-        } else {
-            Self::append_settled_slide(
-                &mut self.audience_cache,
-                scene,
-                transform,
-                text,
-                theme,
-                frame,
-                &palette,
-                destination,
-            );
-        }
+        let destination = Self::stage_dest(frame.rect, theme);
+        self.draw_stage_slide(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            frame,
+            &palette,
+            destination,
+            true,
+        );
     }
 
+    /// The speaker notes over the bottom of the stage while presenting
+    /// without the dashboard: chrome over media, on the floating material.
     fn draw_notes_panel(
         &self,
         scene: &mut Scene,
@@ -597,89 +610,79 @@ impl Presentation {
         theme: &Theme,
         frame: &PresentationFrame<'_>,
         palette: &Palette,
-        panel: Rect,
+        band: Rect,
     ) {
-        let raised = theme.tokens.colors.surfaces.raised;
-        chrome::fill_rect(scene, transform, panel, raised);
-        // The panel's top rule is its own derived edge, crisp on its first
-        // pixel row.
-        chrome::hairline_h(
-            scene,
-            transform,
-            panel.x0,
-            panel.x1,
-            panel.y0,
-            ui::surface::edge_on(raised),
-        );
-        let x = panel.x0 + 40.0;
-        text.draw_text_weighted(
-            scene,
-            "SPEAKER NOTES",
-            12.0,
-            palette.accent,
-            transform * Affine::translate((x, panel.y0 + 20.0)),
+        let sp = &theme.tokens.spacing;
+        let (s2, s4, s6) = (f64::from(sp.s2), f64::from(sp.s4), f64::from(sp.s6));
+        let panel = Rect::new(band.x0 + s4, band.y0, band.x1 - s4, band.y1 - s4);
+        ui::widget::floating_surface::paint(scene, transform, panel, theme);
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        let ink = &local.tokens.colors;
+        let line = |role: TextRole| f64::from(local.text(role).line_height_px());
+        let inner = panel.inset(-s6);
+        let preview_width = inner.width() * 0.26;
+        let preview_x = inner.x1 - preview_width;
+        let mut ctx = PaintCtx::new(scene, transform, text, &local);
+
+        // Leading column: the notes, with the elapsed time beside their label.
+        let notes_x1 = preview_x - s6;
+        ctx.text_role(
+            &tr("slides-speaker-notes"),
+            TextRole::Subheading,
+            ink.text_primary,
+            Point::new(inner.x0, inner.y0),
             None,
-            TextWeight::Semibold,
         );
-        let preview_width = panel.width() * 0.26;
-        let preview_x = panel.x1 - 40.0 - preview_width;
         let clock = self.clock();
-        let (clock_width, _) = text.measure_weighted(&clock, 30.0, None, TextWeight::Bold);
-        text.draw_text_weighted(
-            scene,
+        let clock_style = local.text(TextRole::Title).numeric();
+        let (clock_w, _) = ctx.text.measure_style(&clock, None, &clock_style);
+        ctx.text(
             &clock,
-            30.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((preview_x - 36.0 - f64::from(clock_width), panel.y0 + 16.0)),
+            &clock_style,
+            ink.text_primary,
+            Point::new(notes_x1 - f64::from(clock_w), inner.y0),
             None,
-            TextWeight::Bold,
         );
         let notes = frame.slide().map_or("", |slide| slide.notes.as_str());
-        text.draw_text_weighted(
-            scene,
-            if notes.is_empty() { "—" } else { notes },
-            18.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x, panel.y0 + 44.0)),
-            Some((panel.width() * 0.6) as f32),
-            TextWeight::Regular,
+        let (notes, notes_ink) = if notes.is_empty() {
+            (tr("slides-no-notes"), ink.text_dim)
+        } else {
+            (notes.to_owned(), ink.text_primary)
+        };
+        ctx.text_role(
+            &notes,
+            TextRole::Reading,
+            notes_ink,
+            Point::new(inner.x0, inner.y0 + line(TextRole::Title) + s2),
+            Some((notes_x1 - inner.x0).max(1.0) as f32),
         );
+
+        // Trailing column: the next slide.
         if let Some(next) = frame.deck.slides.get(frame.current + 1) {
-            let preview_height = preview_width * SLIDE_H / SLIDE_W;
+            ctx.text_role(
+                &tr("slides-next"),
+                TextRole::Subheading,
+                ink.text_primary,
+                Point::new(preview_x, inner.y0),
+                None,
+            );
+            let top = inner.y0 + line(TextRole::Subheading) + s2;
             let preview = Rect::new(
                 preview_x,
-                panel.y0 + 28.0,
-                panel.x1 - 40.0,
-                panel.y0 + 28.0 + preview_height,
+                top,
+                inner.x1,
+                top + preview_width * SLIDE_H / SLIDE_W,
             );
-            text.draw_text_weighted(
-                scene,
-                "NEXT",
-                11.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((preview.x0, preview.y0 - 18.0)),
-                None,
-                TextWeight::Semibold,
-            );
+            let radius = f64::from(local.tokens.radii.control);
             render::draw_slide(
-                &mut PaintCtx::new(scene, transform, text, theme),
+                &mut ctx,
                 DeckAssets {
                     palette,
                     images: frame.images,
                 },
                 next,
                 preview,
-                6.0,
-            );
-            // A frame on the raised notes panel: its derived edge.
-            chrome::stroke_round(
-                scene,
-                transform,
-                preview,
-                6.0,
-                ui::surface::edge_on(raised),
-                1.0,
+                radius,
             );
         }
     }
@@ -693,288 +696,157 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
         palette: &Palette,
     ) {
-        chrome::fill_rect(
-            scene,
-            transform,
-            frame.rect,
-            theme.tokens.colors.surfaces.base,
-        );
-        // Header and footer bands follow the measured line boxes of the text
-        // they hold (classic 60 / 40 px as the 1× floors), so a 2× title
-        // never paints over the PRESENTER VIEW caption or the position line
-        // over the timer, and the key hints keep clear of the notes panel.
-        let m = PresenterMetrics::resolve(text, theme);
-        let outer = 28.0;
+        // The dashboard stands on the window ground the framework painted.
+        let m = PresenterMetrics::of(theme);
         let body = Rect::new(
-            frame.rect.x0 + outer,
+            frame.rect.x0 + m.s6,
             frame.rect.y0 + m.header_h(),
-            frame.rect.x1 - outer,
+            frame.rect.x1 - m.s6,
             frame.rect.y1 - m.footer_h(),
         );
-        let view = PresenterView {
-            frame,
-            palette,
-            outer,
-            m,
-        };
+        let view = PresenterView { frame, palette, m };
         let ctx = &mut PaintCtx::new(scene, transform, text, theme);
         self.draw_presenter_header(ctx, &view);
 
         let left_width = (body.width() * 0.62).min(body.width() - 320.0);
         let current = Rect::new(body.x0, body.y0, body.x0 + left_width, body.y1);
-        let right = Rect::new(current.x1 + 24.0, body.y0, body.x1, body.y1);
+        let right = Rect::new(current.x1 + m.s6, body.y0, body.x1, body.y1);
         draw_presenter_current(ctx, &view, current);
         let next = draw_presenter_next(ctx, &view, right);
-        draw_presenter_notes(ctx, &view, Rect::new(right.x0, next.y1, right.x1, body.y1));
+        draw_presenter_notes(
+            ctx,
+            &view,
+            Rect::new(right.x0, next.y1 + m.s6, right.x1, body.y1),
+        );
         draw_presenter_footer(ctx, &view);
     }
 
     fn draw_presenter_header(&self, ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
-        let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+        let PresenterView { frame, m, .. } = view;
         let colors = &ctx.theme.tokens.colors;
-        let PresenterView {
-            frame,
-            palette,
-            outer,
-            m,
-        } = view;
+        let (primary, dim) = (colors.text_primary, colors.text_dim);
+        let top = frame.rect.y0 + m.s4;
+        let right = frame.rect.x1 - m.s6;
+        // The elapsed time is the one hero number on the dashboard.
         let clock = self.clock();
-        let (clock_width, _) = text.measure_weighted(&clock, FONT_CLOCK, None, TextWeight::Bold);
+        let clock_style = ctx.theme.text(TextRole::Display).numeric();
+        let (clock_w, _) = ctx.text.measure_style(&clock, None, &clock_style);
+        ctx.text(
+            &clock,
+            &clock_style,
+            if self.is_paused() { dim } else { primary },
+            Point::new(right - f64::from(clock_w), top),
+            None,
+        );
         let position = tr_args(
-            "slides-position",
+            if self.is_paused() {
+                "slides-position-paused"
+            } else {
+                "slides-position"
+            },
             &[
-                (
-                    "state",
-                    ArgValue::from(tr(if self.is_paused() {
-                        "slides-paused"
-                    } else {
-                        "slides-elapsed"
-                    })),
-                ),
                 ("current", ArgValue::from(frame.current + 1)),
                 ("total", ArgValue::from(frame.deck.slides.len())),
             ],
         );
-        let (position_width, _) =
-            text.measure_weighted(&position, FONT_POSITION, None, TextWeight::Semibold);
-        // The title yields to whichever right-hand line is wider, `s4` away,
-        // and is elided rather than running under the clock.
-        let right_w = f64::from(clock_width).max(f64::from(position_width));
-        let title_w = (frame.rect.width() - 2.0 * outer - right_w - m.s4).max(0.0);
-        let title = text.elide_to_width_weighted(
-            &frame.deck.title,
-            FONT_TITLE,
-            title_w as f32,
-            TextWeight::Bold,
-        );
-        text.draw_text_weighted(
-            scene,
-            &title,
-            FONT_TITLE,
-            colors.text_primary,
-            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + TITLE_TOP)),
-            None,
-            TextWeight::Bold,
-        );
-        text.draw_text_weighted(
-            scene,
-            &tr("slides-presenter-view"),
-            FONT_CAPTION,
-            palette.accent,
-            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + m.caption_top())),
-            None,
-            TextWeight::Semibold,
-        );
-        text.draw_text_weighted(
-            scene,
-            &clock,
-            FONT_CLOCK,
-            if self.is_paused() {
-                colors.text_dim
-            } else {
-                colors.text_primary
-            },
-            transform
-                * Affine::translate((
-                    frame.rect.x1 - outer - f64::from(clock_width),
-                    frame.rect.y0 + CLOCK_TOP,
-                )),
-            None,
-            TextWeight::Bold,
-        );
-        text.draw_text_weighted(
-            scene,
+        let position_style = ctx.theme.text(TextRole::Caption).numeric();
+        let (position_w, _) = ctx.text.measure_style(&position, None, &position_style);
+        ctx.text(
             &position,
-            FONT_POSITION,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    frame.rect.x1 - outer - f64::from(position_width),
-                    frame.rect.y0 + m.position_top(),
-                )),
+            &position_style,
+            dim,
+            Point::new(right - f64::from(position_w), top + m.lh_display),
             None,
-            TextWeight::Semibold,
+        );
+        // The deck's title yields to the wider of the two right-hand lines.
+        let right_w = f64::from(clock_w).max(f64::from(position_w));
+        let title_w = (right - right_w - m.s6 - (frame.rect.x0 + m.s6)).max(0.0);
+        let style = ctx.theme.text(TextRole::Title);
+        let title = ctx
+            .text
+            .elide_to_width_style(&frame.deck.title, title_w as f32, &style);
+        ctx.text(
+            &title,
+            &style,
+            primary,
+            Point::new(frame.rect.x0 + m.s6, top),
+            None,
         );
     }
 }
 
-/// One presenter-dashboard frame: the deck view, its resolved palette, the
-/// side inset of its header, body and footer, and the measured chrome metrics
-/// every panel lays out against.
+/// One presenter-dashboard frame: the deck view, its resolved palette and
+/// the measures every panel lays out against.
 struct PresenterView<'a> {
     frame: &'a PresentationFrame<'a>,
     palette: &'a Palette,
-    outer: f64,
     m: PresenterMetrics,
 }
 
-/// Presenter-view chrome fonts. Passed unscaled to the renderer, which
-/// applies the accessibility scale once.
-const FONT_TITLE: f32 = 18.0;
-const FONT_CAPTION: f32 = 11.0;
-const FONT_CLOCK: f32 = 34.0;
-const FONT_POSITION: f32 = 12.0;
-const FONT_FOOTER: f32 = 12.0;
-/// Classic 1× offsets of the header's two columns.
-const TITLE_TOP: f64 = 18.0;
-const CLOCK_TOP: f64 = 12.0;
-/// Classic 1× advances, kept as the floors of the measured ones.
-const CAPTION_ADV_1X: f64 = 22.0;
-const SECTION_CAPTION_ADV_1X: f64 = 20.0;
-const CLOCK_ADV_1X: f64 = 32.0;
-const HEADER_H_1X: f64 = 60.0;
-const FOOTER_H_1X: f64 = 40.0;
-
-/// Measured line boxes of the presenter view's chrome text plus the theme's
-/// spacing tokens: every band and caption advance below derives from these,
-/// with the classic 1× values as floors so the 1× dashboard is unchanged.
+/// The presenter dashboard's measures, from the theme: its spacing and the
+/// line boxes of the roles it sets.
+#[derive(Clone, Copy)]
 struct PresenterMetrics {
-    lh_title: f64,
+    lh_display: f64,
     lh_caption: f64,
-    lh_clock: f64,
-    lh_position: f64,
-    lh_footer: f64,
+    lh_subheading: f64,
     s1: f64,
+    s2: f64,
     s3: f64,
     s4: f64,
+    s6: f64,
 }
 
 impl PresenterMetrics {
-    fn resolve(text: &mut TextRenderer, theme: &Theme) -> Self {
-        let lh = |text: &mut TextRenderer, font: f32, weight: TextWeight| {
-            f64::from(text.measure_weighted("Ag", font, None, weight).1)
-        };
+    fn of(theme: &Theme) -> Self {
         let sp = &theme.tokens.spacing;
+        let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
         Self {
-            lh_title: lh(text, FONT_TITLE, TextWeight::Bold),
-            lh_caption: lh(text, FONT_CAPTION, TextWeight::Semibold),
-            lh_clock: lh(text, FONT_CLOCK, TextWeight::Bold),
-            lh_position: lh(text, FONT_POSITION, TextWeight::Semibold),
-            lh_footer: lh(text, FONT_FOOTER, TextWeight::Regular),
+            lh_display: line(TextRole::Display),
+            lh_caption: line(TextRole::Caption),
+            lh_subheading: line(TextRole::Subheading),
             s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
             s3: f64::from(sp.s3),
             s4: f64::from(sp.s4),
+            s6: f64::from(sp.s6),
         }
     }
 
-    /// Top of the PRESENTER VIEW caption: under the title's line box.
-    fn caption_top(&self) -> f64 {
-        TITLE_TOP + self.lh_title.max(CAPTION_ADV_1X)
+    /// Advance from a section label's top to the content under it.
+    fn label_adv(&self) -> f64 {
+        self.lh_subheading + self.s2
     }
 
-    /// Top of the "ELAPSED · slide n / m" line: under the clock's digits
-    /// (the clock line box carries descender room the digits never use, so
-    /// `s3` of it is reclaimed, never less than the classic advance).
-    fn position_top(&self) -> f64 {
-        CLOCK_TOP + (self.lh_clock - self.s3).max(CLOCK_ADV_1X)
-    }
-
-    /// Advance from a section caption's top to the content under it.
-    fn caption_adv(&self) -> f64 {
-        (self.lh_caption + self.s1).max(SECTION_CAPTION_ADV_1X)
-    }
-
-    /// Header band: whichever column ends lower, never below the classic.
+    /// Header band: the clock over the slide position.
     fn header_h(&self) -> f64 {
-        (self.caption_top() + self.caption_adv())
-            .max(self.position_top() + self.lh_position)
-            .max(HEADER_H_1X)
+        self.s4 + self.lh_display + self.lh_caption + self.s6
     }
 
-    /// Footer band holding the key hints and the progress track.
+    /// Footer band holding the key hints and the deck's progress.
     fn footer_h(&self) -> f64 {
-        (self.lh_footer + 2.0 * self.s3).max(FOOTER_H_1X)
+        self.lh_caption + 2.0 * self.s4
     }
-
-    /// Top of the key-hint line, centred in the footer band above `y1`.
-    fn footer_text_top(&self, y1: f64) -> f64 {
-        let h = self.footer_h();
-        y1 - h + (h - self.lh_footer) / 2.0
-    }
-}
-
-fn draw_progress(
-    scene: &mut Scene,
-    transform: Affine,
-    frame: &PresentationFrame<'_>,
-    palette: &Palette,
-    height: f64,
-    track_color: Color,
-    track_alpha: u8,
-) {
-    let fraction = (frame.current + 1) as f64 / frame.deck.slides.len().max(1) as f64;
-    let track = Rect::new(
-        frame.rect.x0,
-        frame.rect.y1 - height,
-        frame.rect.x1,
-        frame.rect.y1,
-    );
-    chrome::fill_rect(
-        scene,
-        transform,
-        track,
-        render::with_alpha(track_color, track_alpha),
-    );
-    chrome::fill_rect(
-        scene,
-        transform,
-        Rect::new(
-            track.x0,
-            track.y0,
-            track.x0 + track.width() * fraction,
-            track.y1,
-        ),
-        palette.accent,
-    );
 }
 
 fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: Rect) {
     let PresenterView {
         frame, palette, m, ..
     } = view;
-    let (scene, transform) = (&mut *ctx.scene, ctx.transform);
-    ctx.text.draw_text_weighted(
-        scene,
+    ctx.text_role(
         &tr("slides-current"),
-        FONT_CAPTION,
-        ctx.theme.tokens.colors.text_dim,
-        transform * Affine::translate((area.x0, area.y0)),
+        TextRole::Subheading,
+        ctx.theme.tokens.colors.text_primary,
+        Point::new(area.x0, area.y0),
         None,
-        TextWeight::Semibold,
     );
     let destination = fit_slide_top(Rect::new(
         area.x0,
-        area.y0 + m.caption_adv(),
+        area.y0 + m.label_adv(),
         area.x1,
         area.y1,
     ));
-    chrome::fill_round(
-        scene,
-        transform,
-        (destination + Vec2::new(0.0, 6.0)).inflate(2.0, 2.0),
-        12.0,
-        render::with_alpha(Color::BLACK, 80),
-    );
+    let radius = f64::from(ctx.theme.tokens.radii.control);
     if let Some(slide) = frame.slide() {
         render::draw_slide(
             ctx,
@@ -984,42 +856,31 @@ fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area
             },
             slide,
             destination,
-            12.0,
+            radius,
         );
     }
-    // The slide frame is the stage's derived edge (the presenter stage is
-    // painted `Color::BLACK`, see `draw_presenter`).
-    chrome::stroke_round(
-        ctx.scene,
-        transform,
-        destination,
-        12.0,
-        ui::surface::edge_on(STAGE),
-        1.0,
-    );
 }
 
 fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: Rect) -> Rect {
     let PresenterView {
         frame, palette, m, ..
     } = view;
-    let (transform, colors) = (ctx.transform, &ctx.theme.tokens.colors);
-    ctx.text.draw_text_weighted(
-        ctx.scene,
+    let theme = ctx.theme;
+    ctx.text_role(
         &tr("slides-next"),
-        FONT_CAPTION,
-        colors.text_dim,
-        transform * Affine::translate((area.x0, area.y0)),
+        TextRole::Subheading,
+        theme.tokens.colors.text_primary,
+        Point::new(area.x0, area.y0),
         None,
-        TextWeight::Semibold,
     );
-    let top = area.y0 + m.caption_adv();
+    let top = area.y0 + m.label_adv();
     let destination = Rect::new(
         area.x0,
         top,
         area.x1,
         top + area.width() * SLIDE_H / SLIDE_W,
     );
+    let radius = f64::from(theme.tokens.radii.control);
     if let Some(next) = frame.deck.slides.get(frame.current + 1) {
         render::draw_slide(
             ctx,
@@ -1029,108 +890,110 @@ fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: R
             },
             next,
             destination,
-            8.0,
-        );
-        chrome::stroke_round(
-            ctx.scene,
-            transform,
-            destination,
-            8.0,
-            ui::surface::edge_on(STAGE),
-            1.0,
+            radius,
         );
     } else {
+        // After the last slide: an empty well saying so.
         ui::surface::card(
             ctx.scene,
-            transform,
+            ctx.transform,
             destination,
-            8.0,
-            colors.surfaces.raised,
+            radius,
+            theme.tokens.colors.surfaces.raised,
         );
-        chrome::text_centered(
-            ctx,
-            &tr("slides-end-of-deck"),
+        let label = tr("slides-end-of-deck");
+        let size = ctx.measure_role(&label, TextRole::Body, None);
+        ctx.text_role_in_band(
+            &label,
+            TextRole::Body,
+            theme.tokens.colors.text_dim,
+            destination.center().x - size.width / 2.0,
             destination,
-            &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
-            colors.text_dim,
+            None,
         );
     }
     destination
 }
 
-/// The speaker-notes caption and panel filling `column`, whose top is the
-/// bottom of the next-slide preview.
+/// The speaker-notes label and well filling `column`.
 fn draw_presenter_notes(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, column: Rect) {
     let PresenterView { frame, m, .. } = view;
-    let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
-    let colors = &ctx.theme.tokens.colors;
-    let top = column.y0 + 22.0;
-    text.draw_text_weighted(
-        scene,
+    let theme = ctx.theme;
+    let colors = &theme.tokens.colors;
+    ctx.text_role(
         &tr("slides-speaker-notes"),
-        FONT_CAPTION,
-        colors.text_dim,
-        transform * Affine::translate((column.x0, top)),
+        TextRole::Subheading,
+        colors.text_primary,
+        Point::new(column.x0, column.y0),
         None,
-        TextWeight::Semibold,
     );
-    let panel = Rect::new(column.x0, top + m.caption_adv(), column.x1, column.y1);
-    ui::surface::card(scene, transform, panel, 10.0, colors.surfaces.raised);
+    let well = Rect::new(
+        column.x0,
+        column.y0 + m.label_adv(),
+        column.x1,
+        column.y1.max(column.y0 + m.label_adv()),
+    );
+    ui::surface::card(
+        ctx.scene,
+        ctx.transform,
+        well,
+        f64::from(theme.tokens.radii.control),
+        colors.surfaces.raised,
+    );
     let notes = frame.slide().map_or("", |slide| slide.notes.as_str());
-    let no_notes = tr("slides-no-notes");
-    text.draw_text_weighted(
-        scene,
-        if notes.is_empty() {
-            no_notes.as_str()
-        } else {
-            notes
-        },
-        16.0,
-        if notes.is_empty() {
-            colors.text_dim
-        } else {
-            colors.text_primary
-        },
-        transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 14.0)),
-        Some((panel.width() - 32.0) as f32),
-        TextWeight::Regular,
+    let (notes, ink) = if notes.is_empty() {
+        (tr("slides-no-notes"), colors.text_dim)
+    } else {
+        (notes.to_owned(), colors.text_primary)
+    };
+    ctx.text_role(
+        &notes,
+        TextRole::Reading,
+        ink,
+        Point::new(well.x0 + m.s4, well.y0 + m.s3),
+        Some((well.width() - 2.0 * m.s4).max(1.0) as f32),
     );
 }
 
 fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
-    let PresenterView {
-        frame,
-        palette,
-        outer,
-        m,
-    } = view;
-    let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
-    let colors = &ctx.theme.tokens.colors;
-    // Centred in the footer band and elided to the window, so the 2× hints
-    // end inside the frame instead of running off its right edge.
-    let hints = text.elide_to_width_weighted(
+    let PresenterView { frame, m, .. } = view;
+    let theme = ctx.theme;
+    let band = Rect::new(
+        frame.rect.x0 + m.s6,
+        frame.rect.y1 - m.footer_h(),
+        frame.rect.x1 - m.s6,
+        frame.rect.y1,
+    );
+    // The deck's progress along the bottom edge.
+    let fraction = (frame.current + 1) as f32 / frame.deck.slides.len().max(1) as f32;
+    let mut progress = ProgressBar::new(fraction);
+    progress.apply_layout_external(Rect::new(
+        frame.rect.x0,
+        frame.rect.y1 - m.s1,
+        frame.rect.x1,
+        frame.rect.y1,
+    ));
+    progress.draw(
+        ctx.scene,
+        ctx.transform,
+        ctx.text,
+        theme,
+        &ui::presence::PresenceCtx::empty(),
+    );
+    // The keys the dashboard answers to, elided to the window.
+    let style = theme.text(TextRole::Caption);
+    let hints = ctx.text.elide_to_width_style(
         &tr("slides-presenter-keys"),
-        FONT_FOOTER,
-        (frame.rect.width() - 2.0 * outer).max(0.0) as f32,
-        TextWeight::Regular,
+        band.width().max(0.0) as f32,
+        &style,
     );
-    text.draw_text_weighted(
-        scene,
+    ctx.text_role_in_band(
         &hints,
-        FONT_FOOTER,
-        colors.text_dim,
-        transform * Affine::translate((frame.rect.x0 + outer, m.footer_text_top(frame.rect.y1))),
+        TextRole::Caption,
+        theme.tokens.colors.text_dim,
+        band.x0,
+        Rect::new(band.x0, band.y0, band.x1, band.y1 - m.s1),
         None,
-        TextWeight::Regular,
-    );
-    draw_progress(
-        scene,
-        transform,
-        frame,
-        palette,
-        3.0,
-        colors.text_primary,
-        26,
     );
 }
 

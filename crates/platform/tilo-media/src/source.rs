@@ -111,38 +111,21 @@ impl Source {
                 "remote sources are streamed by the decode pipeline, not read here",
             ));
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            return Err(std::io::Error::new(
+        let abs = self.abs_path().ok_or_else(|| {
+            std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "filesystem media sources are unavailable on this platform",
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let abs = self.abs_path().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "source has no local path to read",
-                )
-            })?;
-            let f = std::fs::File::open(abs)?;
-            Ok(Box::new(f))
-        }
+                "source has no local path to read",
+            )
+        })?;
+        let f = std::fs::File::open(abs)?;
+        Ok(Box::new(f))
     }
 
     /// The total byte length of a file source, if known (a stat on the mount).
     /// `None` for remote streams and unhydrated / missing files.
     pub fn byte_len(&self) -> Option<u64> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            return None;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let abs = self.abs_path()?;
-            std::fs::metadata(abs).ok().map(|m| m.len())
-        }
+        let abs = self.abs_path()?;
+        std::fs::metadata(abs).ok().map(|m| m.len())
     }
 
     /// A playable source over media the app holds as bytes: a file the user
@@ -167,10 +150,7 @@ impl Source {
 }
 
 /// The MIME type a page element needs for a media file extension.
-#[cfg_attr(
-    not(web_page),
-    allow(dead_code, reason = "only a page element needs a MIME type")
-)]
+#[cfg(web_page)]
 fn mime_for_extension(extension: &str) -> &'static str {
     match extension {
         "mp4" | "m4v" => "video/mp4",
@@ -188,6 +168,10 @@ fn mime_for_extension(extension: &str) -> &'static str {
 }
 
 #[cfg(web_page)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "shares the signature of the native variant, which writes a file"
+)]
 fn contents_source(extension: &str, bytes: &[u8]) -> std::io::Result<Source> {
     Ok(Source::Remote {
         url: crate::web::blob_url(bytes, mime_for_extension(extension)),

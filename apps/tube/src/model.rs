@@ -11,7 +11,7 @@
 //! stays theme-agnostic and the OS keeps control of the palette.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type VideoId = String;
 pub type ChannelId = String;
@@ -136,6 +136,21 @@ impl SkipMode {
             SkipMode::Show => "Show",
             SkipMode::Disabled => "Off",
         }
+    }
+
+    /// The stable name an effect names this mode by.
+    pub fn key(self) -> &'static str {
+        match self {
+            SkipMode::Skip => "skip",
+            SkipMode::Show => "show",
+            SkipMode::Disabled => "disabled",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled]
+            .into_iter()
+            .find(|mode| mode.key() == key)
     }
 
     /// Cycle order for the settings selector: Auto-skip → Show → Off → …
@@ -370,14 +385,12 @@ impl Video {
         }
         &self.title
     }
-
-    /// Whether a `DeArrow` alternative exists *and* is active.
-    pub fn dearrow_active(&self, dearrow: bool) -> bool {
-        dearrow && self.dearrow_title.is_some()
-    }
 }
 
-/// User-controlled settings. Lives in the CRDT.
+/// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
+/// counts, autoplay, comments and the preferred quality. A personal setting
+/// that follows them to every device and that collaborators on a shared
+/// library never see.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, user-facing setting toggle, not a state machine"
@@ -409,6 +422,10 @@ pub struct Settings {
 /// of our flags want to default *on* when absent from older persisted state).
 fn default_true() -> bool {
     true
+}
+
+impl ui::storage::SettingsSchema for Settings {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
 impl Default for Settings {
@@ -465,16 +482,6 @@ impl Settings {
     /// Whether this category should offer a manual "Skip" button (Show mode).
     pub fn should_show_skip(&self, c: Category) -> bool {
         matches!(self.mode_of(c), SkipMode::Show)
-    }
-
-    /// Cycle a category's mode: Auto-skip → Show → Off → Auto-skip.
-    pub fn cycle_category(&mut self, c: Category) {
-        let cur = self
-            .categories
-            .get(c.api_key())
-            .copied()
-            .unwrap_or(SkipMode::Skip);
-        self.categories.insert(c.api_key().to_string(), cur.next());
     }
 
     /// Whether `DeArrow` title replacement is active (master + titles sub-toggle).
@@ -542,10 +549,6 @@ impl Route {
 }
 
 /// The complete application state.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent piece of application state, not a state machine"
-)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TubeModel {
     pub videos: Vec<Video>,
@@ -563,20 +566,13 @@ pub struct TubeModel {
     /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
-    /// Stable signed-in profile scope for the owner-local history store. The
-    /// host supplies this from the account identity; the offline default is a
-    /// deterministic local profile for hermetic tests and screenshots.
-    #[serde(default = "default_history_owner")]
-    pub history_owner: String,
-    /// Ordered visible projection of the separate owner-local history document,
-    /// never the source of persistence or a subtree of shared collaboration.
-    /// IDs without loaded metadata remain here so a refresh
-    /// cannot erase durable history membership.
+    /// The person's watch history, newest first, as their own record holds
+    /// it ([`crate::history::WatchHistory`]); never part of the shared library.
+    /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
-    /// A local-only recovery banner shown when the durable owner history store
-    /// was preserved but could not be opened or written. Never synchronised.
+    /// Shown when the watch history could not be stored.
     #[serde(default)]
-    pub history_recovery_notice: Option<String>,
+    pub history_notice: Option<String>,
     pub settings: Settings,
     pub route: Route,
     /// Last submitted, device-local search query. The editable top-bar buffer
@@ -595,20 +591,12 @@ pub struct TubeModel {
     /// identity used by the action layer. Unlike fetched comments themselves,
     /// these are user mutations mirrored from the collaborative document.
     #[serde(default)]
-    pub comment_likes: BTreeMap<String, bool>,
+    pub comment_likes: BTreeSet<String>,
     /// Transient user-facing notices — auto-skip confirmations, worker status,
     /// "link copied" acknowledgements — rendered as a toast stack on the watch
     /// page. Newest first, capped.
     #[serde(default)]
     pub notices: Vec<String>,
-    /// Whether the Ctrl+K global command palette overlay is open.
-    #[serde(default)]
-    pub palette_open: bool,
-    /// Device-local palette query mirrored from the toolkit's local text
-    /// binding for rendering; opening the palette never clobbers top-bar text
-    /// and neither query enters the collaborative document.
-    #[serde(default)]
-    pub palette_query: String,
     /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
@@ -676,19 +664,16 @@ impl Default for TubeModel {
             playlists: Vec::new(),
             subscriptions: Vec::new(),
             queue: Vec::new(),
-            history_owner: default_history_owner(),
             history: Vec::new(),
-            history_recovery_notice: None,
+            history_notice: None,
             settings: Settings::default(),
             route: Route::Home,
             search_query: String::new(),
             playhead: 0.0,
             playing: false,
             liked: Vec::new(),
-            comment_likes: BTreeMap::new(),
+            comment_likes: BTreeSet::new(),
             notices: Vec::new(),
-            palette_open: false,
-            palette_query: String::new(),
             data_source: DataSource::default(),
             search_hits_query: String::new(),
             search_hits: Vec::new(),
@@ -778,22 +763,6 @@ impl TubeModel {
         self.subscription_key(id).is_some()
     }
 
-    pub fn toggle_subscribe(&mut self, id: &str) {
-        if let Some(pos) = self.subscriptions.iter().position(|subscription| {
-            subscription == id
-                || self.channel(id).is_some_and(|channel| {
-                    subscription == &channel.handle
-                        || subscription
-                            .strip_prefix("https://youtube.com/")
-                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
-                })
-        }) {
-            self.subscriptions.remove(pos);
-        } else {
-            self.subscriptions.push(id.to_string());
-        }
-    }
-
     pub fn is_liked(&self, id: &str) -> bool {
         self.liked.iter().any(|l| l == id)
     }
@@ -801,14 +770,6 @@ impl TubeModel {
     /// Whether a video is a member of the shared watch queue.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queue.iter().any(|queued| queued == id)
-    }
-
-    pub fn toggle_like(&mut self, id: &str) {
-        if let Some(pos) = self.liked.iter().position(|l| l == id) {
-            self.liked.remove(pos);
-        } else {
-            self.liked.push(id.to_string());
-        }
     }
 
     /// The like count to display for a video: the base count plus one while the
@@ -842,27 +803,6 @@ impl TubeModel {
     pub fn push_notice(&mut self, msg: impl Into<String>) {
         self.notices.insert(0, msg.into());
         self.notices.truncate(8);
-    }
-
-    /// Update the in-memory projection after an already-dispatched canonical
-    /// history action. Persistence belongs to the owner-local action store;
-    /// retaining this helper keeps the opened card responsive before the next
-    /// document reconciliation pass.
-    pub fn record_watch(&mut self, id: &str) {
-        self.history.retain(|h| h != id);
-        self.history.insert(0, id.to_string());
-        self.history.truncate(50);
-    }
-
-    /// Replace the visible ordered projection of the owner-local history document.
-    /// Entries are sorted by the authored watch timestamp (newest first) with
-    /// the stable video id as a deterministic concurrent tie-breaker.
-    pub fn set_history_projection(&mut self, entries: BTreeMap<VideoId, u64>) {
-        let mut ordered = entries.into_iter().collect::<Vec<_>>();
-        ordered.sort_by(|(left_id, left_at), (right_id, right_at)| {
-            right_at.cmp(left_at).then_with(|| left_id.cmp(right_id))
-        });
-        self.history = ordered.into_iter().map(|(id, _)| id).take(50).collect();
     }
 
     /// Videos uploaded by channels the user is subscribed to.
@@ -1055,15 +995,10 @@ impl TubeModel {
     /// when we have them for this query, otherwise the local substring filter
     /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
-        if self.search_hits_query == query && !self.search_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .search_hits
-                .iter()
-                .filter_map(|id| self.video(id))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.search_hits_query == query
+            && let Some(hits) = self.known_videos(&self.search_hits)
+        {
+            return hits;
         }
         self.search(query)
     }
@@ -1072,17 +1007,19 @@ impl TubeModel {
     /// recommendations when we have them for this video, otherwise the local
     /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
-        if self.related_of == id && !self.related_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .related_hits
-                .iter()
-                .filter_map(|rid| self.video(rid))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.related_of == id
+            && let Some(hits) = self.known_videos(&self.related_hits)
+        {
+            return hits;
         }
         self.related(id)
+    }
+
+    /// The videos of `ids` this model knows, in order; `None` when it knows
+    /// none of them.
+    fn known_videos(&self, ids: &[VideoId]) -> Option<Vec<&Video>> {
+        let hits: Vec<&Video> = ids.iter().filter_map(|id| self.video(id)).collect();
+        (!hits.is_empty()).then_some(hits)
     }
 
     /// "Up next" suggestions for a watch page: same category first, then
@@ -1118,10 +1055,6 @@ impl TubeModel {
     }
 }
 
-fn default_history_owner() -> String {
-    "profile:local".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1148,18 +1081,23 @@ mod tests {
             assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
             assert!(!s.should_auto_skip(Category::Sponsor));
         }
-        // Case `cycle_category_walks_skip_show_off`.
+        // Case `modes_cycle_skip_show_off`.
         {
             let mut s = Settings::default();
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
-            s.cycle_category(Category::Intro);
+            let cycle = |s: &mut Settings| {
+                let next = s.mode_of(Category::Intro).next();
+                s.categories
+                    .insert(Category::Intro.api_key().to_string(), next);
+            };
+            cycle(&mut s);
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Show);
             assert!(s.should_show_skip(Category::Intro));
             assert!(s.category_enabled(Category::Intro), "Show is still enabled");
-            s.cycle_category(Category::Intro);
+            cycle(&mut s);
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
             assert!(!s.category_enabled(Category::Intro));
-            s.cycle_category(Category::Intro);
+            cycle(&mut s);
             assert_eq!(
                 s.mode_of(Category::Intro),
                 SkipMode::Skip,
@@ -1398,34 +1336,13 @@ mod tests {
     }
 
     #[test]
-    fn subscriptions_and_history_toggle_and_dedup() {
-        // Case `subscribe_toggles`.
-        {
-            let mut m = TubeModel::default();
-            m.toggle_subscribe("c1");
-            assert!(m.is_subscribed("c1"));
-            m.toggle_subscribe("c1");
-            assert!(!m.is_subscribed("c1"));
-        }
-        // Case `imported_url_subscription_toggles_the_same_durable_entry`.
-        {
-            let mut m = TubeModel::default();
-            m.channels.push(chan("UC_A", "Creator", ""));
-            m.subscriptions.push("https://youtube.com/UC_A".into());
-
-            assert!(m.is_subscribed("UC_A"));
-            assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
-            m.toggle_subscribe("UC_A");
-            assert!(m.subscriptions.is_empty());
-        }
-        // Case `history_dedups_and_fronts`.
-        {
-            let mut m = TubeModel::default();
-            m.record_watch("a");
-            m.record_watch("b");
-            m.record_watch("a");
-            assert_eq!(m.history, vec!["a", "b"]);
-        }
+    fn an_imported_url_subscription_is_the_creators_subscription() {
+        let mut m = TubeModel::default();
+        m.channels.push(chan("UC_A", "Creator", ""));
+        m.subscriptions.push("https://youtube.com/UC_A".into());
+        assert!(m.is_subscribed("UC_A"));
+        assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
+        assert!(!m.is_subscribed("UC_B"));
     }
 
     fn sample_video() -> Video {

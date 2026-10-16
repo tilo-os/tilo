@@ -1,0 +1,175 @@
+{
+  "schema": 1,
+  "provenance": {
+    "runtime_source": "1c644676ec23a7d76bde914fdb7b19dc2ee5c88e",
+    "original_receipt_sha256": {
+      "fresh-owned-search-visual-result-20261012.json": "6da93d0e8cd9f643db2078beb0eb796066bea9bfcf12d80c6461316582839e82",
+      "fresh-owned-search-field-result-r4-20261012.json": "981c08ce6b60f3c9bb33df8bf535d1d2acac5fe4a8167628a3b5a26fa8ab43bc"
+    },
+    "normalization": "Control/source paths and distinct session names replaced with explicit labels; unrelated UI state/targets omitted. Original peer/field identity, public text, observed activation, command receipts and cleanup retained. Historical observations, not a live runtime/model authority.",
+    "speech_qualified": false
+  },
+  "receipt": {
+    "kernel_peer_pid": 66253,
+    "owned_pid": 66253,
+    "kernel_peer_uid": 65534,
+    "runtime_uid": 65534,
+    "cleanup": {
+      "cleanup_complete": true,
+      "pid_reaped": true,
+      "socket_removed": true
+    },
+    "mic_attempts": 0,
+    "capture_started": false,
+    "public_text_expected": "Public Dictation acceptance blue notebook",
+    "process_executable_readback_equal": false,
+    "binaries": {
+      "tilo-control": {
+        "path": "/__SOURCE__/target/debug/tilo-control",
+        "sha256": "e4ddd8ef455fb162f36da6701b6fb34827b2fa335f523d4b589395ae6629b296"
+      }
+    },
+    "owned_socket": "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+    "field_setup_journal": [
+      {
+        "stage": "public-baseline-keyboard-insertion",
+        "state": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "state-dump"
+          ],
+          "exit": 0,
+          "stdout": "{\"chrome\":{\"palette\":{\"query\":\"Public Dictation acceptance blue notebook\"},\"seat_focus\":{\"keyboard\":null,\"routed_keyboard_surface\":null,\"text_input\":{\"surface\":4294967303,\"root_surface\":4294967303,\"app_id\":null,\"role\":\"other\"},\"text_input_active\":false,\"on_screen_keyboard_surface\":null}}}\n"
+        },
+        "targets": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "list-targets"
+          ],
+          "exit": 0,
+          "stdout": "command_palette_input  (480, 96, 640, 248)\n"
+        },
+        "result": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "type",
+            "Public Dictation acceptance blue notebook"
+          ],
+          "exit": 0,
+          "stdout": "ok\n"
+        }
+      },
+      {
+        "stage": "original-field-consent-prompt-observed",
+        "state": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "state-dump"
+          ],
+          "exit": 0,
+          "stdout": "{\"chrome\":{\"palette\":{\"query\":\"Public Dictation acceptance blue notebook\"},\"seat_focus\":{\"keyboard\":null,\"routed_keyboard_surface\":null,\"text_input\":{\"surface\":4294967303,\"root_surface\":4294967303,\"app_id\":null,\"role\":\"other\"},\"text_input_active\":true,\"on_screen_keyboard_surface\":null}}}\n"
+        },
+        "targets": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "list-targets"
+          ],
+          "exit": 0,
+          "stdout": "command_palette_input  (480, 96, 640, 248)\ntilo.shell.trusted-frame/dictation-microphone  (17, 20, 1566, 4)\n"
+        },
+        "result": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "list-targets"
+          ],
+          "exit": 0,
+          "stdout": "command_palette_input  (480, 96, 640, 248)\ntilo.shell.trusted-frame/dictation-microphone  (17, 20, 1566, 4)\n"
+        }
+      },
+      {
+        "stage": "prepared-consent-canceled-without-capture",
+        "state": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "state-dump"
+          ],
+          "exit": 0,
+          "stdout": "{\"chrome\":{\"palette\":{\"query\":\"Public Dictation acceptance blue notebook\"},\"seat_focus\":{\"keyboard\":null,\"routed_keyboard_surface\":null,\"text_input\":{\"surface\":4294967303,\"root_surface\":4294967303,\"app_id\":null,\"role\":\"other\"},\"text_input_active\":false,\"on_screen_keyboard_surface\":null}}}\n"
+        },
+        "targets": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "list-targets"
+          ],
+          "exit": 0,
+          "stdout": "command_palette_input  (480, 96, 640, 248)\n"
+        },
+        "result": {
+          "argv": [
+            "/__SOURCE__/target/debug/tilo-control",
+            "--socket",
+            "/run/user/65534/__SESSION_A__/tilo-session/test-control.sock",
+            "actions",
+            "invoke",
+            "actions",
+            "dictation.cancel"
+          ],
+          "exit": 0,
+          "stdout": "{\"action\":{\"provider\":\"actions\",\"id\":\"dictation.cancel\",\"kind\":\"Actions\",\"title\":\"Cancel dictation\",\"params\":[],\"contract\":{\"availability\":{\"state\":\"available\"},\"kind\":\"undoable\",\"risk\":\"low\",\"confirmation\":{\"mode\":\"none\"},\"retry\":\"at_most_once\",\"reversible\":false,\"execution\":{\"mode\":\"immediate\"},\"result\":{\"type\":\"none\"}}},\"receipt\":{\"update\":{\"state\":\"succeeded\",\"invocation\":\"86f2925b-5ab5-414b-a4f8-42400089bb28\",\"output\":{}}}}\n"
+        }
+      }
+    ]
+  },
+  "foreign_cancel_stage": {
+    "stage": "prepared-consent-canceled-without-capture",
+    "state": {
+      "argv": [
+        "/__SOURCE__/target/debug/tilo-control",
+        "--socket",
+        "/run/user/65534/__SESSION_B__/tilo-session/test-control.sock",
+        "state-dump"
+      ],
+      "exit": 0,
+      "stdout": "{\"chrome\":{\"palette\":{\"query\":\"Public Dictation acceptance blue notebook\"},\"seat_focus\":{\"keyboard\":null,\"routed_keyboard_surface\":null,\"text_input\":{\"surface\":4294967303,\"root_surface\":4294967303,\"app_id\":null,\"role\":\"other\"},\"text_input_active\":false,\"on_screen_keyboard_surface\":null}}}\n"
+    },
+    "targets": {
+      "argv": [
+        "/__SOURCE__/target/debug/tilo-control",
+        "--socket",
+        "/run/user/65534/__SESSION_B__/tilo-session/test-control.sock",
+        "list-targets"
+      ],
+      "exit": 0,
+      "stdout": "command_palette_input  (480, 96, 640, 248)\n"
+    },
+    "result": {
+      "argv": [
+        "/__SOURCE__/target/debug/tilo-control",
+        "--socket",
+        "/run/user/65534/__SESSION_B__/tilo-session/test-control.sock",
+        "actions",
+        "invoke",
+        "actions",
+        "dictation.cancel"
+      ],
+      "exit": 0,
+      "stdout": "{\"action\":{\"provider\":\"actions\",\"id\":\"dictation.cancel\",\"kind\":\"Actions\",\"title\":\"Cancel dictation\",\"params\":[],\"contract\":{\"availability\":{\"state\":\"available\"},\"kind\":\"undoable\",\"risk\":\"low\",\"confirmation\":{\"mode\":\"none\"},\"retry\":\"at_most_once\",\"reversible\":false,\"execution\":{\"mode\":\"immediate\"},\"result\":{\"type\":\"none\"}}},\"receipt\":{\"update\":{\"state\":\"succeeded\",\"invocation\":\"69d8eaa2-67a8-4371-a01c-ab0cf06300f6\",\"output\":{}}}}\n"
+    }
+  }
+}

@@ -16,22 +16,17 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use format_host::format_router_capnp::format_router;
 use format_host::router::{Router, load_into};
 use format_host::runner::{self, Limits, LoadedProvider};
 use format_host::{transport, watch::spawn_watcher};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: Duration = Duration::from_secs(30);
@@ -45,11 +40,11 @@ fn markdown_wasm() -> PathBuf {
     let wasm = here
         .parent()
         .expect("format-host crate has a parent directory")
-        .join("qdoc-codec-markdown-wasm")
+        .join("tilo-doc-codec-markdown-wasm")
         .join("target")
         .join("wasm32-unknown-unknown")
         .join("release")
-        .join("qdoc_codec_markdown_wasm.wasm");
+        .join("tilo_doc_codec_markdown_wasm.wasm");
     assert!(wasm.is_file(), "Markdown provider is missing; {BUILD_HINT}");
     wasm
 }
@@ -119,19 +114,8 @@ impl HostHarness {
 }
 
 fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc_system = RpcSystem::new(network, None);
-    let client: format_router::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
-    tokio::task::spawn_local(rpc_system);
-    client
+    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
+        .bootstrap()
 }
 
 fn markdown_registry(wasm: &std::path::Path) -> String {
@@ -139,7 +123,7 @@ fn markdown_registry(wasm: &std::path::Path) -> String {
         r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "so.tilo.qdoc-md"
+package  = "so.tilo.markdown"
 wasm     = "{}"
 version  = "1.0.0"
 priority = "builtin"
@@ -157,7 +141,7 @@ async fn import_as(client: &format_router::Client, bytes: &[u8]) -> Vec<u8> {
     {
         let mut p = imp.get();
         p.set_bytes(bytes);
-        p.set_provider_id("so.tilo.qdoc-md");
+        p.set_provider_id("so.tilo.markdown");
     }
     let response = imp.send().promise.await.unwrap();
     response.get().unwrap().get_canonical().unwrap().to_vec()
@@ -172,7 +156,7 @@ async fn export_as(client: &format_router::Client, canonical: &[u8]) -> Vec<u8> 
     {
         let mut p = exp.get();
         p.set_canonical(canonical);
-        p.set_provider_id("so.tilo.qdoc-md");
+        p.set_provider_id("so.tilo.markdown");
     }
     let response = exp.send().promise.await.unwrap();
     response.get().unwrap().get_bytes().unwrap().to_vec()
@@ -200,7 +184,7 @@ fn single_provider_round_trip() {
             .map(|i| providers.get(i).unwrap().to_string().unwrap())
             .collect();
         assert!(
-            names.contains(&"so.tilo.qdoc-md".to_string()),
+            names.contains(&"so.tilo.markdown".to_string()),
             "got {names:?}"
         );
 
@@ -216,10 +200,10 @@ fn single_provider_round_trip() {
         assert!(detected.get_confidence().unwrap().get_tier() >= 1);
         assert_eq!(
             detected.get_provider_id().unwrap().to_str().unwrap(),
-            "so.tilo.qdoc-md"
+            "so.tilo.markdown"
         );
 
-        // import → export round trip. Exported markdown is idempotent (qdoc
+        // import → export round trip. Exported markdown is idempotent (tilo-doc
         // tests prove this); after one round trip the same source re-imports
         // to identical bytes.
         let canonical_a = import_as(&client, REAL_DOC).await;
@@ -323,7 +307,7 @@ fn registry_hot_reload() {
             let providers = response.get().unwrap().get_providers().unwrap();
             if !providers.is_empty() {
                 let name = providers.get(0).unwrap().to_string().unwrap();
-                assert_eq!(name, "so.tilo.qdoc-md");
+                assert_eq!(name, "so.tilo.markdown");
                 return;
             }
         }

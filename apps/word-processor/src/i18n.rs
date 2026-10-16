@@ -12,31 +12,12 @@
 //! (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`, read as POSIX — `de_DE.UTF-8`
 //! resolves the `de` catalog) and falls back to `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::i18n::ArgValue;
 
-/// The source catalog (`en-US`), the fallback for every other locale, plus
-/// the bundled translations. Add a locale by dropping a
-/// `locales/<lang>.ftl` next to `en-US.ftl` and listing it here.
-/// Translations are best-effort: any key a catalog omits transparently falls
-/// back to the English string.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../locales/en-US.ftl")),
-            ("de", include_str!("../locales/de.ftl")),
-        ],
-        "toolbar-body",
-    )
-    .with_system_locale();
-    // Widget tests assert source copy; keep them independent of the locale
-    // of the machine running them. Locale tests select theirs explicitly.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+// Add a locale by dropping a `locales/<lang>.ftl` next to `en-US.ftl` and
+// listing it here. Any key a translation omits falls back to the English
+// string.
+ui::embedded_catalog!(pub fn, ["en-US", "de"]);
 
 /// Switch the active locale at runtime (used by tests and by callers that want
 /// to honour a locale change without restarting). Accepts a BCP-47 or POSIX
@@ -50,24 +31,6 @@ pub fn set_locale(locale: &str) {
 /// and diagnostics.
 pub fn current_locale() -> String {
     CATALOG.current_locale()
-}
-
-/// Translate `key` to a string in the active locale.
-///
-/// Resolution order: active locale → `en-US` source → the key itself. A missing
-/// key returns the key (a safe, debuggable placeholder) rather than panicking.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Translate `key`, interpolating Fluent placeables (e.g. `{ $n }`) from
-/// `args`. Use [`arg`] to build the slice ergonomically:
-///
-/// ```ignore
-/// let s = t_args("status.page-of", &[arg("cur", 3), arg("total", 10)]);
-/// ```
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 /// Build a single Fluent argument from anything convertible into an
@@ -89,18 +52,14 @@ mod tests {
         // Phase: en_us_returns_source_string.
         {
             set_locale("en-US");
-            assert_eq!(t("toolbar-body"), "Body");
+            assert_eq!(t("toolbar-styles"), "Styles");
             assert_eq!(t("template-report"), "Report");
-            assert_eq!(
-                t("recovery-banner"),
-                "Recovered unsaved changes from a previous session."
-            );
         }
 
         // Phase: de_returns_german_string.
         {
             set_locale("de");
-            assert_eq!(t("toolbar-body"), "Fließtext");
+            assert_eq!(t("toolbar-styles"), "Stile");
             assert_eq!(t("template-report"), "Bericht");
             // A POSIX-style value resolves the same `de` catalog.
             set_locale("de_DE.UTF-8");
@@ -121,10 +80,10 @@ mod tests {
             // `find.match-case` is intentionally English-only in the de catalog test
             // surface; assert it falls through to en-US rather than to the key.
             set_locale("de");
-            let v = t("find-find");
+            let v = t("layout-margins");
             // The de catalog DOES translate this; assert it is neither the key nor
             // empty (proves resolution worked at all).
-            assert_ne!(v, "find.find");
+            assert_ne!(v, "layout-margins");
             assert!(!v.is_empty());
             set_locale("en-US");
         }
@@ -132,13 +91,12 @@ mod tests {
         // Phase: t_args_interpolates_numbers.
         {
             set_locale("en-US");
-            let s = t_args("find-count", &[arg("cur", 2), arg("total", 7)]);
-            assert_eq!(s, "2 / 7");
+            let s = t_args("page-indicator", &[arg("n", 7)]);
+            assert_eq!(s, "Page 7");
 
             set_locale("de");
-            // German uses the same numeric pattern; the count format is identical.
-            let s = t_args("find-count", &[arg("cur", 3), arg("total", 9)]);
-            assert_eq!(s, "3 / 9");
+            let s = t_args("page-indicator", &[arg("n", 9)]);
+            assert_eq!(s, "Seite 9");
             set_locale("en-US");
         }
 
@@ -160,40 +118,21 @@ mod tests {
         {
             set_locale("en-US");
 
-            let one = t_args("status-count", &[arg("words", 1), arg("chars", 1)]);
-            assert_eq!(one, "1 word    1 character");
-
-            let many = t_args("status-count", &[arg("words", 2), arg("chars", 12)]);
-            assert_eq!(many, "2 words    12 characters");
+            assert_eq!(t_args("status-words", &[arg("words", 1)]), "1 word");
+            assert_eq!(t_args("status-chars", &[arg("chars", 1)]), "1 character");
+            assert_eq!(t_args("status-words", &[arg("words", 2)]), "2 words");
+            assert_eq!(t_args("status-chars", &[arg("chars", 12)]), "12 characters");
 
             // Zero takes the plural in English, as CLDR has it.
-            let none = t_args("status-count", &[arg("words", 0), arg("chars", 0)]);
-            assert_eq!(none, "0 words    0 characters");
-
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 1)]),
-                "Table of contents updated (1 entry)"
-            );
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 4)]),
-                "Table of contents updated (4 entries)"
-            );
+            assert_eq!(t_args("status-words", &[arg("words", 0)]), "0 words");
 
             // German has the same one/other split, and `Zeichen` is invariant —
             // the catalog must not have grown an English-shaped plural for it.
             set_locale("de");
-            assert_eq!(
-                t_args("status-count", &[arg("words", 1), arg("chars", 1)]),
-                "1 Wort    1 Zeichen"
-            );
-            assert_eq!(
-                t_args("status-count", &[arg("words", 3), arg("chars", 9)]),
-                "3 Wörter    9 Zeichen"
-            );
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 1)]),
-                "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
-            );
+            assert_eq!(t_args("status-words", &[arg("words", 1)]), "1 Wort");
+            assert_eq!(t_args("status-chars", &[arg("chars", 1)]), "1 Zeichen");
+            assert_eq!(t_args("status-words", &[arg("words", 3)]), "3 Wörter");
+            assert_eq!(t_args("status-chars", &[arg("chars", 9)]), "9 Zeichen");
 
             set_locale("en-US");
         }

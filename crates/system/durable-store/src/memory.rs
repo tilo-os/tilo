@@ -397,6 +397,25 @@ impl crate::DurableStore for MemoryStore {
         }))
     }
 
+    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        // `slots` is ordered, so the answer is sorted.
+        Ok(self
+            .state
+            .borrow()
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.current.as_ref().is_some_and(|s| !s.bytes.is_empty()))
+            .filter_map(|(key, _)| match key {
+                StorageKey::Record {
+                    package: p,
+                    workspace: w,
+                    record,
+                } if p == package && w == workspace => Some(record.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
         let mut claims = self.claims.borrow_mut();
         let owner = claims

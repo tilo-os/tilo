@@ -1,0 +1,33 @@
+[package]
+name = "tilo-endpoint-reachability"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Hold an iroh endpoint's relays back until something needs the device dialable."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_endpoint_reachability"
+path = "src/lib.rs"
+
+[features]
+# `test_support::local_relay`: a loopback relay for tests that need a home relay.
+test-support = ["dep:iroh-relay"]
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+iroh.workspace = true
+iroh-relay = { version = "1.0.3", features = ["server"], optional = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+iroh-relay = { version = "1.0.3", features = ["server"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

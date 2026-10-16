@@ -18,10 +18,10 @@ fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
 fn opening_rows_keeps_the_most_recent_first() {
     let mut review = Replica::<Review>::new();
     for id in [3, 7, 3] {
-        review.apply(Review::OPEN.with(id)).expect("open a row");
+        review.apply(Review::OPEN_ROW.with(id)).expect("open a row");
     }
     assert_eq!(review.state().expect("review").opened, [3, 7]);
-    assert!(review.apply(Review::OPEN.with(u64::MAX)).is_err());
+    assert!(review.apply(Review::OPEN_ROW.with(u64::MAX)).is_err());
 }
 
 #[test]

@@ -8,12 +8,16 @@ description = "Portable filesystem operations that only some hosts provide: perm
 
 [dependencies]
 trash = "5.2.6"
-tilo-xdg-paths = { path = "../xdg-paths" }
+tilo-paths.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 xattr = "1.6.1"
+
+[dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [lints]
 workspace = true

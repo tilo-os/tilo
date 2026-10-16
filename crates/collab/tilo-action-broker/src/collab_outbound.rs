@@ -32,8 +32,9 @@ pub trait PeerPublishSink: Send + Sync {
     /// Republish typed presence independently of the local app transport.
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence);
 
-    /// Ask the room whether anyone still holds a range of history.
-    fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+    /// Ask the room `cluster_id` whether anyone still holds a range of
+    /// history; only its members are asked, and only they may answer.
+    fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
     /// Also show typed presence on the room's live plane, where browsers and
     /// agents draw it in `record_id` (empty when the app announced none).
@@ -57,7 +58,7 @@ pub trait PeerPublishSink: Send + Sync {
 /// has one answer per session.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
-    owner_commit: Option<Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>>,
+    owner_commit: Option<Arc<dyn tilo_owner_commit::OwnerCommitService>>,
     /// Set the first time a publish is dropped for no network — keeps
     /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
@@ -77,14 +78,14 @@ impl PeerPublisher {
     /// A legacy sink's wired status never supplies this authority.
     pub fn with_owner_commit(
         sink: Arc<dyn PeerPublishSink>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        owner: Arc<dyn tilo_owner_commit::OwnerCommitService>,
     ) -> Arc<Self> {
         Self::with_optional_owner_commit(Some(sink), owner)
     }
     /// Keep a real local durable owner even when no network sink is installed.
     pub fn with_optional_owner_commit(
         sink: Option<Arc<dyn PeerPublishSink>>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        owner: Arc<dyn tilo_owner_commit::OwnerCommitService>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sink,
@@ -117,9 +118,9 @@ impl PeerPublisher {
     /// Returns a message when no healthy owner commit is installed or the commit fails.
     pub async fn commit_owner(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         let owner = self
             .owner_commit
             .as_ref()
@@ -127,6 +128,27 @@ impl PeerPublisher {
         owner.health()?;
         let receipt = owner
             .commit_with_record_kind(request.clone(), record_kind)
+            .await?;
+        receipt.validate_for(&request)?;
+        Ok(receipt)
+    }
+
+    /// Retain the certified member at the installed governor's original ledger.
+    ///
+    /// # Errors
+    /// Refuses unavailable governor custody or a receipt for a different request.
+    pub async fn commit_member_effect_receipt(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        let owner = self
+            .owner_commit
+            .as_ref()
+            .ok_or("effect governor unsupported")?;
+        owner.health()?;
+        let receipt = owner
+            .commit_member_effect_receipt(request.clone(), caller)
             .await?;
         receipt.validate_for(&request)?;
         Ok(receipt)
@@ -222,7 +244,7 @@ impl PeerPublisher {
         let Some(sink) = self.ready(route, "scrollback request") else {
             return false;
         };
-        sink.scrollback_request(artifact, before_seq, max);
+        sink.scrollback_request(&route.cluster_id, artifact, before_seq, max);
         true
     }
 
@@ -288,7 +310,8 @@ impl PeerPublisher {
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {
     use super::{ArtifactId, PeerPresence, PeerPublishSink, SignedOp};
-    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::sync::{Mutex, MutexGuard};
+    use tilo_lock::MutexRecover as _;
 
     /// What actually reached the wire, in order.
     #[derive(Debug, Clone, PartialEq)]
@@ -305,6 +328,7 @@ pub mod recording {
             presence: PeerPresence,
         },
         Scrollback {
+            cluster_id: String,
             before_seq: u64,
             max: u16,
         },
@@ -328,7 +352,7 @@ pub mod recording {
 
         /// The record, still readable after a panicking test thread poisoned it.
         fn sent(&self) -> MutexGuard<'_, Vec<Sent>> {
-            self.sent.lock().unwrap_or_else(PoisonError::into_inner)
+            self.sent.lock_recover()
         }
     }
 
@@ -356,8 +380,18 @@ pub mod recording {
             });
         }
 
-        fn scrollback_request(&self, _artifact: ArtifactId, before_seq: u64, max: u16) {
-            self.sent().push(Sent::Scrollback { before_seq, max });
+        fn scrollback_request(
+            &self,
+            cluster_id: &str,
+            _artifact: ArtifactId,
+            before_seq: u64,
+            max: u16,
+        ) {
+            self.sent().push(Sent::Scrollback {
+                cluster_id: cluster_id.to_owned(),
+                before_seq,
+                max,
+            });
         }
     }
 }
@@ -386,7 +420,7 @@ mod tests {
             ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         )
@@ -452,6 +486,7 @@ mod tests {
         assert_eq!(
             sink.drain(),
             vec![Sent::Scrollback {
+                cluster_id: route.cluster_id,
                 before_seq: 42,
                 max: 9
             }],
@@ -476,10 +511,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_owner_commit_carries_the_record_kind_to_the_owner() {
-        use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest};
+        use tilo_owner_commit::{CommitFuture, OwnerCommitRequest};
         #[derive(Default)]
         struct Recording(std::sync::Mutex<Vec<Option<String>>>);
-        impl tilo_peer_state::owner_commit::OwnerCommitService for Recording {
+        impl tilo_owner_commit::OwnerCommitService for Recording {
             fn commit(&self, _: OwnerCommitRequest) -> CommitFuture {
                 Box::pin(async { Err("only commits naming their kind are expected".into()) })
             }
@@ -499,7 +534,7 @@ mod tests {
         let publisher = PeerPublisher::with_optional_owner_commit(None, owner.clone());
         let request = OwnerCommitRequest {
             room: "77777777-7777-4777-8777-777777777777".into(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
                 invocation: uuid::Uuid::from_u128(1),
                 redacted: b"{}".to_vec(),
             },

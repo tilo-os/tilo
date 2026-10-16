@@ -35,18 +35,17 @@
 //! aborts only its own egress broadcast (other subscribers see stream resets,
 //! no session close) and tells the revoked session to close.
 use crate::carrier;
-pub use crate::relay::{ADMISSION_CONTENTION_WAIT, Admission, AuthorizationStatus, GOAWAY_GRACE};
+pub use crate::relay::{AuthorizationStatus, Denied, GOAWAY_GRACE};
+use crate::session_authority::{AuthorityDriver, Verdict};
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex, PoisonError, Weak,
+    Arc, Mutex, Weak,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
 /// Exact WebTransport path of the live relay on the host's QUIC endpoint.
 pub const LIVE_PATH: &str = "/moq/live";
-/// WebTransport subprotocol; identical to voice.
-pub const LIVE_PROTOCOL: &str = carrier::PROTOCOL;
 /// First namespace tuple component of every live track.
 pub const NAMESPACE_ROOT: &str = "tilo-live";
 /// Latest-value datagram track.
@@ -68,8 +67,10 @@ pub const MAX_OPEN_RECORDS: usize = 16;
 pub const MAX_DATAGRAM_FRAME_BYTES: usize = 1100;
 /// Ordered frame ceiling.
 pub const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
-/// Concurrently admitted live sessions.
-pub const MAX_LIVE_SESSIONS: usize = 32;
+/// Concurrently admitted live sessions: every guest and spectator of a
+/// public room holds one (behind an HTTP ingress, all of them on the
+/// HTTPS fallback).
+pub const MAX_LIVE_SESSIONS: usize = 2048;
 /// Egress ops tracks one namespace may carry (subscriber demand bound).
 pub const MAX_EGRESS_OPS_TRACKS: usize = 64;
 /// Upstream groups copied concurrently per ops track.
@@ -90,7 +91,6 @@ const INGRESS_POOL_BYTES: u64 = 512 * 1024;
 const EGRESS_POOL_BYTES: u64 = 16 * 1024 * 1024;
 /// Upper bound on bytes one subscriber's own view may buffer.
 const VIEW_POOL_BYTES: u64 = 1024 * 1024;
-const AUTHORITY_INTERVAL: Duration = Duration::from_millis(100);
 /// Delay before a revoked, host-fed namespace is re-announced.
 const REANNOUNCE_AFTER: Duration = Duration::from_millis(100);
 /// A quiet ops track is sealed with an empty group after this long, so a late
@@ -98,10 +98,9 @@ const REANNOUNCE_AFTER: Duration = Duration::from_millis(100);
 pub const SEAL_AFTER: Duration = Duration::from_millis(250);
 /// Quiet time after which a late subscriber is no longer replayed old groups.
 pub const SEAL_QUIET: Duration = Duration::from_millis(250 + 2000 + 100);
-const ADMISSION_RETRY: Duration = Duration::from_millis(5);
 const PRESENCE_RETRY: Duration = Duration::from_millis(100);
 /// An ops track without subscribers for this long is withdrawn.
-const UNUSED_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// Host-internal marker for an exact raw route comparison; not authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,21 +117,20 @@ pub trait LiveSession: Send + Sync {
     fn publish(&self) -> bool;
     /// Grant allows subscribing to the room.
     fn subscribe(&self) -> bool;
-    /// Current lease, signature binding, host boot and membership. `Unavailable`
-    /// is bounded owner contention and never admits a new session.
+    /// Current lease, signature binding, host boot and membership. An
+    /// authority that cannot observe them answers `Denied`.
     fn status(&self) -> AuthorizationStatus;
 }
 
 /// Host-injected admission and frame validation. Called without awaits; must
 /// not block on network I/O.
 pub trait LiveAuthority: Send + Sync {
-    /// Verify the grant. `Busy` only before any state is consumed.
+    /// Verify the grant.
     ///
     /// # Errors
     ///
-    /// Returns [`Admission::Busy`] for transient contention before any state is
-    /// consumed, and [`Admission::Denied`] otherwise.
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission>;
+    /// Returns [`Denied`] when the grant does not authorize a session.
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied>;
     /// Validate one presence frame; returns its per-publisher sequence.
     fn presence_seq(&self, frame: &[u8]) -> Option<u64>;
     /// Validate one ops frame for the track's record digest (64 hex).
@@ -202,6 +200,7 @@ impl Bucket {
 }
 
 use crate::Task;
+use tilo_lock::MutexRecover as _;
 
 struct OpsEntry {
     producer: moq_net::track::Producer,
@@ -266,6 +265,7 @@ struct Ingress {
 
 struct Scopes {
     session: Arc<dyn LiveSession>,
+    authority: AuthorityDriver,
     path: String,
     ingress: Option<Ingress>,
     egress: Option<moq_net::origin::Consumer>,
@@ -399,7 +399,7 @@ impl LiveRelay {
                 .fetch_add(1, Ordering::Relaxed);
             return false;
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         state.host_active = Some(Instant::now());
         let name = format!("{OPS_PREFIX}{record}");
         let Some(entry) = state.ops.get_mut(&name) else {
@@ -466,7 +466,7 @@ impl LiveRelay {
         let Some(slot) = inner.slot(&path, true) else {
             return dropped();
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         state.host_active = Some(Instant::now());
         let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
             return dropped();
@@ -499,8 +499,7 @@ impl LiveRelay {
             return false;
         };
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .ops
             .get(&format!("{OPS_PREFIX}{record}"))
             .is_some_and(|entry| entry.open.is_some())
@@ -519,7 +518,7 @@ impl LiveRelay {
         let Some(slot) = self.0.slot(&path, false) else {
             return;
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
             return;
         };
@@ -559,19 +558,14 @@ impl LiveRelay {
         };
         // Never create (or announce) a namespace a client currently owns.
         if let Some(slot) = inner.slot(&path, false)
-            && slot
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .client
-                .is_some()
+            && slot.state.lock_recover().client.is_some()
         {
             return dropped();
         }
         let Some(slot) = inner.slot(&path, true) else {
             return dropped();
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if state.client.is_some() {
             return dropped();
         }
@@ -603,11 +597,11 @@ impl LiveRelay {
     pub fn maintain(&self) {
         let now = Instant::now();
         let idle: Vec<String> = {
-            let slots = self.0.slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let slots = self.0.slots.lock_recover();
             slots
                 .iter()
                 .filter(|(_, slot)| {
-                    let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let state = slot.state.lock_recover();
                     state.client.is_none()
                         && state
                             .host_active
@@ -670,15 +664,19 @@ impl LiveRelay {
             return;
         };
         let accepted = carrier::accept(transport, |token| async move {
-            let mut scopes = self.scopes(&token).await?;
+            let mut scopes = self.scopes(&token)?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let own = ingress.origin.scope("", &subtree(&scopes.path)?).ok()?;
                 server = server.with_subscriber(own);
             }
             if let Some(egress) = &scopes.egress {
-                let view =
-                    crate::mirror::Mirror::start(egress.clone(), VIEW_POOL_BYTES, EGRESS_RETAIN);
+                let view = crate::mirror::Mirror::start(
+                    egress.clone(),
+                    VIEW_POOL_BYTES,
+                    EGRESS_RETAIN,
+                    None,
+                );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
             }
@@ -692,35 +690,16 @@ impl LiveRelay {
         self.run_session(accepted, scopes).await;
     }
 
-    async fn scopes(&self, token: &[u8]) -> Option<Scopes> {
+    fn scopes(&self, token: &[u8]) -> Option<Scopes> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
             return None;
         }
-        let deadline = crate::later(Instant::now(), ADMISSION_CONTENTION_WAIT);
-        let session = loop {
-            match self.0.authority.try_admit(token) {
-                Ok(session) => break session,
-                Err(Admission::Busy) if Instant::now() < deadline => {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                Err(_) => return None,
-            }
-        };
+        let session = self.0.authority.try_admit(token).ok()?;
         let path = namespace_path(session.room(), session.publisher())?;
         if !session.publish() && !session.subscribe() {
             return None;
         }
-        loop {
-            match session.status() {
-                AuthorizationStatus::Current => break,
-                AuthorizationStatus::Unavailable { expires_at }
-                    if Instant::now() < deadline.min(expires_at) =>
-                {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                _ => return None,
-            }
-        }
+        let authority = AuthorityDriver::admit(session.status())?;
         let ingress = session.publish().then(ingress_origin);
         let egress = if session.subscribe() {
             let room = format!("{NAMESPACE_ROOT}/{}", session.room());
@@ -730,6 +709,7 @@ impl LiveRelay {
         };
         Some(Scopes {
             session,
+            authority,
             path,
             ingress,
             egress,
@@ -762,37 +742,14 @@ impl LiveRelay {
         });
         let driver = moq_net::time::run(driver);
         tokio::pin!(driver);
-        let mut validity = tokio::time::interval(AUTHORITY_INTERVAL);
-        validity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Owner contention (`Unavailable`) is never revocation: sustained
-        // commits can hold the committed authority for seconds. The session
-        // then rides on its verified, renewable lease deadline alone; only an
-        // explicit `Denied` observation (or that deadline) ends it.
-        let mut unavailable: Option<Instant> = None;
         let revoked = loop {
             tokio::select! {
                 _ = session.closed() => break false,
                 _ = &mut driver => break false,
-                () = async {
-                    match unavailable {
-                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => break true,
-                _ = validity.tick() => {
-                    let observed = scopes.session.status();
-                    let now = Instant::now();
-                    if unavailable.is_some_and(|deadline| now >= deadline) {
-                        break true;
-                    }
-                    match observed {
-                        AuthorizationStatus::Current => unavailable = None,
-                        // Renewal may extend the lease while contended: track
-                        // the latest reported deadline, not the earliest.
-                        AuthorizationStatus::Unavailable { expires_at } => unavailable = Some(expires_at),
-                        AuthorizationStatus::Denied => break true,
-                    }
-                }
+                verdict = scopes.authority.next(|| scopes.session.status()) => match verdict {
+                    Verdict::Continue => {}
+                    Verdict::Revoked => break true,
+                },
             }
         };
         if revoked {
@@ -814,7 +771,7 @@ impl LiveRelay {
                     if let Some(inner) = relay.upgrade()
                         && let Some(slot) = inner.slot(&path, true)
                     {
-                        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut state = slot.state.lock_recover();
                         state.host_active.get_or_insert_with(Instant::now);
                     }
                 });
@@ -839,7 +796,7 @@ impl LiveRelay {
 impl Inner {
     /// The namespace slot, created with its egress broadcast when `create`.
     fn slot(self: &Arc<Self>, path: &str, create: bool) -> Option<Arc<Slot>> {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slots = self.slots.lock_recover();
         if let Some(slot) = slots.get(path) {
             return Some(slot.clone());
         }
@@ -883,23 +840,16 @@ impl Inner {
                 }
             })
         };
-        slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .handler = Some(handler);
+        slot.state.lock_recover().handler = Some(handler);
         slots.insert(path.to_owned(), slot.clone());
         drop(slots);
         Some(slot)
     }
 
     /// A subscriber asked for a track this namespace does not yet carry.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard must stay held across the dependent state updates below"
-    )]
     fn on_request(&self, slot: &Arc<Slot>, request: moq_net::track::Request) {
         let name = request.name().to_owned();
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if ops_record(&name).is_none()
             || state.ops.len() >= MAX_EGRESS_OPS_TRACKS
             || state.broadcast.is_none()
@@ -929,12 +879,7 @@ impl Inner {
                     }
                 }
                 if let Some(slot) = weak.upgrade() {
-                    let removed = slot
-                        .state
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .ops
-                        .remove(&name);
+                    let removed = slot.state.lock_recover().ops.remove(&name);
                     if let Some(entry) = removed {
                         let OpsEntry {
                             producer,
@@ -968,6 +913,9 @@ impl Inner {
         let Some(slot) = self.slot(path, true) else {
             return;
         };
+        // A spawned watcher can run immediately on another worker. Publish
+        // its ownership while holding the lock that its first check takes.
+        let mut state = slot.state.lock_recover();
         let watch = Task::spawn(watch_client(
             Arc::downgrade(self),
             Arc::downgrade(&slot),
@@ -975,10 +923,7 @@ impl Inner {
             path.to_owned(),
             ingress,
         ));
-        slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .client = Some(Client {
+        state.client = Some(Client {
             session,
             _watch: watch,
         });
@@ -989,7 +934,7 @@ impl Inner {
             return;
         };
         let (withdraw, client) = {
-            let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = slot.state.lock_recover();
             if state
                 .client
                 .as_ref()
@@ -1016,12 +961,12 @@ impl Inner {
     /// Returns whether the removed namespace was recently host-fed.
     fn remove_slot(&self, path: &str, session: Option<u64>) -> bool {
         let slot = {
-            let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut slots = self.slots.lock_recover();
             let Some(slot) = slots.get(path) else {
                 return false;
             };
+            let state = slot.state.lock_recover();
             if let Some(session) = session {
-                let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state
                     .client
                     .as_ref()
@@ -1029,12 +974,24 @@ impl Inner {
                 {
                     return false;
                 }
+            } else if Arc::strong_count(slot) > 1
+                || state.client.is_some()
+                || state
+                    .host_active
+                    .is_some_and(|at| at.elapsed() < HOST_SLOT_IDLE)
+            {
+                // Recheck the idle candidate under both locks. slot() takes
+                // the map lock to acquire a reference; its caller retains
+                // that reference until attaching or updating host activity.
+                // A stale snapshot cannot collect that in-flight operation.
+                return false;
             }
+            drop(state);
             slots.remove(path)
         };
         let Some(slot) = slot else { return false };
         let (client, handler, ops, presence, broadcast, host_fed) = {
-            let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = slot.state.lock_recover();
             let host_fed = state
                 .host_active
                 .is_some_and(|at| at.elapsed() < HOST_SLOT_IDLE);
@@ -1072,8 +1029,7 @@ impl Inner {
     /// Whether `session` still owns the namespace in `slot`.
     fn owns(slot: &Slot, session: u64) -> bool {
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .client
             .as_ref()
             .is_some_and(|client| client.session == session)
@@ -1092,7 +1048,7 @@ impl Inner {
         let seq = valid
             .then(|| self.authority.presence_seq(&payload))
             .flatten();
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if state
             .client
             .as_ref()
@@ -1135,8 +1091,7 @@ impl Inner {
     /// The egress track currently serving `name`, if a subscriber asked for it.
     fn egress_ops(slot: &Slot, name: &str) -> Option<moq_net::track::Producer> {
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .ops
             .get(name)
             .map(|entry| entry.producer.clone())
@@ -1397,12 +1352,7 @@ async fn copy_group(
         };
         let admitted = frame.payload.len() <= MAX_STREAM_FRAME_BYTES
             && inner.authority.ops_valid(&record, &frame.payload)
-            && slot
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .ops_bucket
-                .take(Instant::now());
+            && slot.state.lock_recover().ops_bucket.take(Instant::now());
         if !admitted || out.write_frame(stamp(), frame.payload).is_err() {
             // An ordered group with a gap is useless: reset it so receivers know.
             inner.counters.ops_dropped.fetch_add(1, Ordering::Relaxed);

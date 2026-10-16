@@ -20,14 +20,15 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use collab_types::{
+use ed25519_dalek::SigningKey;
+use fs::availability::{EvictionDecision, EvictionRequirements};
+use fs::eviction::{EvictionQueue, EvictionRequestState};
+use fs::{AvailabilityRegistry, ContentStore};
+use fs_protocol::Residency;
+use fs_protocol::{
     ContentHash, ContentRevisionV1, FilePermission, FileRecordId, SHARE_CONTROL_VERSION,
     ShareControlOperationV1, ShareControlRequestV1, ShareControlResultV1,
 };
-use ed25519_dalek::SigningKey;
-use fs::availability::{EvictionDecision, EvictionRequirements, Residency};
-use fs::eviction::{EvictionQueue, EvictionRequestState};
-use fs::{AvailabilityRegistry, ContentStore};
 use tempfile::TempDir;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
@@ -158,18 +159,37 @@ fn spawn_host(
     seed: &Path,
     clock: &Path,
 ) -> MountedProcess {
-    let mut child = Command::new(binary)
+    let mut command = host_command(binary, identity, authority_sockets, cache, seed, clock);
+    spawn_mounted(command.arg("--mount-point").arg(mount), mount)
+}
+
+/// `fs serve` with the host's identity, clock, cache and seed; the caller
+/// adds `--mount-point` and anything else.
+fn host_command(
+    binary: &Path,
+    identity: &Path,
+    authority_sockets: &Path,
+    cache: &Path,
+    seed: &Path,
+    clock: &Path,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env("TILO_AUTHORITY_SOCKET_DIR", authority_sockets)
         .env("TILO_FS_FUSE_OWNER_ONLY", "1")
         .arg("--test-clock-file")
         .arg(clock)
-        .args(["serve", "--mount-point"])
-        .arg(mount)
+        .arg("serve")
         .arg("--cache-dir")
         .arg(cache)
         .arg("--seed")
-        .arg(seed)
+        .arg(seed);
+    command
+}
+
+fn spawn_mounted(command: &mut Command, mount: &Path) -> MountedProcess {
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -424,7 +444,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     host.wait_for_line("Mounting QuickFS");
     let host_file = host_mount.join("shared.bin");
     let record_bytes = wait_for_process(&mut host, "the host to stamp the record id", || {
-        get_xattr(&host_file, fs::syncstate::RECORD_ID_XATTR).ok()
+        get_xattr(&host_file, fs_protocol::RECORD_ID_XATTR).ok()
     });
     let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
     let share_socket = host_cache.join("share-control.sock");
@@ -470,7 +490,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     // remove the cached bytes.
     set_xattr(
         &viewer_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"retry",
     )
     .unwrap();
@@ -506,13 +526,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         EvictionDecision::Allowed
     );
 
-    let content_hash: [u8; 32] = get_xattr(&viewer_file, fs::syncstate::CONTENT_HASH_XATTR)
+    let content_hash: [u8; 32] = get_xattr(&viewer_file, fs_protocol::CONTENT_HASH_XATTR)
         .unwrap()
         .try_into()
         .unwrap();
     set_xattr(
         &viewer_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"evict",
     )
     .unwrap();
@@ -524,7 +544,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut viewer,
         "the viewer to project the evicted file",
         || {
-            (get_xattr(&viewer_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&viewer_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"projected")
@@ -570,7 +590,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut restarted_viewer,
         "the restarted viewer to report the file local",
         || {
-            (get_xattr(&restarted_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&restarted_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"local")
@@ -583,7 +603,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         .await
         .unwrap();
     let revision = ContentRevisionV1 {
-        schema_version: collab_types::CONTENT_REVISION_VERSION,
+        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
         record_id,
         version_id: observation.version_id,
         content_hash: Some(ContentHash(content_hash)),
@@ -619,7 +639,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     set_xattr(
         &loss_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"retry",
     )
     .unwrap();
@@ -640,7 +660,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     set_xattr(
         &loss_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"evict",
     )
     .unwrap();
@@ -656,7 +676,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut loss_viewer,
         "the loss viewer to project the evicted file",
         || {
-            (get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&loss_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"projected")
@@ -667,7 +687,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     let unavailable = std::fs::read(&loss_file).unwrap_err();
     assert_eq!(unavailable.raw_os_error(), Some(libc::EIO));
     assert_eq!(
-        get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
+        get_xattr(&loss_file, fs_protocol::SYNC_XATTR)
             .unwrap()
             .as_slice(),
         b"projected"
@@ -681,4 +701,786 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         Residency::NotResident
     );
     loss_viewer.stop();
+}
+
+/// A write the kernel acknowledged survives `systemctl stop fs.service`:
+/// systemd stops the daemon with SIGTERM, which has to end the mount through
+/// the final namespace save like SIGINT does. Killed by the signal instead,
+/// the daemon lost every change younger than the persister's settle time
+/// (`namespace_persist::QUIET`), so a file copied in just before a
+/// shutdown, an update reboot or a restart was gone afterwards.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_acknowledged_before_sigterm_survives_a_restart() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the SIGTERM restart outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let identity = temp.path().join("identity");
+    let mount = temp.path().join("mount");
+    let cache = temp.path().join("cache");
+    let seed = temp.path().join("seed");
+    let clock = temp.path().join("clock-ms");
+    let sockets = temp.path().join("authority-sockets");
+    for path in [&mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("seeded.txt"), PAYLOAD).unwrap();
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&clock, clock_now);
+    install_identity(&identity, rand::random(), rand::random(), true, clock_now);
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let serving = |host: &mut MountedProcess| {
+        host.wait_for_line("Mounting QuickFS");
+        let seeded = mount.join("seeded.txt");
+        wait_for_process(host, "the mount to serve its seed", || {
+            get_xattr(&seeded, fs_protocol::RECORD_ID_XATTR).ok()
+        });
+    };
+
+    let mut host = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut host);
+    let written: Vec<u8> = (0..256 * 1024_u32)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect();
+    let file = mount.join("written-before-stop.bin");
+    // `write` returns after `close`, whose FUSE flush committed the bytes:
+    // from here on the write is acknowledged to the application.
+    std::fs::write(&file, &written).unwrap();
+    let pid = libc::pid_t::try_from(host.child.id()).unwrap();
+    // SAFETY: signalling our own child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    let status = tilo_test_env::wait_for("the daemon to exit on SIGTERM", || {
+        host.child.try_wait().unwrap()
+    });
+    let output = host.logs.lock().unwrap().join("\n");
+    assert!(
+        status.success(),
+        "SIGTERM must end the daemon cleanly, not kill it; it exited with {status}:\n{output}"
+    );
+    assert!(
+        output.contains("Terminated, exiting..."),
+        "the daemon did not take the clean stop path on SIGTERM:\n{output}"
+    );
+    host.stop();
+
+    let mut restarted = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut restarted);
+    let survived = std::fs::read(&file).unwrap_or_else(|error| {
+        let output = restarted.logs.lock().unwrap().join("\n");
+        panic!("a write acknowledged before SIGTERM was lost on restart: {error}\n{output}")
+    });
+    assert!(
+        survived == written,
+        "the restarted mount served {} bytes that differ from the {} written",
+        survived.len(),
+        written.len()
+    );
+    restarted.stop();
+}
+
+/// One owner's `fs serve` over its own cache, restarted on the same cache
+/// as `systemctl restart fs.service` or a reboot would.
+#[cfg(target_os = "linux")]
+struct SoloHost {
+    _temp: TempDir,
+    identity: PathBuf,
+    sockets: PathBuf,
+    mount: PathBuf,
+    cache: PathBuf,
+    seed: PathBuf,
+    clock: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl SoloHost {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let host = Self {
+            identity: temp.path().join("identity"),
+            sockets: temp.path().join("authority-sockets"),
+            mount: temp.path().join("mount"),
+            cache: temp.path().join("cache"),
+            seed: temp.path().join("seed"),
+            clock: temp.path().join("clock-ms"),
+            _temp: temp,
+        };
+        for path in [&host.mount, &host.seed, &host.sockets] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(host.seed.join("seeded.txt"), PAYLOAD).unwrap();
+        let clock_now = tilo_clock::unix_now_ms();
+        write_clock(&host.clock, clock_now);
+        install_identity(
+            &host.identity,
+            rand::random(),
+            rand::random(),
+            true,
+            clock_now,
+        );
+        host
+    }
+
+    /// Starts the daemon and returns once the mount serves its seed.
+    fn start(&self) -> MountedProcess {
+        let mut process = spawn_host(
+            Path::new(env!("CARGO_BIN_EXE_fs")),
+            &self.identity,
+            &self.sockets,
+            &self.mount,
+            &self.cache,
+            &self.seed,
+            &self.clock,
+        );
+        process.wait_for_line("Mounting QuickFS");
+        let seeded = self.mount.join("seeded.txt");
+        wait_for_process(&mut process, "the mount to serve its seed", || {
+            get_xattr(&seeded, fs_protocol::RECORD_ID_XATTR).ok()
+        });
+        process
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal(process: &MountedProcess, signal: libc::c_int) {
+    let pid = libc::pid_t::try_from(process.child.id()).unwrap();
+    // SAFETY: signalling our own child process.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+}
+
+/// What the mount shows for one path: everything a restart must keep.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct Shown {
+    directory: bool,
+    bytes: Option<Vec<u8>>,
+    modified: std::time::SystemTime,
+    record_id: Option<Vec<u8>>,
+    pin: Option<Vec<u8>>,
+}
+
+/// Every path under `mount` and what it shows, read through the kernel.
+#[cfg(target_os = "linux")]
+fn show_tree(mount: &Path) -> std::collections::BTreeMap<String, Shown> {
+    let mut shown = std::collections::BTreeMap::new();
+    let mut pending = vec![mount.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            let directory = metadata.is_dir();
+            if directory {
+                pending.push(path.clone());
+            }
+            let relative = path.strip_prefix(mount).unwrap().display().to_string();
+            shown.insert(
+                relative,
+                Shown {
+                    directory,
+                    bytes: (!directory).then(|| std::fs::read(&path).unwrap()),
+                    modified: metadata.modified().unwrap(),
+                    record_id: (!directory)
+                        .then(|| get_xattr(&path, fs_protocol::RECORD_ID_XATTR).unwrap()),
+                    pin: get_xattr(&path, fs_protocol::PIN_XATTR).ok(),
+                },
+            );
+        }
+    }
+    shown
+}
+
+/// Where two trees differ, without dumping file contents.
+#[cfg(target_os = "linux")]
+fn differences(
+    before: &std::collections::BTreeMap<String, Shown>,
+    after: &std::collections::BTreeMap<String, Shown>,
+) -> String {
+    let brief = |shown: Option<&Shown>| {
+        shown.map(|shown| {
+            format!(
+                "directory {}, {:?} bytes (blake3 {:?}), modified {:?}, record id {:?}, pin {:?}",
+                shown.directory,
+                shown.bytes.as_ref().map(Vec::len),
+                shown
+                    .bytes
+                    .as_ref()
+                    .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
+                shown.modified,
+                shown.record_id,
+                shown.pin.as_deref().map(String::from_utf8_lossy),
+            )
+        })
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .map(|path| {
+            format!(
+                "{path}\n  before: {:?}\n  after:  {:?}",
+                brief(before.get(path)),
+                brief(after.get(path))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Patterned bytes, so a short or shifted read cannot match.
+#[cfg(target_os = "linux")]
+fn patterned(len: u32, salt: u32) -> Vec<u8> {
+    (0..len)
+        .map(|index| u8::try_from(index.wrapping_add(salt) % 251).unwrap())
+        .collect()
+}
+
+/// A workspace that `systemctl stop fs.service` (SIGTERM) and a restart
+/// pass through unchanged, as the kernel showed it: every name and
+/// directory, the exact bytes, the modification times, the stable record
+/// ids (a file stays the same file, not a copy with a new identity) and
+/// pins, a file's own and one inherited from its folder. Files created, overwritten, appended, renamed into a new directory
+/// and deleted, all within the persister's settle time and then stopped at
+/// once: only the stop path's final save can have written them.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_name_byte_time_identity_and_pin_survives_a_stop_and_restart() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the stop/restart round trip outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let solo = SoloHost::new();
+    let mount = &solo.mount;
+    let mut host = solo.start();
+
+    std::fs::write(mount.join("created.bin"), patterned(256 * 1024, 0)).unwrap();
+    std::fs::create_dir(mount.join("docs")).unwrap();
+    // Pinned before anything is in it: what lands in it later inherits it.
+    set_xattr(&mount.join("docs"), fs_protocol::PIN_XATTR, b"pinned").unwrap();
+    std::fs::create_dir(mount.join("empty-dir")).unwrap();
+    std::fs::write(mount.join("docs/nested.txt"), b"nested in a new directory").unwrap();
+    std::fs::write(mount.join("rename-me.txt"), b"moved, never copied").unwrap();
+    std::fs::rename(mount.join("rename-me.txt"), mount.join("docs/renamed.txt")).unwrap();
+    std::fs::write(mount.join("deleted.txt"), b"gone before the stop").unwrap();
+    std::fs::remove_file(mount.join("deleted.txt")).unwrap();
+    std::fs::write(mount.join("seeded.txt"), b"the seed, overwritten in place").unwrap();
+    std::fs::write(mount.join("appended.log"), b"first line\n").unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(mount.join("appended.log"))
+        .unwrap()
+        .write_all(b"second line\n")
+        .unwrap();
+    set_xattr(
+        &mount.join("created.bin"),
+        fs_protocol::PIN_XATTR,
+        b"pinned",
+    )
+    .unwrap();
+    let before = show_tree(mount);
+    assert_eq!(
+        before.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "appended.log",
+            "created.bin",
+            "docs",
+            "docs/nested.txt",
+            "docs/renamed.txt",
+            "empty-dir",
+            "seeded.txt",
+        ],
+        "the mount did not show the changes it acknowledged"
+    );
+    assert_eq!(
+        before["appended.log"].bytes.as_deref(),
+        Some(b"first line\nsecond line\n".as_slice())
+    );
+    let pins = before
+        .iter()
+        .map(|(path, shown)| (path.as_str(), shown.pin.as_deref()))
+        .collect::<Vec<_>>();
+    let pinned = Some(b"pinned".as_slice());
+    let automatic = Some(b"automatic".as_slice());
+    assert_eq!(
+        pins,
+        [
+            ("appended.log", automatic),
+            ("created.bin", pinned),
+            ("docs", pinned),
+            ("docs/nested.txt", pinned),
+            ("docs/renamed.txt", pinned),
+            ("empty-dir", automatic),
+            ("seeded.txt", automatic),
+        ],
+        "every file reports its own or its folder's pin"
+    );
+
+    signal(&host, libc::SIGTERM);
+    let status = tilo_test_env::wait_for("the daemon to exit on SIGTERM", || {
+        host.child.try_wait().unwrap()
+    });
+    let output = host.logs.lock().unwrap().join("\n");
+    assert!(
+        status.success(),
+        "SIGTERM ended the daemon with {status}:\n{output}"
+    );
+    host.stop();
+
+    let mut restarted = solo.start();
+    let after = show_tree(mount);
+    let output = restarted.logs.lock().unwrap().join("\n");
+    assert!(
+        after == before,
+        "the restarted mount differs from what was acknowledged before the stop:\n{}\n{output}",
+        differences(&before, &after)
+    );
+    restarted.stop();
+}
+
+/// A daemon that dies without a stop path (a crash, the OOM killer, the
+/// SIGKILL after `TimeoutStopSec=`) keeps what was synced: a database
+/// journal written and `fsync`ed while still open, and a document saved
+/// the safe way (write a temporary, `fsync` it, rename it over the
+/// target, `fsync` the directory). Both happen within the persister's
+/// settle time, so only the syncs can have made the names durable, and a
+/// synced file must come back under its own name, not as a recovered copy.
+#[cfg(target_os = "linux")]
+#[test]
+fn synced_files_and_renames_survive_a_daemon_crash() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the crash round trip outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let solo = SoloHost::new();
+    let mount = &solo.mount;
+    let mut host = solo.start();
+
+    let journal_bytes = patterned(64 * 1024, 7);
+    let mut journal = std::fs::File::create(mount.join("journal.db")).unwrap();
+    journal.write_all(&journal_bytes).unwrap();
+    journal.sync_all().unwrap();
+
+    std::fs::create_dir(mount.join("reports")).unwrap();
+    let report_bytes = patterned(32 * 1024, 13);
+    let temporary = mount.join("reports/.report.txt.tmp");
+    let mut report = std::fs::File::create(&temporary).unwrap();
+    report.write_all(&report_bytes).unwrap();
+    report.sync_all().unwrap();
+    drop(report);
+    std::fs::rename(&temporary, mount.join("reports/report.txt")).unwrap();
+    std::fs::File::open(mount.join("reports"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    let journal_id = get_xattr(&mount.join("journal.db"), fs_protocol::RECORD_ID_XATTR).unwrap();
+    let report_id = get_xattr(
+        &mount.join("reports/report.txt"),
+        fs_protocol::RECORD_ID_XATTR,
+    )
+    .unwrap();
+
+    signal(&host, libc::SIGKILL);
+    tilo_test_env::wait_for("the daemon to die on SIGKILL", || {
+        host.child.try_wait().unwrap()
+    });
+    // The journal's descriptor outlived its daemon, as a database's would.
+    drop(journal);
+    host.stop();
+
+    let mut restarted = solo.start();
+    let after = show_tree(mount);
+    let output = restarted.logs.lock().unwrap().join("\n");
+    assert_eq!(
+        after.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["journal.db", "reports", "reports/report.txt", "seeded.txt"],
+        "the synced names did not survive the crash exactly:\n{output}"
+    );
+    assert!(
+        after["journal.db"].bytes.as_deref() == Some(journal_bytes.as_slice()),
+        "the synced journal lost bytes across the crash:\n{output}"
+    );
+    assert!(
+        after["reports/report.txt"].bytes.as_deref() == Some(report_bytes.as_slice()),
+        "the synced, renamed report lost bytes across the crash:\n{output}"
+    );
+    assert_eq!(
+        after["journal.db"].record_id.as_deref(),
+        Some(journal_id.as_slice())
+    );
+    assert_eq!(
+        after["reports/report.txt"].record_id.as_deref(),
+        Some(report_id.as_slice())
+    );
+    restarted.stop();
+}
+
+/// Voluntary wakeups per second an idle `fs serve` may make across all of
+/// its threads. An idle thread blocks once and stays blocked, so
+/// each voluntary switch is a timer or a poll that fired. Preemptions are
+/// printed but not budgeted: on a loaded shared runner they measure the
+/// neighbours, not this process.
+///
+/// Measured on the CI `runner` class: 45.4/s before #4130 (a 100 ms
+/// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
+/// after (two runs). #4224 runs the daemon as `fs.service` does, with
+/// the shipped capability list: 9.95/s before (probe run 94694; its two
+/// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
+/// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
+/// timers), 0.65/s on main later (runs 96747, 96755, 96761, 96779). The
+/// vendored iroh and netwatch stop those two timers
+/// (`vendor/iroh/TILO-PATCH.md`, `vendor/netwatch/TILO-PATCH.md`): 0.30/s
+/// (run 97069), one runtime worker, not attributed further. The budget sits
+/// between that and the 0.65/s the iroh timers cost, so their coming back
+/// breaks it.
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 0.5;
+
+/// How long the mount may keep serving a file after its capability is
+/// revoked: the one-second poll's bound, which the file watch must keep.
+const REVOKE_BOUND: Duration = Duration::from_secs(1);
+
+/// The shipped daemon, started as `fs.service` starts it (the shipped
+/// capability list, `--principal person:local`), serving a mounted
+/// workspace that nobody touches sleeps: no persist poll, no
+/// session-supervisor poll, no repair tick, no capability-list poll, and
+/// no relays for a list that names nobody else. Prints the per-thread
+/// table the budget is judged on. Then a revocation written to the list
+/// still closes the mount within the old poll's bound.
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_serve_mount_stays_asleep() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the idle serve mount outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let identity = temp.path().join("identity");
+    let mount = temp.path().join("mount");
+    let cache = temp.path().join("cache");
+    let seed = temp.path().join("seed");
+    let clock = temp.path().join("clock-ms");
+    let sockets = temp.path().join("authority-sockets");
+    for path in [&mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("idle.txt"), PAYLOAD).unwrap();
+    // The list the image ships, at the path `fs.service` names it by.
+    let capabilities = temp.path().join("fs-capabilities.json");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/fs-capabilities.json"),
+        &capabilities,
+    )
+    .unwrap();
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&clock, clock_now);
+    install_identity(&identity, rand::random(), rand::random(), true, clock_now);
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let mut command = host_command(binary, &identity, &sockets, &cache, &seed, &clock);
+    command
+        .arg("--mount-point")
+        .arg(&mount)
+        .arg("--acl")
+        .arg(&capabilities)
+        .args(["--principal", "person:local"]);
+    let mut host = spawn_mounted(&mut command, &mount);
+    host.wait_for_line("Mounting QuickFS");
+    let file = mount.join("idle.txt");
+    wait_for_process(&mut host, "the mount to serve its seed", || {
+        get_xattr(&file, fs_protocol::RECORD_ID_XATTR).ok()
+    });
+
+    // Startup work (seeding, the first persist, thumbnails, the first sync
+    // pass) settles well inside the first 10 s; the window sees only idle.
+    let wakeups = tilo_test_env::idle::idle_wakeups(
+        host.child.id(),
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+    )
+    .expect("the idle daemon's threads must be observable");
+    eprintln!("{wakeups}");
+    let per_second = wakeups.blocking_per_second();
+    eprintln!("#4224 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    let logs = host.logs.lock().unwrap().join("\n");
+    assert!(
+        !logs.contains("relays: this device may be dialled"),
+        "a mount whose capability list names nobody else must not start its relays:\n{logs}"
+    );
+
+    // Revoke the session's grant, the way the desktop rewrites the list.
+    std::fs::write(&capabilities, b"[]").unwrap();
+    let revoked = Instant::now();
+    while std::fs::read(&file).is_ok() {
+        assert!(
+            revoked.elapsed() <= REVOKE_BOUND,
+            "the mount still served a revoked file {} ms after the revocation",
+            revoked.elapsed().as_millis()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "#4224 revocation closed the mount {} ms after the write",
+        revoked.elapsed().as_millis()
+    );
+    host.stop();
+    assert!(
+        per_second <= IDLE_SERVE_WAKEUP_BUDGET,
+        "an idle fs serve woke {per_second:.2} times a second (budget \
+         {IDLE_SERVE_WAKEUP_BUDGET}):\n{wakeups}"
+    );
+}
+
+/// Voluntary wakeups per second an idle `fs mount-share` may make across
+/// all of its threads, judged like
+/// [`IDLE_SERVE_WAKEUP_BUDGET`].
+///
+/// Measured on the CI `runner` class with a hydrated file open (runs 95434,
+/// 95472, 95473): 53.6-54.9/s before change awaits, when every 5 s poll was up to
+/// three fresh connections and peer handshakes, and 9.85/s after, on one
+/// held stream (iroh's relays and the connection's keepalive). The host
+/// answering it went from 54.6-55.3/s to 9.7/s. The budget lets the held
+/// stream through; a fallback to a single 5 s poll does not fit in it.
+const IDLE_SHARE_WAKEUP_BUDGET: f64 = 15.0;
+
+/// How long a host edit may take to reach an open recipient: the old 5 s
+/// poll, with room for the host's own commit.
+const EDIT_BOUND: Duration = Duration::from_secs(10);
+
+/// How long an idle share recipient is watched: one host await limit, so
+/// the window holds the recipient's once-a-minute renewal.
+const IDLE_SHARE_WINDOW: Duration = Duration::from_secs(60);
+
+async fn revoke_grant(socket: &Path, grant_id: uuid::Uuid) -> ShareControlResultV1 {
+    let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    fs::write_share_control_request(
+        &mut stream,
+        &ShareControlRequestV1 {
+            protocol_version: SHARE_CONTROL_VERSION,
+            operation: ShareControlOperationV1::Revoke { grant_id },
+        },
+    )
+    .await
+    .unwrap();
+    fs::read_share_control_response(&mut stream)
+        .await
+        .unwrap()
+        .result
+}
+
+/// Every file the recipient creates under `cache`, its content store
+/// aside. Each durable write creates one: the temporary file it renames
+/// over the old one after an fsync of each, and of their directory.
+fn watch_durable_writes(cache: &Path) -> (notify::RecommendedWatcher, Arc<Mutex<Vec<PathBuf>>>) {
+    use notify::Watcher as _;
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&writes);
+    let blobs = cache.join("blobs");
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else { return };
+        if matches!(event.kind, notify::EventKind::Create(_)) {
+            seen.lock().unwrap().extend(
+                event
+                    .paths
+                    .into_iter()
+                    .filter(|path| !path.starts_with(&blobs)),
+            );
+        }
+    })
+    .unwrap();
+    watcher
+        .watch(cache, notify::RecursiveMode::Recursive)
+        .unwrap();
+    (watcher, writes)
+}
+
+/// A recipient with a shared file open, hydrated, and nobody editing it,
+/// sleeps: it holds one stream to the host and asks again once a
+/// minute, on that stream, with no new connection and no disk write. A
+/// host edit still reaches it, and revoking its link ends its refreshes
+/// within the bound the idle serve gate keeps for a revoked mount.
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear trace: idle window, then the edit and the revocation it must still see"
+)]
+fn idle_share_recipient_stays_asleep() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the idle share recipient outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let temp = TempDir::new().unwrap();
+    let host_identity = temp.path().join("host-identity");
+    let viewer_identity = temp.path().join("viewer-identity");
+    let host_mount = temp.path().join("host-mount");
+    let viewer_mount = temp.path().join("viewer-mount");
+    let host_cache = temp.path().join("host-cache");
+    let viewer_cache = temp.path().join("viewer-cache");
+    let sockets = temp.path().join("authority-sockets");
+    let seed = temp.path().join("seed");
+    let host_clock = temp.path().join("host-clock-ms");
+    let viewer_clock = temp.path().join("viewer-clock-ms");
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&host_clock, clock_now);
+    write_clock(&viewer_clock, clock_now);
+    for path in [&host_mount, &viewer_mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("shared.bin"), PAYLOAD).unwrap();
+    install_identity(
+        &host_identity,
+        rand::random(),
+        rand::random(),
+        true,
+        clock_now,
+    );
+    install_identity(
+        &viewer_identity,
+        rand::random(),
+        rand::random(),
+        false,
+        clock_now,
+    );
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let mut host = spawn_host(
+        binary,
+        &host_identity,
+        &sockets,
+        &host_mount,
+        &host_cache,
+        &seed,
+        &host_clock,
+    );
+    host.wait_for_line("Mounting QuickFS");
+    let host_file = host_mount.join("shared.bin");
+    let record_bytes = wait_for_process(&mut host, "the host to stamp the record id", || {
+        get_xattr(&host_file, fs_protocol::RECORD_ID_XATTR).ok()
+    });
+    let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
+    let share_socket = host_cache.join("share-control.sock");
+    let uri = runtime.block_on(create_view_link(&share_socket, record_id, clock_now));
+    let grant_id = fs::FileShareLinkV2::decode_uri(&uri).unwrap().invite.id;
+
+    let mut viewer = spawn_recipient(
+        binary,
+        &viewer_identity,
+        &viewer_mount,
+        &viewer_cache,
+        &uri,
+        &viewer_clock,
+    );
+    viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
+    let viewer_file = wait_for_process(&mut viewer, "the viewer to list the shared file", || {
+        one_visible_file(&viewer_mount)
+    });
+    // Open it, as someone reading the shared document does.
+    assert_eq!(std::fs::read(&viewer_file).unwrap(), PAYLOAD);
+
+    // Startup and hydration settle well inside 10 s; the window sees idle.
+    std::thread::sleep(Duration::from_secs(10));
+    let connected = |viewer: &MountedProcess| {
+        viewer
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains(fs::share_refresh::SHARE_STREAM_CONNECTED_LINE))
+            .count()
+    };
+    let connections_before = connected(&viewer);
+    let (watcher, writes) = watch_durable_writes(&viewer_cache);
+    let host_pid = host.child.id();
+    let host_wakeups = std::thread::spawn(move || {
+        tilo_test_env::idle::idle_wakeups(host_pid, Duration::ZERO, IDLE_SHARE_WINDOW)
+    });
+    let wakeups =
+        tilo_test_env::idle::idle_wakeups(viewer.child.id(), Duration::ZERO, IDLE_SHARE_WINDOW)
+            .expect("the idle recipient's threads must be observable");
+    let host_wakeups = host_wakeups
+        .join()
+        .unwrap()
+        .expect("the host's threads must be observable");
+    drop(watcher);
+    let writes = std::mem::take(&mut *writes.lock().unwrap());
+    let connections = connected(&viewer) - connections_before;
+    let per_second = wakeups.blocking_per_second();
+    let minutes = IDLE_SHARE_WINDOW.as_secs_f64() / 60.0;
+    let per_minute = |count: usize| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / minutes;
+    eprintln!("idle fs mount-share:\n{wakeups}");
+    eprintln!("its host, fs serve:\n{host_wakeups}");
+    eprintln!(
+        "idle share recipient: {per_second:.2} voluntary wakeups/s, host {:.2}/s; \
+         {:.1} connections/min opened, {connections_before} held; {:.1} durable writes/min \
+         (at least {:.1} fsyncs/min): {writes:?}",
+        host_wakeups.blocking_per_second(),
+        per_minute(connections),
+        per_minute(writes.len()),
+        2.0 * per_minute(writes.len()),
+    );
+
+    // A host edit still reaches the open recipient. Move both clocks on
+    // first: an edit stamped with the same frozen time as the version it
+    // replaces would not supersede its metadata.
+    write_clock(&host_clock, clock_now.saturating_add(1_000));
+    write_clock(&viewer_clock, clock_now.saturating_add(1_000));
+    let content_hash = |file: &Path| get_xattr(file, fs_protocol::CONTENT_HASH_XATTR).ok();
+    let before_edit = content_hash(&viewer_file);
+    let edited = Instant::now();
+    std::fs::write(
+        &host_file,
+        b"an edit the host makes while the recipient is idle",
+    )
+    .unwrap();
+    while content_hash(&viewer_file) == before_edit {
+        assert!(
+            edited.elapsed() <= EDIT_BOUND,
+            "the host's edit did not reach the recipient in {} s\nrecipient:\n{}\nhost:\n{}",
+            EDIT_BOUND.as_secs(),
+            viewer.logs.lock().unwrap().join("\n"),
+            host.logs.lock().unwrap().join("\n"),
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "a host edit reached the idle recipient {} ms after the write",
+        edited.elapsed().as_millis()
+    );
+
+    // Revoking the link ends the recipient's refreshes.
+    while viewer.output.try_recv().is_ok() {}
+    let revoked = Instant::now();
+    assert!(matches!(
+        runtime.block_on(revoke_grant(&share_socket, grant_id)),
+        ShareControlResultV1::Revoked { revoked: true, .. }
+    ));
+    viewer.wait_for_line("shared-record access was denied or revoked");
+    let revocation = revoked.elapsed();
+    eprintln!(
+        "the revocation reached the recipient {} ms after it was made",
+        revocation.as_millis()
+    );
+    viewer.stop();
+    host.stop();
+
+    assert!(
+        revocation <= REVOKE_BOUND,
+        "the recipient kept refreshing a revoked link for {} ms",
+        revocation.as_millis()
+    );
+    assert_eq!(
+        connections, 0,
+        "an idle recipient must keep the stream it holds, not open new ones"
+    );
+    assert_eq!(connections_before, 1, "the recipient holds one stream");
+    assert!(
+        writes.is_empty(),
+        "an idle recipient must not write to disk: {writes:?}"
+    );
+    assert!(
+        per_second <= IDLE_SHARE_WAKEUP_BUDGET,
+        "an idle fs mount-share woke {per_second:.2} times a second (budget \
+         {IDLE_SHARE_WAKEUP_BUDGET}):\n{wakeups}"
+    );
 }

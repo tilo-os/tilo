@@ -7,14 +7,17 @@
 //! vault remains the source of bearer keys and live code generation.
 //!
 //! This module is pure logic — no IO, no rendering, no crypto. Code
-//! generation lives in [`crate::totp`]; CRDT persistence in
-//! [`crate::doc`].
+//! generation lives in [`crate::totp`]. What is shared is the [`Totp`]
+//! record: each account's secret-free metadata, in list order.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
+use ui::color::contrast_ratio;
 use ui::theme::Theme;
+use ui::widget::avatar::initial_ink;
 
 /// Stable identifier for one account. Backs every cross-reference and
 /// the per-account Map key in the CRDT.
@@ -22,7 +25,7 @@ pub type AccountId = Uuid;
 
 /// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
 /// parameter of an `otpauth://` URI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Algorithm {
     #[default]
     Sha1,
@@ -62,11 +65,94 @@ impl Algorithm {
     }
 }
 
+/// One account as the document shares it: everything but its secret, which
+/// stays in each device's secret store. Its item id is the account's uuid,
+/// and its position in [`Totp::accounts`] is its place in the list.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = StoredAccount::valid)]
+pub struct StoredAccount {
+    /// Issuer
+    #[model(label)]
+    pub issuer: String,
+    /// Account name
+    pub label: String,
+    /// Algorithm
+    pub algorithm: Algorithm,
+    /// Digits
+    pub digits: u8,
+    /// Period in seconds
+    pub period: u32,
+    /// Colour
+    pub color: u8,
+}
+
+impl StoredAccount {
+    /// The shared part of `account`.
+    pub fn of(account: &Account) -> Self {
+        Self {
+            issuer: account.issuer.clone(),
+            label: account.label.clone(),
+            algorithm: account.algorithm,
+            digits: account.digits,
+            period: account.period,
+            color: account.color,
+        }
+    }
+
+    /// Codes an authenticator can compute: 4 to 10 digits, every 5 to 300
+    /// seconds.
+    fn valid(&self) -> Result<(), Refusal> {
+        if !(4..=10).contains(&self.digits) {
+            return Err(Refusal::new("a code has 4 to 10 digits"));
+        }
+        if !(5..=300).contains(&self.period) {
+            return Err(Refusal::new("a code changes every 5 to 300 seconds"));
+        }
+        Ok(())
+    }
+}
+
+/// The accounts a person keeps, in list order. Adding one is the
+/// collection's insert under the account's uuid; its fields are edited at
+/// their paths; moving and deleting are the vault's verbs.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Totp {
+    pub accounts: Collection<StoredAccount>,
+}
+
+impl Totp {
+    /// The item id of the account with uuid `id`.
+    pub fn item(id: AccountId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// The accounts the record holds, in order, without secrets.
+    pub fn list(&self) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .enumerate()
+            .filter_map(|(order, (id, stored))| {
+                Some(Account {
+                    id: id.as_str().parse().ok()?,
+                    issuer: stored.issuer.clone(),
+                    label: stored.label.clone(),
+                    secret: String::new(),
+                    algorithm: stored.algorithm,
+                    digits: stored.digits,
+                    period: stored.period,
+                    color: stored.color,
+                    order: u32::try_from(order).unwrap_or(u32::MAX),
+                })
+            })
+            .collect()
+    }
+}
+
 /// One 2FA account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub id: AccountId,
-    /// Service name, e.g. "GitHub". Drives the avatar initials + colour.
+    /// Service name, e.g. "GitHub". Names the account's avatar.
     pub issuer: String,
     /// Account label, e.g. "ada@example.com".
     pub label: String,
@@ -77,8 +163,8 @@ pub struct Account {
     pub digits: u8,
     /// Rotation period in seconds (almost always 30).
     pub period: u32,
-    /// Index into the theme-derived account palette (see
-    /// [`account_palette`]). Wraps modulo the palette length.
+    /// Slot in the theme's presence palette the account's avatar wears (see
+    /// [`account_color`]). Wraps modulo the palette length.
     pub color: u8,
     /// Position in the list (smaller = earlier). Re-densified on
     /// reorder / delete.
@@ -100,31 +186,6 @@ impl Account {
             color: 0,
             order: 0,
         }
-    }
-
-    /// Two-letter avatar initials derived from the issuer (falling back
-    /// to the label). Upper-cased, ≤ 2 chars. Multi-word names take the
-    /// first letter of each of the first two words ("Amazon Web" → "AW");
-    /// a single word takes its first two letters ("GitHub" → "GI") so the
-    /// avatar stays distinctive rather than collapsing to one glyph.
-    pub fn initials(&self) -> String {
-        let source = if self.issuer.trim().is_empty() {
-            self.label.trim()
-        } else {
-            self.issuer.trim()
-        };
-        let words: Vec<&str> = source.split_whitespace().collect();
-        let out: String = match words.as_slice() {
-            [] => String::new(),
-            [single] => single.chars().take(2).collect(),
-            [first, second, ..] => first
-                .chars()
-                .next()
-                .into_iter()
-                .chain(second.chars().next())
-                .collect(),
-        };
-        out.to_uppercase().chars().take(2).collect()
     }
 
     /// Human display title: "Issuer" or, when there is no issuer, the
@@ -249,20 +310,6 @@ impl Vault {
         let ord = self.ordered();
         self.apply_order(&ord);
     }
-
-    /// Filter accounts by a free-text query against issuer + label,
-    /// case-insensitive. Empty query returns everything (ordered).
-    pub fn search(&self, query: &str) -> Vec<Account> {
-        let q = query.trim().to_lowercase();
-        let ordered = self.ordered();
-        if q.is_empty() {
-            return ordered;
-        }
-        ordered
-            .into_iter()
-            .filter(|a| a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q))
-            .collect()
-    }
 }
 
 /// Parse an `otpauth://totp/...` URI into an [`Account`]. Returns
@@ -360,12 +407,13 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     })
 }
 
-/// Normalise a base32 secret: strip whitespace + padding, upper-case.
+/// Normalise a base32 secret: strip whitespace + padding, upper-case (base32
+/// is ASCII, so anything else stays and fails to decode).
 pub fn normalise_secret(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_whitespace() && *c != '=')
         .collect::<String>()
-        .to_uppercase()
+        .to_ascii_uppercase()
 }
 
 /// Reject obvious pasted TOTP material in a display identity before it can
@@ -376,47 +424,49 @@ pub fn contains_secret_shaped_text(value: &str) -> bool {
         .any(|run| run.len() >= 16 && run.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'2'..=b'7')))
 }
 
-/// The per-account colour palette, sourced entirely from the active
-/// [`Theme`]'s tokens — no hard-coded literals — so it tracks the OS
-/// theme. Picks visually-distinct hues from the semantic + accent ramps
-/// so a roster of accounts reads as a varied palette rather than a wall
-/// of indigo.
-pub fn account_palette(theme: &Theme) -> Vec<Color> {
-    let c = &theme.tokens.colors;
-    vec![
-        c.accent[5],        // indigo-500
-        c.semantic.success, // emerald
-        c.semantic.warning, // amber
-        c.semantic.danger,  // red
-        c.semantic.info,    // blue
-        c.accent[7],        // indigo-300 (lighter violet)
-        c.neutral[6],       // slate-400
-    ]
-}
+/// The WCAG AA floor an avatar's initials must clear against its fill.
+const AVATAR_INK_CONTRAST: f64 = 4.5;
 
-/// Resolve an account's avatar colour from its `color` index against the
-/// theme palette (wrapping).
+/// Resolve an account's avatar colour from its `color` slot against the
+/// theme's presence palette. Presence hues share one lightness and chroma, but
+/// at a mid lightness some hues leave their initials under AA whichever ink
+/// is chosen, and neighbouring rows would wear different inks. The slots
+/// wrap over the hues whose initials clear AA in the one ink most of them
+/// share in this theme, so every avatar reads the same way.
 pub fn account_color(theme: &Theme, color_index: u8) -> Color {
-    let palette = account_palette(theme);
-    // `account_palette` always returns a fixed, non-empty set, so this is
-    // unreachable in practice — `.get()` documents that instead of indexing
-    // straight into the palette, and falls back to a themed colour (never a
-    // hard-coded literal) rather than panicking.
-    if palette.is_empty() {
-        return theme.tokens.colors.text_primary;
-    }
-    let idx = (color_index as usize) % palette.len();
-    palette
-        .get(idx)
+    let palette = &theme.tokens.colors.presence;
+    let reading = |fill: Color| {
+        let ink = initial_ink(fill, theme);
+        (ink == theme.text_primary, contrast_ratio(ink, fill))
+    };
+    let legible: Vec<Color> = palette
+        .colors
+        .iter()
         .copied()
-        .unwrap_or(theme.tokens.colors.text_primary)
+        .filter(|fill| reading(*fill).1 >= AVATAR_INK_CONTRAST)
+        .collect();
+    let primary_ink = legible.iter().filter(|fill| reading(**fill).0).count();
+    let primary_wins = primary_ink * 2 > legible.len();
+    let uniform: Vec<Color> = legible
+        .into_iter()
+        .filter(|fill| reading(*fill).0 == primary_wins)
+        .collect();
+    if uniform.is_empty() {
+        return palette.get(usize::from(color_index));
+    }
+    uniform
+        .get(usize::from(color_index) % uniform.len())
+        .copied()
+        .unwrap_or_else(|| palette.get(usize::from(color_index)))
 }
 
-/// First-run demo vault: a handful of recognisable services with real,
-/// valid base32 secrets so the list renders live-looking codes + rings
-/// out of the box (and so the `--shots` frame is populated). These are
+/// Sample vault for captures and tests: a handful of recognisable services
+/// with valid base32 secrets so the list renders real codes and countdowns.
+/// The ids are fixed so a capture is identical on every run. These are
 /// throwaway demo secrets, not real credentials.
 pub fn demo_accounts() -> Vec<Account> {
+    /// The first sample account's id; the others follow it.
+    const DEMO_ID_BASE: u128 = 0x0a07_7e57_0000_4000_8000_0000_0000_0000;
     let specs: [(&str, &str, &str, Algorithm, u8, u32, u8); 5] = [
         (
             "GitHub",
@@ -469,7 +519,7 @@ pub fn demo_accounts() -> Vec<Account> {
         .enumerate()
         .map(
             |(i, (issuer, label, secret, alg, digits, period, color))| Account {
-                id: Uuid::new_v4(),
+                id: Uuid::from_u128(DEMO_ID_BASE + i as u128),
                 issuer: issuer.to_string(),
                 label: label.to_string(),
                 secret: normalise_secret(secret),
@@ -547,33 +597,21 @@ mod tests {
         }
     }
 
-    /// Vault renumbering on reorder and two-letter initials.
+    /// Vault renumbering on reorder.
     #[test]
-    fn vault_reorder_and_initials() {
-        // Case `vault_reorder_renumbers`.
-        {
-            let mut v = Vault::new();
-            for a in demo_accounts() {
-                v.upsert(a);
-            }
-            let first = v.ordered()[0].id;
-            let second = v.ordered()[1].id;
-            assert!(v.move_down(first));
-            assert_eq!(v.ordered()[0].id, second);
-            assert_eq!(v.ordered()[1].id, first);
-            // orders stay contiguous
-            for (i, a) in v.ordered().iter().enumerate() {
-                assert_eq!(a.order, i as u32);
-            }
+    fn vault_reorder_renumbers() {
+        let mut v = Vault::new();
+        for a in demo_accounts() {
+            v.upsert(a);
         }
-
-        // Case `initials_are_two_upper_chars`.
-        {
-            let mut a = Account::blank(Uuid::new_v4());
-            a.issuer = "GitHub".into();
-            assert_eq!(a.initials(), "GI");
-            a.issuer = "Amazon Web".into();
-            assert_eq!(a.initials(), "AW");
+        let first = v.ordered()[0].id;
+        let second = v.ordered()[1].id;
+        assert!(v.move_down(first));
+        assert_eq!(v.ordered()[0].id, second);
+        assert_eq!(v.ordered()[1].id, first);
+        // orders stay contiguous
+        for (i, a) in v.ordered().iter().enumerate() {
+            assert_eq!(a.order, i as u32);
         }
     }
 }

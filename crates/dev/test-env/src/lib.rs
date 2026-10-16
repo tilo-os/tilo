@@ -27,6 +27,8 @@
 //! - [`hang`] waits for workers, daemons, sockets and events against one
 //!   workspace-wide bound that only catches a hang: [`wait_until`],
 //!   [`wait_for`], [`recv`] and [`within`].
+//! - [`idle`] counts how often idle threads wake: one thread of the test
+//!   process, or every thread of a process tree the test spawned.
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
 //!   started outside the test environment, where it could reach the caller's
 //!   session bus, portals, media players or display.
@@ -39,6 +41,7 @@ pub mod allocation;
 mod capability;
 mod desktop;
 pub mod hang;
+pub mod idle;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
@@ -50,6 +53,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
+use tilo_lock::MutexRecover as _;
 
 struct LockState {
     owner: Option<ThreadId>,
@@ -78,7 +82,7 @@ pub struct EnvLock {
 /// that holds it.
 pub fn lock() -> EnvLock {
     let me = thread::current().id();
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = STATE.lock_recover();
     loop {
         match state.owner {
             None => {
@@ -103,7 +107,7 @@ pub fn lock() -> EnvLock {
 
 impl Drop for EnvLock {
     fn drop(&mut self) {
-        let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = STATE.lock_recover();
         state.depth = state.depth.saturating_sub(1);
         let released = state.depth == 0;
         if released {

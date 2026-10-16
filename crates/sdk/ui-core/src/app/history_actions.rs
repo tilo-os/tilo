@@ -16,13 +16,13 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use super::App;
 use crate::history_source::{AuthorDirectory, DEFAULT_MAX_ENTRIES, committed_heads};
 use crate::i18n::I18nManager;
-use crate::permissions::{PermissionScope, UserId, Verb};
+use crate::permissions::{ActionKind, PermissionScope, UserId};
 use crate::standalone_history::{
     HistoryError, HistoryReadContext, HistoryTarget, StandaloneHistory,
 };
@@ -115,9 +115,9 @@ fn lookup(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
 
-fn json_contract(permission: PermissionRequirement, retry: RetryPolicy) -> ActionContract {
+fn json_contract(kind: ActionKind, retry: RetryPolicy) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         risk: RiskLevel::None,
         retry,
         result: ResultSpec::Json {
@@ -212,7 +212,7 @@ pub(crate) fn resource() -> Resource {
                 lookup("history-action-param-cursor"),
             ),
         ],
-        json_contract(PermissionRequirement::Read, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Read, RetryPolicy::Idempotent),
         |args| Command::List {
             resource: text(args, "resource"),
             cursor: text(args, "cursor"),
@@ -222,7 +222,7 @@ pub(crate) fn resource() -> Resource {
         VIEW_AT,
         "history-action-view-at",
         vec![resource_param(), entry_param()],
-        json_contract(PermissionRequirement::Write, RetryPolicy::AtMostOnce),
+        json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce),
         |args| Command::ViewAt {
             resource: text(args, "resource"),
             entry: text(args, "entry").unwrap_or_default(),
@@ -244,7 +244,7 @@ pub(crate) fn resource() -> Resource {
                 "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
             })),
         ],
-        json_contract(PermissionRequirement::Write, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
         |args| Command::Compare {
             resource: text(args, "resource"),
             entries: strings(args, "entries"),
@@ -261,7 +261,7 @@ pub(crate) fn resource() -> Resource {
             )
             .with_schema(serde_json::json!({"format": "uuid"})),
         ],
-        json_contract(PermissionRequirement::Write, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
         |args| Command::Close {
             session: text(args, "session").unwrap_or_default(),
         },
@@ -286,7 +286,7 @@ pub(crate) fn resource() -> Resource {
         ActionContract {
             risk: RiskLevel::Low,
             reversible: true,
-            ..json_contract(PermissionRequirement::Write, RetryPolicy::AtMostOnce)
+            ..json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce)
         },
         |args| Command::Restore {
             resource: text(args, "resource"),
@@ -367,10 +367,22 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
+    // Who acted and for whom, as data: an agent's change is the agent's, on
+    // behalf of its person, for a script or a screen reader as on screen.
+    let attribution = entry.author.attribution.as_ref().map(|attribution| {
+        serde_json::json!({
+            "actor": attribution.actor,
+            "kind": attribution.kind,
+            "actor_name": attribution.actor_name,
+            "on_behalf_of": attribution.on_behalf_of,
+            "on_behalf_of_name": attribution.on_behalf_of_name,
+        })
+    });
     serde_json::json!({
         "entry": encode_entry(entry.id),
         "summary": entry.summary,
         "author": entry.author.name,
+        "attribution": attribution,
         "time_ms": time_ms,
     })
 }
@@ -378,8 +390,7 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
 /// The document as JSON, or `None` when it exceeds [`MAX_SNAPSHOT_BYTES`].
 fn snapshot_json(doc: &AutoCommit) -> Option<serde_json::Value> {
     let value = serde_json::to_value(automerge::AutoSerde::from(doc)).ok()?;
-    let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
-    (size <= MAX_SNAPSHOT_BYTES).then_some(value)
+    (runtime_collab::wire_json_len(&value) <= MAX_SNAPSHOT_BYTES).then_some(value)
 }
 
 fn output(value: serde_json::Value) -> ActionOutput {
@@ -425,14 +436,15 @@ impl App {
             record: active_record.cloned(),
             document_identity: context.document_identity,
         };
-        let mut model = StandaloneHistory::open(target, &context, AuthorDirectory::new())?;
+        let mut model =
+            StandaloneHistory::open(target, &context, AuthorDirectory::with_room_agents())?;
         visit(&mut model, &context)
     }
 
     fn require_history_write(&self) -> Result<(), DoorError> {
         if self.permission_ctx.check(&PermissionScope::app(
             crate::collaboration::local_app_id(),
-            Verb::Write,
+            ActionKind::Undoable,
         )) {
             Ok(())
         } else {

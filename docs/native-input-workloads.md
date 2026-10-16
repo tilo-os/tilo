@@ -23,7 +23,14 @@ click, wheel line deltas (`dx`, `dy`), Unicode character input
 (`{"kind":"character","value":"é"}`), and named keys
 (`{"kind":"key","key":"backspace"}`), routed through existing native event
 handlers. Each keyboard step emits a press/release pair using the constructor
-shared with headless driving. Character steps contain exactly one Unicode scalar;
+shared with headless driving. Pen steps drive a stylus at the requested
+cadence: `{"kind":"pen_down","x":…,"y":…,"pressure":0.4}`,
+`{"kind":"pen_move",…,"pressure":0.7}` and `{"kind":"pen_up","x":…,"y":…}`.
+Each sends a pen sample ahead of every pointer event it makes (move, then the
+press or release), as a tablet does, so a brush reads pressure through
+`EventCtx::pen`; pressure outside `0..=1` is rejected. One pen step is one
+input id but several window events, so a frame's `input_events` counts more
+events than input ids. Character steps contain exactly one Unicode scalar;
 unknown key names and extra fields are rejected. Pixel-wheel phases, resize, named targeting, semantic/pixel
 assertions and app fixture preparation remain required for the full suite.
 Unknown fields, empty timelines, non-finite input, invalid warmup, over100000
@@ -45,7 +52,11 @@ excluded from measured CPU statistics.
 
 `scripts/perf/native_delivery.py` validates input coverage, ordering, payloads,
 timelines, frame mapping and numeric timing fields. It separates full-stream
-CPU/worker correlation from the subset associated with measured inputs. Its
+CPU/worker correlation from the subset associated with measured inputs. When
+the CPU frames carry the per-event input fields (`docs/profiling.md`), its
+`input_phases` section splits measured frames' banked `handle_event_us` into
+events per frame, the costliest event, the oldest input's wait for a CPU
+commit, and dispatch, hit-test, resource, publication and commit phases. Its
 report explicitly does not certify effects or FPS; fixtures must independently
 assert effects. Optional macOS drawable presentation evidence is documented in
 [native-presentation-feedback.md](native-presentation-feedback.md).

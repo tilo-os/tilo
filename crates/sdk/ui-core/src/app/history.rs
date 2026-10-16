@@ -152,7 +152,9 @@ impl App {
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
-        let status = self.document_sync_status().map(str::to_owned);
+        let status = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
         let nested = crate::history_mode::embedded::needs_refresh(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -179,13 +181,7 @@ impl App {
         }
         // Refresh may replace retained chrome. No raw map survives it.
         if self.history_focus.is_none() {
-            self.history_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            };
+            self.history_focus = self.capture_focus_identity();
         }
         self.layout.node_map.clear();
         self.bindings.clear();
@@ -230,57 +226,64 @@ impl App {
             }
         }
         self.invalidate_widget_resource_cache();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
-    pub(super) fn update_history_focus_order(&mut self) {
+    pub(super) fn update_history_focus_order(
+        &mut self,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) {
         self.focusable_order.clear();
         let root = self
             .history
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
-        let mut nodes: Vec<_> = root.into_iter().collect();
-        while let Some(node) = nodes.pop() {
-            let allowed = crate::history_mode::embedded::allows_focus(
-                self.root_widget.as_ref(),
-                node,
-                &self.layout.taffy,
-            ) && self.history.as_ref().is_none_or(|history| {
-                !history.captures_input() || history.owns_node(node, &self.layout.taffy)
-            });
-            if allowed
-                && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-            {
-                self.focusable_order.push(node);
-            }
-            nodes.extend(
-                self.layout
-                    .taffy
-                    .children(node)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev(),
-            );
-        }
-        if self
+        // History's owned nodes, walked once for this recomputation: both the
+        // capture filter and the History-last sort ask it of every node.
+        let owned = self
             .history
             .as_ref()
-            .is_none_or(|history| !history.captures_input())
-        {
-            self.focusable_order.sort_by_key(|id| {
-                self.history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
-            });
-        }
-        self.accessibility.focus_trap_active = self
+            .map(|history| history.owned_nodes(&self.layout.taffy))
+            .unwrap_or_default();
+        let captures = self
             .history
             .as_ref()
-            .is_some_and(|history| history.review_is_open());
-        self.accessibility.focus_before_trap = None;
+            .is_some_and(|history| history.captures_input());
+        let (order, app_trap) = root.map_or_else(
+            || (Vec::new(), false),
+            |root| {
+                crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
+                    let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
+                    self.inspect_node(node, |widget| {
+                        (
+                            allowed && widget.is_focusable() && widget.is_enabled(),
+                            allowed && widget.traps_focus(),
+                            widget.accessibility().is_some_and(|node| node.state.hidden),
+                        )
+                    })
+                    .unwrap_or((false, false, false))
+                })
+            },
+        );
+        self.focusable_order = order;
+        if !captures {
+            self.focusable_order.sort_by_key(|id| owned.contains(id));
+        }
+        let trap_active = app_trap
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.review_is_open());
+        if let Some(next) = crate::focus_navigation::reconcile_trap(
+            &mut self.accessibility.focus_trap_active,
+            &mut self.accessibility.focus_before_trap,
+            self.focused_node,
+            &self.focusable_order,
+            trap_active,
+        ) {
+            self.set_focused_node(next);
+        }
     }
     pub(super) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         if unsafe {
@@ -433,7 +436,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -447,7 +450,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -497,7 +500,7 @@ impl App {
                 self.invalidate_widget_resource_cache();
                 self.publish_owned_documents();
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         let nested_focus = unsafe {
@@ -528,7 +531,9 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             let changed = history.invalidate_owner();
-            self.layout.structure_dirty |= changed;
+            if changed {
+                self.layout.request_rebuild();
+            }
             return changed;
         }
         if history.has_review_request() {
@@ -558,7 +563,7 @@ impl App {
                     self.publish_owned_documents();
                 }
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         if history.returning_live() {

@@ -239,7 +239,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let (_, empty_rx) = mpsc::unbounded_channel();
         let rx = Rc::new(AsyncMutex::new(std::mem::replace(&mut fixture.invocation_rx, empty_rx)));
-        let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { host_guard: None, rx: rx.clone() });
+        let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { host_guard: None, rx: rx.clone(), delivered: None });
         let delivery = stream.read_request().send().promise.await.unwrap();
         let wire_id = delivery.get().unwrap().get_id();
         assert_eq!(delivery.get().unwrap().get_invocation_uuid().unwrap(), request.invocation.0.as_bytes());
@@ -250,7 +250,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "effect_count", 1_i64).unwrap();
         let artifact = document_artifact_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id);
-        let mut mutation = SignedOp::new_unsigned(DocumentMutation::Snapshot(document.save()).encode().unwrap(), artifact, collab_types::Ed25519PublicKey::from_bytes(device(52, false).1.device_public_key), document_attestation_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id), collab_types::OpClass::Splice, std::time::SystemTime::now(), 1);
+        let mut mutation = SignedOp::new_unsigned(DocumentMutation::Snapshot(document.save()).encode().unwrap(), artifact, collab_types::Ed25519PublicKey::from_bytes(device(52, false).1.device_public_key), document_attestation_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id), collab_types::OpKind::Change, std::time::SystemTime::now(), 1);
         collab_types::sign_op(&mut mutation, &device(52, false).0).unwrap();
         fixture.state.ensure_channel(&fixture.route.channel_key());
         let mut signed = fixture.state.subscribe_ops(&fixture.route.channel_key(), 72);
@@ -297,6 +297,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let receipts = serde_json::to_string(&fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts).unwrap();
         assert!(!receipts.contains("private"));
         assert!(receipts.contains("succeeded"));
+        let recorded = fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts[0]
+            .context
+            .what
+            .clone();
+        assert!(
+            matches!(&recorded, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == request.action),
+            "the receipt records the effect it was: {recorded:?}"
+        );
         // Losing a private response and reconnecting queries the same key.
         let _lost_reply = send(&caller, room, 52, invoke(&request));
         caller.close().await;
@@ -621,4 +629,206 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
     caller.close().await;
     recipient.close().await;
     relay.shutdown().await;
+}
+
+/// A device session spoken frame by frame, so a test sends exactly what an
+/// older build or a misbehaving device would: an unsigned action on
+/// `tilo-relay/3`, or a chosen signed frame, stale or repeated, on `tilo-relay/4`.
+struct RawSession {
+    _endpoint: iroh::Endpoint,
+    _connection: iroh::endpoint::Connection,
+    send: iroh::endpoint::SendStream,
+    reader: tilo_delivery_protocol::transport_v2::SessionReader<iroh::endpoint::RecvStream>,
+}
+impl RawSession {
+    async fn open(relay: &Relay, seed: u8, room: Uuid, alpn: &[u8]) -> Self {
+        let (key, cert) = device(seed, false);
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+            .bind()
+            .await
+            .unwrap();
+        let connection = endpoint.connect(relay.node_addr(), alpn).await.unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        let hello = tilo_relay::auth::Hello {
+            cert,
+            client_nonce: [seed; 32],
+        };
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
+            .await
+            .unwrap();
+        let ack: tilo_relay::auth::HelloAck = postcard::from_bytes(
+            &tilo_relay::frame::read_frame(&mut recv, tilo_relay::transport::MAX_FRAME_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let ack2 = tilo_relay::auth::build_hello_ack2(&key, &ack.server_nonce);
+        tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
+            .await
+            .unwrap();
+        let mut session = Self {
+            _endpoint: endpoint,
+            _connection: connection,
+            send,
+            reader: tilo_delivery_protocol::transport_v2::SessionReader::new(recv, true),
+        };
+        let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+        session
+            .write(EnvelopeV2::State(Envelope::Subscribe { workspace_id }))
+            .await;
+        session
+            .until("the raw session to be ready", |frame| {
+                matches!(frame, EnvelopeV2::State(Envelope::Ready { .. })).then_some(())
+            })
+            .await;
+        session.write(EnvelopeV2::EnableActions { room }).await;
+        session
+            .until("the raw private lane", |frame| {
+                matches!(frame, EnvelopeV2::ActionsReady { .. }).then_some(())
+            })
+            .await;
+        session.write(EnvelopeV2::EnableBrokerClient { room }).await;
+        session
+    }
+    async fn write(&mut self, frame: EnvelopeV2) {
+        self.send
+            .write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
+            .await
+            .unwrap();
+    }
+    async fn until<T>(&mut self, what: &str, mut pick: impl FnMut(EnvelopeV2) -> Option<T>) -> T {
+        tilo_test_env::within(what, async {
+            loop {
+                if let Some(found) = pick(self.reader.read_next().await.unwrap().unwrap()) {
+                    return found;
+                }
+            }
+        })
+        .await
+    }
+    /// The broker's answer to `id`, or the host's refusal to route it.
+    async fn answer(&mut self, id: Uuid) -> Answer {
+        self.until("the answer to this request", |frame| match frame {
+            EnvelopeV2::Delivered { action, .. } if action.request_id == id => {
+                Some(Ok(action.message))
+            }
+            EnvelopeV2::Unavailable {
+                request_id, reason, ..
+            } if request_id == id => Some(Err(reason)),
+            _ => None,
+        })
+        .await
+    }
+}
+
+type Answer = Result<ActionMessage, tilo_delivery_protocol::peer_actions::UnavailableReason>;
+
+fn directed(room: Uuid, seed: u8, message: ActionMessage) -> DirectedAction {
+    DirectedAction {
+        room,
+        request_id: Uuid::new_v4(),
+        source: device(seed, false).1.device_public_key,
+        target: device(54, false).1.device_public_key,
+        message,
+    }
+}
+
+fn signed_by(
+    action: &DirectedAction,
+    seed: u8,
+    issued_at_ns: u64,
+) -> tilo_delivery_protocol::peer_actions::SignedDirectedAction {
+    tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+        action,
+        issued_at_ns,
+        &device(seed, false).0,
+    )
+    .unwrap()
+}
+
+fn rejected(code: &str) -> ActionMessage {
+    ActionMessage::Rejected { code: code.into() }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_peer_facade_admits_effects_only_on_their_source_device_signature() {
+    use tilo_clock::unix_now_ns as now_ns;
+    use tilo_delivery_protocol::transport_v2::{ALPN_AGENT_READS_V1, ALPN_SIGNED_ACTIONS_V1};
+    tokio::task::LocalSet::new().run_until(async {
+        let root = tempfile::tempdir().unwrap();
+        let relay_root = tempfile::tempdir().unwrap();
+        let (mut fixture, _, mut request) = durable_fixture(root.path(), None);
+        package_primary(&mut fixture, &mut request);
+        let room = Uuid::parse_str(&fixture.cluster_id).unwrap();
+        let ws = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+        let authority = Arc::new(LiveAuthority { room, root: device(52, false).1.user_public_key, revocations: Mutex::new(RevocationList::new()) });
+        assert!(fixture.state.certificate_authority.set(authority).is_ok());
+        let (relay_key, relay_cert) = device(55, true);
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        relay.set_workspace_membership(ws, true, [52, 53, 54].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), relay_root.path().into()).await.unwrap();
+        let host_client = client(&relay, 54, room).await;
+        let session = Arc::new(RelayCoeditSession::join(host_client, ws, device(54, false).1.device_public_key).unwrap());
+        assert!(matches!(session.recv().await, Some(tilo_relay::Inbound::Ready { .. })));
+        let worker = fixture.state.start_peer_action_bridge(fixture.directories.clone()).unwrap();
+        let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
+        let server_session = session.clone();
+        let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
+        let mut current = RawSession::open(&relay, 52, room, ALPN_SIGNED_ACTIONS_V1).await;
+        let mut older = RawSession::open(&relay, 53, room, ALPN_AGENT_READS_V1).await;
+        tilo_test_env::within("the attached broker to serve reads", async { loop {
+            let read = directed(room, 52, ActionMessage::CatalogueRefresh { scope: None });
+            current.write(EnvelopeV2::SignedDirected(signed_by(&read, 52, now_ns()))).await;
+            if matches!(tokio::time::timeout(Duration::from_millis(250), current.answer(read.request_id)).await, Ok(Ok(ActionMessage::BrokerCatalogue { .. }))) { break; }
+        }}).await;
+
+        // An older device, or a host vouching for a device it never heard
+        // from: the broker sees an unsigned delivery under a valid member
+        // certificate. Reads are still served; effects are refused before any
+        // admission, with a code that says why.
+        let read = directed(room, 53, ActionMessage::CatalogueRefresh { scope: None });
+        older.write(EnvelopeV2::Directed(read.clone())).await;
+        assert!(matches!(older.answer(read.request_id).await, Ok(ActionMessage::BrokerCatalogue { .. })));
+        let mut unsigned = request.clone();
+        unsigned.invocation = tilo_actions::InvocationId::new();
+        for message in [invoke(&unsigned), ActionMessage::Cancel { invocation: unsigned.invocation }] {
+            let effect = directed(room, 53, message);
+            older.write(EnvelopeV2::Directed(effect.clone())).await;
+            assert_eq!(older.answer(effect.request_id).await, Ok(rejected("action_signature_required")));
+        }
+        assert!(fixture.invocation_rx.try_recv().is_err(), "an unsigned effect never dispatches");
+
+        // A signature by another device never leaves the host: device 53
+        // signed it, and device 52's session claims it as its own.
+        let by_other = signed_by(&directed(room, 53, invoke(&unsigned)), 53, now_ns());
+        let mut wire = postcard::to_allocvec(&EnvelopeV2::SignedDirected(by_other)).unwrap();
+        let at = wire.windows(32).position(|w| w == device(53, false).1.device_public_key).unwrap();
+        wire.get_mut(at..at.saturating_add(32)).unwrap().copy_from_slice(&device(52, false).1.device_public_key);
+        let EnvelopeV2::SignedDirected(claimed) = tilo_delivery_protocol::transport_v2::decode(&wire).unwrap() else { panic!("signed frame expected") };
+        let claimed_id = claimed.action().request_id;
+        current.write(EnvelopeV2::SignedDirected(claimed)).await;
+        assert_eq!(current.answer(claimed_id).await, Err(tilo_delivery_protocol::peer_actions::UnavailableReason::NotAuthorised));
+
+        // The device's own signature admits the effect, as that person.
+        let effect = directed(room, 52, invoke(&request));
+        let frame = signed_by(&effect, 52, now_ns());
+        current.write(EnvelopeV2::SignedDirected(frame.clone())).await;
+        assert!(matches!(current.answer(effect.request_id).await, Ok(ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { invocation }), .. }) if invocation == request.invocation));
+        assert!(fixture.invocation_rx.try_recv().is_ok(), "the signed effect dispatched");
+        // The same signed frame delivered again is refused.
+        current.write(EnvelopeV2::SignedDirected(frame)).await;
+        assert_eq!(current.answer(effect.request_id).await, Ok(rejected("action_replayed")));
+        // So is a frame signed outside the freshness window, either way.
+        let window = i64::try_from(tilo_delivery_protocol::peer_actions::ACTION_SIGNATURE_TOLERANCE_NS).unwrap();
+        for skew in [window.saturating_mul(-2), window.saturating_mul(2)] {
+            let mut late = request.clone();
+            late.invocation = tilo_actions::InvocationId::new();
+            let stale = directed(room, 52, invoke(&late));
+            current.write(EnvelopeV2::SignedDirected(signed_by(&stale, 52, now_ns().saturating_add_signed(skew)))).await;
+            assert_eq!(current.answer(stale.request_id).await, Ok(rejected("action_stale")));
+        }
+        assert!(fixture.invocation_rx.try_recv().is_err(), "refused frames never dispatch");
+
+        server.abort(); worker.abort(); let _ = server.await; let _ = worker.await;
+        session.close().await; relay.shutdown().await;
+    }).await;
 }

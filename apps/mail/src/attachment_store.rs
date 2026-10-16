@@ -204,10 +204,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn staged_attachments_are_portable_and_bounded() {
         // Phase `staged_attachment_is_portable_and_not_a_host_path`.
         {

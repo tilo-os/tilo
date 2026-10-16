@@ -1,8 +1,7 @@
 //! A record's retained history stays short without any device checkpointing
-//! it. A cleartext route the host folds into a snapshot of its own; a sealed
-//! route, which the host cannot read, a member device compacts on the host's
-//! request. Either way a late joiner converges from the snapshot and the
-//! entries it does not contain, and nothing written concurrently is lost.
+//! it. A browser only writes sealed routes, which the host cannot read, so a
+//! member device compacts them on the host's request, and a late joiner
+//! converges from the snapshot and the entries it does not contain.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,7 +24,6 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::{ContentCipher, Host, PeerEvent, PeerHandle};
-use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, workspace};
@@ -56,27 +54,6 @@ fn lineage_len(state: &Path, author: &[u8; 32]) -> usize {
     })
 }
 
-/// Resident set size in MiB, 0 where it cannot be read (CI images ship no
-/// `ps`; Linux reads it from procfs).
-fn rss_mib() -> u64 {
-    let kib = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix("VmRSS:"))
-                .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
-        })
-        .or_else(|| {
-            let out = std::process::Command::new("ps")
-                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-                .output()
-                .ok()?;
-            String::from_utf8_lossy(&out.stdout).trim().parse().ok()
-        });
-    kib.unwrap_or(0) / 1024
-}
-
 fn apply(doc: &mut AutoCommit, mutation: DocumentMutation) {
     match mutation {
         DocumentMutation::Snapshot(bytes) => {
@@ -87,18 +64,6 @@ fn apply(doc: &mut AutoCommit, mutation: DocumentMutation) {
             doc.load_incoming(&bytes).unwrap();
         }
     }
-}
-
-fn noise(len: usize, seed: u64) -> String {
-    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-    (0..len)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            char::from(b"abcdefghijklmnopqrstuvwxyz"[(state % 26) as usize])
-        })
-        .collect()
 }
 
 /// `support::wait_for` with room for phases that move megabytes.
@@ -193,263 +158,6 @@ async fn join_late(
     joiner.close();
     let pages = pages.lock().unwrap().clone();
     (replica, documents, pages, elapsed)
-}
-
-/// Every envelope the host sent, in order.
-fn envelopes(pages: &[Vec<u8>]) -> Vec<Envelope> {
-    pages
-        .iter()
-        .filter_map(|page| postcard::from_bytes::<tilo_relay_protocol::web::EventsPage>(page).ok())
-        .flat_map(|page| page.envelopes)
-        .collect()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_five_megabyte_history_reaches_a_late_joiner_as_a_host_snapshot() {
-    const EDITS: usize = 640;
-    const VALUE: usize = 8 * 1024;
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let host_key = host_device.cert.device_public_key;
-    let author_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let author_key = author_device.cert.device_public_key;
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    // Room for a baseline join between the fold's read and its removal.
-    host.relay
-        .compactor()
-        .hold_before_removing(Duration::from_secs(120));
-    let author = start_peer(
-        Host::Https(host.https()),
-        author_device.cert,
-        host_device.cert.clone(),
-        author_device.key,
-    );
-    author.join(workspace()).unwrap();
-    ready(&[&author]).await;
-
-    // 640 edits of 8 KiB each and no checkpoint: 5 MiB of history.
-    let mut doc = AutoCommit::new();
-    let published = Instant::now();
-    for edit in 0..EDITS {
-        let before = doc.get_heads();
-        doc.put(ROOT, format!("k{}", edit % 64), noise(VALUE, edit as u64))
-            .unwrap();
-        doc.commit();
-        author
-            .publish(
-                route(),
-                &DocumentMutation::Incremental(doc.save_after(&before)),
-            )
-            .unwrap();
-    }
-    durable(&author).await;
-    eprintln!(
-        "5 MiB history: {EDITS} x {VALUE} B durable in {} ms, {} entries retained",
-        published.elapsed().as_millis(),
-        lineage_len(state.path(), &author_key)
-    );
-    let rss_before = rss_mib();
-
-    let compactor = host.relay.compactor().clone();
-    let heads = doc.get_heads();
-    // Every fold is held before it removes anything: this joiner sees the
-    // whole history.
-    let (_, baseline_documents, baseline_pages, baseline_time) = join_late(
-        &host,
-        enrol(&root, "tablet", DeviceCapabilities::member()),
-        &host_device.cert,
-        None,
-        &heads,
-    )
-    .await;
-    let rss_folding = rss_mib();
-    compactor.hold_before_removing(Duration::ZERO);
-    let released = Instant::now();
-    settle("the history to be folded", || {
-        let done = lineage_len(state.path(), &author_key) == 0;
-        async move { done.then_some(()) }
-    })
-    .await;
-    let folded_in = released.elapsed();
-    let rss_after = rss_mib();
-    let host_entries = lineage_len(state.path(), &host_key);
-    assert!(
-        (1..=4).contains(&host_entries),
-        "{host_entries} host entries"
-    );
-
-    let (_, documents, pages, time) = join_late(
-        &host,
-        enrol(&root, "phone", DeviceCapabilities::member()),
-        &host_device.cert,
-        None,
-        &heads,
-    )
-    .await;
-    let bytes: usize = pages.iter().map(Vec::len).sum();
-    let baseline_bytes: usize = baseline_pages.iter().map(Vec::len).sum();
-    eprintln!(
-        "late join before compaction: {baseline_documents} documents, {baseline_bytes} B of /events, {} ms",
-        baseline_time.as_millis()
-    );
-    eprintln!(
-        "late join after compaction: {documents} documents, {bytes} B of /events, {} ms",
-        time.as_millis()
-    );
-    eprintln!(
-        "{} host folds; the last finished {} ms after the hold was released",
-        compactor.rounds(),
-        folded_in.as_millis()
-    );
-    eprintln!(
-        "process RSS (host and peers in one process): {rss_before} MiB before, {rss_folding} MiB while folds were held, {rss_after} MiB after"
-    );
-    assert_eq!(baseline_documents, EDITS);
-    assert_eq!(documents, 1, "one reassembled host snapshot");
-
-    // The host's certificate precedes the state it signed, so a native
-    // shell that joins late holds it before the snapshot arrives.
-    let sent = envelopes(&pages);
-    let position = |wanted: &dyn Fn(&neighbour_wire::NeighbourMsg) -> bool| {
-        sent.iter().position(|envelope| {
-            let Envelope::Delta {
-                author_device_public_key,
-                delta,
-                ..
-            } = envelope
-            else {
-                return false;
-            };
-            let Some(
-                tilo_relay::CoeditPayload::Checkpoint { body, .. }
-                | tilo_relay::CoeditPayload::RetainedDelta { body, .. },
-            ) = tilo_relay::CoeditPayload::decode(delta)
-            else {
-                return false;
-            };
-            *author_device_public_key == host_key
-                && postcard::from_bytes(&body).is_ok_and(|message| wanted(&message))
-        })
-    };
-    let certificate = position(&|message| {
-        matches!(message, neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }
-            if cert.device_public_key == host_key)
-    })
-    .expect("the host's certificate is replayed");
-    let snapshot =
-        position(&|message| matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }))
-            .expect("the host's snapshot is replayed");
-    assert!(
-        certificate < snapshot,
-        "certificate {certificate} before snapshot {snapshot}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_edit_made_while_the_host_folds_reaches_late_joiners() {
-    const EDITS: usize = 300;
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let (a, b) = (
-        enrol(&root, "browser", DeviceCapabilities::member()),
-        enrol(&root, "laptop", DeviceCapabilities::member()),
-    );
-    let b_key = b.cert.device_public_key;
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let compactor = host.relay.compactor().clone();
-    compactor.hold_before_removing(Duration::from_secs(3));
-    let https = || Host::Https(host.https());
-    let a = start_peer(https(), a.cert, host_device.cert.clone(), a.key);
-    let b = start_peer(https(), b.cert, host_device.cert.clone(), b.key);
-    a.join(workspace()).unwrap();
-    b.join(workspace()).unwrap();
-    ready(&[&a, &b]).await;
-
-    let mut base = AutoCommit::new();
-    base.put(ROOT, "title", "base").unwrap();
-    base.commit();
-    a.publish(route(), &DocumentMutation::Snapshot(base.save()))
-        .unwrap();
-    let mut on_a = base.fork();
-    for edit in 0..EDITS {
-        let before = on_a.get_heads();
-        on_a.put(
-            ROOT,
-            format!("k{}", edit % 20),
-            i64::try_from(edit).unwrap(),
-        )
-        .unwrap();
-        on_a.commit();
-        a.publish(
-            route(),
-            &DocumentMutation::Incremental(on_a.save_after(&before)),
-        )
-        .unwrap();
-    }
-    durable(&a).await;
-    settle("the fold to read the channel", || {
-        let started = compactor.folds_started() > 0;
-        async move { started.then_some(()) }
-    })
-    .await;
-    // B writes after the host read the channel and before it removes.
-    let mut on_b = base.fork();
-    on_b.put(ROOT, "from_b", "concurrent").unwrap();
-    on_b.commit();
-    b.publish(
-        route(),
-        &DocumentMutation::Incremental(on_b.save_after(&base.get_heads())),
-    )
-    .unwrap();
-    durable(&b).await;
-    assert_eq!(compactor.rounds(), 0, "the edit landed during the fold");
-    settle("the host snapshot", || {
-        let done = compactor.rounds() > 0;
-        async move { done.then_some(()) }
-    })
-    .await;
-    assert_eq!(
-        lineage_len(state.path(), &b_key),
-        1,
-        "the concurrent edit is kept"
-    );
-
-    let mut merged = on_a.fork();
-    merged.merge_incoming(&mut on_b.fork()).unwrap();
-    let heads = merged.get_heads();
-    let (replica, documents, _, _) = join_late(
-        &host,
-        enrol(&root, "phone", DeviceCapabilities::member()),
-        &host_device.cert,
-        None,
-        &heads,
-    )
-    .await;
-    assert!(
-        documents <= 3,
-        "{documents} documents instead of {}",
-        EDITS + 2
-    );
-    let from_b = replica
-        .get(ROOT, "from_b")
-        .unwrap()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|scalar| scalar.into_string().ok());
-    assert_eq!(from_b.as_deref(), Some("concurrent"));
 }
 
 /// A route's content keys as the page's cipher, as a member holds them.

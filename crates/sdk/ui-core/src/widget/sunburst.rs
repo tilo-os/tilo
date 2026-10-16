@@ -5,26 +5,22 @@
     reason = "radial hierarchy projection is bounded floating-point geometry"
 )]
 
-use crate::widget::{AppModel, ModelPath};
-use std::collections::HashMap;
+use crate::widget::ModelPath;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
-};
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 const ARC_STEPS: u32 = 64;
 
@@ -138,11 +134,8 @@ pub struct SunburstChart {
     center_subtitle: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<String>,
+    inspection: ChartInspection<String>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl SunburstChart {
@@ -154,27 +147,14 @@ impl SunburstChart {
             center_subtitle: String::new(),
             height: 440.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: SunburstStyle) -> Self {
+    pub fn with_style(mut self, style: SunburstStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: SunburstStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &SunburstStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut SunburstStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
@@ -189,41 +169,23 @@ impl SunburstChart {
     }
     pub fn set_root(&mut self, root: SunburstNode) {
         self.root = root;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self
+        self.inspection.hovered = self
             .segments()
             .iter()
             .any(|segment| segment.id == id)
             .then(|| id.to_owned());
-        self.keyboard_inspection = self.hovered.is_some();
-        self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        self.anchor_hovered();
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
-    }
-
-    fn update_inspection_anchor(&mut self) {
-        let Some(id) = self.hovered.as_deref() else {
-            return;
-        };
-        let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id) else {
-            return;
-        };
-        let (center, inner, _, band) = self.geometry();
-        let angle = segment.start.midpoint(segment.end);
-        let depth = f64::from(u32::try_from(segment.depth).unwrap_or(u32::MAX));
-        let radius = inner + (depth - 0.5) * band;
-        self.pointer = Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
-        );
+        self.inspection.clear();
     }
 
     fn depth(&self) -> usize {
@@ -381,75 +343,54 @@ impl SunburstChart {
 
     fn palette(theme: &Theme, family: usize, depth: usize) -> Color {
         let colors = &theme.tokens.colors;
-        let bases = [
-            colors.accent.stops[5],
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.semantic.info,
-            colors.accent.stops[8],
-            colors.semantic.danger,
-        ];
-        let base = bases
-            .get(family % bases.len())
-            .copied()
-            .unwrap_or(theme.accent_primary);
+        let base = colors.presence.series(family);
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
-        mix(base, target, amount)
+        crate::tokens::colors::mix8(base, target, crate::num::f32_of_f64(amount))
     }
 }
 
-fn mix(start: Color, end: Color, amount: f64) -> Color {
-    let amount = amount.clamp(0.0, 1.0);
-    let channel = |a: u8, b: u8| {
-        let value = f64::from(a) + (f64::from(b) - f64::from(a)) * amount;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "interpolation remains inside u8 endpoints"
-        )]
-        {
-            value.round() as u8
-        }
-    };
-    Color::from_rgb8(
-        channel(start.r(), end.r()),
-        channel(start.g(), end.g()),
-        channel(start.b(), end.b()),
-    )
+impl InteractiveChart for SunburstChart {
+    type Hover = String;
+    fn inspection(&mut self) -> &mut ChartInspection<String> {
+        &mut self.inspection
+    }
+    fn update_hover(&mut self) {
+        self.inspection.hovered = self.hit_test(self.inspection.pointer);
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(id) = &self.inspection.hovered else {
+            return false;
+        };
+        self.activated = Some(id.clone());
+        true
+    }
+    fn keyboard_items(&self) -> Vec<String> {
+        self.segments()
+            .into_iter()
+            .map(|segment| segment.id)
+            .collect()
+    }
+    fn anchor(&self, id: &String) -> Option<Point> {
+        let segment = self
+            .segments()
+            .into_iter()
+            .find(|segment| segment.id == *id)?;
+        let (center, inner, _, band) = self.geometry();
+        let angle = segment.start.midpoint(segment.end);
+        let depth = f64::from(u32::try_from(segment.depth).unwrap_or(u32::MAX));
+        let radius = inner + (depth - 0.5) * band;
+        Some(Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        ))
+    }
 }
 
 impl Widget for SunburstChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps segment, center-label, and tooltip painting together"
-    )]
+    crate::widget::chart_navigation::chart_leaf!();
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -458,14 +399,12 @@ impl Widget for SunburstChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.keyboard_inspection {
-            self.update_inspection_anchor();
-        }
+        self.follow_keyboard_anchor();
         let (base_center, inner, _, band) = self.geometry();
         for segment in self.segments() {
             let half_gap = (self.style.angular_gap / 2.0).min((segment.end - segment.start) * 0.2);
             let mid = segment.start.midpoint(segment.end);
-            let lift = if self.hovered.as_deref() == Some(segment.id.as_str()) {
+            let lift = if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 self.style.hover_offset
             } else {
                 0.0
@@ -492,7 +431,7 @@ impl Widget for SunburstChart {
                 segment.end - half_gap,
             );
             scene.fill(Fill::NonZero, transform, color, None, &path);
-            if self.hovered.as_deref() == Some(segment.id.as_str()) {
+            if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -509,40 +448,23 @@ impl Widget for SunburstChart {
             None,
             &Circle::new(base_center, (inner - 2.0).max(0.0)),
         );
-        let title_size = theme.tokens.typography.scale.x2l;
-        let (width, height) =
-            tr.measure_weighted(&self.center_title, title_size, None, TextWeight::Bold);
-        tr.draw_text_weighted(
+        // The centre copy at the largest size the hole holds; left out
+        // where even a heading does not fit (the tooltip carries it).
+        let _ = crate::widget::chart_labels::paint_centre_label(
             scene,
+            transform,
+            tr,
+            theme,
+            base_center,
+            (inner - 2.0).max(0.0),
             &self.center_title,
-            title_size,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    base_center.x - f64::from(width) / 2.0,
-                    base_center.y - f64::from(height),
-                )),
-            None,
-            TextWeight::Bold,
-        );
-        let (sub_width, _) = tr.measure(
             &self.center_subtitle,
-            theme.tokens.typography.scale.xs,
-            None,
         );
-        tr.draw_text(
-            scene,
-            &self.center_subtitle,
-            theme.tokens.typography.scale.xs,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((
-                    base_center.x - f64::from(sub_width) / 2.0,
-                    base_center.y + 8.0,
-                )),
-            None,
-        );
-        if let Some(id) = self.hovered.as_deref().filter(|_| self.style.tooltip)
+        if let Some(id) = self
+            .inspection
+            .hovered
+            .as_deref()
+            .filter(|_| self.style.tooltip)
             && let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id)
         {
             let detail = if segment.detail.is_empty() {
@@ -550,107 +472,20 @@ impl Widget for SunburstChart {
             } else {
                 format!("{}  ·  {}", format_compact(segment.value), segment.detail)
             };
-            let (pw, _) = tr.measure(&segment.path, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
-            let width = f64::from(pw.max(dw)).max(170.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
-            );
-            tr.draw_text_weighted(
-                scene,
-                &segment.path,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            tr.draw_text(
-                scene,
-                &detail,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
+                tr,
+                theme,
+                self.inspection.pointer,
+                self.rect,
+                170.0,
+                (&segment.path, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    if let Some(id) = &self.hovered {
-                        self.activated = Some(id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.hovered = self.hit_test(self.pointer);
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(id) = &self.hovered {
-                    self.activated = Some(id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    self.activated.clone_from(&self.hovered);
-                } else {
-                    let candidates = self.segments();
-                    let current = self
-                        .hovered
-                        .as_deref()
-                        .and_then(|id| candidates.iter().position(|segment| segment.id == id));
-                    self.hovered = moved_index(current, candidates.len(), action)
-                        .and_then(|index| candidates.get(index))
-                        .map(|segment| segment.id.clone());
-                    self.keyboard_inspection = self.hovered.is_some();
-                    self.update_inspection_anchor();
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
@@ -665,10 +500,7 @@ impl Widget for SunburstChart {
                     } else {
                         segment.detail
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(
@@ -677,52 +509,26 @@ impl Widget for SunburstChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
-            return false;
-        };
-        if let Some(segment) = self
-            .segments()
-            .into_iter()
-            .find(|segment| crate::a11y::hash_key(&segment.id) == *key)
-        {
-            self.activated = Some(segment.id);
-            return true;
-        }
-        false
+        let segments = self.segments();
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
+            action,
+            key_path,
+            segments.into_iter().map(|segment| segment.id),
+        )
     }
     fn name(&self) -> &'static str {
         "SunburstChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 

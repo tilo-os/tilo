@@ -1,26 +1,73 @@
-//! Pins the Welcome page seed across all four Phase-3 block kinds.
-//!
-//! Two assertions:
-//! 1. The Welcome page body round-trips through the markdown parser
-//!    byte-stably (so saving + reloading produces identical content).
-//! 2. Loading the body into a `BlockEditor` produces blocks of every
-//!    Phase-3 kind (paragraph, heading, bullet, checklist, code block,
-//!    divider) — proving the parser landed at least one of each.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
+//! A note using every block kind:
+//! 1. round-trips through the markdown parser byte-stably, and
+//! 2. loads into a `BlockEditor` as blocks of every kind (paragraph,
+//!    heading, bullet, checklist, code block, divider).
 
 use std::collections::HashSet;
 
-use notes::WELCOME_BODY;
 use notes::markdown::{BlockSpec, parse, serialize};
+
+/// A note that uses each block kind at least once, as a quick reference
+/// for the editing syntax would.
+pub const WELCOME_BODY: &str = "\
+# Welcome
+
+This is your first note. Edit it, or add a note from the left.
+
+Type here. **Bold**, *italic*, `code`, and [[Welcome]] links work inline.
+
+## Formatting
+
+Start a line with `#` for a heading, or `- ` for a bullet:
+
+- Coffee
+
+- Tea
+
+- Hot chocolate
+
+  - With marshmallows
+
+Add `[ ]` after the dash to track to-dos:
+
+- [ ] Something to finish
+
+- [x] Something already done
+
+Triple backticks make a code block:
+
+```rust
+fn hello() {}
+```
+
+Start with `> ` to call out a quotation:
+
+> Notes should feel calm, fast, and connected.
+
+Or number them when order matters:
+
+1. First, add a note.
+
+2. Then write something.
+
+3. Finally, link it with `[[`.
+
+Three dashes make a divider:
+
+---
+
+## Shortcuts
+
+- `Cmd-K` jumps to any note by name
+
+- `Cmd-N` adds a note under the selection
+
+- `/` opens the block menu; `[[` links a note
+
+- `?` opens the full shortcuts list
+
+Double-click a title in the sidebar to rename it.
+";
 
 #[test]
 fn welcome_body_contains_every_block_kind_and_round_trips() {

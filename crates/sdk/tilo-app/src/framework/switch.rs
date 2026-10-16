@@ -5,7 +5,6 @@ use std::rc::Rc;
 use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
-use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
@@ -16,55 +15,70 @@ use ui_core::{LocalState, Theme, taffy};
 
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
 
+/// The part for the key now, built with the given liveness token, when the
+/// key moved since the part shown was built; `None` while it has not.
+type Rebuild = Box<dyn FnMut(&Rc<()>) -> Option<Element>>;
+
 /// The part [`ViewCx::switch`](super::ViewCx::switch) shows for the current
 /// key. Rebuilt when the key changes; dropping the old part retires every
-/// binding it registered.
-pub(crate) struct Switch<K> {
-    key: LocalState<K>,
-    shown: K,
-    build: BuildPart<K>,
+/// binding it registered. The key's type stays in the constructor, so the
+/// widget is one type whatever the key.
+pub(crate) struct Switch {
+    rebuild: Rebuild,
     /// Dropping it retires every binding the shown part registered.
     alive: Rc<()>,
     part: Element,
     structure_dirty: bool,
 }
 
-impl<K: Clone + PartialEq + 'static> Switch<K> {
-    pub(crate) fn new(key: LocalState<K>, build: BuildPart<K>) -> Self {
-        let shown = key.with(Clone::clone);
+impl Switch {
+    pub(crate) fn keyed<K: Clone + PartialEq + 'static>(
+        key: LocalState<K>,
+        build: BuildPart<K>,
+    ) -> Element {
+        let mut shown = key.with(Clone::clone);
         let alive = Rc::new(());
         let part = build(&shown, &alive);
-        Self {
-            key,
-            shown,
-            build,
+        Self::element(
+            Box::new(move |alive| {
+                let current = key.with(Clone::clone);
+                if current == shown {
+                    return None;
+                }
+                let part = build(&current, alive);
+                shown = current;
+                Some(part)
+            }),
+            alive,
+            part,
+        )
+    }
+
+    /// The switch as an element, its widget table compiled once whatever
+    /// the key.
+    fn element(rebuild: Rebuild, alive: Rc<()>, part: Element) -> Element {
+        Box::new(Self {
+            rebuild,
             alive,
             part,
             structure_dirty: false,
-        }
+        })
     }
 
     fn reconcile(&mut self) {
-        let current = self.key.with(Clone::clone);
-        if current == self.shown {
-            return;
-        }
         let alive = Rc::new(());
-        self.part = (self.build)(&current, &alive);
-        self.alive = alive;
-        self.shown = current;
-        self.structure_dirty = true;
+        if let Some(part) = (self.rebuild)(&alive) {
+            self.part = part;
+            self.alive = alive;
+            self.structure_dirty = true;
+        }
     }
 }
 
-impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+impl Widget for Switch {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
-    }
-
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        self.part.update(state, path)
     }
 
     fn build_layout(
@@ -105,15 +119,6 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
         self.reconcile();
         let own = std::mem::take(&mut self.structure_dirty);
         self.part.take_structure_dirty() | own
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui_core::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        ui_core::widget::start_in_children(self, op, doc, path)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

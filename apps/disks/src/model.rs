@@ -1,9 +1,8 @@
 //! Pure data model for the Disks app.
 //!
-//! Everything here is plain data + serde so the whole topology can be
-//! round-tripped through a single Automerge `Text` blob. Rendering, probing,
-//! and CRDT plumbing live in sibling modules — this file knows nothing about
-//! vello, taffy or `lsblk`.
+//! Everything here is plain data + serde, parsed from the probe's JSON.
+//! Rendering and probing live in sibling modules — this file knows nothing
+//! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,29 +22,29 @@ pub enum DriveKind {
 }
 
 impl DriveKind {
-    /// Short uppercase tag shown in the drive badge.
+    /// Short name of the kind, as it is written on the drive's box.
     pub fn tag(&self) -> &'static str {
         match self {
             DriveKind::Nvme => "NVMe",
             DriveKind::Ssd => "SSD",
             DriveKind::Hdd => "HDD",
             DriveKind::Usb => "USB",
-            DriveKind::Zram => "ZRAM",
-            DriveKind::Virtual => "VIRT",
-            DriveKind::Other => "DISK",
+            DriveKind::Zram => "zram",
+            DriveKind::Virtual => "Virtual",
+            DriveKind::Other => "Disk",
         }
     }
 
     /// Longer human label for the detail header.
     pub fn long(&self) -> &'static str {
         match self {
-            DriveKind::Nvme => "NVMe Solid State Drive",
-            DriveKind::Ssd => "Solid State Drive",
-            DriveKind::Hdd => "Hard Disk Drive",
-            DriveKind::Usb => "Removable USB Drive",
-            DriveKind::Zram => "Compressed RAM Disk",
-            DriveKind::Virtual => "Virtual Block Device",
-            DriveKind::Other => "Block Device",
+            DriveKind::Nvme => "NVMe solid state drive",
+            DriveKind::Ssd => "Solid state drive",
+            DriveKind::Hdd => "Hard disk drive",
+            DriveKind::Usb => "Removable USB drive",
+            DriveKind::Zram => "Compressed RAM disk",
+            DriveKind::Virtual => "Virtual block device",
+            DriveKind::Other => "Block device",
         }
     }
 
@@ -101,7 +100,7 @@ impl SmartStatus {
     pub fn label(&self) -> &'static str {
         match self {
             SmartStatus::Passed => "Healthy",
-            SmartStatus::Warning => "Attention",
+            SmartStatus::Warning => "Needs attention",
             SmartStatus::Failing => "Failing",
             SmartStatus::Unknown => "Unknown",
         }
@@ -229,14 +228,30 @@ impl Partition {
         Some((used / self.size as f64).clamp(0.0, 1.0))
     }
 
-    /// Display name for the filesystem (label preferred, then fstype).
+    /// Display name for the filesystem: its label, else the filesystem type,
+    /// else the kernel name of the partition.
     pub fn display_label(&self) -> String {
         if let Some(l) = &self.label
             && !l.is_empty()
         {
             return l.clone();
         }
-        self.fstype.clone().unwrap_or_else(|| "—".to_string())
+        self.fstype
+            .clone()
+            .filter(|fs| !fs.is_empty())
+            .unwrap_or_else(|| self.name.clone())
+    }
+
+    /// Where the filesystem is mounted, as a person reads it: the kernel's
+    /// `[SWAP]` marker is "Swap". `None` when it is not mounted.
+    pub fn mount_display(&self) -> Option<String> {
+        self.mountpoint.as_deref().map(|mount| {
+            if mount.eq_ignore_ascii_case("[swap]") {
+                "Swap".to_owned()
+            } else {
+                mount.to_owned()
+            }
+        })
     }
 }
 
@@ -265,11 +280,6 @@ impl Drive {
         self.size.saturating_sub(self.allocated())
     }
 
-    /// Sum of used bytes across mounted filesystems.
-    pub fn used_total(&self) -> u64 {
-        self.partitions.iter().filter_map(|p| p.used).sum()
-    }
-
     /// SMART status, defaulting to Unknown when no data is present.
     pub fn smart_status(&self) -> SmartStatus {
         self.smart
@@ -289,12 +299,8 @@ impl Topology {
         self.drives.iter().map(|d| d.size).sum()
     }
 
-    pub fn total_used(&self) -> u64 {
-        self.drives.iter().map(Drive::used_total).sum()
-    }
-
-    /// A curated, fully-populated sample used for `--shots` and as the
-    /// instant-on seed before a live probe lands: an `NVMe` with
+    /// A curated, fully-populated sample machine for screenshots and tests:
+    /// an `NVMe` with
     /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs
     /// attention, and a USB stick.
     pub fn sample() -> Self {
@@ -333,7 +339,7 @@ impl Topology {
                     name: "nvme0n1p2".into(),
                     size: 214_748_364_800,
                     fstype: Some("ext4".into()),
-                    label: Some("fedora-root".into()),
+                    label: Some("system".into()),
                     mountpoint: Some("/".into()),
                     used: Some(142_300_000_000),
                     uuid: Some("a1b2c3d4-...-root".into()),
@@ -366,12 +372,12 @@ impl Topology {
                 pct_used: Some(3),
                 written_gb: Some(48_210),
                 attrs: vec![
-                    attr(5, "Available Spare", "100 %", AttrSeverity::Ok),
-                    attr(9, "Percentage Used", "3 %", AttrSeverity::Ok),
-                    attr(12, "Power Cycles", "412", AttrSeverity::Ok),
-                    attr(14, "Unsafe Shutdowns", "14", AttrSeverity::Ok),
-                    attr(1, "Media & Data Errors", "0", AttrSeverity::Ok),
-                    attr(2, "Critical Warning", "0x00", AttrSeverity::Ok),
+                    attr(5, "Available spare", "100 %", AttrSeverity::Ok),
+                    attr(9, "Percentage used", "3 %", AttrSeverity::Ok),
+                    attr(12, "Power cycles", "412", AttrSeverity::Ok),
+                    attr(14, "Unsafe shutdowns", "14", AttrSeverity::Ok),
+                    attr(1, "Media and data errors", "0", AttrSeverity::Ok),
+                    attr(2, "Critical warning", "0x00", AttrSeverity::Ok),
                 ],
                 detail: None,
             }),
@@ -407,11 +413,11 @@ impl Topology {
                 pct_used: None,
                 written_gb: Some(31_540),
                 attrs: vec![
-                    attr(5, "Reallocated Sectors", "0", AttrSeverity::Ok),
-                    attr(9, "Power-On Hours", "11860", AttrSeverity::Ok),
-                    attr(173, "Wear Leveling Count", "94", AttrSeverity::Ok),
+                    attr(5, "Reallocated sectors", "0", AttrSeverity::Ok),
+                    attr(9, "Power-on hours", "11860", AttrSeverity::Ok),
+                    attr(173, "Wear leveling count", "94", AttrSeverity::Ok),
                     attr(194, "Temperature", "35 °C", AttrSeverity::Ok),
-                    attr(199, "UDMA CRC Errors", "0", AttrSeverity::Ok),
+                    attr(199, "UDMA CRC errors", "0", AttrSeverity::Ok),
                 ],
                 detail: None,
             }),
@@ -447,12 +453,12 @@ impl Topology {
                 pct_used: None,
                 written_gb: None,
                 attrs: vec![
-                    attr(5, "Reallocated Sectors", "8", AttrSeverity::Warn),
-                    attr(197, "Current Pending Sectors", "2", AttrSeverity::Warn),
-                    attr(198, "Offline Uncorrectable", "0", AttrSeverity::Ok),
-                    attr(9, "Power-On Hours", "28714", AttrSeverity::Ok),
+                    attr(5, "Reallocated sectors", "8", AttrSeverity::Warn),
+                    attr(197, "Current pending sectors", "2", AttrSeverity::Warn),
+                    attr(198, "Offline uncorrectable", "0", AttrSeverity::Ok),
+                    attr(9, "Power-on hours", "28714", AttrSeverity::Ok),
                     attr(194, "Temperature", "39 °C", AttrSeverity::Ok),
-                    attr(7, "Seek Error Rate", "0", AttrSeverity::Ok),
+                    attr(7, "Seek error rate", "0", AttrSeverity::Ok),
                 ],
                 detail: None,
             }),
@@ -475,8 +481,8 @@ impl Topology {
                 name: "sdc1".into(),
                 size: 30_745_000_000,
                 fstype: Some("exfat".into()),
-                label: Some("ULTRA".into()),
-                mountpoint: Some("/run/media/quinten/ULTRA".into()),
+                label: Some("Ultra".into()),
+                mountpoint: Some("/run/media/tilo/Ultra".into()),
                 used: Some(8_240_000_000),
                 uuid: Some("64ED-1A2B".into()),
             }],

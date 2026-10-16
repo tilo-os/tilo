@@ -291,14 +291,15 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 
 // ---- probe -----------------------------------------------------------
 
-/// Read the leading AVI headers of `path` and return `(width, height,
-/// duration_ms)`. Best-effort: `None` if the file is not a readable AVI.
-/// Lets the recent handoff show real duration/resolution for recorded clips
-/// without decoding the whole stream.
 /// The largest clip [`probe_avi`] reads (whole; the header is its first
 /// 512 bytes).
+#[cfg(test)]
 const PROBE_READ_LIMIT: usize = 256 * 1024 * 1024;
 
+/// Read the leading AVI headers of `path` and return `(width, height,
+/// duration_ms)`: `None` if the file is not a readable AVI. Tests use it to
+/// check what the recorder wrote.
+#[cfg(test)]
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is
     // enough. Read up to 512 bytes.
@@ -335,6 +336,7 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     Some((w, h, dur_ms))
 }
 
+#[cfg(test)]
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }

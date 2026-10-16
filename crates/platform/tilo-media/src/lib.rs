@@ -27,17 +27,21 @@
 //!   and a [`MediaEvent`] stream drained with [`MediaEngine::poll`]. With
 //!   `--features decode` it drives a `GStreamer` `playbin`→`appsink` pipeline
 //!   with audio output; without it a synthesized-frame fallback is used.
-//! * [`TransportState`] + [`TransportSync`] — collaborative "follow-the-host"
-//!   playback: a host publishes the transport, followers project it forward and
-//!   drift-correct. The CRDT wiring lives in [`CrdtTransport`] behind the trait
-//!   so a local-only player carries no automerge weight.
+//! * [`TransportState`] — collaborative playback: a participant publishes
+//!   the transport, the others project it forward and drift-correct
+//!   ([`MediaEngine::apply_transport`]).
 //! * [`Frame`] / [`FrameAcceptance`] — decoded pictures in the memory chosen by
 //!   the decoder. A hardware decoder's output can stay a
 //!   dmabuf on the GPU ([`FramePayload::Dmabuf`]) or arrive as planar NV12/P010
 //!   ([`FramePayload::Planar`]); only a consumer that says it can paint nothing
 //!   else gets the picture forced into system-memory RGBA.
 //! * [`HwReport`] — which decoder element the pipeline plugged and what caps
-//!   the sink negotiated.
+//!   the sink negotiated. [`hw::v4l2`] asks the kernel what its V4L2 codec
+//!   blocks actually take, and [`hw::fallback`] states, once, why a stream
+//!   ran in software.
+//! * [`video_surface`] — the handoff of a dmabuf picture to a display plane:
+//!   per frame, whether it can be scanned out directly (and with which KMS
+//!   source/destination rectangles) or has to be composited, and why.
 //! * [`encode`] — the same discipline for the other direction. Encoding has no
 //!   autoplugger, so a pipeline that names `openh264enc` encodes on the CPU
 //!   forever however capable the GPU is. [`encode::select_video`] walks a
@@ -64,6 +68,8 @@
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
+//! * [`audio_watch`] — event-driven notice that the audio device graph
+//!   changed, from a `PipeWire` registry listener that sleeps between changes.
 //! * [`sync_playout`] — the member side of a synchronized speaker group:
 //!   frames stamped on the leader's clock play at a shared presentation time
 //!   through a jitter buffer and a drift-steered resampler, mapped to the
@@ -79,18 +85,16 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod audio;
+pub mod audio_output;
 pub mod audio_runtime;
+pub mod audio_watch;
 pub mod cache;
 pub mod calibration;
 pub mod calibration_fusion;
@@ -114,6 +118,7 @@ pub mod session;
 pub mod source;
 pub mod sync_playout;
 pub mod transport;
+pub mod video_surface;
 pub mod voice;
 /// The page backend: the browser's media element decodes and plays.
 #[cfg(web_page)]
@@ -141,7 +146,7 @@ pub use audio::{
 pub use cache::{
     FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of, read_ahead_targets,
 };
-pub use caps::{Availability, CAPABILITIES, Feature, availability};
+pub use caps::{Availability, Feature, availability, available};
 pub use dmabuf::{ColorRange, Colorimetry, YuvMatrix};
 #[cfg(unix)]
 pub use dmabuf::{DmabufImage, DmabufPlane};
@@ -149,7 +154,7 @@ pub use encode::{
     AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
     VideoCodec,
 };
-pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode};
+pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode, SeekWaitError};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 pub use hw::{DecoderKind, HwPolicy, HwReport, StreamCodec};
@@ -158,12 +163,10 @@ pub use now_playing::{
 };
 pub use realtime::{
     CodecCapabilities, DecodeOutput, DecodedPicture, DecoderConfig, EncodedUnit, EncoderConfig,
-    InputFormat, InputFrame, RealtimeDecoder, RealtimeEncoder, RealtimeError, StreamColor,
+    InputFormat, InputFrame, PictureWake, RealtimeDecoder, RealtimeEncoder, RealtimeError,
+    StreamColor,
 };
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
 pub use session::{DEFAULT_FRAME_TIMEOUT, EngineSession, SessionPool};
 pub use source::{Source, WORKSPACE_ROOT};
-pub use transport::{
-    Correction, CrdtTransport, DRIFT_SEEK_THRESHOLD_MS, LocalTransport, TransportState,
-    TransportSync, correction,
-};
+pub use transport::{Correction, DRIFT_SEEK_THRESHOLD_MS, TransportState, correction};

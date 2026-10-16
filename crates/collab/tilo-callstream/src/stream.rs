@@ -35,6 +35,7 @@ use media::StreamCodec;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_lock::MutexRecover as _;
 
 /// Opaque numeric peer handle; matches the compositor's `network::protocol::PeerId`.
 pub type PeerId = u64;
@@ -350,34 +351,22 @@ impl SurfaceStreamSender {
     /// stamped on frames published from now on. A new codec needs a keyframe
     /// first; the caller publishes one next.
     pub fn set_format(&self, codec: StreamCodec, display_size: Option<(u16, u16)>) {
-        *self
-            .format
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (codec, display_size);
+        *self.format.lock_recover() = (codec, display_size);
     }
 
     /// Registers a viewer; idempotent — resets the drop counter and empties the queue if already subscribed.
     pub fn subscribe(&self, peer: PeerId) {
-        let mut subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut subs = self.subscribers.lock_recover();
         subs.insert(peer, SubscriberQueue::new(self.queue_cap));
     }
 
     pub fn unsubscribe(&self, peer: PeerId) {
-        let mut subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut subs = self.subscribers.lock_recover();
         subs.remove(&peer);
     }
 
     pub fn subscriber_count(&self) -> usize {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.subscribers.lock_recover().len()
     }
 
     /// Ships one frame to every subscribed viewer. The sequence counter
@@ -397,10 +386,7 @@ impl SurfaceStreamSender {
                 current.checked_add(1)
             })
             .map_err(|_| FrameError::SequenceExhausted)?;
-        let (codec, display_size) = *self
-            .format
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (codec, display_size) = *self.format.lock_recover();
         let frame = SurfaceFrame {
             sequence,
             keyframe,
@@ -411,10 +397,7 @@ impl SurfaceStreamSender {
         // Scoped so the lock is released as soon as delivery is done, rather
         // than held until the function returns.
         {
-            let mut subs = self
-                .subscribers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut subs = self.subscribers.lock_recover();
             for queue in subs.values_mut() {
                 queue.push(frame.clone());
             }
@@ -424,35 +407,23 @@ impl SurfaceStreamSender {
 
     /// Pops the front frame for `peer`, or `None` if unsubscribed / empty.
     pub fn poll(&self, peer: PeerId) -> Option<SurfaceFrame> {
-        let mut subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut subs = self.subscribers.lock_recover();
         subs.get_mut(&peer)?.pop()
     }
 
     /// Cumulative drop count for a subscriber; 0 if not subscribed.
     pub fn drops_for(&self, peer: PeerId) -> u64 {
-        let subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subs = self.subscribers.lock_recover();
         subs.get(&peer).map_or(0, SubscriberQueue::drops)
     }
 
     pub fn total_drops(&self) -> u64 {
-        let subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subs = self.subscribers.lock_recover();
         subs.values().map(SubscriberQueue::drops).sum()
     }
 
     pub fn pending_for(&self, peer: PeerId) -> usize {
-        let subs = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subs = self.subscribers.lock_recover();
         subs.get(&peer).map_or(0, |q| q.frames.len())
     }
 }

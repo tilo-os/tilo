@@ -1,15 +1,13 @@
 //! Retained geometry for the Photos chronology.
 //!
 //! Justified rows are variable-height and never cross a capture day.  This
-//! index therefore lays out one day at a time, retains its exact pixel extent,
-//! and exposes only the rows intersecting a viewport.  Scrollbars, date
-//! markers, painting and thumbnail hydration consequently share one coordinate
-//! system instead of approximating the layout with a column count.
+//! index therefore lays out one day at a time with the toolkit's
+//! `justified_rows`, retains its exact pixel extent, and exposes only the
+//! rows intersecting a viewport.  Scrollbars, date markers, painting and
+//! thumbnail hydration consequently share one coordinate system instead of
+//! approximating the layout with a column count.
 
 use std::collections::HashMap;
-
-const DAY_HEADER_HEIGHT: f64 = 34.0;
-const MAX_ROW_ITEMS: usize = 6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TimelinePhoto {
@@ -29,17 +27,25 @@ pub(crate) struct TimelineGeometry {
     pub width: f64,
     pub target_height: f64,
     pub gap: f64,
-    pub compact: bool,
+    /// The day's heading above its rows, its gap to them included.
+    pub header_height: f64,
+    /// The space after a day, before the next day's heading.
+    pub day_gap: f64,
 }
 
 impl TimelineGeometry {
     fn normalized(self) -> Self {
         Self {
-            width: self.width.max(44.0),
-            target_height: self.target_height.clamp(76.0, 420.0),
+            width: self.width.max(1.0),
+            target_height: self.target_height.max(1.0),
             gap: self.gap.max(0.0),
-            compact: self.compact,
+            header_height: self.header_height.max(0.0),
+            day_gap: self.day_gap.max(0.0),
         }
+    }
+
+    fn header(geometry: Option<Self>) -> f64 {
+        geometry.map_or(0.0, |geometry| geometry.header_height)
     }
 }
 
@@ -185,13 +191,16 @@ impl TimelineProjection {
 
     pub fn date_markers(&self, viewport: f64) -> Vec<(String, f64, bool)> {
         let denominator = self.max_scroll(viewport);
+        // A year boundary is where one year gives way to the next: the
+        // newest day opens the timeline and stands at the top of the track,
+        // so it is no boundary and draws no mark.
         let mut previous_year = "";
         self.days
             .iter()
             .map(|day| {
                 let year = day.key.get(..4).unwrap_or_default();
-                let major = year.len() == 4 && year != previous_year;
-                if major {
+                let major = year.len() == 4 && !previous_year.is_empty() && year != previous_year;
+                if year != previous_year {
                     previous_year = year;
                 }
                 let position = if denominator > 0.0 {
@@ -207,9 +216,10 @@ impl TimelineProjection {
     /// Preserve the first row intersecting the viewport at the same screen
     /// coordinate through a density or width change.
     pub fn anchor_at(&self, scroll_y: f64) -> Option<TimelineAnchor> {
+        let header = TimelineGeometry::header(self.geometry);
         self.days.iter().find_map(|day| {
             day.rows.iter().find_map(|row| {
-                let absolute = day.top + DAY_HEADER_HEIGHT + row.top;
+                let absolute = day.top + header + row.top;
                 (absolute + row.height >= scroll_y).then(|| TimelineAnchor {
                     photo_id: row.ids.first().cloned().unwrap_or_default(),
                     screen_y: absolute - scroll_y,
@@ -219,10 +229,11 @@ impl TimelineProjection {
     }
 
     pub fn restore_anchor(&self, anchor: &TimelineAnchor, viewport: f64) -> Option<f64> {
+        let header = TimelineGeometry::header(self.geometry);
         for day in &self.days {
             for row in &day.rows {
                 if row.ids.iter().any(|id| id == &anchor.photo_id) {
-                    let absolute = day.top + DAY_HEADER_HEIGHT + row.top;
+                    let absolute = day.top + header + row.top;
                     return Some(self.clamp_scroll(absolute - anchor.screen_y, viewport));
                 }
             }
@@ -233,9 +244,10 @@ impl TimelineProjection {
     pub fn visible_days(&self, scroll_y: f64, viewport: f64) -> Vec<VisibleTimelineDay> {
         let top = (scroll_y - self.overscan()).max(0.0);
         let bottom = scroll_y + viewport + self.overscan();
+        let header = TimelineGeometry::header(self.geometry);
         self.days
             .iter()
-            .filter(|day| day.top + DAY_HEADER_HEIGHT >= top && day.top <= bottom)
+            .filter(|day| day.top + header >= top && day.top <= bottom)
             .map(|day| VisibleTimelineDay {
                 key: day.key.clone(),
                 y: day.top - scroll_y,
@@ -255,7 +267,7 @@ impl TimelineProjection {
                 continue;
             }
             for row in &day.rows {
-                let y = day.top + DAY_HEADER_HEIGHT + row.top;
+                let y = day.top + geometry.header_height + row.top;
                 if y > bottom || y + row.height < top {
                     continue;
                 }
@@ -279,7 +291,7 @@ impl TimelineProjection {
 
     fn overscan(&self) -> f64 {
         self.geometry.map_or(0.0, |geometry| {
-            (geometry.target_height + geometry.gap) * 2.0 + DAY_HEADER_HEIGHT
+            (geometry.target_height + geometry.gap) * 2.0 + geometry.header_height
         })
     }
 
@@ -358,88 +370,55 @@ impl TimelineProjection {
         geometry: TimelineGeometry,
     ) {
         day.rows.clear();
-        if geometry.compact {
-            for id in &day.ids {
-                let aspect = photos
-                    .get(id)
-                    .map_or(1.5, |photo| photo.aspect_ratio)
-                    .clamp(0.35, 3.0);
-                day.rows.push(TimelineRow {
-                    ids: vec![id.clone()],
-                    widths: vec![geometry.width],
-                    height: (geometry.width / aspect).clamp(140.0, 420.0),
-                    top: 0.0,
-                });
-            }
-        } else {
-            let mut start = 0;
-            while start < day.ids.len() {
-                let mut end = start;
-                let mut aspect_sum = 0.0;
-                let row_item_limit = if geometry.target_height > 320.0 {
-                    2
-                } else {
-                    MAX_ROW_ITEMS
-                };
-                for id in day.ids.iter().skip(start) {
-                    aspect_sum += photos
-                        .get(id)
-                        .map_or(1.5, |photo| photo.aspect_ratio)
-                        .clamp(0.35, 3.0);
-                    end += 1;
-                    let count = end - start;
-                    let natural = aspect_sum * geometry.target_height
-                        + geometry.gap * count.saturating_sub(1) as f64;
-                    if natural >= geometry.width || count >= row_item_limit {
-                        break;
+        let aspects: Vec<f64> = day
+            .ids
+            .iter()
+            .map(|id| photos.get(id).map_or(1.5, |photo| photo.aspect_ratio))
+            .collect();
+        let rects = ui::widget::justified_rows(
+            &aspects,
+            geometry.width,
+            geometry.target_height,
+            geometry.gap,
+        );
+        let mut current: Option<TimelineRow> = None;
+        for (id, rect) in day.ids.iter().zip(rects) {
+            match current.as_mut() {
+                Some(row) if (row.top - rect.y0).abs() < 0.5 => {
+                    row.ids.push(id.clone());
+                    row.widths.push(rect.width());
+                }
+                _ => {
+                    if let Some(row) = current.take() {
+                        day.rows.push(row);
                     }
+                    current = Some(TimelineRow {
+                        ids: vec![id.clone()],
+                        widths: vec![rect.width()],
+                        height: rect.height(),
+                        top: rect.y0,
+                    });
                 }
-                let fills =
-                    end < day.ids.len() || aspect_sum * geometry.target_height >= geometry.width;
-                let height = if fills {
-                    ((geometry.width - geometry.gap * (end - start - 1) as f64) / aspect_sum)
-                        // Ordinary timelines stay compact, while an explicit
-                        // enlarged-text target may grow to the geometry's
-                        // bounded 420px ceiling. Keeping the real justified
-                        // height here avoids dumping all clamped leftover
-                        // width into the final photograph in a row.
-                        .clamp(76.0, geometry.target_height.clamp(320.0, 420.0))
-                } else {
-                    geometry.target_height.clamp(76.0, 320.0)
-                };
-                let mut widths = Vec::with_capacity(end - start);
-                let mut used = 0.0;
-                for (index, id) in day.ids.iter().enumerate().take(end).skip(start) {
-                    let last = index + 1 == end;
-                    let width = if fills && last {
-                        (geometry.width - used).max(44.0)
-                    } else {
-                        let width = (photos
-                            .get(id)
-                            .map_or(1.5, |photo| photo.aspect_ratio)
-                            .clamp(0.35, 3.0)
-                            * height)
-                            .round();
-                        used += width + geometry.gap;
-                        width
-                    };
-                    widths.push(width);
-                }
-                day.rows.push(TimelineRow {
-                    ids: day.ids.iter().take(end).skip(start).cloned().collect(),
-                    widths,
-                    height,
-                    top: 0.0,
-                });
-                start = end;
             }
         }
-        let mut top = 0.0;
-        for row in &mut day.rows {
-            row.top = top;
-            top += row.height + geometry.gap;
+        if let Some(mut row) = current {
+            // A last row that does not fill the width keeps the target
+            // height, which is taller than the filled rows above it (they are
+            // scaled down to fit). Keep it at their height so a day does not
+            // end on one oversized photograph.
+            if let Some(previous) = day.rows.last()
+                && row.height > previous.height
+            {
+                let scale = previous.height / row.height;
+                row.height = previous.height;
+                for width in &mut row.widths {
+                    *width *= scale;
+                }
+            }
+            day.rows.push(row);
         }
-        day.height = DAY_HEADER_HEIGHT + top;
+        let extent = day.rows.last().map_or(0.0, |row| row.top + row.height);
+        day.height = geometry.header_height + extent + geometry.day_gap;
     }
 
     fn rebuild_prefix(&mut self) {
@@ -494,7 +473,8 @@ mod tests {
             width,
             target_height: 160.0,
             gap: 12.0,
-            compact: false,
+            header_height: 34.0,
+            day_gap: 24.0,
         }
     }
 
@@ -537,7 +517,7 @@ mod tests {
                 "overscan decoded {} photos",
                 visible.len()
             );
-            assert!(visible.iter().all(|entry| entry.width >= 44.0));
+            assert!(visible.iter().all(|entry| entry.width > 0.0));
         }
     }
 

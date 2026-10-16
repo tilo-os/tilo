@@ -9,10 +9,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use file_explorer::model::{AvailabilityPolicy, Residency};
 use file_explorer::{FileCommand, FileExplorerWidget};
-use fs::availability::{RecordAvailability, RecordKind, Residency as FsResidency};
+use fs::availability::{RecordAvailability, RecordKind};
 use fs::{AvailabilityRegistry, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
+use fs_protocol::AvailabilityPolicy;
+use fs_protocol::Residency;
+use fs_protocol::Residency as FsResidency;
 use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 
@@ -130,7 +132,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     assert_eq!(folder_availability.policy, AvailabilityPolicy::Pinned);
     assert!(!folder_availability.policy_inherited);
     assert_eq!(
-        host_fs::attributes::get(mount.join("Offline"), fs::syncstate::PIN_XATTR)
+        host_fs::attributes::get(mount.join("Offline"), fs_protocol::PIN_XATTR)
             .unwrap()
             .as_deref(),
         Some(b"pinned".as_slice())
@@ -171,12 +173,12 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         for (_, record_id, _, _) in &expected {
             assert_eq!(
                 registry.get(*record_id).unwrap().policy,
-                fs::availability::AvailabilityPolicy::Automatic
+                fs_protocol::AvailabilityPolicy::Automatic
             );
         }
         assert_eq!(
             registry.get(folder_record_id).unwrap().policy,
-            fs::availability::AvailabilityPolicy::Pinned
+            fs_protocol::AvailabilityPolicy::Pinned
         );
         drop(registry);
     }

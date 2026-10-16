@@ -1,13 +1,13 @@
 //! Room documents written by one build must read the same in another, and
 //! two peers whose documents started empty must both survive a merge.
 //!
-//! `fixtures/room_contents.automerge` pins the room document schema: it is a
+//! `fixtures/room_contents.automerge.hex` pins the room document schema: it is a
 //! saved document, so a change to the keys or value encodings the projection
 //! writes makes it read differently and fails these tests. When a schema
 //! change is intended, rewrite it from the current writer with
 //!
 //! ```text
-//! cargo test -p tilo-desktop-model --test room_schema rewrite_room_fixture -- --ignored
+//! cargo test -p tilo-desktop-model --test it room_schema::rewrite_room_fixture -- --ignored
 //! ```
 //!
 //! and commit the rewritten fixture alongside the change.
@@ -15,7 +15,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
@@ -38,10 +37,17 @@ const BOB: u16 = 0x0b;
 /// Written by [`fixture_document`]: two peers whose room documents started
 /// empty each minted `contents`; Bob also created an explicitly kept, empty
 /// strip. Merged, so `contents` holds two candidates.
-const ROOM_FIXTURE: &[u8] = include_bytes!("fixtures/room_contents.automerge");
+static ROOM_FIXTURE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!("fixtures/room_contents.automerge.hex")
+        .split_ascii_whitespace()
+        .map(|byte| {
+            u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+        })
+        .collect()
+});
 const ROOM_FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/room_contents.automerge"
+    "/tests/fixtures/room_contents.automerge.hex"
 );
 const ROOM_ID: &str = "6f1f2d3c-1111-4222-8333-944445555666";
 
@@ -55,6 +61,7 @@ fn strip(salt: u16, counter: u64, label: &str) -> Strip {
             active_tab: id + 2,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
             tabs: vec![Tab {
                 id: id + 2,
                 title: label.into(),
@@ -119,9 +126,24 @@ fn fixture_document() -> AutoCommit {
 
 /// Rewrites the fixture from the current writer; see the module docs.
 #[test]
-#[ignore = "rewrites tests/fixtures/room_contents.automerge"]
+#[ignore = "rewrites tests/fixtures/room_contents.automerge.hex"]
 fn rewrite_room_fixture() {
-    std::fs::write(ROOM_FIXTURE_PATH, fixture_document().save()).unwrap();
+    std::fs::write(
+        ROOM_FIXTURE_PATH,
+        fixture_document()
+            .save()
+            .chunks(16)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    + "\n"
+            })
+            .collect::<String>(),
+    )
+    .unwrap();
 }
 
 /// The stored fixture reads exactly like the document the current writer
@@ -129,7 +151,7 @@ fn rewrite_room_fixture() {
 #[test]
 fn the_fixture_matches_the_current_writer() {
     let fresh = fixture_document();
-    let stored = AutoCommit::load(ROOM_FIXTURE).unwrap();
+    let stored = AutoCommit::load(ROOM_FIXTURE.as_slice()).unwrap();
     assert_eq!(
         format!("{:?}", contents_of(&stored)),
         format!("{:?}", contents_of(&fresh)),
@@ -149,7 +171,7 @@ fn names(doc: &AutoCommit) -> Vec<String> {
 
 #[test]
 fn the_fixture_reads_every_peers_windows_and_kept_strips() {
-    let doc = AutoCommit::load(ROOM_FIXTURE).unwrap();
+    let doc = AutoCommit::load(ROOM_FIXTURE.as_slice()).unwrap();
     assert_eq!(
         doc.get_all(ROOT, ROOM_CONTENTS_KEY).unwrap().len(),
         2,
@@ -177,7 +199,7 @@ fn the_fixture_reads_every_peers_windows_and_kept_strips() {
 
 #[test]
 fn a_kept_strip_stays_through_an_ordinary_projection_and_sweeps_across_candidates() {
-    let mut doc = AutoCommit::load(ROOM_FIXTURE).unwrap();
+    let mut doc = AutoCommit::load(ROOM_FIXTURE.as_slice()).unwrap();
     let mut kept = strip(BOB, 10, "Kept");
     kept.window_groups.clear();
     project_owned_contents(

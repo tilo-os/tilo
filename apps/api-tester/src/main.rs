@@ -1,68 +1,8 @@
-//! API tester — standard Tilo application entry point.
-
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    reason = "app-local arithmetic"
-)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
-
-// `ShotFactory` (in `ui::launch`) is `fn(&LaunchArgs) -> Result<Box<dyn
-// Widget>, LaunchError>` — a fixed callback type shared by every app's
-// `--shots` entry point, so this can't drop the `Result` even though this
-// particular app never fails to build its shot root.
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "must match ui::launch's ShotFactory = fn(&LaunchArgs) -> Result<..>"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let mut app = if args.has("--empty") {
-        api_tester::ApiTesterApp::new()
-    } else {
-        api_tester::ApiTesterApp::new_demo()
-    };
-    if args.has("--rail-open") {
-        app.snap_rail(true);
-    }
-    if args.has("--error") {
-        app.shot_error();
-    }
-    if args.has("--focus-url") {
-        app.shot_focus_url();
-    }
-    if let Some(form) = args.value("--form") {
-        app.shot_form(form);
-    }
-    Ok(Box::new(app))
-}
+//! The app's entry point on every target: the live window and the standard
+//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,
+//! registration with the page runtime on the web.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.api-tester", api_tester::app_root)
-            .shot_root(shot_root)
-            .allowed_flags(&["--rail-open", "--empty", "--error", "--focus-url"])
-            .allowed_options(&["--form"])
-            .configure_app(|app| api_tester::actions::register(app.action_registry_mut())),
-    );
-}
+ui::main!(api_tester::ApiTesterShell);

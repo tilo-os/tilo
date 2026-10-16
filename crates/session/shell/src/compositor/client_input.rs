@@ -21,7 +21,7 @@ use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-    GestureSwipeUpdateEvent, MotionEvent,
+    GestureSwipeUpdateEvent,
 };
 use smithay::input::touch::{
     DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, UpEvent as TouchUpEvent,
@@ -37,7 +37,7 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
-use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree, WorkspaceTreeHandle};
 use tilo_desktop::notifications::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
@@ -92,17 +92,37 @@ pub struct ClientInput {
     pending_renames: Vec<(u64, String)>,
     /// Where each mirrored surface ended up: `surface id -> (strip, group)`.
     placements: HashMap<u64, (StripId, GroupId)>,
+    /// Advanced whenever [`Self::surfaces`] gains or loses a surface, since
+    /// placements cover only live surfaces.
+    surfaces_epoch: u64,
+    /// The tree generation and surface epoch [`Self::placements`] was last
+    /// derived from; `None` before the first derivation.
+    placements_from: Option<(u64, u64)>,
+    /// The app id of every foreign tab in the tree, as of tree generation
+    /// [`Self::app_ids_generation`]. Capture protection is decided per app,
+    /// for every popup and every streamed frame, so it reads this instead
+    /// of walking the tree.
+    app_ids: HashMap<u64, String>,
+    app_ids_generation: Option<u64>,
+    /// Whole-tree walks made to derive placements and app ids.
+    #[cfg(test)]
+    tree_walks: usize,
     /// evdev codes whose *press* was forwarded to a client. A release
     /// forwards iff its press did — a client never sees a release for a key it never saw pressed (a shell chord).
     forwarded_keys: HashSet<u32>,
+    /// evdev codes whose release [`deliver_held_key_release`] already sent
+    /// while the release itself still waits in the input queue; the queued
+    /// release then reaches the shell's own bookkeeping but not the client
+    /// a second time.
+    early_released_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
     /// Whether this module currently owns a content-drop indicator in the
     /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
     content_drop_hover_active: bool,
     /// Click/touch focus changes awaiting durable session-state persistence.
-    /// Persistence fsyncs both the replacement file and its directory, so it
-    /// must run after latency-sensitive Wayland input has been queued/flushed.
+    /// Saving copies the whole workspace tree, so it runs after
+    /// latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
     /// Whether the latest direct-touch down was delivered to a client over
     /// `wl_touch`. That client owns the whole tap, so the compositor must not
@@ -126,6 +146,7 @@ impl ClientInput {
         app_id: Option<String>,
     ) {
         self.surfaces.insert(surface_id, surface);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.pending_adoptions
             .push(PendingAdoption { surface_id, app_id });
     }
@@ -135,6 +156,7 @@ impl ClientInput {
     /// become tabs in their own right.
     pub fn register_transient(&mut self, surface_id: u64, surface: WlSurface) {
         self.surfaces.insert(surface_id, surface);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
     }
 
     /// Drop any queued adoption/removal/rename bookkeeping. The canonical
@@ -164,9 +186,56 @@ impl ClientInput {
         true
     }
 
+    /// Re-derive placements and app ids from the shared tree, but only when
+    /// it was written or the set of live surfaces changed since the last
+    /// derivation: a wakeup that changed neither walks nothing. Returns
+    /// whether the placements changed.
+    pub fn refresh_from_tree(&mut self, handle: &WorkspaceTreeHandle) -> bool {
+        // Loaded before the lock is taken, so the tree read below is at least
+        // this new; a write racing in between only costs one more walk.
+        let generation = handle.generation();
+        let key = (generation, self.surfaces_epoch);
+        if self.placements_from == Some(key) && self.app_ids_generation == Some(generation) {
+            return false;
+        }
+        let tree = handle.read();
+        #[cfg(test)]
+        {
+            self.tree_walks = self.tree_walks.saturating_add(1);
+        }
+        let changed = self.refresh_placements_from_tree(&tree);
+        if self.app_ids_generation != Some(generation) {
+            refresh_app_ids(&mut self.app_ids, &tree);
+            self.app_ids_generation = Some(generation);
+        }
+        drop(tree);
+        self.placements_from = Some(key);
+        changed
+    }
+
+    /// Whether [`Self::app_id`] answers for tree generation `generation`.
+    /// A tree written since the last [`Self::refresh_from_tree`] may have
+    /// renamed or added a tab, so the cache must not be trusted.
+    pub fn app_ids_current(&self, generation: u64) -> bool {
+        self.app_ids_generation == Some(generation)
+    }
+
+    /// The app id of the foreign tab showing `surface`, as of the last
+    /// [`Self::refresh_from_tree`]; check [`Self::app_ids_current`] first.
+    pub fn app_id(&self, surface: u64) -> Option<&str> {
+        self.app_ids.get(&surface).map(String::as_str)
+    }
+
+    /// Whole-tree walks [`Self::refresh_from_tree`] has made.
+    #[cfg(test)]
+    pub(crate) const fn tree_walks(&self) -> usize {
+        self.tree_walks
+    }
+
     /// Record a destroyed foreign toplevel — drops the surface handle immediately and queues the chrome-side tab removal.
     pub fn unregister_toplevel(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.pending_adoptions
             .retain(|p| p.surface_id != surface_id);
         self.pending_removals.push(surface_id);
@@ -176,6 +245,7 @@ impl ClientInput {
     /// Remove a transient without queuing a workspace-tab removal.
     pub fn unregister_transient(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.clear_surface_input_state(surface_id);
     }
 
@@ -213,6 +283,8 @@ impl ClientInput {
         self.pending_renames.retain(|(id, _)| *id != surface_id);
         self.pending_removals.retain(|id| *id != surface_id);
         self.placements.remove(&surface_id);
+        // Derive again from the tree, exactly as the next wakeup used to.
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
     }
 
     /// The surface the seat's keyboard is currently focused on, if any.
@@ -227,6 +299,17 @@ impl ClientInput {
 
     pub fn pointer_focus(&self) -> Option<u64> {
         self.pointer_focus
+    }
+
+    /// Content-free custody of the router's implicit pointer grab. This is
+    /// separate from both the actual Wayland focus and keyboard focus.
+    pub(super) fn pointer_custody(&self) -> (&'static str, Option<u64>, u32) {
+        let (kind, surface) = match self.grab {
+            None => ("none", None),
+            Some(PointerOwner::Chrome) => ("chrome", None),
+            Some(PointerOwner::Client(surface)) => ("client", Some(surface)),
+        };
+        (kind, surface, self.buttons_down)
     }
 
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
@@ -291,6 +374,9 @@ fn mint_serial(state: &mut State) -> Serial {
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    state
+        .clients_given_input
+        .insert(crate::compositor::state::client_index_of(surface_id));
     let now = Instant::now();
     state
         .activation_serials
@@ -308,6 +394,16 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     }
 }
 
+/// The xdg `app_id` a toplevel declared, for naming it in latency records.
+fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
+}
+
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
     // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
@@ -316,6 +412,34 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
+    /// `app_id`s of the toplevels `client` has mapped, for naming a client in logs.
+    pub(crate) fn client_app_ids(
+        &self,
+        client: &smithay::reexports::wayland_server::Client,
+    ) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .client_input
+            .surfaces
+            .values()
+            .filter(|surface| surface.client().is_some_and(|c| c.id() == client.id()))
+            .filter_map(toplevel_app_id)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Who holds the seat's keyboard focus, for logs: `app_id` (or `none`).
+    pub(crate) fn keyboard_focus_holder(&self) -> String {
+        self.client_input
+            .keyboard_focus
+            .and_then(|id| self.client_input.surfaces.get(&id))
+            .map_or_else(
+                || "none".to_owned(),
+                |surface| toplevel_app_id(surface).unwrap_or_else(|| "unnamed surface".to_owned()),
+            )
+    }
+
     /// Revoke client keyboard focus and retire every pressed seat key without
     /// delivering it to an application.
     ///
@@ -387,6 +511,14 @@ impl State {
         // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
         let surface_id =
             surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
+        if surface_id.is_some_and(|target| self.preserves_floating_preedit_for(target)) {
+            // The logical floating destination is exact-owner bound, but the
+            // active composer must keep its real text-input-v3 resource until
+            // commit/cancel. Physical keys therefore continue through the
+            // existing source seat; the app's native runner routes them to
+            // the same retained editor during this bounded handoff.
+            return;
+        }
         if self.client_input.keyboard_focus == surface_id {
             return;
         }
@@ -395,6 +527,10 @@ impl State {
             // Retire their held keys while the old client still owns focus,
             // before Smithay sends the next client its focus-enter key array.
             self.release_remote_keys_for_surface(previous);
+            let root = crate::compositor::foreign::store().sheet_root(previous);
+            if root != previous {
+                self.release_remote_keys_for_surface(root);
+            }
         }
         let target = match surface_id {
             Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
@@ -404,14 +540,43 @@ impl State {
             return;
         };
         let serial = mint_serial(self);
+        if self.input_method_resource_client.is_some() {
+            // Smithay deactivates (and sends `done`) once for the old focus
+            // and once again before entering the new one.
+            let protocol_done = u32::from(self.client_input.keyboard_focus.is_some())
+                .saturating_add(u32::from(target.is_some()));
+            self.input_method_serial = self.input_method_serial.saturating_add(protocol_done);
+            if self.client_input.keyboard_focus.is_some() {
+                self.text_fields.protocol_focus_left();
+                self.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
+            }
+        }
+        let previous_holder = self.keyboard_focus_holder();
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        tracing::debug!(
+            target: "shell::selection",
+            from = %previous_holder,
+            to = %self.keyboard_focus_holder(),
+            "keyboard focus moved; selection focus follows"
+        );
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
         self.tablet_pads_follow_keyboard(target.as_ref().map(|(_, surface)| surface));
-        if let Some((surface_id, _)) = target {
+        if let Some((surface_id, surface)) = target {
             record_activation_serial(self, serial, surface_id);
+            // The focused app's scope gets the foreground tier and the one it
+            // replaces is demoted. Queued to a worker thread: this is the
+            // compositor's input path and must never wait on systemd.
+            if let Some(pid) = surface.client().and_then(|client| {
+                client
+                    .get_data::<crate::compositor::state::ClientState>()
+                    .and_then(|state| state.pid)
+            }) {
+                ::launcher::priority::notify_focus(pid);
+            }
         }
     }
 
@@ -434,6 +599,15 @@ impl State {
         } else {
             KeyState::Released
         };
+        let observed_surface = crate::compositor::seat_lock::keyboard_focus(&keyboard)
+            .as_ref()
+            .map(super::state::surface_id);
+        let delivery_time_ns = (forward
+            && has_focus
+            && pressed
+            && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
+        .then(crate::compositor::metrics::monotonic_time_ns)
+        .flatten();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -449,8 +623,39 @@ impl State {
             },
         );
         let delivered = forward && has_focus && intercepted.is_none();
+        if delivered {
+            self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
+        }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            if let Some((delivery_time_ns, observed_surface)) =
+                delivery_time_ns.zip(observed_surface)
+            {
+                eprintln!(
+                    "tilo-physical-delivery {}",
+                    serde_json::json!({
+                        "wayland_serial": u32::from(serial),
+                        "surface_id": observed_surface,
+                        "clock_id": libc::CLOCK_MONOTONIC,
+                        "delivery_time_ns": delivery_time_ns,
+                        "input_time_ns": self.physical_key_input_time_ns.filter(|origin| u128::from(*origin) <= delivery_time_ns),
+                    })
+                );
+            }
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                let app = self
+                    .client_input
+                    .surfaces
+                    .get(&surface_id)
+                    .and_then(toplevel_app_id)
+                    .unwrap_or_default();
+                crate::compositor::key_latency::tracker().key_delivered(
+                    surface_id,
+                    &app,
+                    keycode,
+                    Instant::now(),
+                );
+            }
         }
         delivered
     }
@@ -486,15 +691,7 @@ impl State {
             .and_then(|_| target.map(|(_, origin)| origin));
         let serial = mint_serial(self);
         let time = event_time(self);
-        pointer.motion(
-            self,
-            focus,
-            &MotionEvent {
-                location: SmithayPoint::from(global),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, focus, global, (serial, time));
         pointer.frame(self);
         // `wl_pointer.motion` itself has no serial. Smithay uses this serial
         // only when the motion changes focus and emits `wl_pointer.enter`, so
@@ -513,7 +710,7 @@ impl State {
         let smithay_grabbed = self
             .seat
             .get_pointer()
-            .is_some_and(|pointer| pointer.is_grabbed());
+            .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
         if self.client_input.pointer_focus.is_none()
             && self.selection.chrome_drag.is_none()
             && !smithay_grabbed
@@ -546,7 +743,17 @@ impl State {
     }
 
     /// Forward a scroll event to the surface the pointer is focused on.
-    pub fn forward_client_pointer_axis(&mut self, delta: MouseScrollDelta) -> bool {
+    ///
+    /// `wl_pointer.axis_stop` ends a finger scroll on that axis, so it goes
+    /// out once, when the fingers lift (`phase` ended). Sent with every
+    /// event for the axis that did not move, it told toolkits each wheel
+    /// notch was the end of a gesture: winit reported it as an ended
+    /// scroll, which a scroll view takes for a fling release and ignores.
+    pub fn forward_client_pointer_axis(
+        &mut self,
+        delta: MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+    ) -> bool {
         if self.client_input.pointer_focus.is_none() {
             return false;
         }
@@ -573,11 +780,13 @@ impl State {
                 frame = frame.v120(Axis::Vertical, v120);
             }
         }
-        if h == 0.0 {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if v == 0.0 {
-            frame = frame.stop(Axis::Vertical);
+        if v120.is_none()
+            && matches!(
+                phase,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+            )
+        {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -674,10 +883,11 @@ impl State {
         self.client_input.touch_down_reached_client = false;
     }
 
-    /// Whether a confirmed tap may be emulated as a pointer click. A tap whose
-    /// touch sequence already reached a client is that client's alone.
-    pub fn touch_tap_needs_pointer_click(&self) -> bool {
-        !self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down reached a client that takes touch over
+    /// `wl_touch`. Such a contact is that client's alone; any other is turned
+    /// into pointer input (see [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_reached_client(&self) -> bool {
+        self.client_input.touch_down_reached_client
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -696,8 +906,25 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((id, _)) = target
+        {
+            self.clients_given_input
+                .insert(crate::compositor::state::client_index_of(id));
+        }
         if matches!(touch, BackendTouchEvent::Down { .. }) {
-            self.client_input.touch_down_reached_client = handle.is_some() && focus.is_some();
+            // A client that never asked for a `wl_touch` would receive
+            // nothing; it gets the contact as pointer input instead.
+            self.client_input.touch_down_reached_client = handle.is_some()
+                && focus.as_ref().is_some_and(|(surface, _)| {
+                    surface.client().is_some_and(|client| {
+                        client
+                            .get_data::<crate::compositor::state::ClientState>()
+                            .is_some_and(|data| {
+                                data.touch_bound.load(std::sync::atomic::Ordering::Acquire)
+                            })
+                    })
+                });
         }
         let Some(handle) = handle else {
             return;
@@ -754,6 +981,9 @@ pub fn touch_target(
 /// keyboard, popups, fullscreen and floating windows before tiles, and a
 /// tile's subsurface before the tile.
 fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u64, (f64, f64))> {
+    if fb.host().agent_marker_pointer_at(point) {
+        return None;
+    }
     let (x, y) = (&point.0, &point.1);
     if let Some((surface_id, rect)) = fb.osk_surface_hit((*x, *y))
         && state.osk_surface == Some(surface_id)
@@ -761,7 +991,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
@@ -769,7 +999,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
@@ -777,7 +1007,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
@@ -785,7 +1015,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
         ));
     }
     let hit = {
@@ -804,7 +1034,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
 /// over it. `None` when a modal sheet swallows the point.
 fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
     let store = crate::compositor::foreign::store();
-    let origin = store.surface_origin(root, tile);
+    let origin = store.surface_origin(root, tile, (x, y));
     match store.route_point(root, x - origin.0, y - origin.1) {
         crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
         crate::compositor::foreign::PointRoute::Surface {
@@ -872,60 +1102,17 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 
 // Run-loop entry points.
 
-/// Mirror foreign toplevels adopted at the protocol layer into the shell
-/// chrome's workspace tree, and reap the tabs of destroyed ones; `true` when changed. Each becomes its own window group in the active strip.
-pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
-    let adoptions = std::mem::take(&mut state.client_input.pending_adoptions);
-    let removals = std::mem::take(&mut state.client_input.pending_removals);
-    let renames = std::mem::take(&mut state.client_input.pending_renames);
-    if adoptions.is_empty() && removals.is_empty() && renames.is_empty() {
-        return false;
-    }
-    let mut changed = false;
-    let mut placements: Vec<(u64, StripId, GroupId)> = Vec::new();
-
-    fb.with_chrome(|chrome| {
-        {
-            let mut tree = chrome.tree_mut();
-            for adoption in &adoptions {
-                if let Some((strip, group)) =
-                    insert_foreign_group(&mut tree, adoption.surface_id, adoption.app_id.as_deref())
-                {
-                    placements.push((adoption.surface_id, strip, group));
-                    changed = true;
-                }
-            }
-            for surface_id in &removals {
-                if remove_foreign_tab(&mut tree, *surface_id) {
-                    changed = true;
-                }
-            }
-            for (surface_id, app_id) in &renames {
-                if rename_foreign_tab(&mut tree, *surface_id, app_id) {
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            chrome.bump();
-        }
-    });
-
-    for (surface_id, strip, group) in placements {
-        state
-            .client_input
-            .placements
-            .insert(surface_id, (strip, group));
-    }
-    for surface_id in &removals {
-        state.client_input.placements.remove(surface_id);
-    }
-    changed
-}
-
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
+    // A popup the client destroyed (a closed menu or Quick Access panel) keeps
+    // its keyboard grab until smithay is told to forget it; while the grab
+    // lives it ignores every focus change below, so the next window to open
+    // or the one that should get focus back never receives it.
+    state.popup_manager.cleanup();
     let captured = chrome_captures_input(fb);
+    let handoff = (!captured)
+        .then(|| state.apply_floating_focus_handoffs(fb))
+        .flatten();
     // Overlay clicks assign focus directly because they are not represented in
     // the workspace tree. Preserve that assignment across the next tick while
     // the surface is still mapped; otherwise this reconciliation immediately
@@ -945,9 +1132,21 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                 .is_some_and(|(fullscreen_id, _)| fullscreen_id == *id)
         }),
     );
-    let candidate = state
-        .focused_output_presentation_surface()
+    // A window the person focused while showing it on another device of
+    // theirs types there until they use this device again.
+    let candidate = handoff
+        .or_else(|| state.floating_preedit_source_focus())
+        .or_else(|| state.focused_output_presentation_surface())
+        .or_else(|| state.headless_keyboard_focus())
+        .or_else(|| {
+            // A system-modal prompt owns the keyboard while it is shown.
+            state
+                .top_system_modal()
+                .filter(|id| fb.transient_surface_rect(*id).is_some())
+        })
+        .or_else(|| state.floating_return_focus())
         .or(overlay_focus)
+        .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
             let chrome = fb.chrome();
             let tree = chrome.tree();
@@ -966,6 +1165,33 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         });
     state.set_activated_toplevel(candidate);
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+/// Rebuild `app_ids` from every foreign tab in `tree`, reusing its entries.
+/// The first tab showing a surface wins, as in
+/// [`crate::shell::tab_binding::app_id_for_surface`].
+fn refresh_app_ids(app_ids: &mut HashMap<u64, String>, tree: &WorkspaceTree) {
+    let tabs = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, app_id } => Some((*surface_id, app_id)),
+            _ => None,
+        });
+    let mut seen = HashSet::new();
+    for (surface, app_id) in tabs {
+        if !seen.insert(surface) {
+            continue;
+        }
+        if app_ids.get(&surface) != Some(app_id) {
+            app_ids.insert(surface, app_id.clone());
+        }
+    }
+    app_ids.retain(|surface, _| seen.contains(surface));
 }
 
 fn placements_for_live_surfaces(
@@ -1023,10 +1249,11 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
-/// Decide what the pointer shows this tick: the focused client's request
-/// while the pointer is over its surface, otherwise the cursor the chrome
-/// under the pointer names (the default arrow when it names none). The lock
-/// screen is not chrome and never shows a client's cursor.
+/// Decide what the pointer shows this tick: nothing while touch is the input
+/// in use (a finger needs no cursor, and touch never moves it), the focused
+/// client's request while the pointer is over its surface, otherwise the
+/// cursor the chrome under the pointer names (the default arrow when it names
+/// none). The lock screen is not chrome and never shows a client's cursor.
 ///
 /// Records the result on the frame builder, where captures and the state
 /// dump read it, and returns it only when it changed so the caller hands it
@@ -1035,9 +1262,12 @@ pub fn sync_pointer_image(
     state: &State,
     fb: &mut FrameBuilder,
     session_locked: bool,
+    touch_in_use: bool,
 ) -> Option<crate::compositor::cursor::PointerImage> {
     use crate::compositor::cursor::{CursorShape, PointerImage};
-    let image = if session_locked {
+    let image = if touch_in_use {
+        PointerImage::Hidden
+    } else if session_locked {
         PointerImage::default()
     } else if state.client_input.pointer_focus().is_some() {
         state.client_cursor.image()
@@ -1059,24 +1289,94 @@ pub fn sync_pointer_image(
 /// `zwp_tablet_tool_v2`; for anything else — other apps, shell chrome, the
 /// lock screen — the pen stands in for the pointer, and the returned events
 /// go through the ordinary pointer path.
+///
+/// Over a tablet-aware client the pen still is the pointer as far as the
+/// desktop goes: the cursor follows it, touching down focuses and raises the
+/// window as a click does (and closes a popup it lands outside of), and a
+/// stroke stays with the window it started in until the tip lifts, as a held
+/// button keeps the pointer with its client.
 pub fn route_tablet_event(
     state: &mut State,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     input: &crate::compositor::backend::TabletInput,
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
-    let target = (!session_locked && !chrome_captures_input(fb))
+    use crate::compositor::backend::TabletPhase;
+    let usable = !session_locked && !chrome_captures_input(fb);
+    let under = usable
         .then(|| surface_at(state, fb, input.position))
-        .flatten()
-        .filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id));
-    state.forward_tablet(input, target);
+        .flatten();
+    let target = match state.tablet_clients.stroke.filter(|_| usable) {
+        Some((held, origin)) => Some(match under {
+            Some((surface_id, now)) if surface_id == held => (held, now),
+            _ => (held, origin),
+        }),
+        None => under.filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id)),
+    };
+    let mut input = std::borrow::Cow::Borrowed(input);
+    if target.is_some() && input.phase != TabletPhase::ProximityOut {
+        state.client_input.cursor = Some(input.position);
+        fb.host_mut()
+            .note_pointer(vello::kurbo::Point::new(input.position.0, input.position.1));
+        if input.phase == TabletPhase::TipDown && state.tablet_clients.stroke.is_none() {
+            let hit = current_pointer_target(state, fb, false);
+            if state.dismiss_popup_grab_outside(hit.map(|hit| hit.surface_id)) {
+                // Like a click outside a popup, the touch only closes it.
+                input.to_mut().phase = TabletPhase::Motion;
+            } else {
+                state.tablet_clients.stroke = target;
+                if let Some(hit) = hit {
+                    focus_pressed(state, fb, hit);
+                }
+            }
+        }
+    }
+    state.forward_tablet(&input, target);
+    if !usable || matches!(input.phase, TabletPhase::TipUp | TabletPhase::ProximityOut) {
+        state.tablet_clients.stroke = None;
+    }
     if target.is_some() {
         return Vec::new();
     }
-    crate::compositor::tablet::tablet_pointer_events(input)
+    crate::compositor::tablet::tablet_pointer_events(&input)
         .into_iter()
         .map(crate::compositor::backend::BackendEvent::Input)
         .collect()
+}
+
+/// Click-to-focus: raise the pressed window group so the keyboard follows
+/// the pointer, or the pen, into the client.
+fn focus_pressed(state: &mut State, fb: &mut FrameBuilder, h: TileHit) {
+    if state.is_output_presentation_surface(h.surface_id) {
+        // Audience focus is explicit and never mutates the
+        // presenter's workspace selection.
+        state.focus_output_presentation_surface(h.surface_id);
+        sync_keyboard_focus(state, fb);
+    } else {
+        state.clear_output_presentation_focus();
+    }
+    let overlay_focus = state.is_floating_toplevel(h.surface_id)
+        || state.is_transient_surface(h.surface_id)
+        || fb
+            .fullscreen_surface_rect()
+            .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
+    if overlay_focus && state.osk_surface != Some(h.surface_id) {
+        state.set_client_keyboard_focus(Some(h.surface_id));
+    }
+    // Tapping the keyboard must keep the editable field's
+    // keyboard focus. Pointer focus moves to the OSK, but
+    // raising/focusing it would deactivate the very
+    // text-input session the tap is meant to feed.
+    if !state.is_output_presentation_surface(h.surface_id)
+        && state.osk_surface != Some(h.surface_id)
+        && !state.is_floating_toplevel(h.surface_id)
+        && !state.is_transient_surface(h.surface_id)
+    {
+        if raise_group(fb, h.strip, h.group) {
+            state.client_input.focus_persistence_pending = true;
+        }
+        sync_keyboard_focus(state, fb);
+    }
 }
 
 /// Route one tablet pad event. Pads follow keyboard focus: a focused client
@@ -1142,7 +1442,7 @@ pub fn sync_pointer_constraint(
 /// [`foreign_tile_at`] resolves local clicks with. `session_locked` must be
 /// passed in since the lock surface isn't part of the tiled tree — without it a guest's click would pass through to a password-protected window.
 pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
-    let tiles: Vec<(u64, Rect)> = {
+    let (tiles, chrome_regions) = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         let mut tiles = foreign_tiles(&tree, fb.host())
@@ -1151,39 +1451,79 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
             .map(|hit| (hit.surface_id, hit.rect))
             .collect::<Vec<_>>();
+        let chrome_regions = foreign_tiles(&tree, fb.host())
+            .iter()
+            .flat_map(|hit| {
+                fb.host()
+                    .group_resize_rects(hit.group)
+                    .into_iter()
+                    .map(|rect| (hit.surface_id, rect))
+            })
+            .collect();
         drop(tree);
         drop(chrome);
-        tiles.extend(
-            fb.floating_surface_rects()
-                .into_iter()
-                .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
-        );
+        // Floating widgets paint back-to-front and hit-test in reverse. Their
+        // interactive frames must precede tiles in this front-to-back view.
+        let mut floating = fb
+            .floating_surface_rects()
+            .into_iter()
+            .rev()
+            .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id))
+            .collect::<Vec<_>>();
+        floating.append(&mut tiles);
+        tiles = floating;
         tiles.extend(state.output_presentation_remote_tiles());
-        tiles
+        let offscreen = state.offscreen_stream_tiles(&tiles);
+        tiles.extend(offscreen);
+        (tiles, chrome_regions)
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
-        state.client_input.keyboard_focus(),
-        chrome_captures_input(fb),
+        // Viewers address the streamed tile; Wayland enters its modal
+        // sheet. Compare against the tile's root while delivering to the
+        // real focused child, so Save dialogs keep the same guarded door.
+        state
+            .client_input
+            .keyboard_focus()
+            .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
+        chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
         fb.host().palette_visible(),
     )
+    .chrome_regions(chrome_regions)
+    .input_regions(fb.floating_surface_input_rects())
     .locked(session_locked)
     .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
 }
 
-/// Stop every peer from driving this seat, and say so on screen.
+/// Stop every peer from driving this seat, and say so on screen when there
+/// was anything to stop.
 ///
 /// Action half of the `Super+Esc` kill switch, split from the backend loop
 /// (a `-> !` function) so it can be driven from a test. Returns how many
-/// shares lost write access. The confirmation toast bypasses Do-Not-Disturb ([`Notification::bypassing_dnd`]) and is persistent.
-pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
-    let revoked = state.engage_remote_input_kill_switch();
+/// shares lost write access.
+///
+/// The chord always latches the firewall, but the toast is only for a
+/// person who just cut off someone who was connected (`other_control_live`
+/// covers a device-control session the registry does not see). With nobody
+/// connected, `Super+Esc` is just a stray chord (Esc to leave the palette
+/// with Super still held) and a "stopped" warning would report an event
+/// nobody saw start. When shown, the toast bypasses Do-Not-Disturb
+/// ([`Notification::bypassing_dnd`]) and is persistent.
+pub fn stop_remote_input(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    other_control_live: bool,
+) -> usize {
+    let ended = state.end_all_remote_input();
+    if ended.live == 0 && !other_control_live {
+        return ended.revoked;
+    }
     fb.with_chrome(|chrome| {
         chrome.push_notification_full(
             Notification::new(
                 crate::shell::i18n::t("notification-remote-input-stopped"),
-                match revoked {
+                match ended.revoked {
                     0 => crate::shell::i18n::t("notification-remote-input-stopped-sessions"),
                     n => crate::shell::i18n::t_args(
                         "notification-remote-input-stopped-shares",
@@ -1197,7 +1537,7 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
             .bypassing_dnd(),
         );
     });
-    revoked
+    ended.revoked
 }
 
 /// Route one backend input event. Returns `true` when consumed by a client
@@ -1217,6 +1557,24 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
+        state.release_personal_keyboard_focus();
+        // Another device of the person last placed this seat's pointer, on a
+        // window it shows. The host's cursor never left its spot, so the
+        // pointer goes back to what is under it before this input lands.
+        if state.take_personal_pointer_hold()
+            && !matches!(event, WindowEvent::CursorMoved { .. })
+            && let Some((x, y)) = state.client_input.pointer_position()
+        {
+            let _ = route_cursor_moved(
+                state,
+                fb,
+                chrome_captures_input(fb),
+                winit::dpi::PhysicalPosition::new(x, y),
+            );
+        }
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {
@@ -1235,7 +1593,9 @@ pub fn route_input(
             button,
             ..
         } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
-        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
+        WindowEvent::MouseWheel { delta, phase, .. } => {
+            route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
+        }
         WindowEvent::KeyboardInput { .. } => {
             route_keyboard_input(state, fb, chrome_captures_input(fb), event, *modifiers)
         }
@@ -1338,45 +1698,15 @@ fn route_mouse_input(
             let smithay_grabbed = state
                 .seat
                 .get_pointer()
-                .is_some_and(|pointer| pointer.is_grabbed());
+                .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
             if !smithay_grabbed {
                 state.client_input.grab = Some(match hit {
                     Some(h) => PointerOwner::Client(h.surface_id),
                     None => PointerOwner::Chrome,
                 });
             }
-            // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
-                if state.is_output_presentation_surface(h.surface_id) {
-                    // Audience focus is explicit and never mutates the
-                    // presenter's workspace selection.
-                    state.focus_output_presentation_surface(h.surface_id);
-                    sync_keyboard_focus(state, fb);
-                } else {
-                    state.clear_output_presentation_focus();
-                }
-                let overlay_focus = state.is_floating_toplevel(h.surface_id)
-                    || state.is_transient_surface(h.surface_id)
-                    || fb
-                        .fullscreen_surface_rect()
-                        .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
-                if overlay_focus && state.osk_surface != Some(h.surface_id) {
-                    state.set_client_keyboard_focus(Some(h.surface_id));
-                }
-                // Tapping the keyboard must keep the editable field's
-                // keyboard focus. Pointer focus moves to the OSK, but
-                // raising/focusing it would deactivate the very
-                // text-input session the tap is meant to feed.
-                if !state.is_output_presentation_surface(h.surface_id)
-                    && state.osk_surface != Some(h.surface_id)
-                    && !state.is_floating_toplevel(h.surface_id)
-                    && !state.is_transient_surface(h.surface_id)
-                {
-                    if raise_group(fb, h.strip, h.group) {
-                        state.client_input.focus_persistence_pending = true;
-                    }
-                    sync_keyboard_focus(state, fb);
-                }
+                focus_pressed(state, fb, h);
             }
         }
         state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
@@ -1388,7 +1718,7 @@ fn route_mouse_input(
     let smithay_grabbed = state
         .seat
         .get_pointer()
-        .is_some_and(|pointer| pointer.is_grabbed());
+        .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
     let to_client = smithay_grabbed
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())
@@ -1452,6 +1782,7 @@ fn route_mouse_wheel(
     state: &mut State,
     fb: &mut FrameBuilder,
     delta: MouseScrollDelta,
+    phase: winit::event::TouchPhase,
     modifiers: Modifiers,
 ) -> bool {
     let mods = modifiers.state();
@@ -1488,10 +1819,52 @@ fn route_mouse_wheel(
         return true;
     }
     if state.client_input.pointer_focus.is_some() {
-        state.forward_client_pointer_axis(delta)
+        state.forward_client_pointer_axis(delta, phase)
     } else {
         false
     }
+}
+
+/// Send the release of a key the focused client holds now, ahead of the
+/// rest of the input queue it waits in; `true` when it was sent.
+///
+/// A client repeats a held key from `wl_keyboard.repeat_info` until the
+/// release reaches it. The run loop reads input once per turn, ahead of
+/// work that can take longer than the repeat delay, so a release that
+/// arrives meanwhile would reach the client only after it had typed the key
+/// again. The loop therefore reads input between its phases too and sends
+/// such releases at once. Only the release of a non-modifier key whose
+/// press this client received qualifies: it goes to that client whatever
+/// else is queued before it (`route_keyboard_input` forwards it
+/// unconditionally), so sending it early changes when the client sees it,
+/// never whether. Everything else, presses included, waits for the full
+/// dispatch, where the queued release still runs the shell's bookkeeping
+/// and is not sent again.
+pub fn deliver_held_key_release(state: &mut State, event: &WindowEvent) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    if key.state != ElementState::Released
+        || key.repeat
+        || is_modifier_key(&key.logical_key)
+        || state.client_input.participant.is_some()
+        || state.client_input.keyboard_focus.is_none()
+    {
+        return false;
+    }
+    let Some(code) = evdev_keycode(key) else {
+        return false;
+    };
+    if !state.client_input.forwarded_keys.contains(&code)
+        || !state.remote_seats.local_release_reaches_apps(code)
+    {
+        return false;
+    }
+    state.client_input.forwarded_keys.remove(&code);
+    let _ = state.remote_seats.local_key_transition(code, false);
+    let delivered = state.deliver_client_key(code, false, true);
+    state.client_input.early_released_keys.insert(code);
+    delivered
 }
 
 /// `WindowEvent::KeyboardInput` half of [`route_input`]: every key goes
@@ -1518,6 +1891,7 @@ fn route_keyboard_input(
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
+            || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
             || state.global_shortcuts.claims(&key.physical_key, modifiers);
@@ -1530,6 +1904,12 @@ fn route_keyboard_input(
     let Some(code) = evdev_keycode(key) else {
         return false;
     };
+    if pressed {
+        state.client_input.early_released_keys.remove(&code);
+    } else if state.client_input.early_released_keys.remove(&code) {
+        // The client already has this release (`deliver_held_key_release`).
+        return true;
+    }
     // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
     let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
     // Static safety chords and user-edited shortcuts share the same
@@ -1551,7 +1931,8 @@ fn route_keyboard_input(
     } else {
         state.global_shortcuts.release(&key.physical_key)
     };
-    let shell_owns = captured || shell_chord || granted;
+    let shell_owns =
+        captured || shell_chord || granted || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,
@@ -1771,6 +2152,14 @@ pub fn finish_chrome_drag_into_shell(
     reason = "Pointer targeting is an ordered routing policy: separating the Chrome, client drag-and-drop, implicit-grab, and capture cases could reorder focus delivery during a held gesture."
 )]
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
+    if state.client_input.grab.is_none()
+        && (fb.host().dictation_pointer_at(state.client_input.cursor())
+            || fb
+                .host()
+                .agent_marker_pointer_at(state.client_input.cursor()))
+    {
+        return None;
+    }
     match state.client_input.grab {
         // A file carried out of the hosted file manager: the drop target is whichever client the pointer is over, so hit-test normally, as for a client's own drag below.
         Some(PointerOwner::Chrome) if state.selection.chrome_drag.is_some() => {
@@ -1921,7 +2310,7 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     state.forward_client_pointer_motion(global, target);
 }
 
-/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked.
+/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked, and keep the strip where it is: the click landed on what was on screen.
 fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     let mut changed = false;
     fb.with_chrome(|chrome| {
@@ -1939,14 +2328,13 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
             chrome.bump();
         }
     });
+    if changed {
+        fb.host_mut().keep_clicked_group_in_place(strip, group);
+    }
     changed
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "deterministic pointer-coordinate fixtures use exactly representable values"
-)]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
@@ -1954,26 +2342,19 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
 mod tests {
     use super::*;
     use crate::shell::persist;
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+    use winit::keyboard::{Key, NamedKey};
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed::<DeviceId>() },
-            event: ev,
-            is_synthetic: false,
-        }
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
+        ui::synthetic_input::keyboard_input(ev)
     }
 
     #[test]
@@ -2005,10 +2386,7 @@ mod tests {
                 display.handle(),
                 tree,
             );
-            let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
-            };
+            let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
 
             assert!(
                 !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
@@ -2036,7 +2414,7 @@ mod tests {
                     insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
                         .expect("second foreign group");
                 tree.desktop.set_active_group(strip_id, first_group);
-                tree.flush_to_disk();
+                tree.queue_save();
                 drop(tree);
                 (strip_id, first_group, second_group)
             };
@@ -2051,7 +2429,7 @@ mod tests {
             );
 
             // The native loop performs this only after `display.flush_clients()`.
-            fb.chrome().tree().flush_to_disk();
+            fb.chrome().tree().queue_save();
 
             let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
             assert_eq!(
@@ -2209,6 +2587,17 @@ mod tests {
                 None,
                 false,
                 false,
+            )
+            .chrome_regions(
+                tiles
+                    .iter()
+                    .flat_map(|hit| {
+                        fb.host()
+                            .group_resize_rects(hit.group)
+                            .into_iter()
+                            .map(|rect| (hit.surface_id, rect))
+                    })
+                    .collect(),
             );
 
             // Probe each tile's inside and just past each edge — a hit-test discrepancy shows up at a boundary first, derived from the layout's actual rects.
@@ -2332,6 +2721,37 @@ mod tests {
             publish_remote_input_view(&mut state, &fb, true);
             assert!(state.remote_input_firewall.view().session_locked());
         }
+        // Local microphone decisions mute remote control without giving up
+        // the original local editable field's keyboard owner.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut state = state_sharing(ORPHAN_SURFACE);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(!state.remote_input_firewall.view().chrome_captures_input());
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .failure(crate::compositor::dictation::DictationError::NoEditableField);
+            assert!(
+                !chrome_captures_input(&fb),
+                "dictation controls must retain the local field's IME owner"
+            );
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                state.remote_input_firewall.view().chrome_captures_input(),
+                "a peer cannot operate the local microphone controls"
+            );
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .status(crate::compositor::dictation::DictationStatus::Idle);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                !state.remote_input_firewall.view().chrome_captures_input(),
+                "closing dictation must restore normal shared-seat policy"
+            );
+        }
     }
 
     const ORPHAN_SURFACE: u64 = 900_003;
@@ -2362,10 +2782,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
-                },
+                &ui::synthetic_input::cursor_moved(640.0, 610.0),
                 &mods,
             );
 
@@ -2393,10 +2810,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
-                },
+                &ui::synthetic_input::cursor_moved(523.0, 339.0),
                 &mods,
             );
             assert_eq!(
@@ -2409,10 +2823,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
-                },
+                &ui::synthetic_input::cursor_moved(880.0, 300.0),
                 &mods,
             );
             assert_eq!(
@@ -2874,7 +3285,7 @@ mod tests {
 
             guest_motion(&mut state).expect("the guest is driving the seat to begin with");
 
-            let revoked = stop_remote_input(&mut state, &mut fb);
+            let revoked = stop_remote_input(&mut state, &mut fb, false);
             assert_eq!(
                 revoked, 1,
                 "the one writable share had to lose write access"
@@ -2910,7 +3321,7 @@ mod tests {
             let mut state = state_sharing(KILL_SURFACE);
             fb.with_chrome(|chrome| chrome.set_dnd(true));
 
-            stop_remote_input(&mut state, &mut fb);
+            stop_remote_input(&mut state, &mut fb, false);
 
             let chrome = fb.chrome();
             assert!(
@@ -2936,7 +3347,7 @@ mod tests {
                 }
             });
 
-            stop_remote_input(&mut state, &mut fb);
+            stop_remote_input(&mut state, &mut fb, false);
 
             let chrome = fb.chrome();
             assert!(
@@ -2947,6 +3358,33 @@ mod tests {
                 "a flood of app toasts buried the kill-switch confirmation",
             );
         }
+    }
+
+    #[test]
+    fn stopping_remote_input_with_nobody_connected_stays_silent() {
+        // A stray Super+Esc (leaving the palette with Super still held) must
+        // not warn about a session nobody saw start, but still latches.
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        state.share_registry.clear();
+        assert_eq!(state.live_remote_input_participants(), 0);
+
+        assert_eq!(stop_remote_input(&mut state, &mut fb, false), 0);
+        assert!(
+            fb.chrome().notifications().is_empty(),
+            "a kill switch with nothing connected raised a toast"
+        );
+        assert!(state.remote_input_firewall.kill_switch_engaged());
+
+        // A device-control session outside the registry still counts.
+        let mut fb = FrameBuilder::new((1600, 900));
+        stop_remote_input(&mut state, &mut fb, true);
+        assert!(
+            fb.chrome()
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped")
+        );
     }
 
     #[test]

@@ -20,9 +20,7 @@ static PROFILE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None)
 /// Native per-user directories belong to one profile already and do not
 /// change.
 pub fn set_default_profile(profile: &str) {
-    *PROFILE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(component(profile));
+    *PROFILE.write_recover() = Some(component(profile));
 }
 
 /// The profile [`AppPaths::for_app`] resolves web storage in, as it appears
@@ -30,8 +28,7 @@ pub fn set_default_profile(profile: &str) {
 #[must_use]
 pub fn default_profile() -> String {
     PROFILE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read_recover()
         .clone()
         .unwrap_or_else(|| DEFAULT_PROFILE.to_owned())
 }
@@ -444,11 +441,13 @@ mod web {
     }
 }
 
+use tilo_lock::RwLockRecover as _;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web as system;
 
 // Every backend's rules are pure, so the native test run checks them all.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod tests {
     use std::ffi::OsString;
     use std::path::Path;

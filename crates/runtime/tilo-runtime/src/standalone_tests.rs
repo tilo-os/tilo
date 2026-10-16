@@ -12,6 +12,7 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
+use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -21,6 +22,120 @@ const PROCESS_TEST: &str =
     "standalone::tests::sdk_apps_join_a_standalone_session_and_publish_to_mcp";
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
+
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
+)]
+#[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
+async fn runtime_invocation_ownership_survives_device_normalization() {
+    use tilo_action_broker::{
+        collab_broker::CrdtRoute,
+        collab_broker_capnp::{
+            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
+        },
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+    };
+
+    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    workspace.set_owner("a1".repeat(32));
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.files".into(),
+        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        actions: vec![PublishedAction {
+            semantic_identity: None,
+            resource: "files.entry:/tmp/synthetic-report".into(),
+            action: "refresh".into(),
+            resource_kind: "files.entry".into(),
+            resource_label: "Synthetic report".into(),
+            action_label: "Refresh".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                ..Default::default()
+            },
+            input: PublishedInput::None,
+            view: None,
+        }],
+        live: true,
+    }]);
+    let mut invocations = broker.capture_invocations_for_test(7);
+    let (joined, _directory) = Joined::test_empty().await;
+    let host = RuntimeActionHost {
+        broker,
+        room: room.clone(),
+        joined,
+        session: None,
+    };
+    let owner = Caller::local_person("a1".repeat(32))
+        .in_room(room)
+        .in_new_execution();
+    let other = owner.clone().in_new_execution();
+    let id = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: id,
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new(
+                "files.entry:/tmp/synthetic-report",
+                "refresh",
+            ),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
+        panic!("the synthetic app must accept the invocation");
+    };
+    assert!(invocations.try_recv().is_ok());
+    assert!(host.observe(&owner, &id).is_some());
+    assert!(host.observe(&other, &id).is_none());
+    // Waiting on a change is authorized exactly as observing.
+    assert!(host.next_change(&other, &id).is_none());
+    let change = host
+        .next_change(&owner, &id)
+        .expect("the owner may wait on its invocation");
+    assert_eq!(
+        host.cancel(&other, &id),
+        Err(ActionHostError::UnknownInvocation)
+    );
+    assert!(matches!(
+        host.invoke(&owner, request.clone()).poll_ready(),
+        PendingPoll::Ready(Ok(retry)) if retry == receipt
+    ));
+    assert!(matches!(
+        host.invoke(&other, request).poll_ready(),
+        PendingPoll::Ready(Err(ActionHostError::InvocationConflict))
+    ));
+    assert!(
+        invocations.try_recv().is_err(),
+        "retries must not dispatch again"
+    );
+    assert_eq!(host.cancel(&owner, &id), Ok(()));
+    // The cancellation request changed the invocation: the waiter wakes on
+    // it, well before the broker's one-second safety interval.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(500), change).await,
+        Ok(Some(())),
+        "a change wakes its waiter"
+    );
+}
 
 /// In the parent, runs the test at path `test` again in a child process
 /// whose profile environment is private, and returns `None`; in that child,
@@ -132,7 +247,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let mut server = McpServer::new(
+            let server = McpServer::new(
                 session.action_host().unwrap(),
                 session.room().to_owned(),
                 session.actor().to_owned(),
@@ -282,6 +397,95 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart()
     assert_eq!(written(&root).as_deref(), Some(WRITTEN));
 }
 
+const OFFLOAD_TEST: &str =
+    "standalone::tests::the_session_hands_its_broker_the_route_its_home_relay_configures";
+
+/// The person's always-on relay at `address`, registered as retaining
+/// `room`, as enrollment writes it beside the identity.
+fn register_home_relay(
+    identity_dir: &Path,
+    user: [u8; 32],
+    room: &str,
+    address: iroh::EndpointAddr,
+) {
+    let relay_device = *address.id.as_bytes();
+    let registration = tilo_relay::HomePeerRegistration {
+        schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+        device_node_id: hex::encode(relay_device),
+        relay_service_node_id: hex::encode(relay_device),
+        relay_endpoint: Some(address),
+        label: "home".into(),
+        user_public_key: hex::encode(user),
+        device_cert: None,
+        relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(room).unwrap()],
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
+    };
+    let path = tilo_relay::home_peer_registry_path(identity_dir);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each session holds the profile for its whole phase on purpose"
+)]
+fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
+    let Some(root) = isolated_root(OFFLOAD_TEST) else {
+        return;
+    };
+    // No home relay: the broker has no route, and every offloadable action
+    // runs through its app's handler exactly as before.
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    assert!(state.action_offload().is_none(), "unconfigured: no route");
+    let session_room = session.room().to_owned();
+    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_room).unwrap();
+    drop(state);
+    drop(session);
+
+    // The person's home relay retains the room: the session's broker gets
+    // the route. This relay never answers, so the route cannot place
+    // anything elsewhere, and says so: the door runs the app's handler.
+    let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
+    let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+    register_home_relay(
+        &identity_root,
+        cert.user_public_key,
+        &session_room,
+        unreachable,
+    );
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    let route = state
+        .action_offload()
+        .expect("the configured home relay routes the room's offloadable actions")
+        .clone();
+    let request = tilo_actions::offload::OffloadRequest {
+        room: session_room,
+        app_id: "so.tilo.photos".into(),
+        address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
+        offload: tilo_actions::Offload {
+            app: "so.tilo.thumbnails".into(),
+            entrypoint: "thumbnail-batch".into(),
+            gpu: false,
+            cpu_time_ms: 120_000,
+            memory_bytes: 1024 * 1024 * 1024,
+            output_bytes: 16 * 1024 * 1024,
+        },
+        inputs: vec![hex::encode([1; 32])],
+    };
+    let answer = tilo_rt::app().handle().block_on(route.offload(request));
+    let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+        panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+    };
+    assert!(reason.contains("offload route"), "{reason}");
+    drop(route);
+    drop(state);
+    drop(session);
+}
+
 fn listed_room(root: &Path) -> String {
     let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
     tree.workspaces[0].room.to_string()
@@ -304,7 +508,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     assert_eq!(reopened.room(), room);
     let tree = reopened.snapshot().unwrap();
     assert_eq!(tree.workspaces.len(), 1);
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     assert_eq!(tree.workspaces[0].strips.len(), 1);
     // An owner is kept, not replaced by the next actor.
     reopened.adopt("person-2").unwrap();
@@ -312,7 +519,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         .unwrap()
         .snapshot()
         .unwrap();
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     let mut seen = None;
     reopened.with_workspace(&tree.workspaces[0].room, &mut |workspace| {
         seen = Some(workspace.name.clone());
@@ -350,10 +560,12 @@ fn effect_and_task_records_persist_in_the_profile() {
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
 
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-    let context = tilo_actions::ActionContext {
-        action_label: "Send".into(),
-        ..tilo_actions::ActionContext::default()
-    };
+    let context = tilo_actions::ActionContext::default().with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+            [],
+        )),
+    );
     let status = tilo_actions::EffectReceiptStatus::Succeeded;
     for _ in 0..2 {
         workspace
@@ -399,13 +611,14 @@ fn effect_and_task_records_persist_in_the_profile() {
     assert_eq!(workspace.effect_receipts[0].invocation, invocation);
     let task = &workspace.tasks[0];
     assert_eq!(task.status, WorkspaceTaskStatus::Done);
-    let summaries: Vec<_> = task.audit.iter().map(|event| &*event.summary).collect();
+    let events: Vec<_> = task
+        .audit
+        .iter()
+        .map(|event| (event.action(), event.note.as_deref()))
+        .collect();
     assert_eq!(
-        summaries,
-        [
-            format!("Status · {}", WorkspaceTaskStatus::Done.label()).as_str(),
-            "Wrote the outline"
-        ]
+        events,
+        [("set-status", None), ("report", Some("Wrote the outline"))]
     );
 }
 
@@ -464,12 +677,14 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
     assert_eq!(
-        workspace.snapshot().unwrap().workspaces[0].owner.as_deref(),
+        workspace.snapshot().unwrap().workspaces[0]
+            .owner()
+            .map(String::as_str),
         Some("desktop-owner")
     );
 
     // Without an owner there is nobody this host could act as.
-    value["workspaces"][0]["owner"] = serde_json::Value::Null;
+    value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
     std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(
         ProfileWorkspace::open(temp.path())
@@ -492,22 +707,28 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         person: person.into(),
         app_id: "so.tilo.caller".into(),
         target_app: "so.tilo.target-app".into(),
+        resource: "target.document".into(),
         action: "open".into(),
+        resource_label: "Document".into(),
         action_label: "Open".into(),
         risk: tilo_actions::RiskLevel::default(),
         needs_confirmation: false,
+        confirming: false,
     }
 }
 
-fn app_grant() -> collab_types::caps::CapOverride {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-    CapOverride::grant(
-        Subject::app("so.tilo.caller"),
-        Scope::Action {
-            app: "so.tilo.target-app".into(),
-            action: "open".into(),
-        },
-        Verb::Write,
+fn app_grant(room: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        "caller-opens-target",
+        tilo_action_policy::Subject::App("so.tilo.caller".into()),
+        tilo_action_policy::TreePath::room(room)
+            .app("so.tilo.target-app")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("target.document")
+            .action("open"),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
     )
 }
 
@@ -534,7 +755,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
         grants
             .record(
                 &consent(&room, "stranger"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -543,31 +764,36 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let id = grants
         .record(
             &consent(&room, "owner"),
-            app_grant(),
+            app_grant(&room),
             AppActionConsent::Always,
         )
         .unwrap();
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     let workspace = &saved.workspaces[0];
-    assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
+    assert!(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == id)
+    );
     let receipt = workspace.effect_receipts.last().unwrap();
     assert_eq!(receipt.actor, "owner");
-    assert!(
-        receipt
-            .context
-            .action_label
-            .contains("Allowed Caller to use Target App: Open in this workspace"),
-        "{}",
-        receipt.context.action_label
-    );
+    let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
+        panic!("the grant is recorded as a verb: {:?}", receipt.context);
+    };
+    assert_eq!(verb.args["app"].as_str(), Some("Caller"));
+    assert_eq!(verb.args["target"].as_str(), Some("Target App"));
+    assert_eq!(verb.args["lifetime"].as_str(), Some("workspace"));
 
     grants.revoke(&room, &id);
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     assert!(
         saved.workspaces[0]
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .all(|cap| cap.id != id)
+            .all(|grant| grant.id.as_str() != id)
     );
 }
 
@@ -588,7 +814,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
         grants
             .record(
                 &consent(&room, "owner"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -596,12 +822,13 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     grants.revoke(&room, "owner-1");
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-    assert_eq!(
+    assert!(
         grants.workspace.snapshot().unwrap().workspaces[0]
-            .capabilities
-            .len(),
-        1,
-        "only the owner's membership"
+            .policy
+            .grants
+            .iter()
+            .all(|grant| grant.subject != tilo_action_policy::Subject::App("so.tilo.caller".into())),
+        "nothing granted to the app"
     );
 }
 
@@ -609,12 +836,49 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
 fn the_runtime_governs_only_its_own_room_from_its_own_device() {
     use tilo_action_broker::peer_actions::CertificateAuthority as _;
     let room = uuid::Uuid::from_u128(7);
+    let origin = Arc::new(
+        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin(),
+    );
     let certificates = Certificates {
         room: room.to_string(),
         device: [2; 32],
+        policy_time: origin.capture().unwrap(),
+        joined: std::sync::Weak::new(),
     };
     assert!(certificates.governs(room, Some(&[2; 32])));
     assert!(certificates.governs(room, None));
     assert!(!certificates.governs(room, Some(&[3; 32])));
     assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
+    drop(certificates);
+}
+
+#[test]
+fn runtime_original_policy_time_cannot_survive_origin_retirement() {
+    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    let origin = Arc::new(
+        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin(),
+    );
+    let certificates = Certificates {
+        room: uuid::Uuid::from_u128(7).to_string(),
+        device: [2; 32],
+        policy_time: origin.capture().unwrap(),
+        joined: std::sync::Weak::new(),
+    };
+    let retained = certificates.policy_time().unwrap().unwrap();
+    origin.invalidate();
+    assert!(certificates.policy_time().is_err());
+    drop(certificates);
+    assert!(retained.now_ns().is_err());
+    let replacement = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        .unwrap()
+        .new_origin();
+    assert!(!retained.same_origin(&replacement.capture().unwrap()));
+    assert!(
+        retained.now_ns().is_err(),
+        "a new runtime clock cannot revive the original custody"
+    );
 }

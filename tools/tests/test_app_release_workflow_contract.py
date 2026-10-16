@@ -10,6 +10,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_SCRIPT = ROOT / 'tools/apps/publish-collections.sh'
 
 
 def bash_path(path: Path) -> str:
@@ -21,17 +22,50 @@ def bash_path(path: Path) -> str:
 
 
 class AppReleaseWorkflowContract(unittest.TestCase):
+    def test_collection_address_identifies_assembled_bytes_for_the_same_source(self):
+        source = PUBLISH_SCRIPT.read_text()
+        start = source.index('  bundle_sha=$(sha256sum "$bundle"')
+        end = source.index('  if [[ ${VERIFY_FINAL_RECEIPT', start)
+        address = source[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / 'tilo-apps-x86_64.tar.gz'
+
+            def urls(content):
+                bundle.write_bytes(content)
+                script = address + '\nprintf "%s\\n%s\\n" "$bundle_upload_url" "$bundle_url"\n'
+                return subprocess.check_output(
+                    ['bash', '-eu', '-c', script], text=True,
+                    env={'PATH': '/usr/bin:/bin', 'bundle': bash_path(bundle),
+                         'VERSION': '0.0.0-' + 'a' * 40,
+                         'package_api': 'https://code.tilo.so/api/packages/tilo/generic',
+                         'package_public_api': 'https://registry.tilo.so/artifacts/tilo/generic'},
+                ).splitlines()
+
+            first = urls(b'first selected app cohort')
+            second = urls(b'second selected app cohort')
+            self.assertNotEqual(first, second)
+            self.assertEqual(first, urls(b'first selected app cohort'))
+            for url in first:
+                self.assertIn(hashlib.sha256(b'first selected app cohort').hexdigest(), url)
+            self.assertNotIn('tilo-app-collections/$VERSION/', source)
+            self.assertEqual(source.count('tilo-app-collections/$collection_version/'), 5)
+
     def test_jobs_check_out_the_exact_commit_with_complete_shell_steps(self):
         with self.subTest(phase='each job checks out only the exact event commit'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             checkouts = source.split('uses: actions/checkout@')[1:]
-            self.assertEqual(len(checkouts), 5)
+            # Signal adds one compilation and one publication checkout.
+            self.assertEqual(len(checkouts), 11)
             for checkout in checkouts:
                 block = checkout.split('\n      - ', 1)[0]
                 self.assertIn('fetch-depth: 1', block)
                 self.assertNotIn('fetch-depth: 0', block)
                 self.assertIn('persist-credentials: false', block)
-                self.assertIn('ref: ${{ github.sha }}', block)
+                if 'path: original-source' in block:
+                    self.assertIn('ref: 919dfbd901dff103b79e3d0fdef9f4af4b2e24c5', block)
+                    self.assertIn("if: github.event.inputs.publish == 'true'", block)
+                else:
+                    self.assertIn('ref: ${{ github.sha }}', block)
                 self.assertNotIn('ref: main', block)
 
             plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
@@ -97,7 +131,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotIn('secrets.', tag_validation)
             self.assertNotIn('enable-openid-connect', tag_validation)
             self.assertNotIn('container:', tag_validation)
-            self.assertIn("  plan:\n    if: \"!startsWith(github.ref, 'refs/tags/')\"", source)
+            self.assertIn("  plan:\n    if: \"!startsWith(github.ref, 'refs/tags/') && github.event.inputs.recover_97894 != 'true'\"", source)
             authorization = source.split('\n  authorize-publish:\n', 1)[1].split(
                 '\n  build:\n', 1
             )[0]
@@ -122,7 +156,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
             self.assertNotIn('SOURCE_TOKEN', history_helper)
             self.assertNotIn('extraheader', history_helper)
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('needs: [plan, authorize-publish, build]', publish)
             self.assertIn('persist-credentials: false', publish)
             self.assertNotIn('TAG_AUDIENCE', publish)
@@ -194,6 +228,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                     'tools/ci/__init__.py',
                     'tools/ci/python.py',
                     'tools/ci/resolve_builder.py',
+                    'tools/ci/images.toml',
                 ],
             )
             for relative, size, digest in bootstrap['FILES']:
@@ -235,15 +270,14 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                 self.assertEqual(opener.request.get_header('Authorization'), 'token scoped-token')
                 self.assertEqual((Path(directory) / 'tools/example.py').read_bytes(), payload)
 
-    def test_pull_requests_plan_without_packaging_or_signing_secrets(self):
-        with self.subTest(phase='every main pr plans but never packages'):
+    def test_pull_requests_start_no_jobs_and_never_package(self):
+        with self.subTest(phase='prs start nothing; packaging excludes them regardless'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             self.assertIn('- "tools/apps/**"', source)
-            pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
-            self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
-            self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
+            triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
+            self.assertNotRegex(triggers, r'(?m)^  pull_request(?:_target)?:')
             plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
-            self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/')\"", plan)
+            self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/') && github.event.inputs.recover_97894 != 'true'\"", plan)
             self.assertIn('python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', plan)
             build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
             condition = re.search(r'(?m)^    if: (.+)$', build).group(1).strip('"')
@@ -270,35 +304,17 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
             self.assertRegex(push, r'(?m)^    branches: \[main\]$')
             self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
-        with self.subTest(phase='pr plan skips builder resolution but release events resolve'):
+        with self.subTest(phase='every plan resolves one builder'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
             builder = plan.split('        id: builder\n', 1)[1].split('\n      - ', 1)[0]
             self.assertIn('run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', builder)
-            condition = re.search(r'(?m)^        if: (.+)$', builder).group(1).strip('"')
-            # Execute the actual step predicate. Both publishing releases and the
-            # nonpublishing coordinator dispatch still require immutable resolution.
-            for event, ref_type, allowed in [('pull_request', 'branch', False),
-                                             ('push', 'branch', True),
-                                             ('push', 'tag', False),
-                                             ('workflow_dispatch', 'branch', True)]:
-                with self.subTest(event=event, ref_type=ref_type):
-                    predicate = condition.replace(
-                        'github.event_name', shlex.quote(event)
-                    ).replace(
-                        "!startsWith(github.ref, 'refs/tags/')",
-                        shlex.quote(ref_type) + ' != "tag"',
-                    )
-                    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-                        script = Path(directory) / 'predicate.sh'
-                        script.write_text(
-                            '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
-                        )
-                        result = subprocess.run(['bash', bash_path(script)])
-                    self.assertEqual(0 if allowed else 1, result.returncode)
+            self.assertNotRegex(builder, r'(?m)^        if:')
+            # Tags never reach the plan job, so it resolves for every event it runs on.
+            self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/') && github.event.inputs.recover_97894 != 'true'\"", plan)
             selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
-            # Only main pushes, which always resolve a builder, compare it with
-            # the prior collection's builder; PR selection never reads it.
+            # Only main pushes compare the resolved builder with the prior
+            # collection's builder.
             self.assertEqual(1, selection.count('steps.builder.outputs'))
             self.assertIn('BUILDER: ${{ steps.builder.outputs.image }}', selection)
             pushed = selection.split('if [[ $GITHUB_EVENT_NAME == push ]]', 1)
@@ -332,6 +348,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             contract = Path(directory) / 'contract.sh'
             contract.write_text(
                 'set -euo pipefail\napps=' + shlex.quote(bash_path(path)) + '\n'
+                'apps_publish=' + shlex.quote(bash_path(PUBLISH_SCRIPT)) + '\n'
                 'ok() { :; }\nbad() { exit 1; }\n' + script[start:end],
                 newline='\n',
             )
@@ -375,7 +392,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
         with self.subTest(phase='persisted collection urls use the configured public origin'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
             self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
             self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
@@ -387,6 +404,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         with self.subTest(phase='published tapps are submitted to the signed registry'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             build, publish = source.split('\n  publish:\n', 1)
+            publish += PUBLISH_SCRIPT.read_text()
             self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
             self.assertIn('dist/app-release/tilo-app-package', build)
             self.assertIn(
@@ -404,8 +422,22 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('tilo-app-metadata/$VERSION/$media', publish)
             self.assertIn('registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"', publish)
             self.assertIn('tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"', publish)
+        with self.subTest(phase='every uploaded tapp has a compressed twin beside it'):
+            script = PUBLISH_SCRIPT.read_text()
+            self.assertIn('"$registry_cli" compress -o "$twins/$file.zst" "$tapp"', script)
+            self.assertIn('"$package_api/tilo-app-$name/$VERSION/$file.zst" >> "$upload_manifest"', script)
+            # The twin is written before the upload that needs it.
+            self.assertLess(script.index('registry_cli="${index%/index.json}/tilo-app-package"'),
+                            script.index('"$registry_cli" compress'))
+            self.assertLess(script.index('"$registry_cli" compress'),
+                            script.index('tools/upload_immutable_packages.sh "$upload_manifest"'))
             self.assertIn('public registry media is unavailable or has the wrong type', publish)
             self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
+            # Archived screenshots are downloaded and digest-checked; a single
+            # gateway timeout from the proxy must not fail the publication.
+            self.assertIn('--connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 \\\n'
+                          '      "$media_url" --output "$archived_file"', publish)
+            self.assertIn("[[ ${actual_sha%% *} == \"$version\" ]]", publish)
             self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
             self.assertIn("*.webp) expected_type='image/webp'", publish)
             # Every media URL is checked, eight at a time, and any failure fails.
@@ -419,8 +451,8 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         with self.subTest(phase='verifier package secret is narrow and artifact token stays job scoped'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
-            self.assertEqual(source.count(binding), 2)
-            for occurrence in (0, 1):
+            self.assertEqual(source.count(binding), 3)
+            for occurrence in (0, 1, 2):
                 for replacement in ('${{ github.token }}', '${{ secrets.REGISTRY_TOKEN }}',
                                     '${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN || secrets.REGISTRY_TOKEN }}'):
                     with self.subTest(occurrence=occurrence, replacement=replacement):

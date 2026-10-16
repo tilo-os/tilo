@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_ui::text_render::TextRenderer;
@@ -36,7 +26,12 @@ fn cell_render_receives_text_renderer_and_rect() {
     let rect_c = saw_nonzero_rect.clone();
     let columns = vec![
         ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)).with_render(Box::new(
-            move |r: &Row, scene: &mut Scene, theme: &Theme, tr: &mut TextRenderer, rect: Rect| {
+            move |r: &Row,
+                  scene: &mut Scene,
+                  transform: Affine,
+                  theme: &Theme,
+                  tr: &mut TextRenderer,
+                  rect: Rect| {
                 calls_c.fetch_add(1, Ordering::SeqCst);
                 if rect.width() > 0.0 && rect.height() > 0.0 {
                     rect_c.fetch_add(1, Ordering::SeqCst);
@@ -46,7 +41,7 @@ fn cell_render_receives_text_renderer_and_rect() {
                     &r.name,
                     12.0,
                     theme.text_primary,
-                    Affine::translate((rect.x0 + 4.0, rect.y0)),
+                    transform * Affine::translate((rect.x0 + 4.0, rect.y0)),
                     None,
                 );
             },
@@ -73,10 +68,7 @@ fn cell_render_receives_text_renderer_and_rect() {
         .set_style(
             root,
             taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(400.0),
-                    height: taffy::Dimension::length(200.0),
-                },
+                size: taffy::Size::from_lengths(400.0, 200.0),
                 ..Default::default()
             },
         )

@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -36,12 +37,12 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert!(
         crate::room::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -58,12 +59,12 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert_eq!(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
@@ -99,9 +100,13 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
     assert!(peer.certificates().contains(&cert));
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cached policy followed through expiry, removal and replacement"
+)]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Principal, Scope, Subject, Verb};
+    use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (key, cert, _, other, now) = fixtures();
     let room_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut doc = crate::room::candidate(
@@ -110,16 +115,29 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     doc.put(ROOT, "owner", "another-person").unwrap();
-    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let person = Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-        cert.user_public_key,
-    ));
-    let grant = CapOverride::grant(Subject::Principal(person), Scope::Workspace, Verb::Write)
-        .with_expiry(2001);
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    let person = hex::encode(cert.user_public_key);
     doc.put(
-        &caps,
-        "membership",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        &members,
+        person.as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    // A time-limited hold on undoable changes, rechecked at every decision.
+    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let hold = Grant::new(
+        "hold",
+        Subject::Person(person.clone()),
+        TreePath::room(room_id),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        Subject::person("another-person"),
+    )
+    .with_lifetime(Lifetime::Until(2_001_000));
+    doc.put(
+        &grants,
+        "hold",
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&hold).unwrap()),
     )
     .unwrap();
     let changes = doc
@@ -145,16 +163,27 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().0,
+        peer.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
+    );
+    let room_node = TreePath::room(room_id);
+    assert!(
+        !peer
+            .permissions(cert.device_public_key, now)
+            .unwrap()
+            .allows(&room_node, ActionKind::Undoable, now)
     );
     assert!(
         peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
-            .unwrap_err()
-            .contains("membership")
+            .unwrap()
+            .allows(
+                &room_node,
+                ActionKind::Undoable,
+                now + Duration::from_secs(2)
+            )
     );
     let old = peer.clone();
-    doc.delete(&caps, "membership").unwrap();
+    doc.delete(&members, person.as_str()).unwrap();
     let changes = doc
         .get_changes(&[])
         .into_iter()
@@ -175,7 +204,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
             .contains("membership")
     );
     assert_eq!(
-        old.permissions(cert.device_public_key, now).unwrap().0,
+        old.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
     );
 }
@@ -193,7 +222,7 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     let seed = SeedState {
         room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
         documents: vec![SeedDocument {
@@ -249,7 +278,7 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", 1).unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -302,6 +331,122 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     );
     assert!(receiver.rows().is_empty());
 }
+/// [`seeded`], with the room owned by another person and the fixture's
+/// person an Editor of it: a member whose grants a governor can narrow.
+pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
+    let (a, ac, b, bc, now) = fixtures();
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::room::candidate(
+        None,
+        &seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+    )
+    .unwrap();
+    doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    doc.put(
+        &members,
+        hex::encode(bc.user_public_key).as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    let room_changes = doc
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let mut native = StatePeer::new(
+        room,
+        ac.clone(),
+        vec![ac, bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    native
+        .install_seed(
+            SeedState {
+                room_changes,
+                documents: vec![],
+            },
+            &a,
+            now,
+        )
+        .unwrap();
+    (native, a, b, bc, now)
+}
+
+/// Invite a second person into `peer` as an Editor with one device, as the
+/// governor `authority`: their device certificate and root.
+pub(crate) fn add_editor(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    now: SystemTime,
+) -> (DeviceCert, [u8; 32]) {
+    use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let device = SigningKey::from_bytes(&[6; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Editor".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let now_ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    let owner = peer.authority().clone();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: owner.clone(),
+            issuer: owner,
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [53; 16],
+            recipient_user_public_key: Some(cert.user_public_key),
+            invitee_name: Some("Editor".into()),
+            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+            transport: vec![],
+        },
+        authority,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &cert,
+        [54; 32],
+        [55; 32],
+        now_ns.checked_add(1_000_000_000).unwrap(),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+    let redemption =
+        crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
+            .unwrap();
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&redemption, authority, now)
+            .unwrap()
+    );
+    (cert, root.verifying_key().to_bytes())
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -315,7 +460,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -345,7 +490,6 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         verify_join_proof,
     };
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
     let now_ns: u64 = now
@@ -410,21 +554,23 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
 
     assert!(
-        peer.admit_invited_member(&redemption, &other_owner_device, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &other_owner_device, now)
             .is_err(),
         "only the pinned authority device may mutate governance"
     );
     assert!(
-        peer.admit_invited_member(&redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert_eq!(
         peer.permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Editor
     );
-    let access = peer.governed_access(now).unwrap();
+    let access = peer.governance().governed_access(now).unwrap();
     assert!(
         access
             .member_devices
@@ -447,6 +593,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
@@ -479,11 +626,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     )
     .unwrap();
     assert!(
-        peer.admit_invited_member(&second_redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap(),
         "a later invite for the same device must not overwrite the first receipt"
@@ -500,11 +649,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
@@ -546,6 +697,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         restored
+            .governance_mut()
             .admit_invited_member(&replay_redemption, &authority_key, now)
             .unwrap_err()
             .contains("already redeemed"),
@@ -555,27 +707,21 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         panic!("unexpected fixture shape")
     };
     let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    let capabilities = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
     let before = room_doc.get_heads();
     room_doc.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    let shadowing = CapOverride::grant(
-        Subject::User(collab_types::Ed25519PublicKey::from_bytes(
-            guest_cert.user_public_key,
-        )),
-        Scope::Workspace,
-        Verb::Admin,
-    )
-    .with_id("legacy-strong-membership");
     room_doc
         .put(
-            &capabilities,
-            "legacy-strong-membership",
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&shadowing).unwrap()),
+            &members,
+            hex::encode(guest_cert.user_public_key),
+            automerge::ScalarValue::Bytes(
+                serde_json::to_vec(&collab_types::Role::Commenter).unwrap(),
+            ),
         )
         .unwrap();
-    room_doc.commit();
+    room_doc.commit_edit("fixture", "fixture");
     restored
         .receive_from(
             TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
@@ -594,11 +740,12 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
-        collab_types::Role::Owner
+            .role,
+        collab_types::Role::Commenter
     );
     assert!(
         restored
+            .governance_mut()
             .set_member_role(
                 guest_cert.user_public_key,
                 MemberRole::Viewer,
@@ -611,10 +758,11 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Viewer
     );
     restored
+        .governance()
         .membership_challenge(
             7,
             &guest_cert,
@@ -626,6 +774,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         .unwrap();
     assert!(
         restored
+            .governance_mut()
             .remove_member(guest_cert.user_public_key, &authority_key, now)
             .unwrap()
     );
@@ -636,6 +785,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert_eq!(
         restored
+            .governance()
             .membership_challenge(
                 7,
                 &guest_cert,
@@ -649,10 +799,11 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
-    let access = restored.governed_access(now).unwrap();
+    let access = restored.governance().governed_access(now).unwrap();
     assert!(
         !access
             .member_devices
@@ -665,6 +816,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         restored
+            .governance_mut()
             .remove_member(peer.authority().user_public_key, &authority_key, now)
             .is_err(),
         "the owner cannot be removed through member governance"
@@ -706,7 +858,8 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     )
     .unwrap();
     assert!(
-        peer.install_workspace_delegation(delegation.clone(), &authority_key, now)
+        peer.governance_mut()
+            .install_workspace_delegation(delegation.clone(), &authority_key, now)
             .unwrap()
     );
 
@@ -759,11 +912,12 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     let redemption =
         verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &host_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &host_key, now)
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest.device_public_key, now).unwrap().0,
+        peer.permissions(guest.device_public_key, now).unwrap().role,
         collab_types::Role::Commenter
     );
 }
@@ -835,11 +989,13 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     let mut left = base.clone();
     let mut right = base.clone();
     assert!(
-        left.admit_invited_member(&first, &authority_key, now)
+        left.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
     assert!(
         right
+            .governance_mut()
             .admit_invited_member(&second, &authority_key, now)
             .unwrap()
     );
@@ -889,7 +1045,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
     legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
-    legacy.commit();
+    legacy.commit_edit("fixture", "invitation_receipts_v1");
     base.receive_from(
         TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
@@ -928,7 +1084,8 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         &authority_key,
     )
     .unwrap();
-    base.install_workspace_delegation(delegation.clone(), &authority_key, now)
+    base.governance_mut()
+        .install_workspace_delegation(delegation.clone(), &authority_key, now)
         .unwrap();
 
     let guest_root = SigningKey::from_bytes(&[81; 32]);
@@ -983,9 +1140,11 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
     let mut left = base.clone();
     let mut right = base.clone();
-    left.admit_invited_member(&redemption_a, &authority_key, now)
+    left.governance_mut()
+        .admit_invited_member(&redemption_a, &authority_key, now)
         .unwrap();
     right
+        .governance_mut()
         .admit_invited_member(&redemption_b, &delegate_key, now)
         .unwrap();
 
@@ -1025,6 +1184,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     for (redemption, issuer) in [(&replay_a, &authority_key), (&replay_b, &delegate_key)] {
         assert!(
             restored
+                .governance_mut()
                 .admit_invited_member(redemption, issuer, now)
                 .unwrap_err()
                 .contains("already redeemed")
@@ -1058,7 +1218,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
         automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt([99; 32], [100; 32])).unwrap()),
     )
     .unwrap();
-    left.commit();
+    left.commit_edit("fixture", "fixture");
     right.set_actor(automerge::ActorId::from(vec![101; 32]));
     right
         .put(
@@ -1069,7 +1229,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
             ),
         )
         .unwrap();
-    right.commit();
+    right.commit_edit("fixture", "fixture");
     let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
         changes: branch
             .get_changes(&base_heads)
@@ -1133,7 +1293,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "other", "B").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "other");
     let old = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1198,7 +1358,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "new", "B2").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let next = reload
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1272,7 +1432,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
     if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
         let mut replacement = AutoCommit::new();
         replacement.put(ROOT, "attack", true).unwrap();
-        replacement.commit();
+        replacement.commit_edit("fixture", "attack");
         envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
             .encode()
             .unwrap();
@@ -1308,7 +1468,7 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     };
     let mut doc = room::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let legacy = NeighbourMsg::SyncResp {
         room: room.clone(),
         changes: doc
@@ -1623,7 +1783,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "new", "forbidden").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let op = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -1798,7 +1958,7 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
             .put_object(ROOT, "text", automerge::ObjType::Text)
             .unwrap();
         doc.splice_text(&text, 0, 0, "saved once").unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "fixture");
         let original = client
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
             .unwrap();
@@ -1823,9 +1983,21 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
         .unwrap();
         let old_bytes = postcard::to_allocvec(&original).unwrap();
         let mut outbox = vec![original.clone()];
-        assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 1);
+        assert_eq!(
+            client
+                .outbox()
+                .outbox_status(&outbox, later)
+                .blocked_expired,
+            1
+        );
         // A reload alone cannot authorize re-signing or turn persistence into sync.
-        assert_eq!(client.reconcile_outbox(&outbox, &b, later).unwrap(), outbox);
+        assert_eq!(
+            client
+                .outbox_mut()
+                .reconcile_outbox(&outbox, &b, later)
+                .unwrap(),
+            outbox
+        );
         for msg in governor.bootstrap_messages(&a, later).unwrap() {
             client
                 .receive_from(
@@ -1835,10 +2007,11 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                 )
                 .unwrap();
         }
-        outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-        if delivered {
-            assert!(outbox.is_empty());
-        } else {
+        outbox = client
+            .outbox_mut()
+            .reconcile_outbox(&outbox, &b, later)
+            .unwrap();
+        if !delivered {
             assert_eq!(outbox.len(), 2);
             assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
             let (
@@ -1852,7 +2025,13 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
             assert_eq!(new.seq, old.seq + 1);
             assert_eq!(old.timestamp, now);
             assert_eq!(new.timestamp, later);
-            assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 0);
+            assert_eq!(
+                client
+                    .outbox()
+                    .outbox_status(&outbox, later)
+                    .blocked_expired,
+                0
+            );
             governor
                 .receive_from(
                     TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
@@ -1888,14 +2067,17 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                     )
                     .unwrap();
             }
-            outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-            assert!(outbox.is_empty());
+            outbox = client
+                .outbox_mut()
+                .reconcile_outbox(&outbox, &b, later)
+                .unwrap();
         }
+        assert!(outbox.is_empty());
         assert_eq!(client.rows(), governor.rows());
         let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
         let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
         assert_eq!(final_doc.text(text).unwrap(), "saved once");
-        assert_eq!(client.outbox_status(&outbox, later).pending, 0);
+        assert_eq!(client.outbox().outbox_status(&outbox, later).pending, 0);
     }
 }
 
@@ -1949,13 +2131,13 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1986,6 +2168,7 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
         "missing dependencies are not materialized checkpoint coverage"
     );
     let outbox = client
+        .outbox_mut()
         .reconcile_outbox(&[first, second], &b, later)
         .unwrap();
     assert_eq!(outbox.len(), 4);
@@ -2009,6 +2192,7 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
     }
     assert!(
         client
+            .outbox_mut()
             .reconcile_outbox(&outbox, &b, later)
             .unwrap()
             .is_empty()
@@ -2032,13 +2216,13 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
     let before = document.get_heads();
     document.put(ROOT, "first", "A").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "first");
     let first = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
     let before = document.get_heads();
     document.put(ROOT, "second", "B").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "second");
     let second = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
@@ -2094,14 +2278,14 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let recent = now + Duration::from_secs(290);
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, recent)
         .unwrap();
@@ -2112,6 +2296,7 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
         client.receive_from(origin, message, reconnect).unwrap();
     }
     let mut outbox = client
+        .outbox_mut()
         .reconcile_outbox(&[first, second.clone()], &b, reconnect)
         .unwrap();
     assert_eq!(outbox.len(), 3);
@@ -2139,7 +2324,10 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
             if outcome.changed {
                 for checkpoint in governor.bootstrap_messages(&a, reconnect).unwrap() {
                     client.receive_from(origin, checkpoint, reconnect).unwrap();
-                    outbox = client.reconcile_outbox(&outbox, &b, reconnect).unwrap();
+                    outbox = client
+                        .outbox_mut()
+                        .reconcile_outbox(&outbox, &b, reconnect)
+                        .unwrap();
                 }
             }
         }
@@ -2160,7 +2348,7 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
     let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
-    assert_eq!(client.outbox_status(&outbox, reconnect).pending, 0);
+    assert_eq!(client.outbox().outbox_status(&outbox, reconnect).pending, 0);
 }
 
 #[test]
@@ -2203,7 +2391,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "joined", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "joined");
     let message = existing
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
         .unwrap();
@@ -2449,7 +2637,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
             automerge::ScalarValue::Bytes(vec![0]),
         )
         .unwrap();
-    candidate.commit();
+    candidate.commit_edit("fixture", "fixture");
     let changes = candidate
         .get_changes(&[])
         .into_iter()
@@ -2490,7 +2678,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", 1).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -2586,7 +2774,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let heads = browser.document_heads("test.app", "tab:1").unwrap();
     assert_eq!(heads, doc.get_heads());
     doc.put(ROOT, "value", 2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     let local = browser
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -2658,7 +2846,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
         .unwrap();
     doc.put(&tab, "title", "Original").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000001").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let mut peer =
         StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -2680,7 +2868,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     ));
     doc.put(&tab, "title", "Stolen").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000012").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let result = peer.receive(
         b.verifying_key().to_bytes(),
         NeighbourMsg::SyncResp {
@@ -2731,7 +2919,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "foreign", "original effect").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "foreign");
     let change = doc.save_after(&heads);
     let original = governor
         .publish_incremental(app, record, change.clone(), &b, now)
@@ -2780,7 +2968,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     before = governor.clone();
     let mut new = AutoCommit::new();
     new.put(ROOT, "created", true).unwrap();
-    new.commit();
+    new.commit_edit("fixture", "created");
     governor
         .publish_document("new.app", "new-record", new.save(), &a, now)
         .unwrap();
@@ -2835,6 +3023,30 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     .unwrap();
     assert!(restored.covers(&original));
     assert!(restored.covers(&metadata_only));
+    // The covered floor is not coverage of whatever bytes claim it. The
+    // incremental is decoded in the isolate, which refuses a covered change
+    // followed by a copy of it with a bad checksum rather than keeping the
+    // valid prefix and reporting the checkpoint's heads unchanged.
+    let NeighbourMsg::AppDocument { envelope, .. } = &original else {
+        panic!("document publication")
+    };
+    let collab_types::DocumentMutation::Incremental(covered) =
+        collab_types::DocumentMutation::decode(&envelope.payload).unwrap()
+    else {
+        panic!("incremental publication")
+    };
+    let mut bad_checksum = covered.clone();
+    bad_checksum[4] ^= 0x01;
+    let mut corrupt = covered;
+    corrupt.extend_from_slice(&bad_checksum);
+    let mut forged = original.clone();
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
+        panic!("document publication")
+    };
+    envelope.payload = collab_types::DocumentMutation::Incremental(corrupt)
+        .encode()
+        .unwrap();
+    assert!(!restored.covers(&forged));
     let before = governor.clone();
     assert!(
         governor
@@ -2929,5 +3141,131 @@ fn selective_publication_cannot_discard_prior_document_basis() {
     );
 }
 
+#[path = "copy_on_write_tests.rs"]
+mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
+
+/// An invitation for `guest_cert` with `nonce`, redeemed by its device.
+fn guest_redemption(
+    peer: &StatePeer,
+    authority_key: &SigningKey,
+    guest_key: &SigningKey,
+    guest_cert: &DeviceCert,
+    nonce: u8,
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        verify_join_proof,
+    };
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: peer.authority().clone(),
+            issuer: peer.authority().clone(),
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [nonce; 16],
+            recipient_user_public_key: Some(guest_cert.user_public_key),
+            invitee_name: Some("Guest".into()),
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
+            transport: vec![],
+        },
+        authority_key,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(guest_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        guest_cert,
+        [nonce.wrapping_add(1); 32],
+        [nonce.wrapping_add(2); 32],
+        now_ns.saturating_add(1_000_000_000),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), guest_key).unwrap();
+    verify_join_proof(
+        &proof,
+        &challenge,
+        guest_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let guest_root = SigningKey::from_bytes(&[61; 32]);
+    let guest_key = SigningKey::from_bytes(&[62; 32]);
+    let mut guest_cert = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "Guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
+    let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
+            .unwrap()
+    );
+    let owner = hex::encode(peer.authority().user_public_key);
+    assert!(
+        peer.governance_mut()
+            .ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
+            .unwrap()
+    );
+    assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
+    assert!(
+        !peer
+            .governance()
+            .governed_access(now)
+            .unwrap()
+            .member_user_roots
+            .contains(&guest_cert.user_public_key)
+    );
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
+            .is_err(),
+        "an invitation issued before the ban does not let them back"
+    );
+    assert!(
+        peer.governance_mut()
+            .unban_member(guest_cert.user_public_key, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .role,
+        collab_types::Role::Editor
+    );
+}

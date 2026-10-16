@@ -217,6 +217,149 @@ fn only_granted_paths_widen_the_profile_and_payload_stays_read_only() {
     assert!(!f.payload.join("dropped").exists());
 }
 
+/// A person's home holding Tilo's private store, the way
+/// `launcher::capabilities::private_store_roots` names it.
+struct Person {
+    home: PathBuf,
+    store: PathBuf,
+    key: PathBuf,
+    attestors: PathBuf,
+}
+
+fn home_with_store(f: &Fixture) -> Person {
+    let home = f.root.join("home");
+    let store = home.join(".config/tilo");
+    let key = store.join("identity/secrets/x.key");
+    std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(home.join("Documents")).unwrap();
+    std::fs::write(&key, b"root secret").unwrap();
+    let attestors = store.join("trusted-attestors.toml");
+    std::fs::write(&attestors, b"# trusted\n").unwrap();
+    std::fs::write(home.join(".config/other.toml"), b"other").unwrap();
+    Person {
+        home,
+        store,
+        key,
+        attestors,
+    }
+}
+
+/// The plan `CapabilityPlan::for_app` builds for `rw_paths`, confined against
+/// this home's store rather than the person running the test.
+fn granted(h: &Person, rw_paths: Vec<PathBuf>) -> CapabilityPlan {
+    CapabilityPlan {
+        rw_paths,
+        ..CapabilityPlan::empty()
+    }
+    .confine_private_stores(std::slice::from_ref(&h.store))
+}
+
+#[test]
+fn a_home_grant_never_reaches_tilos_private_stores() {
+    let f = fixture();
+    let h = home_with_store(&f);
+    let plan = granted(&h, vec![h.home.clone()]);
+    assert_eq!(plan.masked_dirs, vec![h.store.clone()], "{plan:?}");
+    let run = |op: &str, path: &Path| {
+        let mut req = request(&f, op, path);
+        req.capabilities = plan.clone();
+        exit_code(&req)
+    };
+
+    assert_eq!(run("read", &h.key), REFUSED, "the identity secret was read");
+    assert_eq!(
+        run("read", &h.home.join(".CONFIG/TILO/identity/secrets/x.key")),
+        REFUSED,
+        "the identity secret was read under another case"
+    );
+    assert_eq!(
+        run("write", &h.attestors),
+        REFUSED,
+        "the trust list was rewritten"
+    );
+    assert_eq!(std::fs::read(&h.attestors).unwrap(), b"# trusted\n");
+    let revoked = h.store.join("revoked-keys.toml");
+    assert_eq!(run("write", &revoked), REFUSED, "a store file was planted");
+    assert!(!revoked.exists());
+
+    // Moving the store, or any directory on its way, aside would let the app
+    // plant a substitute where Tilo looks next.
+    for aside in [h.home.join(".config"), h.store.clone()] {
+        assert_eq!(
+            run("rename", &aside),
+            REFUSED,
+            "{} was moved aside",
+            aside.display()
+        );
+    }
+    assert!(h.key.is_file(), "the store moved");
+
+    // Everything else in the grant is as granted, `.config` included.
+    assert_eq!(run("read", &h.home.join(".config/other.toml")), OK);
+    assert_eq!(run("write", &h.home.join(".config/new.toml")), OK);
+    assert_eq!(run("rename", &h.home.join(".config/other.toml")), OK);
+    let note = h.home.join("Documents/note.txt");
+    assert_eq!(run("write", &note), OK, "Documents lost its write");
+    assert_eq!(run("rename", &note), OK);
+    assert!(h.home.join("Documents/note.txt.moved").is_file());
+
+    // A path picked in the runtime's chooser does not open the store either.
+    let token = tilo_dialogs::confined::issue_extension(&h.key).unwrap();
+    let mut picked = request(&f, "picked", &h.key);
+    picked.capabilities = plan.clone();
+    picked.env = vec![(OsString::from("TILO_PROBE_TOKEN"), OsString::from(token))];
+    assert_eq!(exit_code(&picked), REFUSED, "a picked store file opened");
+    assert_eq!(std::fs::read(&h.key).unwrap(), b"root secret");
+}
+
+#[test]
+fn a_grant_beside_the_private_store_is_unchanged() {
+    let f = fixture();
+    let h = home_with_store(&f);
+    let documents = h.home.join("Documents");
+    let plan = granted(&h, vec![documents.clone()]);
+    assert!(plan.masked_dirs.is_empty(), "{plan:?}");
+    let run = |op: &str, path: &Path| {
+        let mut req = request(&f, op, path);
+        req.capabilities = plan.clone();
+        exit_code(&req)
+    };
+    assert_eq!(run("write", &documents.join("a.txt")), OK);
+    assert_eq!(run("read", &documents.join("a.txt")), OK);
+    assert_eq!(run("rename", &documents.join("a.txt")), OK);
+    assert_eq!(run("read", &h.key), REFUSED);
+    assert_eq!(run("read", &h.home.join(".config/other.toml")), REFUSED);
+}
+
+#[test]
+fn a_store_reached_through_a_symlink_stays_hidden_and_in_place() {
+    let f = fixture();
+    let h = home_with_store(&f);
+    // The store really lives elsewhere in the home; `.config/tilo` links to it.
+    let real = h.home.join("dotfiles/tilo");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&h.store, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &h.store).unwrap();
+    let plan = granted(&h, vec![h.home.clone()]);
+    // A writable grant holding the link is bound read-only on Linux, since a
+    // link cannot be pinned; the same plan reaches Seatbelt.
+    assert!(plan.rw_paths.is_empty(), "{plan:?}");
+    assert_eq!(plan.masked_dirs, vec![real.clone()], "{plan:?}");
+    let run = |op: &str, path: &Path| {
+        let mut req = request(&f, op, path);
+        req.capabilities = plan.clone();
+        exit_code(&req)
+    };
+    assert_eq!(run("read", &h.key), REFUSED, "read through the link");
+    assert_eq!(
+        run("read", &real.join("identity/secrets/x.key")),
+        REFUSED,
+        "read at the real path"
+    );
+    assert_eq!(run("rename", &h.store), REFUSED, "the link was moved");
+    assert_eq!(run("read", &h.home.join(".config/other.toml")), OK);
+}
+
 #[test]
 fn code_runs_only_from_the_payload() {
     let f = fixture();
@@ -259,7 +402,7 @@ fn network_follows_the_egress_decision() {
 
     // A host allowlist: the launcher's gate is the only way out, through the
     // proxy environment, and it carries only the granted hosts.
-    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["localhost".into()]));
+    let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["localhost"]));
     let mut tcp_gated = request_with(&f, &f.probe, "tcp", port.clone());
     tcp_gated.egress = filtered.clone();
     assert_eq!(

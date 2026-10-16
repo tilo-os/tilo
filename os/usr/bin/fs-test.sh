@@ -54,22 +54,21 @@ echo "PASS: FUSE mount + content"
 
 # --- 2. Binaries ----------------------------------------------------
 echo "--- [2/4] OS binaries ---"
-for bin in /usr/bin/shell /usr/bin/fs \
-           /usr/bin/terminal /usr/bin/file-explorer; do
+for bin in /usr/bin/shell /usr/bin/fs; do
     if [ ! -x "$bin" ]; then
         echo "FAIL: $bin missing or not executable"
         exit 1
     fi
 done
-# The browser is optional: an image built with TILO_WITH_BROWSER=0 ships without
-# it (and without its WPE engine) so boot verification isn't gated on the
-# browser engine building. Still checked when it IS there — absent is allowed,
-# present-but-broken is not.
-if [ -e /usr/bin/browser ] && [ ! -x /usr/bin/browser ]; then
-    echo "FAIL: /usr/bin/browser present but not executable"
+# The browser engine runtime is optional: an image built with
+# TILO_WITH_BROWSER=0 ships without it so boot verification isn't gated on the
+# engine building. Absent is allowed, present-but-broken is not.
+engine_host=$(find /usr/lib/tilo-runtime -mindepth 4 -maxdepth 4 -path '*/lib/chromium/tilo-chromium-host' -print -quit 2>/dev/null)
+if [ -n "$engine_host" ] && [ ! -x "$engine_host" ]; then
+    echo "FAIL: $engine_host present but not executable"
     exit 1
 fi
-echo "PASS: core binaries present (browser: $([ -x /usr/bin/browser ] && echo present || echo omitted))"
+echo "PASS: core binaries present (browser engine: ${engine_host:-omitted})"
 
 # --- 3. Portal D-Bus backend ---------------------------------------
 # The portal user service is D-Bus-activated, so the assertion is

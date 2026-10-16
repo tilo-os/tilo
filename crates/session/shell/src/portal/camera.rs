@@ -7,6 +7,7 @@
 //! surface. It never guesses a security capability from translated display
 //! text; microphone access has its own PipeWire/portal path.
 
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
@@ -14,14 +15,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
-#[cfg(target_os = "linux")]
-use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
+use zbus::object_server::DispatchResult2;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::OwnedObjectPath;
 use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, message::Header, message::Message};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
@@ -108,65 +107,21 @@ const ACCESS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.impl.port
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for AccessBackend {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.impl.portal.Access")
-    }
+interface_dispatch::method_interface!(
+    AccessBackend,
+    "org.freedesktop.impl.portal.Access",
+    ACCESS_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl AccessBackend {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call zbus::zvariant::Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &zbus::zvariant::Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "AccessDialog" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -178,84 +133,66 @@ impl Interface for AccessBackend {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, ACCESS_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
     async fn access_dialog(
         &self,
         hdr: &Header<'_>,
         connection: &Connection,
         request: AccessDialogRequest,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let AccessDialogRequest {
-            handle,
-            app_id,
-            parent_window,
-            title,
-            body,
-        } = request;
-        tracing::debug!(
-            "Access.AccessDialog: app={} title={:?} body={:?}",
-            app_id,
-            title,
-            body
-        );
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_camera {
-            return (1, HashMap::new());
-        }
-        let request = handle.as_str().to_owned();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancellation = cancelled.clone();
-        let prompts = self.ctx.prompts.clone();
-        let cancellation_request = request.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
+    ) -> Reply {
+        answer(async move {
+            let AccessDialogRequest {
+                handle,
+                app_id,
+                parent_window,
+                title,
+                body,
+            } = request;
+            tracing::debug!(
+                "Access.AccessDialog: app={} title={:?} body={:?}",
+                app_id,
+                title,
+                body
+            );
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            if lockdown::current_policy().disable_camera {
+                return Err(Ended::Cancelled);
+            }
+            let request = handle.as_str().to_owned();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancellation = cancelled.clone();
+            let prompts = self.ctx.prompts.clone();
+            let cancellation_request = request.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
+            };
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&cancellation_request);
+            };
             self.lifecycle
-                .register_request(connection, &request, entry, move |_| {
-                    cancellation.store(true, Ordering::Release);
-                    prompts.cancel_request(&cancellation_request);
+                .with_request(connection, &request, entry, cancel, async {
+                    let (kind, cap_template) = camera_capability();
+                    let outcome = flow::resolve_for_request(
+                        &self.ctx,
+                        auth.caller,
+                        kind,
+                        cap_template,
+                        request.clone(),
+                    )
+                    .await;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(Ended::Cancelled);
+                    }
+                    access_outcome(outcome)
                 })
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let (kind, cap_template) = camera_capability();
-        let outcome =
-            flow::resolve_for_request(&self.ctx, auth.caller, kind, cap_template, request.clone())
-                .await;
-        self.lifecycle
-            .complete_request_object(connection, &request)
-            .await;
-        if cancelled.load(Ordering::Acquire) {
-            return (1, HashMap::new());
-        }
-        outcome_to_access_response(outcome)
+                .await
+        })
+        .await
     }
 }
 
@@ -268,10 +205,12 @@ pub(super) fn camera_capability() -> (CapabilityKind, Capability) {
     )
 }
 
-fn outcome_to_access_response(outcome: PromptOutcome) -> (u32, HashMap<String, OwnedValue>) {
-    let results: HashMap<String, OwnedValue> = HashMap::new();
-    let code = u32::from(!outcome.is_allowed());
-    (code, results)
+fn access_outcome(outcome: PromptOutcome) -> Outcome {
+    if outcome.is_allowed() {
+        Ok(Results::new())
+    } else {
+        Err(Ended::Cancelled)
+    }
 }
 
 #[cfg(test)]
@@ -290,13 +229,14 @@ mod tests {
         // these assertions: `camera_capability` takes no UI text, so nothing can change it.)
         // Phase `access_allow_returns_zero`.
         {
-            let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
+            let (code, results) =
+                crate::portal::reply::reply(access_outcome(PromptOutcome::AllowOnce));
             assert_eq!(code, 0);
             assert!(results.is_empty());
         }
         // Phase `access_deny_returns_one`.
         {
-            let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
+            let (code, _) = crate::portal::reply::reply(access_outcome(PromptOutcome::Deny));
             assert_eq!(code, 1);
         }
     }

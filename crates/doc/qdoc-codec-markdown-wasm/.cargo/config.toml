@@ -1,4 +1,0 @@
-# Providers run without WASI; `format-provider-abi`'s `entropy` feature
-# supplies getrandom's backend from the host's `tilo_fp.fill_random` import.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg", 'getrandom_backend="custom"']

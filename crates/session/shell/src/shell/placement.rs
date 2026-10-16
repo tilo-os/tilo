@@ -16,8 +16,10 @@ use tilo_desktop_model::commands::{
     OpenContext, OpenIntent, StripViewport, TabPlacement, open_app_placement,
 };
 
+use tilo_action_broker::services::LaunchPlace;
+
 use crate::shell::chrome_state::OpenTarget;
-use crate::shell::state::{GroupId, WorkspaceTree};
+use crate::shell::state::{GroupId, RoomId, TileContent, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 
 /// Where a window opened with `intent` lands in the active workspace.
@@ -41,6 +43,57 @@ pub fn placement_for(
     }
 }
 
+/// Where the view of a launch an invocation needs lands in the workspace
+/// of `room`. A person's own invocation opens where they are looking, as a
+/// launch does; an actor's opens beside the view it works in, on whichever
+/// strip holds that, without taking the person's focus. `None` leaves it to
+/// adoption: the workspace is not the one on screen and the actor has no
+/// view in it.
+pub fn placement_at(tree: &WorkspaceTree, room: RoomId, place: &LaunchPlace) -> Option<Placement> {
+    let workspace = tree.desktop.workspaces.iter().find(|ws| ws.room == room)?;
+    if let LaunchPlace::Beside { app_id } = place
+        && let Some(group) = group_showing(workspace, app_id)
+    {
+        let at = OpenContext::beside(workspace, group)?;
+        return match open_app_placement(workspace, &at, |_| true) {
+            Ok(TabPlacement::NewGroup {
+                after: Some(group), ..
+            }) => Some(Placement::Beside(group)),
+            _ => None,
+        };
+    }
+    tree.desktop
+        .active_workspace()
+        .is_some_and(|active| active.room == room)
+        .then(|| placement_for(tree, OpenIntent::Launch, None))
+}
+
+/// The group of `workspace` whose shown tab is a window of `package_id`,
+/// else any group holding one.
+pub(crate) fn group_showing(
+    workspace: &tilo_desktop_model::Workspace,
+    package_id: &str,
+) -> Option<GroupId> {
+    let shows = |tile: &TileContent| match tile {
+        TileContent::Foreign { app_id, .. } => {
+            crate::shell::launcher::app_id_matches_package(app_id, package_id)
+        }
+        TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+            app_id == package_id
+        }
+        _ => false,
+    };
+    let groups = || workspace.strips.iter().flat_map(|s| &s.window_groups);
+    groups()
+        .find(|g| {
+            g.tabs
+                .iter()
+                .any(|tab| tab.id == g.active_tab && shows(&tab.tile))
+        })
+        .or_else(|| groups().find(|g| g.tabs.iter().any(|tab| shows(&tab.tile))))
+        .map(|g| g.id)
+}
+
 /// Record the launch rule's answer for `package_id`'s window.
 pub fn note_placement_for_launch(
     package_id: &str,
@@ -60,8 +113,9 @@ pub fn note_placement_for_launch_identities(
     identities: &[String],
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
+    target: OpenTarget,
 ) -> Placement {
-    let placement = placement_for(tree, OpenIntent::Search, viewport);
+    let placement = placement_for_target(tree, viewport, target);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
     placement
 }
@@ -76,11 +130,30 @@ pub fn note_placement_for_launch_targeted(
     viewport: Option<&StripViewport>,
     target: OpenTarget,
 ) {
-    let placement = match target {
-        OpenTarget::Here(group) if group_exists(tree, group) => Placement::TabIn(group),
-        _ => placement_for(tree, OpenIntent::Search, viewport),
-    };
+    let placement = placement_for_target(tree, viewport, target);
     crate::shell::launcher::set_pending_placement(package_id, placement);
+}
+
+/// Where a window the person asked for from search lands: a tab of the
+/// group whose "+" summoned the search ([`OpenTarget::Here`]), else the
+/// search rule. Every launch path (package, host app, document, URL) asks
+/// here, at the moment of the request, so the target survives the launch
+/// being queued and the window mapping seconds later.
+pub fn placement_for_target(
+    tree: &WorkspaceTree,
+    viewport: Option<&StripViewport>,
+    target: OpenTarget,
+) -> Placement {
+    explicit_group_placement(tree, target)
+        .unwrap_or_else(|| placement_for(tree, OpenIntent::Search, viewport))
+}
+
+/// The tab-in-group placement `target` names, when its group still exists.
+pub fn explicit_group_placement(tree: &WorkspaceTree, target: OpenTarget) -> Option<Placement> {
+    match target {
+        OpenTarget::Here(group) if group_exists(tree, group) => Some(Placement::TabIn(group)),
+        _ => None,
+    }
 }
 
 fn group_exists(tree: &WorkspaceTree, group: GroupId) -> bool {
@@ -123,6 +196,7 @@ mod tests {
                 active_tab: active,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             ids.push(group.id);
             strip.window_groups.push(group);
@@ -190,12 +264,84 @@ mod tests {
         )
     }
 
+    /// An agent working in Notes on another strip gets the view its next
+    /// action needs right beside Notes, there; the person keeps their strip
+    /// and their focus. The person's own invocation opens where they are.
     #[test]
     #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
+    fn an_actors_view_opens_beside_its_own_on_its_strip_without_taking_focus() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let person = strip_of(&mut tree, &[1, 1]);
+        let room = tree.desktop.workspaces[0].room;
+        let person_strip = tree.desktop.workspaces[0].strips[0].id;
+        let notes_group = next_id();
+        let mut agent_strip = crate::shell::state::Strip::new(StripId::from(next_id()), "Agent");
+        agent_strip.window_groups.push(WindowGroup {
+            id: notes_group,
+            tabs: vec![Tab {
+                id: notes_group + 1,
+                title: "Notes".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.notes".into(),
+                    surface_id: 77,
+                },
+            }],
+            active_tab: notes_group + 1,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let agent_strip_id = agent_strip.id;
+        tree.desktop.workspaces[0].strips.push(agent_strip);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, person_strip);
+        tree.desktop.set_active_group(person_strip, person[0]);
+
+        let beside = LaunchPlace::Beside {
+            app_id: "so.tilo.notes".into(),
+        };
+        let placement = placement_at(&tree, room, &beside).expect("Notes is on the desk");
+        assert_eq!(placement, Placement::Beside(notes_group));
+        crate::shell::launcher::set_pending_placement("so.tilo.files", placement);
+        crate::shell::tab_binding::adopt_toplevel(&mut tree, 78, Some("so.tilo.files".into()));
+        let agent = &tree.desktop.workspaces[0].strips[1];
+        assert_eq!(agent.id, agent_strip_id);
+        assert_eq!(
+            agent.window_groups.len(),
+            2,
+            "Files opened on the agent's strip"
+        );
+        assert_eq!(agent.window_groups[0].id, notes_group, "right of Notes");
+        assert_eq!(
+            tree.desktop.active_strip.get(&tree.desktop.active),
+            Some(&person_strip),
+            "the person stays on their strip"
+        );
+        assert_eq!(tree.desktop.active_group_for(person_strip), Some(person[0]));
+
+        assert_eq!(
+            placement_at(&tree, room, &LaunchPlace::Focus),
+            Some(Placement::RightOf(person[0])),
+            "a person's own invocation opens beside what they are in"
+        );
+        assert_eq!(
+            placement_at(
+                &tree,
+                room,
+                &LaunchPlace::Beside {
+                    app_id: "so.tilo.mail".into()
+                }
+            ),
+            Some(Placement::RightOf(person[0])),
+            "an actor with no view on the desk opens where the person is"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn launches_land_where_placement_says_until_they_map() {
         fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
             crate::shell::launcher::clear_pending_placements();
@@ -309,6 +455,59 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
         }
 
+        fn a_plus_in_a_group_lands_the_picked_window_as_a_tab_of_that_group() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            // The "+" group is a single-window group, not the selected one,
+            // and the viewport's seam is elsewhere: only the carried target
+            // can put the window there, even after selection moves on.
+            let ids = strip_of(&mut tree, &[1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, ids[0]);
+            let view = viewport(strip_id, &ids, (200.0, 300.0));
+
+            note_placement_for_launch_targeted(
+                "dev.tilo.plusfixture",
+                &tree,
+                Some(&view),
+                OpenTarget::Here(ids[1]),
+            );
+            tree.desktop.set_active_group(strip_id, ids[2]);
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut tree,
+                9_106,
+                Some("plusfixture".to_string()),
+            );
+
+            let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
+            assert_eq!(groups.len(), 3, "no new group for the window");
+            let landed = groups
+                .iter()
+                .find(|group| {
+                    group.tabs.iter().any(|tab| {
+                        matches!(
+                            &tab.tile,
+                            TileContent::Foreign {
+                                surface_id: 9_106,
+                                ..
+                            }
+                        )
+                    })
+                })
+                .expect("window mapped into a group")
+                .id;
+            assert_eq!(landed, ids[1], "a tab of the group whose + asked");
+            assert_eq!(
+                explicit_group_placement(&tree, OpenTarget::Here(ids[1])),
+                Some(Placement::TabIn(ids[1]))
+            );
+            assert_eq!(explicit_group_placement(&tree, OpenTarget::Beside), None);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
         fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -360,6 +559,7 @@ mod tests {
         }
 
         a_launch_with_no_selection_lands_at_the_seam_the_user_can_see();
+        a_plus_in_a_group_lands_the_picked_window_as_a_tab_of_that_group();
         a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards();
         a_launch_beside_a_lone_selected_window_lands_right_of_it();
         a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam();

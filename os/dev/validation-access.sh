@@ -31,8 +31,11 @@ set -euo pipefail
 die() { printf 'validation-access: %s\n' "$*" >&2; exit 1; }
 
 # Build tools only; nothing from this container reaches the extension except
-# what it assembles from the snapshot's openssh-server RPM.
-TOOLS_IMAGE="${TILO_VALIDATION_TOOLS_IMAGE:-registry.fedoraproject.org/fedora:44}"
+# what it assembles from the snapshot's openssh-server RPM. The default is the
+# digest-pinned Fedora base mirrored in our registry, which the image build has
+# already pulled, not a public registry tag.
+base_ref="$(sed -n 's/^BASE_REF=//p' "$(dirname "${BASH_SOURCE[0]}")/../base-snapshot.env")"
+TOOLS_IMAGE="${TILO_VALIDATION_TOOLS_IMAGE:-$base_ref}"
 EXTENSION=tilo-validation
 UNIT=tilo-validation-ssh.service
 
@@ -42,6 +45,8 @@ outdir=$2 image=$3 rpms_ref=$4
 [[ $rpms_ref =~ @sha256:[0-9a-f]{64}$ ]] || die "RPMS_REF must be digest-pinned: $rpms_ref"
 podman image exists "$image" || die "$image is not in rootless Podman storage"
 podman image exists "$rpms_ref" || podman pull -q "$rpms_ref" >/dev/null
+[[ $TOOLS_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || die "the tools image must be digest-pinned: $TOOLS_IMAGE"
+podman image exists "$TOOLS_IMAGE" || podman pull -q "$TOOLS_IMAGE" >/dev/null
 
 rm -rf "$outdir"
 mkdir -p "$outdir/work"
@@ -75,7 +80,7 @@ EOF
 cat > "$work/build.sh" <<'EOF'
 set -euo pipefail
 dnf -q -y install --setopt=install_weak_deps=False \
-  cpio cryptsetup-libs erofs-utils openssl systemd-repart >/dev/null
+  attr cpio cryptsetup-libs erofs-utils openssl systemd-repart >/dev/null
 arch=$(uname -m)
 shopt -s nullglob
 rpms=(/rpms/repo/openssh-server-[0-9]*."$arch".rpm)
@@ -98,6 +103,15 @@ install -d /tree/usr/lib/extension-release.d
   printf 'ID=%s\n' "$OS_ID"
   [ -z "$OS_VERSION" ] || printf 'VERSION_ID=%s\n' "$OS_VERSION"
 } > /tree/usr/lib/extension-release.d/extension-release.$EXTENSION
+# systemd 259 derives a block-backed image's metadata name from the backing
+# device rather than /run/extensions/tilo-validation.raw. The raw disk arrives
+# via virtio, so that device name is not stable. This documented xattr permits
+# the one extension-release file above to match regardless of the device name;
+# the image is still required to pass the signed-Verity policy at activation.
+setfattr -n user.extension-release.strict -v 0 \
+  /tree/usr/lib/extension-release.d/extension-release.$EXTENSION
+test "$(getfattr --only-values -n user.extension-release.strict \
+  /tree/usr/lib/extension-release.d/extension-release.$EXTENSION)" = 0
 cp /unpacked/etc/pam.d/sshd /work/pam-sshd
 # Label with the image's policy at mkfs time; no host relabel is involved.
 mkfs.erofs --quiet --file-contexts=/work/file_contexts /work/root.erofs /tree
@@ -165,14 +179,30 @@ cat > "$etc/systemd/system/$UNIT" <<'EOF'
 [Unit]
 Description=Validation-only SSH access for the release gate
 BindsTo=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device
-After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target
+After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target basic.target
+# The merge gives /usr a fresh mtime (systemd-sysext stamps it). After
+# systemd-update-done, the boot's ConditionNeedsUpdate= checks (ldconfig,
+# sysusers, hwdb) have all seen the image's own /usr, as on a user's boot.
+After=systemd-update-done.service
+# Off multi-user.target's ordering: a target waits for the units it wants
+# unless they opt out, and this gate-only service would otherwise add its own
+# sysext refresh and host-key generation to the boot time the gate measures.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=exec
+ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt
 ExecStartPre=/usr/bin/mkdir -p /run/extensions
 ExecStartPre=/usr/bin/ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw
 # Only a verity-signed root partition, verified against /etc/verity.d.
-ExecStartPre=/usr/bin/systemd-sysext refresh --no-reload --image-policy=root=signed+absent:usr=absent:=unused+absent
+# Keep the signed-Verity diagnostics on this disposable gate disk: systemd's
+# normal log level hides whether the userspace /etc/verity.d certificate
+# fallback was attempted after kernel ENOKEY. Only for the refresh: sshd and
+# every login it serves would otherwise inherit debug logging and flood the
+# journal the gate's failure diagnostics print.
+ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh --no-reload --image-policy=root=signed+absent:usr=absent:=unused+absent
 ExecStartPre=/usr/bin/systemd-sysusers /usr/lib/sysusers.d/openssh-server.conf
 ExecStartPre=/usr/bin/ssh-keygen -A
 ExecStartPre=-/usr/sbin/restorecon -R /etc/ssh
@@ -189,7 +219,10 @@ ln -s "../$UNIT" "$etc/systemd/system/multi-user.target.wants/$UNIT"
 cat > "$etc/tilo-validation-diagnostics.sh" <<'EOF'
 #!/usr/bin/bash
 sleep 45
-for phase in early late; do
+# early once, then late every 30 s: the gate prints the serial tail when its
+# SSH wait fails, about two to three minutes after boot, so the newest late
+# report covers its connection attempts.
+for phase in early late late late late late late late late; do
   report="$(
     echo "TILO_VALIDATION_DIAGNOSTICS $phase"
     systemctl is-system-running --no-pager || true
@@ -198,9 +231,23 @@ for phase in early late; do
     systemctl status greetd.service tilo-validation-ssh.service \
       tilo-firstboot-user.service tilo-installer-setup.service \
       tilo-device-key-init.service --no-pager --lines=8 || true
+    if [ -r /etc/verity.d/tilo-validation.crt ]; then
+      echo "TILO_VALIDATION_CERT_PRESENT $(sha256sum /etc/verity.d/tilo-validation.crt)"
+    else
+      echo 'TILO_VALIDATION_CERT_MISSING'
+    fi
+    journalctl -b -u tilo-validation-ssh.service --no-pager -n 75 || true
     journalctl -b -u greetd.service -u tilo-validation-ssh.service \
       -u tilo-firstboot-user.service -u tilo-installer-setup.service \
-      --no-pager -n 60 || true
+      --no-pager -n 35 || true
+    if [ "$phase" = late ]; then
+      getent passwd quickuser || echo 'TILO_VALIDATION_NO_QUICKUSER'
+      faillock --user quickuser 2>&1 || true
+      ss -tnlp 2>/dev/null | grep -E ':22\b' || echo 'TILO_VALIDATION_NOTHING_ON_22'
+      ss -tn 2>/dev/null | grep -E ':22\b' || true
+      journalctl -b --no-pager -o short-monotonic -n 25 \
+        _COMM=sshd _COMM=sshd-session _COMM=sshd-auth _COMM=greetd _COMM=cage || true
+    fi
     echo "TILO_VALIDATION_DIAGNOSTICS_END $phase"
   )"
   for serial in /dev/ttyS0 /dev/ttyAMA0; do
@@ -208,7 +255,7 @@ for phase in early late; do
       printf '%s\n' "$report" | tail -n 160 > "$serial" || true
     fi
   done
-  [ "$phase" = late ] || sleep 135
+  sleep 30
 done
 EOF
 chmod 0644 "$etc/tilo-validation-diagnostics.sh"

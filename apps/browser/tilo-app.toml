@@ -2,10 +2,11 @@
 #
 # A web browser's egress set is the web, so `mode = "host"`. The
 # adblock filter lists (easylist.to, secure.fanboy.co.nz) are fetched
-# into the cache dir even in the hermetic default build; the WPE
-# engine (feature `wpe`) additionally needs the GStreamer plugin path
-# for media playback.
+# into the cache dir even in the hermetic default build.
 #
+# Pages render in the Chromium engine, its own signed runtime bundle
+# (ui::webview::chromium::runtime). The launcher mounts it when it is
+# installed; without it the page area offers to install it.
 
 
 [package]
@@ -15,6 +16,7 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+optional-runtimes = ["tilo-runtime/2026.10.10-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Embeds a WebView engine."
 
@@ -25,7 +27,10 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http", "webview"]
-optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings"]
+
+[resources]
+kinds = ["browser.address-book", "browser.application", "browser.browsing-history"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -49,8 +54,8 @@ namespaces = [
     "mount",
     "net",
 ]
-# Both engines need JIT mappings, and Chromium also builds its own renderer
-# sandbox from user, PID and network namespaces. `tilo-web-engine` is
+# The engine needs JIT mappings and builds its own renderer sandbox from
+# user, PID and network namespaces. `tilo-web-engine` is
 # `tilo-jit` plus exactly those; the launcher grants each part only when the
 # image's entitlement lists (jit-entitled.conf, web-engine-entitled.conf) name
 # the package, and otherwise falls back to what they do grant.
@@ -66,6 +71,7 @@ mode = "host"
 collab = "optional@1"
 tilo-fs = "optional@1"
 shell-ui = "optional@1"
+app-host = "optional@1"
 
 [entrypoint]
 bin             = "bin/browser"

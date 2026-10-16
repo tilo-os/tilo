@@ -27,73 +27,112 @@
 //! loop already handles an arbitrary sequence of auth messages and reports
 //! each prompt to the caller via the `on_prompt` callback.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
+pub use greetd_ipc::AuthMessageType;
 use greetd_ipc::codec::SyncCodec;
-use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
+use greetd_ipc::{ErrorType, Request, Response};
+use zeroize::Zeroize;
+
+mod conversation;
+pub use conversation::{ConversationControl, authenticate_conversation};
 
 /// Why an authentication attempt did not result in a started session.
 ///
-/// The variants exist so the UI can show a clear, non-leaky message
-/// (`user_message`) while still keeping the raw diagnostic available as
-/// secondary `detail`. Crucially, a rejected credential maps to
-/// [`AuthError::BadCredentials`] whose message never reveals *which* field
-/// was wrong.
+/// The variants exist so a login surface can say what happened and what to
+/// do about it, in its own words and language, while the raw diagnostic
+/// stays available for logs as [`AuthError::detail`]. A rejected credential
+/// never says *which* field was wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
-    /// greetd rejected the credentials (PAM auth failure,
-    /// [`ErrorType::AuthError`]).
-    BadCredentials,
-    /// greetd returned a non-auth error ([`ErrorType::Error`], e.g. a
-    /// session-start failure). The `String` is the raw greetd
-    /// description, surfaced only as small secondary detail.
+    /// The caller cancelled the configured session before it started.
+    Cancelled,
+    /// PAM refused the attempt. greetd reports every PAM failure as an
+    /// authentication error; `reason` is what the PAM result code means and
+    /// `detail` is greetd's raw description (`pam_authenticate: AUTH_ERR`).
+    Denied { reason: Denial, detail: String },
+    /// The credentials were accepted, but greetd could not start the
+    /// session. The `String` is the raw greetd description.
+    SessionStart(String),
+    /// greetd refused the request for a reason other than PAM (a session
+    /// already being configured). The `String` is the raw description.
     Greetd(String),
     /// The conversation could not be carried out at all (socket connect /
     /// read / write / decode failure). The `String` is the raw error.
     Transport(String),
 }
 
+/// What a PAM refusal means for the person signing in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    /// Wrong passcode, or an account that does not exist. The two are
+    /// deliberately indistinguishable.
+    Credentials,
+    /// Too many failed attempts; the account is locked for now.
+    Locked,
+    /// The account itself has expired.
+    AccountExpired,
+    /// The passcode has expired and must be changed first.
+    PasscodeExpired,
+    /// The account may not sign in here.
+    NotPermitted,
+    /// PAM could not check the credentials at all (a module or system
+    /// error), so retrying may succeed.
+    Unavailable,
+}
+
+impl Denial {
+    /// Classify greetd's description of a PAM failure, which names the PAM
+    /// step and its result code, as in `pam_acct_mgmt: ACCT_EXPIRED`.
+    pub fn from_description(description: &str) -> Self {
+        let code = description
+            .rsplit(|c: char| c == ':' || c.is_whitespace())
+            .find(|word| !word.is_empty())
+            .unwrap_or_default();
+        match code {
+            "AUTH_ERR" | "USER_UNKNOWN" | "CRED_INSUFFICIENT" => Self::Credentials,
+            "MAXTRIES" => Self::Locked,
+            "ACCT_EXPIRED" => Self::AccountExpired,
+            "NEW_AUTHTOK_REQD" | "AUTHTOK_EXPIRED" | "CRED_EXPIRED" => Self::PasscodeExpired,
+            "PERM_DENIED" => Self::NotPermitted,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
 impl AuthError {
-    /// Primary, user-facing one-liner. Deliberately never a raw PAM
-    /// string — bad credentials always read "Incorrect username or
-    /// passcode" so we leak nothing about which field failed.
+    /// A short English sentence for surfaces without their own catalogue.
+    /// Never a raw PAM or greetd string.
     pub fn user_message(&self) -> String {
         match self {
-            AuthError::BadCredentials => "Incorrect username or passcode".to_string(),
-            AuthError::Greetd(_) => "Could not start the session".to_string(),
+            AuthError::Cancelled => "Sign-in cancelled".to_string(),
+            AuthError::Denied { reason, .. } => match reason {
+                Denial::Credentials => "Incorrect username or passcode",
+                Denial::Locked => "Too many failed attempts. Try again later",
+                Denial::AccountExpired => "This account has expired",
+                Denial::PasscodeExpired => "Your passcode has expired",
+                Denial::NotPermitted => "This account cannot sign in here",
+                Denial::Unavailable => "Your passcode could not be checked. Try again",
+            }
+            .to_string(),
+            AuthError::SessionStart(_) | AuthError::Greetd(_) => {
+                "Could not start the session".to_string()
+            }
             AuthError::Transport(_) => "Could not reach the login service".to_string(),
         }
     }
 
-    /// Optional secondary detail (raw text), shown small/secondary under
-    /// the primary message. `None` for bad credentials (nothing safe to
-    /// add) and for empty descriptions.
+    /// The raw diagnostic, for logs only. `None` when there is nothing
+    /// beyond the classification.
     pub fn detail(&self) -> Option<String> {
-        match self {
-            AuthError::BadCredentials => None,
-            AuthError::Greetd(d) | AuthError::Transport(d) => {
-                let d = d.trim();
-                if d.is_empty() {
-                    None
-                } else {
-                    Some(d.to_string())
-                }
-            }
-        }
+        let d = match self {
+            AuthError::Cancelled => return None,
+            AuthError::Denied { detail, .. } => detail,
+            AuthError::SessionStart(d) | AuthError::Greetd(d) | AuthError::Transport(d) => d,
+        };
+        let d = d.trim();
+        (!d.is_empty()).then(|| d.to_string())
     }
 }
 
@@ -113,8 +152,20 @@ pub struct AuthPrompt {
 /// Map a top-level greetd [`Response::Error`] into an [`AuthError`].
 fn map_error(error_type: &ErrorType, description: String) -> AuthError {
     match error_type {
-        ErrorType::AuthError => AuthError::BadCredentials,
+        ErrorType::AuthError => AuthError::Denied {
+            reason: Denial::from_description(&description),
+            detail: description,
+        },
         ErrorType::Error => AuthError::Greetd(description),
+    }
+}
+
+/// Tear down greetd's half-open session so the next attempt starts clean,
+/// and wait for its answer: closing the socket first leaves greetd writing
+/// that answer into a broken pipe.
+fn cancel_session<S: Read + Write>(stream: &mut S) {
+    if Request::CancelSession.write_to(stream).is_ok() {
+        let _ = Response::read_from(stream);
     }
 }
 
@@ -127,9 +178,10 @@ fn map_error(error_type: &ErrorType, description: String) -> AuthError {
 /// # Errors
 ///
 /// Returns [`AuthError::Transport`] if `sock_path` can't be connected to or
-/// the exchange fails at the transport level, [`AuthError::BadCredentials`]
-/// if greetd rejects the credentials, or [`AuthError::Greetd`] on any other
-/// greetd-reported failure.
+/// the exchange fails at the transport level, [`AuthError::Denied`] if PAM
+/// refuses the attempt, [`AuthError::SessionStart`] if the accepted session
+/// cannot start, or [`AuthError::Greetd`] on any other greetd-reported
+/// failure.
 #[allow(
     clippy::exit,
     reason = "the documented success path: greetd takes over the VT, so the \
@@ -172,7 +224,7 @@ pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
 /// # Errors
 ///
 /// Returns [`AuthError::Transport`] on a read/write/decode failure,
-/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Denied`] if PAM refuses the attempt, or
 /// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     stream: &mut S,
@@ -196,7 +248,7 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// # Errors
 ///
 /// Returns [`AuthError::Transport`] on a read/write/decode failure,
-/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Denied`] if PAM refuses the attempt, or
 /// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
     stream: &mut S,
@@ -205,80 +257,135 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
     cmd: &[String],
     env: &[String],
     mut on_prompt: F,
-    mut on_accepted: G,
+    on_accepted: G,
 ) -> Result<(), AuthError> {
-    Request::CreateSession {
-        username: username.to_string(),
-    }
-    .write_to(stream)
-    .map_err(|e| AuthError::Transport(format!("CreateSession: {e}")))?;
+    exchange(
+        &mut StreamExchange(stream),
+        username,
+        cmd,
+        env,
+        move |kind, text| {
+            Ok(match kind {
+                AuthMessageType::Secret => Some(password.to_string()),
+                AuthMessageType::Visible => Some(username.to_string()),
+                AuthMessageType::Info | AuthMessageType::Error => {
+                    on_prompt(AuthPrompt {
+                        text,
+                        is_error: matches!(kind, AuthMessageType::Error),
+                    });
+                    None
+                }
+            })
+        },
+        on_accepted,
+    )
+}
 
+trait ExchangeIo {
+    fn send(&mut self, request: Request) -> Result<(), AuthError>;
+    fn receive(&mut self) -> Result<Response, AuthError>;
+    fn check_cancelled(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn prepare_start(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn terminal_failure(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn cancel(&mut self) {
+        if self.send(Request::CancelSession).is_ok() {
+            let _ = self.receive();
+        }
+    }
+}
+
+struct StreamExchange<'a, S>(&'a mut S);
+
+impl<S: Read + Write> ExchangeIo for StreamExchange<'_, S> {
+    fn send(&mut self, request: Request) -> Result<(), AuthError> {
+        write_request(request, self.0)
+            .map_err(|error| AuthError::Transport(format!("write request: {error}")))
+    }
+
+    fn receive(&mut self) -> Result<Response, AuthError> {
+        Response::read_from(self.0)
+            .map_err(|error| AuthError::Transport(format!("read response: {error}")))
+    }
+}
+
+fn write_request<S: Write>(
+    mut request: Request,
+    stream: &mut S,
+) -> Result<(), greetd_ipc::codec::Error> {
+    let result = request.write_to(stream);
+    if let Request::PostAuthMessageResponse {
+        response: Some(response),
+    } = &mut request
+    {
+        response.zeroize();
+    }
+    result
+}
+
+fn exchange<I: ExchangeIo, F, G>(
+    stream: &mut I,
+    username: &str,
+    cmd: &[String],
+    env: &[String],
+    mut response: F,
+    mut on_accepted: G,
+) -> Result<(), AuthError>
+where
+    F: FnMut(AuthMessageType, String) -> Result<Option<String>, AuthError>,
+    G: FnMut(),
+{
+    stream.send(Request::CreateSession {
+        username: username.to_owned(),
+    })?;
     loop {
-        let response = Response::read_from(stream)
-            .map_err(|e| AuthError::Transport(format!("read response: {e}")))?;
-        match response {
+        stream.check_cancelled()?;
+        let message = stream.receive()?;
+        stream.check_cancelled()?;
+        match message {
             Response::AuthMessage {
                 auth_message_type,
                 auth_message,
             } => {
-                let reply = match auth_message_type {
-                    AuthMessageType::Secret => Some(password.to_string()),
-                    AuthMessageType::Visible => Some(username.to_string()),
-                    AuthMessageType::Info => {
-                        on_prompt(AuthPrompt {
-                            text: auth_message.clone(),
-                            is_error: false,
-                        });
-                        tracing::info!(prompt = %auth_message, "greetd auth info");
-                        None
-                    }
-                    AuthMessageType::Error => {
-                        // A PAM_ERROR_MSG conversation message. NOT a
-                        // terminal failure (the authoritative outcome is a
-                        // top-level Response::Error/Success) — fprintd
-                        // emits these on a mis-swipe and then re-prompts.
-                        // Surface as a warning and continue.
-                        on_prompt(AuthPrompt {
-                            text: auth_message.clone(),
-                            is_error: true,
-                        });
-                        tracing::warn!(prompt = %auth_message, "greetd auth message (error type)");
-                        None
+                let reply = match response(auth_message_type, auth_message) {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        stream.cancel();
+                        return Err(error);
                     }
                 };
-                Request::PostAuthMessageResponse { response: reply }
-                    .write_to(stream)
-                    .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
+                stream.check_cancelled()?;
+                stream.send(Request::PostAuthMessageResponse { response: reply })?;
             }
             Response::Success => {
-                // Authentication complete. Tell the caller before issuing
-                // StartSession, so the UI can show that the attempt
-                // succeeded rather than sitting on a spinner until the
-                // process exits.
+                // Seal start against cancellation before exposing acceptance;
+                // the ordinary acceptance hook still precedes StartSession.
+                stream.prepare_start()?;
                 on_accepted();
-                Request::StartSession {
+                stream.send(Request::StartSession {
                     cmd: cmd.to_vec(),
                     env: env.to_vec(),
-                }
-                .write_to(stream)
-                .map_err(|e| AuthError::Transport(format!("StartSession: {e}")))?;
-
-                match Response::read_from(stream)
-                    .map_err(|e| AuthError::Transport(format!("read start response: {e}")))?
-                {
+                })?;
+                match stream.receive()? {
                     Response::Success => return Ok(()),
                     Response::Error {
                         error_type,
                         description,
                     } => {
-                        let _ = Request::CancelSession.write_to(stream);
-                        return Err(map_error(&error_type, description));
+                        stream.cancel();
+                        tracing::warn!(?error_type, "greetd could not start the session");
+                        return Err(AuthError::SessionStart(description));
                     }
-                    Response::AuthMessage { auth_message, .. } => {
-                        let _ = Request::CancelSession.write_to(stream);
-                        return Err(AuthError::Greetd(format!(
-                            "unexpected auth prompt after StartSession: {auth_message}"
-                        )));
+                    Response::AuthMessage { .. } => {
+                        stream.cancel();
+                        return Err(AuthError::SessionStart(
+                            "unexpected auth prompt after StartSession".into(),
+                        ));
                     }
                 }
             }
@@ -286,10 +393,9 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                 error_type,
                 description,
             } => {
-                // Reset greetd's session slot so the user can retry without
-                // a stuck half-open session.
-                let _ = Request::CancelSession.write_to(stream);
-                tracing::warn!(?error_type, %description, "greetd auth error");
+                stream.terminal_failure()?;
+                stream.cancel();
+                tracing::warn!(?error_type, "greetd auth error");
                 return Err(map_error(&error_type, description));
             }
         }
@@ -306,8 +412,8 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
 /// sends `CancelSession` (tearing down greetd's transient session slot) and
 /// returns `Ok(())` — it never sends `StartSession`, so no session is
 /// spawned and the caller (the compositor lock screen) simply clears the
-/// lock. A rejected credential maps to [`AuthError::BadCredentials`] exactly
-/// as the login path does, so the non-leaky user messaging is shared.
+/// lock. A refusal maps to [`AuthError::Denied`] exactly as the login path
+/// does, so the non-leaky user messaging is shared.
 ///
 /// Generic over the transport so it is unit-testable against an in-memory
 /// `UnixStream` pair, mirroring [`run_exchange`]'s tests.
@@ -315,7 +421,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
 /// # Errors
 ///
 /// Returns [`AuthError::Transport`] on a read/write/decode failure,
-/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Denied`] if PAM refuses the attempt, or
 /// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     stream: &mut S,
@@ -372,8 +478,8 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
                 error_type,
                 description,
             } => {
-                let _ = Request::CancelSession.write_to(stream);
-                tracing::warn!(?error_type, %description, "greetd verify error");
+                cancel_session(stream);
+                tracing::warn!(?error_type, "greetd verify error");
                 return Err(map_error(&error_type, description));
             }
         }
@@ -388,7 +494,7 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// # Errors
 ///
 /// Returns [`AuthError::Transport`] if `sock_path` can't be connected to,
-/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Denied`] if PAM refuses the attempt, or
 /// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn verify_password(sock_path: &str, username: &str, password: &str) -> Result<(), AuthError> {
     let mut stream = UnixStream::connect(sock_path).map_err(|e| {
@@ -543,10 +649,10 @@ mod tests {
 
     #[test]
     fn greetd_errors_map_to_login_failures_and_cancel() {
-        // Phase `auth_error_maps_to_bad_credentials_and_cancels`.
+        // Phase `auth_error_maps_to_denied_credentials_and_cancels`.
         // A bad password yields `Response::Error { AuthError }`; the client
-        // cancels and maps it to [`AuthError::BadCredentials`], whose message
-        // is the vague, non-leaky string.
+        // cancels and maps it to a credentials denial, whose message is the
+        // vague, non-leaky string.
         {
             let (client, mut server) = UnixStream::pair().unwrap();
 
@@ -561,24 +667,32 @@ mod tests {
                 let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
                 Response::Error {
                     error_type: ErrorType::AuthError,
-                    description: "Login incorrect (pam_unix)".to_string(),
+                    description: "pam_authenticate: AUTH_ERR".to_string(),
                 }
                 .write_to(&mut server)
                 .unwrap();
-                // The client should send CancelSession to clean up.
+                // The client should send CancelSession to clean up, and wait
+                // for greetd's answer instead of closing on it.
                 let req = Request::read_from(&mut server).unwrap();
                 assert!(matches!(req, Request::CancelSession));
+                Response::Success.write_to(&mut server).unwrap();
             });
 
             let mut client = client;
             let result = run_exchange(&mut client, "alice", "wrong", &[], &[], ignore_prompts);
             server_thread.join().unwrap();
 
-            assert_eq!(result, Err(AuthError::BadCredentials));
-            // The raw PAM string must NOT leak into the user-facing message.
             let err = result.unwrap_err();
+            assert!(matches!(
+                err,
+                AuthError::Denied {
+                    reason: Denial::Credentials,
+                    ..
+                }
+            ));
+            // The raw PAM string must NOT leak into the user-facing message.
             assert_eq!(err.user_message(), "Incorrect username or passcode");
-            assert_eq!(err.detail(), None);
+            assert_eq!(err.detail().as_deref(), Some("pam_authenticate: AUTH_ERR"));
         }
         // Phase `generic_error_maps_to_greetd_with_detail`.
         // A non-auth greetd error (`ErrorType::Error`) maps to
@@ -636,18 +750,27 @@ mod tests {
             server_thread.join().unwrap();
             assert_eq!(
                 result,
-                Err(AuthError::Greetd("no such session command".to_string()))
+                Err(AuthError::SessionStart(
+                    "no such session command".to_string()
+                ))
             );
         }
-        // Phase `auth_error_message_mapping`.
-        // `AuthError::user_message` / `detail` mapping, checked directly so a
-        // future refactor can't silently change the user-facing copy.
+    }
+
+    /// `AuthError::user_message` / `detail` mapping, checked directly so a
+    /// future refactor can't silently change the user-facing copy.
+    #[test]
+    fn auth_error_messages_are_plain_and_details_stay_raw() {
         {
+            let denied = |description: &str| AuthError::Denied {
+                reason: Denial::from_description(description),
+                detail: description.to_string(),
+            };
             assert_eq!(
-                AuthError::BadCredentials.user_message(),
+                denied("pam_authenticate: AUTH_ERR").user_message(),
                 "Incorrect username or passcode"
             );
-            assert_eq!(AuthError::BadCredentials.detail(), None);
+            assert_eq!(denied("").detail(), None);
 
             let g = AuthError::Greetd("  boom  ".to_string());
             assert_eq!(g.user_message(), "Could not start the session");
@@ -704,7 +827,7 @@ mod tests {
         }
         // Phase `verify_exchange_bad_password_maps_to_bad_credentials`.
         // A bad password in the verify path maps to the same non-leaky
-        // [`AuthError::BadCredentials`] and cancels the slot.
+        // credentials denial and cancels the slot.
         {
             let (client, mut server) = UnixStream::pair().unwrap();
 
@@ -719,7 +842,7 @@ mod tests {
                 let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
                 Response::Error {
                     error_type: ErrorType::AuthError,
-                    description: "Login incorrect (pam_unix)".to_string(),
+                    description: "pam_authenticate: AUTH_ERR".to_string(),
                 }
                 .write_to(&mut server)
                 .unwrap();
@@ -730,10 +853,49 @@ mod tests {
             let mut client = client;
             let result = verify_exchange(&mut client, "alice", "wrong", ignore_prompts);
             server_thread.join().unwrap();
-            assert_eq!(result, Err(AuthError::BadCredentials));
+            assert!(matches!(
+                result,
+                Err(AuthError::Denied {
+                    reason: Denial::Credentials,
+                    ..
+                })
+            ));
             assert_eq!(
                 result.unwrap_err().user_message(),
                 "Incorrect username or passcode"
+            );
+        }
+    }
+
+    #[test]
+    fn every_pam_outcome_greetd_reports_has_a_meaning() {
+        for (description, reason) in [
+            ("pam_authenticate: AUTH_ERR", Denial::Credentials),
+            ("pam_authenticate: USER_UNKNOWN", Denial::Credentials),
+            ("pam_authenticate: CRED_INSUFFICIENT", Denial::Credentials),
+            ("pam_authenticate: MAXTRIES", Denial::Locked),
+            ("pam_acct_mgmt: ACCT_EXPIRED", Denial::AccountExpired),
+            ("pam_acct_mgmt: NEW_AUTHTOK_REQD", Denial::PasscodeExpired),
+            ("pam_authenticate: CRED_EXPIRED", Denial::PasscodeExpired),
+            ("pam_acct_mgmt: PERM_DENIED", Denial::NotPermitted),
+            ("pam_authenticate: AUTHINFO_UNAVAIL", Denial::Unavailable),
+            ("pam_authenticate: SERVICE_ERR", Denial::Unavailable),
+            ("abort error: pam_authenticate: ABORT", Denial::Unavailable),
+            ("", Denial::Unavailable),
+        ] {
+            assert_eq!(
+                Denial::from_description(description),
+                reason,
+                "{description}"
+            );
+            let message = AuthError::Denied {
+                reason,
+                detail: description.to_string(),
+            }
+            .user_message();
+            assert!(
+                !message.contains("pam") && !message.contains('_'),
+                "{description} leaked into {message:?}"
             );
         }
     }

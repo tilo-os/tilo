@@ -1,4 +1,21 @@
-//! Filtered D-Bus proxy for sandboxed apps.
+//! Filtered D-Bus proxies for sandboxed apps.
+//!
+//! Two buses reach a graphical app, each only through its own
+//! `xdg-dbus-proxy`, and each filtered to an explicit allowlist:
+//!
+//! - **Session bus.** Portal-adjacent names when the manifest declares a
+//!   `via-host` portal, and for every graphical app exactly the two
+//!   read-only questions an accessibility client must ask
+//!   `org.a11y.Bus`: where the AT-SPI bus is (`GetAddress`) and whether
+//!   assistive technology is on (the `org.a11y.Status` properties).
+//! - **AT-SPI bus.** Flatpak's filter, verbatim: the app may embed its
+//!   accessibility root in the registry, read which events listeners want,
+//!   and notify device-event listeners. Assistive technology then calls
+//!   *into* the app; the app cannot call any other client on that bus,
+//!   so it cannot read another app's tree or synthesise its events.
+//!
+//! Without the second proxy a sandboxed app is invisible to every screen
+//! reader; without the first it never learns accessibility is enabled.
 //!
 //! Motivation. When a manifest declares a `via-host` XDG portal, the
 //! sandboxed app needs a well-defined slice of the host session bus —
@@ -23,10 +40,12 @@
 //! including `unix:abstract=...` — strictly more capable than the
 //! raw-bind path, which can only mount `unix:path=...` addresses.
 
-use std::io;
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::time::{Duration, Instant};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 /// Filter args passed after `SOURCE DEST` to `xdg-dbus-proxy`.
 ///
@@ -44,6 +63,50 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
     "--talk=org.freedesktop.portal.*",
     "--talk=org.freedesktop.Notifications",
     "--talk=org.mpris.MediaPlayer2.*",
+];
+
+/// The session-bus rules every graphical app gets, and the only ones a
+/// portal-less app gets: `org.a11y.Bus.GetAddress`, reading the
+/// `org.a11y.Status` properties (`IsEnabled`, `ScreenReaderEnabled`) and
+/// their change signal, all on `/org/a11y/bus`. Not `--talk`: setting those
+/// properties, or any other method of the accessibility bus launcher, stays
+/// denied.
+pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
+    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+];
+
+/// The session-bus filter for one launch: the bus daemon for `Hello`, the
+/// portal names when the manifest declares a `via-host` portal, and the
+/// accessibility status rules when the app has a display.
+#[must_use]
+pub fn session_filter_args(portals: bool, graphical: bool) -> Vec<&'static str> {
+    let mut args = vec!["--filter", "--see=org.freedesktop.DBus"];
+    if portals {
+        args.extend(DEFAULT_FILTER_ARGS.iter().skip(2));
+    }
+    if graphical {
+        args.extend(A11Y_STATUS_FILTER_ARGS);
+    }
+    args
+}
+
+/// The AT-SPI bus filter: Flatpak's (`flatpak_run_add_a11y_dbus_args`),
+/// verbatim. Every rule names the registry and an exact object path.
+pub const ATSPI_FILTER_ARGS: &[&str] = &[
+    "--filter",
+    "--sloppy-names",
+    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerRegistered@/org/a11y/atspi/registry",
+    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerDeregistered@/org/a11y/atspi/registry",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Embed@/org/a11y/atspi/accessible/root",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Unembed@/org/a11y/atspi/accessible/root",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Registry.GetRegisteredEvents@/org/a11y/atspi/registry",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetKeystrokeListeners@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetDeviceEventListeners@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersSync@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
 ];
 
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
@@ -65,7 +128,7 @@ pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
 pub fn find_proxy_binary() -> Option<PathBuf> {
-    if let Some(bin) = crate::dev_env::dev_override(PROXY_BIN_ENV) {
+    if let Some(bin) = package_store::dev_env::dev_override(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
         return p.is_file().then_some(p);
     }
@@ -98,6 +161,14 @@ pub fn proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
     ))
 }
 
+/// Host-side path of the per-launcher system-bus proxy socket, for the
+/// packages [`crate::system_authority`] grants it.
+pub fn system_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-system.sock"
+    ))
+}
+
 /// In-sandbox bus path, matching Flatpak's convention: the app looks
 /// for `$DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`.
 pub fn sandbox_bus_path(uid: u32) -> PathBuf {
@@ -107,6 +178,50 @@ pub fn sandbox_bus_path(uid: u32) -> PathBuf {
 /// In-sandbox `DBUS_SESSION_BUS_ADDRESS` value for the proxy path.
 pub fn sandbox_bus_env(uid: u32) -> String {
     format!("unix:path=/run/user/{uid}/bus")
+}
+
+/// Host-side path of the per-launcher AT-SPI proxy socket.
+pub fn atspi_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-atspi.sock"
+    ))
+}
+
+/// In-sandbox AT-SPI bus path, where at-spi2's own launcher puts it.
+pub fn sandbox_atspi_path(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/run/user/{uid}/at-spi/bus"))
+}
+
+/// In-sandbox `AT_SPI_BUS_ADDRESS`.
+pub fn sandbox_atspi_env(uid: u32) -> String {
+    format!("unix:path=/run/user/{uid}/at-spi/bus")
+}
+
+/// The host AT-SPI bus address: `AT_SPI_BUS_ADDRESS` when the session set it,
+/// else `org.a11y.Bus.GetAddress` on the session bus. `None` when the session
+/// runs no accessibility bus.
+pub fn host_atspi_address(session_bus: &str) -> Option<String> {
+    if let Ok(address) = std::env::var("AT_SPI_BUS_ADDRESS")
+        && !address.is_empty()
+    {
+        return Some(address);
+    }
+    let address: zbus::Address = session_bus.try_into().ok()?;
+    let connection = zbus::blocking::connection::Builder::address(address)
+        .ok()?
+        .build()
+        .ok()?;
+    let reply = connection
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.a11y.Bus"),
+            "GetAddress",
+            &(),
+        )
+        .ok()?;
+    let address: String = reply.body().deserialize().ok()?;
+    (!address.is_empty()).then_some(address)
 }
 
 /// Errors from [`spawn_dbus_proxy`].
@@ -121,7 +236,7 @@ pub enum ProxyError {
     #[error("spawning xdg-dbus-proxy: {0}")]
     Spawn(#[source] io::Error),
     #[error(
-        "xdg-dbus-proxy did not create its listener socket at {path} within {timeout:?}. \
+        "xdg-dbus-proxy did not report its listener ready at {path} within {timeout:?}. \
          The proxy binary may have exited before setting up the socket — check its stderr."
     )]
     NotReady { path: PathBuf, timeout: Duration },
@@ -141,7 +256,7 @@ pub enum ProxyError {
 ///
 /// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
 /// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
-/// [`ProxyError::NotReady`] if its listener socket doesn't appear within
+/// [`ProxyError::NotReady`] if its listener is not reported ready within
 /// [`PROXY_READY_TIMEOUT`].
 pub fn spawn_dbus_proxy(
     binary: &Path,
@@ -151,8 +266,23 @@ pub fn spawn_dbus_proxy(
     spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
 }
 
-/// How long a launch waits for the proxy's listener socket. The real proxy
-/// is ready in ~10ms; a launch does not stall on one that never comes up.
+/// [`spawn_dbus_proxy`] with an explicit filter (one of this module's
+/// allowlists, never a caller-built one).
+///
+/// # Errors
+///
+/// As [`spawn_dbus_proxy`].
+pub fn spawn_filtered_proxy(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(binary, bus_addr, socket_path, filter, PROXY_READY_TIMEOUT)
+}
+
+/// Maximum wait for the proxy's listener readiness notification. A launch
+/// must not stall indefinitely on a helper that never comes up.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener
@@ -168,6 +298,22 @@ pub fn spawn_dbus_proxy_within(
     socket_path: &Path,
     ready_within: Duration,
 ) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(
+        binary,
+        bus_addr,
+        socket_path,
+        DEFAULT_FILTER_ARGS,
+        ready_within,
+    )
+}
+
+fn spawn_proxy(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+    ready_within: Duration,
+) -> Result<DBusProxyGuard, ProxyError> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
             path: parent.to_path_buf(),
@@ -178,19 +324,24 @@ pub fn spawn_dbus_proxy_within(
     // EADDRINUSE. Remove best-effort.
     let _ = std::fs::remove_file(socket_path);
 
+    let (ready_channel, child_channel) = UnixStream::pair().map_err(ProxyError::Spawn)?;
     let mut cmd = Command::new(binary);
-    cmd.arg(bus_addr).arg(socket_path);
-    for arg in DEFAULT_FILTER_ARGS {
+    // Upstream writes `x` after all listeners start and watches this channel
+    // for HUP. Keep our endpoint alive for the entire proxy lifetime. Passing
+    // the duplex endpoint as stdin preserves stdout/stderr for diagnostics.
+    cmd.arg("--fd=0").arg(bus_addr).arg(socket_path);
+    cmd.stdin(Stdio::from(OwnedFd::from(child_channel)));
+    for arg in filter {
         cmd.arg(arg);
     }
     let child = cmd.spawn().map_err(ProxyError::Spawn)?;
-    let guard = DBusProxyGuard {
+    let mut guard = DBusProxyGuard {
         child: Some(child),
         socket_path: socket_path.to_path_buf(),
+        ready_channel,
     };
 
-    // The socket appears asynchronously; poll with a bounded timeout.
-    match wait_for_socket(socket_path, ready_within) {
+    match wait_for_ready(&mut guard.ready_channel, socket_path, ready_within) {
         Ok(()) => Ok(guard),
         Err(_) => Err(ProxyError::NotReady {
             path: socket_path.to_path_buf(),
@@ -199,24 +350,16 @@ pub fn spawn_dbus_proxy_within(
     }
 }
 
-fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    while Instant::now() < deadline {
-        // `try_exists` catches both regular files (mock proxy) and socket
-        // inodes (real proxy); `Path::exists` would too but hides `EACCES`.
-        if path.try_exists().unwrap_or(false) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(20));
+fn wait_for_ready(channel: &mut UnixStream, path: &Path, timeout: Duration) -> io::Result<()> {
+    channel.set_read_timeout(Some(timeout))?;
+    let mut token = [0];
+    channel.read_exact(&mut token)?;
+    if token == *b"x" && path.try_exists()? {
+        return Ok(());
     }
     Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "socket {} did not appear within {timeout:?}",
-            path.display()
-        ),
+        io::ErrorKind::InvalidData,
+        "proxy readiness notification or listener is missing",
     ))
 }
 
@@ -226,6 +369,7 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
 pub struct DBusProxyGuard {
     child: Option<Child>,
     socket_path: PathBuf,
+    ready_channel: UnixStream,
 }
 
 impl DBusProxyGuard {
@@ -252,22 +396,7 @@ impl DBusProxyGuard {
             unsafe {
                 libc::kill(i32::try_from(child.id()).unwrap_or(i32::MAX), libc::SIGTERM);
             }
-            let deadline = Instant::now()
-                .checked_add(Duration::from_millis(500))
-                .unwrap_or_else(Instant::now);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) | Err(_) => break,
-                    Ok(None) => {
-                        if Instant::now() >= deadline {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                }
-            }
+            let _ = bounded_command::wait_or_kill(&mut child, Duration::from_millis(500));
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }
@@ -282,6 +411,83 @@ impl Drop for DBusProxyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_grant_exactly_the_listed_rules() {
+        // A portal-less graphical app: the bus daemon and the accessibility
+        // status questions, nothing else.
+        assert_eq!(
+            session_filter_args(false, true),
+            [
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+            ]
+        );
+        // A portal app adds exactly the portal names.
+        assert_eq!(
+            session_filter_args(true, true),
+            [
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--talk=org.freedesktop.portal.*",
+                "--talk=org.freedesktop.Notifications",
+                "--talk=org.mpris.MediaPlayer2.*",
+                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+            ]
+        );
+        assert_eq!(session_filter_args(true, false), DEFAULT_FILTER_ARGS);
+        // No rule anywhere grants a whole name on the accessibility side, and
+        // nothing ever widens to ownership or to the raw bus.
+        for arg in session_filter_args(true, true)
+            .iter()
+            .chain(ATSPI_FILTER_ARGS)
+        {
+            assert!(!arg.starts_with("--own"), "{arg}");
+            assert!(
+                !arg.contains("org.a11y") || !arg.starts_with("--talk"),
+                "{arg}"
+            );
+        }
+        // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to
+        // the registry at an exact object path.
+        assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
+        assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
+        for rule in &ATSPI_FILTER_ARGS[2..] {
+            assert!(
+                rule.starts_with("--call=org.a11y.atspi.Registry=org.a11y.atspi.")
+                    || rule.starts_with("--broadcast=org.a11y.atspi.Registry=org.a11y.atspi."),
+                "{rule}"
+            );
+            let path = rule
+                .rsplit_once('@')
+                .expect("every rule names an object path")
+                .1;
+            assert!(
+                path.starts_with("/org/a11y/atspi/") && !path.contains('*'),
+                "{rule}"
+            );
+            assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
+        }
+        assert_eq!(
+            atspi_proxy_socket_path(1000, 7),
+            PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
+        );
+        assert_eq!(
+            sandbox_atspi_path(1000),
+            PathBuf::from("/run/user/1000/at-spi/bus")
+        );
+        assert_eq!(
+            sandbox_atspi_env(1000),
+            "unix:path=/run/user/1000/at-spi/bus"
+        );
+    }
 
     #[test]
     fn proxy_paths_env_and_binary_lookup() {
@@ -335,8 +541,11 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-# args: SOURCE DEST [filter args...]
+# args: [--fd=0] SOURCE DEST [filter args...]
+notify=0
+if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 : >"$2"
+if [ "$notify" = 1 ]; then printf x >&0; fi
 # exec, not a backgrounded child: the guard signals and reaps this pid,
 # and a child of a shell it killed would be orphaned, never reaped.
 if [ -x /usr/bin/sleep ]; then
@@ -353,6 +562,36 @@ exit 1
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();
         script
+    }
+
+    #[test]
+    fn proxy_marker_without_readiness_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for notification in ["", "?"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let script = tmp.path().join("unready-proxy");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nnotify=0\nif [ \"$1\" = --fd=0 ]; then notify=1; shift; fi\n: >\"$2\"\nif [ \"$notify\" = 1 ]; then printf '%s' '{notification}' >&0; fi\nexec /usr/bin/sleep infinity\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let socket = tmp.path().join("proxy.sock");
+            let result = spawn_dbus_proxy_within(
+                &script,
+                "unix:path=/dev/null/nope",
+                &socket,
+                Duration::from_millis(100),
+            );
+            assert!(
+                matches!(&result, Err(ProxyError::NotReady { .. })),
+                "an inode with notification {notification:?} must not admit an unready proxy"
+            );
+            assert!(!socket.exists(), "a refused helper must be cleaned up");
+        }
     }
 
     #[test]
@@ -392,7 +631,9 @@ exit 1
             // /proc/<pid> disappears once the kernel reaps the exited process; poll
             // briefly to avoid a schedule race.
             let deadline = tilo_test_env::hang_deadline();
-            while PathBuf::from(format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+            while PathBuf::from(format!("/proc/{pid}")).exists()
+                && std::time::Instant::now() < deadline
+            {
                 std::thread::sleep(Duration::from_millis(20));
             }
             assert!(

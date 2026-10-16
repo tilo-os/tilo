@@ -19,10 +19,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -77,7 +74,9 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             Inbound::Ready { .. }
             | Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
-            | Inbound::Live { .. } => {}
+            | Inbound::RecordContent { .. }
+            | Inbound::Live { .. }
+            | Inbound::Voice(_) => {}
         }
     }
     panic!("no document delta arrived");
@@ -338,7 +337,9 @@ async fn catch_up_first_connection(
             }
             other @ (Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
-            | Inbound::Live { .. }) => {
+            | Inbound::RecordContent { .. }
+            | Inbound::Live { .. }
+            | Inbound::Voice(_)) => {
                 panic!("unexpected inbound {other:?}")
             }
         }

@@ -1,5 +1,68 @@
-use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
-use collab_types::ChannelId;
+use channel_crypto::{ChannelGroup, ChannelSteward, MemberKey, VaultKey};
+use collab_types::{ArtifactId, ChannelId, ContentRetention};
+use ed25519_dalek::SigningKey;
+
+#[test]
+fn existing_steward_reopen_recovers_content_without_creating_missing_groups() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("channels");
+    let channel = ChannelId::new();
+    let key = SigningKey::from_bytes(&[21; 32]);
+    let vault = VaultKey::new([22; 32]);
+    assert!(ChannelSteward::open_existing(&dir, channel, key.clone(), &vault).is_err());
+    assert!(
+        !dir.exists(),
+        "a missing source cannot create private channel storage"
+    );
+    std::fs::create_dir(&dir).unwrap();
+    let original = ChannelSteward::open_or_create(&dir, channel, key.clone(), &vault).unwrap();
+    let members = original.members();
+    let epoch = original.epoch();
+    let artifact = ArtifactId::new();
+    let (metadata, ciphertext) = original
+        .content_keys()
+        .unwrap()
+        .seal_content(artifact, ContentRetention::Checkpoint, b"existing source")
+        .unwrap();
+    drop(original);
+    let restored = ChannelSteward::open_existing(&dir, channel, key.clone(), &vault).unwrap();
+    assert_eq!(
+        restored.members(),
+        members,
+        "reopen cannot admit another member"
+    );
+    assert_eq!(
+        restored.epoch(),
+        epoch,
+        "reopen preserves the existing group epoch"
+    );
+    assert_eq!(
+        restored
+            .content_keys()
+            .unwrap()
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap()
+            .as_slice(),
+        b"existing source"
+    );
+    let before = std::fs::read_dir(&dir).unwrap().count();
+    assert!(ChannelSteward::open_existing(&dir, ChannelId::new(), key.clone(), &vault).is_err());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), before);
+    assert!(
+        ChannelSteward::open_existing(&dir, channel, key.clone(), &VaultKey::new([23; 32]))
+            .is_err()
+    );
+    assert!(
+        ChannelSteward::open_existing(&dir, channel, SigningKey::from_bytes(&[24; 32]), &vault)
+            .is_err()
+    );
+    std::fs::write(
+        dir.join(format!("{}.group", channel.0)),
+        b"corrupt persisted group",
+    )
+    .unwrap();
+    assert!(ChannelSteward::open_existing(&dir, channel, key, &vault).is_err());
+}
 
 /// Sealed groups survive restart with ratchet state and reject a wrong key, tampering and
 /// truncation.

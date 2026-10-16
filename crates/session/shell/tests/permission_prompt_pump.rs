@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -27,58 +23,18 @@ use std::time::Duration;
 use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
-use ui::widget::{PermissionPrompt, PromptChoice, Widget};
+use ui::widget::PromptChoice;
 
-use automerge::AutoCommit;
 use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-fn synth_device() -> DeviceId {
-    // SAFETY: `DeviceId` is opaque; integration-test scaffolding
-    // already uses this pattern in `quick-ui::widget::slider`'s
-    // tests + several other shell test files.
-    unsafe { std::mem::zeroed() }
-}
+use winit::event::WindowEvent;
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
-
-/// Drive an event through a [`PermissionPrompt`], mirroring the shell's own
-/// `pump_permission_prompt`.
-fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-    let mut tree = TaffyTree::<()>::new();
-    let node = tree.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
-}
+use ui::synthetic_input::mouse_press;
+use ui::testing::dispatch;
 
 /// One workspace plus the requested app's pending grant. The workspace is
 /// handed to the local user because an ownerless room has no administrators,
@@ -122,16 +78,6 @@ impl ui::widget::Widget for StubContent {
         let n = taffy.new_leaf(Style::default()).unwrap();
         node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         n
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut ui::text_render::TextRenderer,
-        _theme: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "StubContent"
@@ -179,7 +125,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.allow_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(
                 prompt.pending_choice,
                 Some(PromptChoice::Allow),
@@ -255,7 +201,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.allow_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
         }
         host.tick_permission_prompt_for_tests();
 
@@ -270,7 +216,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.deny_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
         }
         host.tick_permission_prompt_for_tests();
 
@@ -289,10 +235,6 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
     reason = "the pending_grants assert and tree() both need st held; there is nothing \
 to narrow between them"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn prompt_pump_persists_only_what_each_choice_allows() {
     // Phase `pump_keeps_session_choice_out_of_the_shared_workspace`.
     {
@@ -308,7 +250,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.session_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
         }
 
@@ -343,7 +285,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.always_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
         }
         host.tick_permission_prompt_for_tests();
@@ -382,7 +324,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.deny_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Deny));
         }
         host.tick_permission_prompt_for_tests();
@@ -441,3 +383,73 @@ fn _suppress_unused() {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use shell::shell::state::WorkspaceExt as _;
+
+#[test]
+fn latched_permission_choice_cannot_answer_a_new_request_from_the_same_app() {
+    let (chrome, _) = chrome_with_pending_grant(
+        "so.tilo.terminal",
+        Capability::HostShell { scope: GRANT_ONCE },
+    );
+    let mut host = host_with_chrome(chrome.clone());
+    host.tick_permission_prompt_for_tests();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    {
+        let mut state = chrome.borrow_mut();
+        state.pending_grants.pop_front();
+        state.pending_grants.push_back(PendingPrompt::with_reply(
+            "so.tilo.terminal".into(),
+            Capability::HostShell { scope: GRANT_ONCE },
+            tx,
+        ));
+    }
+    let prompt = host
+        .permission_prompt_mut_for_tests()
+        .expect("old prompt latched");
+    prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+    let center = prompt.allow_rect().center();
+    dispatch(prompt, &cursor_at(center));
+    dispatch(prompt, &mouse_press());
+    assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+    host.tick_permission_prompt_for_tests();
+    assert!(
+        rx.try_recv().is_err(),
+        "old click cannot release the new waiting request"
+    );
+    assert_eq!(chrome.borrow().pending_grants.len(), 1);
+    assert!(
+        host.permission_prompt_mut_for_tests().is_some(),
+        "replacement is presented for a fresh decision"
+    );
+}
+
+#[test]
+fn permanent_permission_rechecks_owner_after_widget_latching() {
+    let (chrome, _) = chrome_with_pending_grant(
+        "so.tilo.terminal",
+        Capability::HostShell { scope: GRANT_ONCE },
+    );
+    chrome.borrow_mut().test_only_owner_override = Some(true);
+    let mut host = host_with_chrome(chrome.clone());
+    host.tick_permission_prompt_for_tests();
+    let prompt = host
+        .permission_prompt_mut_for_tests()
+        .expect("owner prompt");
+    prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+    let center = prompt.always_rect().center();
+    dispatch(prompt, &cursor_at(center));
+    dispatch(prompt, &mouse_press());
+    assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+    host.tick_permission_prompt_for_tests();
+    assert_eq!(
+        chrome.borrow().pending_grants.len(),
+        1,
+        "owner loss must not consume permanent consent"
+    );
+    assert!(
+        !host
+            .permission_prompt_mut_for_tests()
+            .expect("pending prompt")
+            .is_owner
+    );
+}

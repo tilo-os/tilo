@@ -30,10 +30,11 @@ pub enum OAuthIssuer {
     Google,
     Microsoft,
     Dropbox,
+    Spotify,
 }
 
 impl OAuthIssuer {
-    pub const ALL: [Self; 3] = [Self::Google, Self::Microsoft, Self::Dropbox];
+    pub const ALL: [Self; 4] = [Self::Google, Self::Microsoft, Self::Dropbox, Self::Spotify];
 
     /// Stable identifier, also the issuer's table in `oauth-clients.toml`.
     pub fn id(self) -> &'static str {
@@ -41,6 +42,7 @@ impl OAuthIssuer {
             Self::Google => "google",
             Self::Microsoft => "microsoft",
             Self::Dropbox => "dropbox",
+            Self::Spotify => "spotify",
         }
     }
 
@@ -50,6 +52,7 @@ impl OAuthIssuer {
             Self::Google => "Google",
             Self::Microsoft => "Microsoft",
             Self::Dropbox => "Dropbox",
+            Self::Spotify => "Spotify",
         }
     }
 
@@ -64,6 +67,10 @@ impl OAuthIssuer {
             Self::Microsoft => ClientId::new(
                 "TILO_OAUTH_MICROSOFT_CLIENT_ID",
                 option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID"),
+            ),
+            Self::Spotify => ClientId::new(
+                "TILO_OAUTH_SPOTIFY_CLIENT_ID",
+                option_env!("TILO_OAUTH_SPOTIFY_CLIENT_ID"),
             ),
             Self::Dropbox => ClientId::new(
                 "TILO_OAUTH_DROPBOX_CLIENT_ID",
@@ -80,7 +87,7 @@ impl OAuthIssuer {
                 "TILO_OAUTH_GOOGLE_CLIENT_SECRET",
                 option_env!("TILO_OAUTH_GOOGLE_CLIENT_SECRET"),
             )),
-            Self::Microsoft | Self::Dropbox => None,
+            Self::Microsoft | Self::Dropbox | Self::Spotify => None,
         }
     }
 
@@ -121,6 +128,15 @@ impl OAuthIssuer {
                 scopes: Vec::new(),
                 authorization_params: pairs(&[("prompt", "select_account")]),
             },
+            Self::Spotify => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://accounts.spotify.com/authorize".into(),
+                token_endpoint: "https://accounts.spotify.com/api/token".into(),
+                revocation: Revocation::Unsupported,
+                scopes: Vec::new(),
+                authorization_params: Vec::new(),
+            },
             Self::Dropbox => Provider {
                 id: self.id().into(),
                 label: self.label().into(),
@@ -145,6 +161,12 @@ pub enum Capability {
     Files,
     /// Mail over IMAP and SMTP (`XOAUTH2`).
     Mail,
+    Music,
+    MusicStreaming,
+    /// Hosted agent models the model gateway calls (Google Vertex AI). A
+    /// grant of its own, so the broad cloud scope it needs never rides on a
+    /// mail or storage token, and forgetting it leaves those untouched.
+    Models,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -167,6 +189,10 @@ impl OAuthUse {
     /// The product name shown to the person.
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
+            (OAuthIssuer::Spotify, _) => "Spotify",
+            (OAuthIssuer::Google, Capability::Models) => "Google Vertex AI",
+            (_, Capability::Models) => "Agent models",
+            (_, Capability::Music | Capability::MusicStreaming) => "Music",
             (OAuthIssuer::Google, Capability::Files) => "Google Drive",
             (OAuthIssuer::Google, Capability::Mail) => "Gmail",
             (OAuthIssuer::Microsoft, Capability::Files) => "OneDrive",
@@ -281,7 +307,7 @@ mod tests {
             .into_iter()
             .map(|issuer| issuer.client_id().key)
             .collect();
-        assert_eq!(keys.len(), 3);
+        assert_eq!(keys.len(), 4);
         assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
     }
 
@@ -294,5 +320,9 @@ mod tests {
         );
         assert_eq!(OAuthUse::mail(OAuthIssuer::Google).label(), "Gmail");
         assert_eq!(OAuthUse::mail(OAuthIssuer::Microsoft).label(), "Outlook");
+        assert_eq!(
+            OAuthUse::new(OAuthIssuer::Google, Capability::Models).label(),
+            "Google Vertex AI"
+        );
     }
 }

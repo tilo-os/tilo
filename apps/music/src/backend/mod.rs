@@ -15,16 +15,15 @@
 //! picks the implementation at build time, and [`crate::stream`]'s worker
 //! picks live-or-offline at *runtime*, falling back to offline if live init
 //! or the network fails.
-//!
-//! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
-//! documented in [`potoken`].
 
 pub mod android_vr;
 #[cfg(feature = "live")]
 pub mod live;
 pub mod offline;
-pub mod potoken;
-pub mod proxy;
+#[cfg(feature = "live")]
+mod sources;
+#[cfg(feature = "live")]
+pub mod spotify;
 
 /// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
 /// A substring check would also accept `googlevideo.com.attacker.invalid`.
@@ -164,18 +163,9 @@ impl SearchBundle {
     }
 }
 
-/// Which result type a deep per-type "see all" search targets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SearchKind {
-    Songs,
-    Albums,
-    Artists,
-    Playlists,
-}
-
 /// What a [`HomeItem`] represents, so the UI can route a click and pick the
 /// right tile shape (artists render as circles).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HomeItemKind {
     Track,
     Album,
@@ -185,7 +175,7 @@ pub enum HomeItemKind {
 
 /// One tile on the real Home page (a chart track, a new album, a top artist, a
 /// mood playlist). Toolkit-free so it crosses the worker boundary.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeItem {
     /// Entity id: album id / artist channel id / playlist id. For a track it's
     /// the library id the app mints; [`Self::video_id`] carries the stream key.
@@ -204,14 +194,14 @@ pub struct HomeItem {
 }
 
 /// A titled row of tiles on the Home page.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeSection {
     pub title: String,
     pub items: Vec<HomeItem>,
 }
 
 /// Real YouTube-Music home/charts content: a handful of titled sections.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HomeContent {
     pub sections: Vec<HomeSection>,
 }
@@ -247,6 +237,8 @@ pub struct ArtistPage {
     pub albums: Vec<ArtistAlbum>,
     /// Related / similar artists surfaced on the page.
     pub similar: Vec<ArtistHit>,
+    /// Provider-confirmed device-local follow status, independent of the CRDT.
+    pub provider_followed: Option<bool>,
 }
 
 /// A real YouTube-Music playlist: its ordered tracks + cover + owner. Backs the
@@ -319,13 +311,126 @@ impl std::error::Error for BackendError {}
 pub type SearchOutcome = Result<Vec<TrackHit>, BackendError>;
 pub type ResolveOutcome = Result<ResolvedStream, BackendError>;
 
+/// Device-local Spotify work; remote player state never claims local PCM.
+#[derive(Clone, Debug)]
+pub enum SpotifyOperation {
+    AccountStatus,
+    Devices,
+    Queue,
+    LibraryPage {
+        offset: u32,
+        artists_after: Option<String>,
+    },
+    CreatePlaylist {
+        name: String,
+    },
+    Transfer {
+        device: String,
+    },
+    RemotePlay {
+        device: String,
+        track: String,
+    },
+    RemotePause {
+        device: String,
+    },
+    Save {
+        uri: String,
+        saved: bool,
+    },
+    RenamePlaylist {
+        playlist: String,
+        name: String,
+    },
+    PlaylistAdd {
+        playlist: String,
+        track: String,
+    },
+    PlaylistRemove {
+        playlist: String,
+        track: String,
+    },
+}
+
+/// Provider product classifications; unknown metadata never establishes eligibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpotifyProduct {
+    Premium,
+    Free,
+    Open,
+    Unknown,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SpotifyAccountStatus {
+    pub catalogue_product: SpotifyProduct,
+    pub streaming_product: SpotifyProduct,
+    pub account_match: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SpotifyDevice {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    pub restricted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpotifyReply {
+    pub devices: Vec<SpotifyDevice>,
+    pub state: serde_json::Value,
+}
+
 /// The data-source seam. One trait, two worlds (offline sample / live
 /// rustypipe). Implementations are `Send + Sync` because the live backend is
 /// driven from the [`crate::stream`] worker thread.
 pub trait MusicBackend: Send + Sync {
+    /// Execute a Spotify API operation, reporting only confirmed provider state.
+    /// # Errors
+    /// Source unavailable, missing scopes, restricted device or unconfirmed state.
+    fn spotify_operation(
+        &self,
+        _operation: &SpotifyOperation,
+    ) -> Result<SpotifyReply, BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
     /// Human name for the status log / toast ("offline (bundled library)",
     /// "youtube-music (live)").
     fn name(&self) -> &str;
+
+    /// Select a catalogue or authorize it, on the background worker.
+    ///
+    /// # Errors
+    /// Source unavailable, sign-in failed or account inaccessible.
+    fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    /// Connect with profile and library read access only.
+    /// # Errors
+    /// Source unavailable, sign-in failed or account inaccessible.
+    fn connect_spotify_read_only(&self) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    /// Validate Premium entitlement and the separate native playback grant.
+    /// # Errors
+    /// Unavailable support, missing sign-in, Free account or rejected grant.
+    fn spotify_playback(&self, _sign_in: bool) -> Result<String, BackendError> {
+        Err(BackendError(
+            "Native Spotify playback is unavailable in this build".into(),
+        ))
+    }
+
+    /// Forget Spotify authorization on this device.
+    ///
+    /// # Errors
+    /// Spotify unavailable or credential custody failed.
+    fn disconnect_spotify(&self) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
 
     /// Whether this backend can actually reach `YouTube` and stream audio. The UI
     /// uses it to decide whether to surface live search / "streaming" state.
@@ -352,19 +457,6 @@ pub trait MusicBackend: Send + Sync {
     /// unparseable `YouTube` Music response. The default (offline) body never
     /// errors.
     fn search_all(&self, _query: &str) -> Result<SearchBundle, BackendError> {
-        Ok(SearchBundle::default())
-    }
-
-    /// Deep per-type search ("see all Albums / Artists / Playlists"). Offline
-    /// returns an empty bundle; live fills just the requested bucket with a
-    /// fuller list than the mixed [`Self::search_all`] surfaces.
-    ///
-    /// # Errors
-    ///
-    /// Live: returns a [`BackendError`] on a network failure or an
-    /// unparseable `YouTube` Music response. The default (offline) body never
-    /// errors.
-    fn search_more(&self, _query: &str, _kind: SearchKind) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }
 
@@ -440,7 +532,7 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
         match live::RustyPipeBackend::new() {
             Ok(b) => {
                 note(format!("live backend ready: {}", b.name()));
-                return Box::new(b);
+                return Box::new(sources::Sources::new(Box::new(b)));
             }
             Err(e) => {
                 note(format!(
@@ -453,6 +545,11 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
     {
         note("offline build (no `live` feature); using bundled library".to_string());
     }
+    #[cfg(feature = "live")]
+    {
+        Box::new(sources::Sources::new(default_backend()))
+    }
+    #[cfg(not(feature = "live"))]
     default_backend()
 }
 
@@ -461,10 +558,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn default_backend_is_offline_empty_and_cannot_stream() {
         // Phase `default_backend_is_offline_and_cannot_stream`.
         {
@@ -489,14 +582,6 @@ mod tests {
             assert!(bundle.artists.is_empty());
             assert!(bundle.playlists.is_empty());
             assert!(bundle.top.is_none());
-            for kind in [
-                SearchKind::Songs,
-                SearchKind::Albums,
-                SearchKind::Artists,
-                SearchKind::Playlists,
-            ] {
-                assert!(b.search_more("aurora", kind).unwrap().is_empty());
-            }
         }
 
         // Phase `preferred_backend_offline_build_notes_and_is_offline`.

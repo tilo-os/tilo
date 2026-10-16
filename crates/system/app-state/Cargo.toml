@@ -13,6 +13,7 @@ name = "app_state"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The canonical gate and the single-writer guard around the actor sidecar.
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -27,6 +28,8 @@ durable-store = { version = "0.1.0", path = "../durable-store" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 automerge.workspace = true
+# Binds a load hint to the exact document bytes it was made for.
+blake3.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

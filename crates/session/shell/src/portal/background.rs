@@ -6,6 +6,7 @@
 //! entry. This preserves Tilo's app/workspace isolation and avoids a second,
 //! unsafe autostart mechanism.
 
+use super::reply::{OrFail, Reply, Results, answer, ensure};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,36 +73,7 @@ pub trait BackgroundService: Send + Sync {
     fn cancel_background(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
-pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
-impl BackgroundServiceHandle {
-    pub fn new(service: Arc<dyn BackgroundService>) -> Self {
-        Self(service)
-    }
-    #[cfg(target_os = "linux")]
-    fn request_background(
-        &self,
-        request: BackgroundConsentRequest,
-        reply: oneshot::Sender<PortalResult<BackgroundConsent>>,
-    ) -> PortalResult<()> {
-        self.0.request_background(request, reply)
-    }
-    #[cfg(target_os = "linux")]
-    fn set_autostart(&self, app_id: &str, enabled: bool) -> PortalResult<bool> {
-        self.0.set_autostart(app_id, enabled)
-    }
-    #[cfg(target_os = "linux")]
-    fn cancel_background(&self, handle: &str) {
-        self.0.cancel_background(handle);
-    }
-}
+pub type BackgroundServiceHandle = Arc<dyn BackgroundService>;
 
 struct UnavailableBackgroundService;
 impl BackgroundService for UnavailableBackgroundService {
@@ -150,7 +122,7 @@ impl ShellBackgroundService {
 
     pub fn at_path(dialogs: PortalDialogQueue, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = atomic_file::json::load_or_default(&path);
+        let state = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             dialogs,
             state: Arc::new(Mutex::new(state)),
@@ -204,7 +176,7 @@ impl ShellBackgroundService {
     }
 
     fn commit(&self, state: &AutostartFile) -> PortalResult<()> {
-        match atomic_file::json::write_private(&self.path, state) {
+        match tilo_files::native::atomic::json::write_private(&self.path, state) {
             Ok(()) => PortalResult::Success(()),
             Err(error) => PortalResult::Failed(format!("cannot commit background state: {error}")),
         }
@@ -262,7 +234,7 @@ impl BackgroundService for ShellBackgroundService {
             PortalResult::Cancelled => PortalResult::Cancelled,
             PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
             PortalResult::Failed(error) => {
-                *state = atomic_file::json::load_or_default(&self.path);
+                *state = tilo_files::native::atomic::json::load_or_default(&self.path);
                 PortalResult::Failed(error)
             }
         }
@@ -282,21 +254,7 @@ pub struct BackgroundBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     service: BackgroundServiceHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
 }
 
@@ -310,11 +268,7 @@ impl BackgroundBackend {
 
     #[cfg(target_os = "linux")]
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
-        Self::with_service_and_lifecycle(
-            ctx,
-            BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
-            lifecycle,
-        )
+        Self::with_service_and_lifecycle(ctx, Arc::new(UnavailableBackgroundService), lifecycle)
     }
 
     #[cfg(target_os = "linux")]
@@ -396,14 +350,6 @@ impl BackgroundBackend {
         before != after
     }
 
-    /// Remove state when the package is uninstalled. This also forgets portal
-    /// consent; package reinstall must ask again.
-    pub fn remove_app(&self, app_id: &str) -> bool {
-        self.apps
-            .lock()
-            .is_ok_and(|mut apps| apps.remove(app_id).is_some())
-    }
-
     pub fn app_state(&self, app_id: &str) -> Option<u32> {
         self.apps.lock().ok()?.get(app_id).map(|entry| entry.state)
     }
@@ -424,10 +370,7 @@ impl BackgroundBackend {
         hdr: zbus::message::Header<'_>,
         app_id: &str,
     ) -> Option<super::auth::AuthenticatedCall> {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        authenticate_call(&self.ctx, sender.as_ref(), app_id, None)
-            .await
-            .ok()
+        authenticate_call(&self.ctx, &hdr, app_id, None).await.ok()
     }
 }
 
@@ -465,60 +408,54 @@ impl BackgroundBackend {
         handle: ObjectPath<'_>,
         app_id: String,
         name: String,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let Some(auth) = self.authenticated(hdr, &app_id).await else {
-            return (2, HashMap::new());
-        };
-        if !valid_name(&name) {
-            return (2, HashMap::new());
-        }
-        let key = handle.to_string();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        let service = self.service.clone();
-        let cancel_key = key.clone();
-        let registered = self
-            .lifecycle
-            .register_request(connection, &key, entry, move |_| {
+    ) -> Reply {
+        answer(async move {
+            let auth = self.authenticated(hdr, &app_id).await.or_fail()?;
+            ensure(valid_name(&name))?;
+            let key = handle.to_string();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
+            };
+            let service = self.service.clone();
+            let cancel_key = key.clone();
+            let cancel = move |_: &LifecycleEntry| {
                 service.cancel_background(&cancel_key);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            return (2, HashMap::new());
-        }
-        let (reply, rx) = oneshot::channel();
-        let request = BackgroundConsentRequest {
-            handle: key.clone(),
-            app_id: auth.caller.app_id.clone(),
-            name,
-        };
-        let outcome = match self.service.request_background(request, reply) {
-            PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
-            PortalResult::Cancelled => PortalResult::Cancelled,
-            PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
-            PortalResult::Failed(error) => PortalResult::Failed(error),
-        };
-        self.lifecycle
-            .complete_request_object(connection, &key)
-            .await;
-        let allowed = matches!(outcome, PortalResult::Success(BackgroundConsent::Allow));
-        if allowed {
-            if let Ok(mut apps) = self.apps.lock() {
-                if apps.contains_key(&auth.caller.app_id) || apps.len() < MAX_TRACKED_APPS {
-                    apps.entry(auth.caller.app_id.clone())
-                        .or_default()
-                        .background_allowed = true;
-                }
-            }
-        }
-        match outcome {
-            PortalResult::Success(_) => response_with_result(allowed),
-            PortalResult::Cancelled => (1, HashMap::new()),
-            PortalResult::Unavailable(_) | PortalResult::Failed(_) => (2, HashMap::new()),
-        }
+            };
+            self.lifecycle
+                .with_request(connection, &key, entry, cancel, async {
+                    let (reply, rx) = oneshot::channel();
+                    let request = BackgroundConsentRequest {
+                        handle: key.clone(),
+                        app_id: auth.caller.app_id.clone(),
+                        name,
+                    };
+                    let outcome = match self.service.request_background(request, reply) {
+                        PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+                        PortalResult::Cancelled => PortalResult::Cancelled,
+                        PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+                        PortalResult::Failed(error) => PortalResult::Failed(error),
+                    };
+                    let allowed =
+                        matches!(outcome, PortalResult::Success(BackgroundConsent::Allow));
+                    if allowed {
+                        if let Ok(mut apps) = self.apps.lock() {
+                            if apps.contains_key(&auth.caller.app_id)
+                                || apps.len() < MAX_TRACKED_APPS
+                            {
+                                apps.entry(auth.caller.app_id.clone())
+                                    .or_default()
+                                    .background_allowed = true;
+                            }
+                        }
+                    }
+                    outcome.into_result()?;
+                    Ok(allowed_result(allowed))
+                })
+                .await
+        })
+        .await
     }
 
     /// Deprecated upstream API. Tilo accepts it only after a background grant,
@@ -577,22 +514,25 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
         .executor()
         .spawn(
             async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
+                // Woken by the launcher registry, not a timer: an idle session
+                // with no launches or exits never runs this task.
+                let mut changes = crate::shell::launcher::subscribe_running_changes();
                 loop {
-                    interval.tick().await;
-                    if !backend.sync_running_apps() {
-                        continue;
+                    if backend.sync_running_apps() {
+                        let Ok(context) = zbus::object_server::SignalEmitter::new(
+                            &task_connection,
+                            super::OBJECT_PATH,
+                        ) else {
+                            break;
+                        };
+                        if BackgroundBackend::running_applications_changed(&context)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                    let Ok(context) = zbus::object_server::SignalEmitter::new(
-                        &task_connection,
-                        super::OBJECT_PATH,
-                    ) else {
-                        break;
-                    };
-                    if BackgroundBackend::running_applications_changed(&context)
-                        .await
-                        .is_err()
-                    {
+                    if changes.changed().await.is_err() {
                         break;
                     }
                 }
@@ -602,13 +542,10 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
         .detach();
 }
 
-fn response_with_result(allowed: bool) -> (u32, HashMap<String, OwnedValue>) {
-    let mut results = HashMap::new();
-    results.insert(
-        "result".into(),
-        OwnedValue::from(if allowed { 1_u32 } else { 0_u32 }),
-    );
-    (0, results)
+fn allowed_result(allowed: bool) -> Results {
+    let mut results = Results::new();
+    results.insert("result".into(), OwnedValue::from(u32::from(allowed)));
+    results
 }
 fn valid_app_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 255 && !value.chars().any(char::is_control)
@@ -669,7 +606,7 @@ mod tests {
                     )
                 },
                 apps: Arc::new(Mutex::new(HashMap::new())),
-                service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
+                service: Arc::new(UnavailableBackgroundService),
                 lifecycle: PortalLifecycle::new(),
             };
             assert!(backend.set_app_state("org.example.App", ACTIVE));
@@ -679,16 +616,8 @@ mod tests {
         }
         // Phase `denial_result_is_not_a_fabricated_grant`.
         {
-            let response = response_with_result(false);
-            assert_eq!(response.0, 0);
-            assert_eq!(
-                response
-                    .1
-                    .get("result")
-                    .and_then(|value| value.try_clone().ok())
-                    .and_then(|value| u32::try_from(value).ok()),
-                Some(0)
-            );
+            let results = allowed_result(false);
+            assert_eq!(crate::portal::option::<u32>(&results, "result"), Some(0));
         }
     }
 

@@ -2,8 +2,9 @@
 //! persisted, and never discard bytes that were not committed.
 
 use super::*;
-use collab_types::{Ed25519PublicKey, FileActor};
+use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
+use fs_protocol::FileActor;
 use iroh::endpoint::{Endpoint, presets};
 use uuid::Uuid;
 
@@ -78,7 +79,7 @@ impl Fixture {
         loaded
     }
 
-    fn versions(&self, record_id: collab_types::FileRecordId) -> usize {
+    fn versions(&self, record_id: fs_protocol::FileRecordId) -> usize {
         self.history.snapshot(record_id).unwrap().versions.len()
     }
 }
@@ -90,7 +91,7 @@ fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
         .create_empty_file(crate::namespace::ROOT_INO, name)
         .unwrap();
     fs.publish(delta);
-    fs.buffers().insert(ino, Vec::new());
+    fs.install_stage(ino, Vec::new());
     fs.buffer_states().insert(
         ino,
         BufferState {
@@ -146,7 +147,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         fs.write_buffer(ino, 8, b"BYTES").unwrap();
         assert_eq!(fs.release_handle(ino, fh), Err(EIO));
         assert_eq!(
-            fs.buffers().get(&ino).map(Vec::as_slice),
+            fs.staged_bytes(ino).as_deref(),
             Some(b"preciousBYTESs".as_slice()),
             "the last close must not drop bytes that were never committed"
         );
@@ -282,4 +283,132 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
         assert!(fixture.staged().is_empty());
         assert_eq!(fs.recover_unsaved_writes(), 0);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
+    let bytes: Vec<u8> = (0..2_500_000_u32).map(|i| (i % 253) as u8).collect();
+    // Phase `fsync_stages_the_file_and_close_commits_it`.
+    {
+        let fixture = Fixture::new().await;
+        let fs = fixture
+            .mount(true)
+            .with_write_stage_dir(fixture.dir.path().join("stage"));
+        let (ino, delta) = fs
+            .create_empty_file(crate::namespace::ROOT_INO, "db.sqlite")
+            .unwrap();
+        fs.publish(delta);
+        let fh = open_handle(&fs, ino, true);
+        let record_id = fs.ns().record_id_for(ino).unwrap();
+        fs.write_buffer(ino, 0, &bytes).unwrap();
+        assert!(fs.stage(ino).unwrap().lock().is_file_backed());
+        assert_eq!(fs.fsync_inode(ino), Ok(()));
+        assert_eq!(fixture.staged()[0].bytes, bytes);
+        assert_eq!(fixture.versions(record_id), 1);
+        assert_eq!(fs.flush_inode(ino), Ok(()));
+        assert_eq!(fs.release_handle(ino, fh), Ok(()));
+        assert_eq!(committed_bytes(&fs, ino).await, bytes);
+        assert_eq!(fixture.versions(record_id), 2);
+        assert!(fixture.staged().is_empty());
+    }
+    // Phase `bytes_a_record_cannot_take_are_copied_from_the_stage_file`.
+    {
+        let fixture = Fixture::new().await;
+        let fs = fixture
+            .mount(true)
+            .with_write_stage_dir(fixture.dir.path().join("stage"));
+        let (ino, delta) = fs
+            .create_empty_file(crate::namespace::ROOT_INO, "capture.raw")
+            .unwrap();
+        fs.publish(delta);
+        let fh = open_handle(&fs, ino, true);
+        fs.write_buffer(ino, 0, &bytes).unwrap();
+        *fs.commit_fault.lock().unwrap() = Some((ino, EDQUOT));
+        assert_eq!(fs.flush_inode(ino), Err(EDQUOT));
+        assert!(
+            fixture.staged()[0].bytes == bytes,
+            "a failed commit stages the file"
+        );
+        assert_eq!(fs.release_handle(ino, fh), Err(EDQUOT));
+        let copy_name = unsaved_copy_name(b"capture.raw", &bytes);
+        let copy = fs
+            .ns()
+            .lookup(crate::namespace::ROOT_INO, &copy_name)
+            .expect("the bytes are preserved under the name derived from them")
+            .ino
+            .0;
+        assert_eq!(committed_bytes(&fs, copy).await, bytes);
+        assert!(!fs.buffers().contains_key(&ino));
+        assert!(fixture.staged().is_empty());
+    }
+}
+
+/// A file created, written and synced inside the persister's settle time is
+/// back under its own name after a crash: `fsync` makes the namespace that
+/// places it durable, not only its bytes. A namespace that cannot be written
+/// fails the `fsync`, and the staged bytes stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot() {
+    let mut fixture = Fixture::new().await;
+    // What the disk holds: the namespace from before the file existed, until
+    // the hook writes a newer one.
+    let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let record_id = {
+        let fs = fixture.mount(true);
+        fs.set_durability_hook({
+            let namespace = Arc::clone(&fixture.namespace);
+            let on_disk = Arc::clone(&on_disk);
+            let refuse = Arc::clone(&refuse);
+            Arc::new(move || {
+                if refuse.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("the namespace volume is full"));
+                }
+                *on_disk.lock().unwrap() = namespace.lock().unwrap().save();
+                Ok(())
+            })
+        });
+        let (ino, _fh) = create_open(&fs, "wal.db");
+        fs.write_buffer(ino, 0, b"committed transaction").unwrap();
+        assert_eq!(fs.fsync_inode(ino), Ok(()));
+
+        let (other, _fh) = create_open(&fs, "unsynced.db");
+        fs.write_buffer(other, 0, b"never synced").unwrap();
+        refuse.store(true, Ordering::SeqCst);
+        assert_eq!(
+            fs.fsync_inode(other),
+            Err(EIO),
+            "a sync whose namespace was not written must fail"
+        );
+        assert_eq!(
+            fs.staged_bytes(other).as_deref(),
+            Some(b"never synced".as_slice())
+        );
+        fs.ns().record_id_for(ino).unwrap()
+        // Dropped without close or a final save: the process died.
+    };
+
+    let bytes = on_disk.lock().unwrap().clone();
+    fixture.namespace = Arc::new(Mutex::new(
+        Namespace::from_bytes("restarted", &bytes).unwrap(),
+    ));
+    let fs = fixture.mount(true);
+    let ino = fs
+        .ns()
+        .lookup(crate::namespace::ROOT_INO, b"wal.db")
+        .expect("a synced file keeps its name across a crash")
+        .ino
+        .0;
+    assert_eq!(fs.ns().record_id_for(ino), Some(record_id));
+    assert!(fs.recover_unsaved_writes() >= 1);
+    assert_eq!(committed_bytes(&fs, ino).await, b"committed transaction");
+    assert!(
+        fs.ns()
+            .lookup(
+                crate::namespace::ROOT_INO,
+                unsaved_copy_name(b"wal.db", b"committed transaction")
+            )
+            .is_none(),
+        "the synced bytes went back into their file, not into a copy beside it"
+    );
 }

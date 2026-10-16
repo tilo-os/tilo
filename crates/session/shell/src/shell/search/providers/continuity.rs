@@ -7,19 +7,19 @@
 
 use std::rc::Rc;
 
+use ui::i18n::ArgValue;
 use ui::search::{FieldWeight, ListIndex};
 
 use super::actions::ACTION_ID_WEIGHT;
 
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
-use crate::shell::device_fabric_runtime::{
-    BluetoothHandoffPhaseView, DisplayMirrorPhase, MediaHandoffPhase,
-};
+use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::{
     DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, RealtimeContinuityBridge,
     RealtimeContinuityUiAction,
 };
+use crate::shell::personal_continuity::DeviceId;
 use crate::shell::personal_tethering_runtime::TetheringPhase;
 use crate::shell::remote_capture::device::RemoteCaptureKind;
 use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
@@ -33,22 +33,70 @@ use crate::shell::speaker_group_runtime::SpeakerConsentKind;
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
 
+/// One continuity action row, re-derived from the trusted view before it runs.
 #[derive(Clone)]
-struct DeviceAction {
+struct ContinuityAction<A> {
     id: String,
     title: String,
     subtitle: String,
-    action: DeviceFabricUiAction,
+    action: A,
     confirm: bool,
 }
 
-#[derive(Clone)]
-struct CallAction {
-    id: String,
-    title: String,
-    subtitle: String,
-    action: RealtimeContinuityUiAction,
-    confirm: bool,
+type DeviceAction = ContinuityAction<DeviceFabricUiAction>;
+type CallAction = ContinuityAction<RealtimeContinuityUiAction>;
+
+impl<A: std::fmt::Debug> ContinuityAction<A> {
+    fn revision_row(&self) -> (&str, &str, &str, bool, String) {
+        (
+            &self.id,
+            &self.title,
+            &self.subtitle,
+            self.confirm,
+            format!("{:?}", self.action),
+        )
+    }
+
+    fn fields(&self) -> Vec<(String, FieldWeight)> {
+        action_fields(&self.title, &self.subtitle, &self.id)
+    }
+}
+
+impl<A: 'static> ContinuityAction<A> {
+    /// The search row for this action. Opening it demands confirmation when
+    /// the action asks for it, then hands the expected action to `dispatch`.
+    fn into_result(
+        self,
+        provider_id: &'static str,
+        dispatch: impl Fn(&A) -> Result<(), ActionError> + 'static,
+    ) -> SearchResult {
+        let Self {
+            id,
+            title,
+            subtitle,
+            action,
+            confirm,
+        } = self;
+        SearchResult {
+            shortcut: None,
+            kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            provider_id: provider_id.into(),
+            id,
+            title,
+            subtitle: Some(subtitle),
+            badge: None,
+            score: 0,
+            params: confirmation_params(confirm),
+            contract: Some(contract(confirm)),
+            on_open: Rc::new(move |_doc, _root, _chrome, args| {
+                ensure_confirmed(args, confirm)?;
+                dispatch(&action)
+            }),
+            on_invoke: None,
+            on_begin_invoke: None,
+        }
+    }
 }
 
 fn opaque(domain: &'static str, bytes: &[u8]) -> String {
@@ -73,14 +121,11 @@ pub(crate) fn speaker_group_media_action_id(
 /// The semantic id of "play this local media session on `target`". Other
 /// chrome names a handoff destination by this id, never by the device or
 /// session identity behind it.
-pub(crate) fn media_handoff_action_id(
-    session_id: &str,
-    target: &crate::shell::personal_continuity::DeviceId,
-) -> String {
+pub(crate) fn media_handoff_action_id(session_id: &str, target: &DeviceId) -> String {
     format!(
         "media.handoff.{}.{}",
         opaque("so.tilo.continuity.media-session.v1", session_id.as_bytes()),
-        opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
+        device_token(target)
     )
 }
 
@@ -158,13 +203,40 @@ fn dispatch_device_action(
     Ok(())
 }
 
+/// A device's identity as it appears in action ids: a digest, never the id.
+fn device_token(id: &DeviceId) -> String {
+    opaque("so.tilo.continuity.device.v1", id.as_str().as_bytes())
+}
+
+/// The allow and decline rows answering one consent request, with ids
+/// `{topic}.consent.{allow|decline}.{token}`. Only allowing asks for
+/// confirmation.
+fn consent_pair<A>(
+    topic: &str,
+    token: &str,
+    [allow_key, decline_key]: [&str; 2],
+    title_args: &[(&str, ArgValue)],
+    subtitle_key: &str,
+    action: impl Fn(bool) -> A,
+) -> [ContinuityAction<A>; 2] {
+    [(true, "allow", allow_key), (false, "decline", decline_key)].map(
+        |(approved, verb, title_key)| ContinuityAction {
+            id: format!("{topic}.consent.{verb}.{token}"),
+            title: t_args(title_key, title_args),
+            subtitle: t(subtitle_key),
+            action: action(approved),
+            confirm: approved,
+        },
+    )
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive projection keeps every continuity state and its authorized action visibly paired"
 )]
 fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
     let mut actions = Vec::new();
-    let label_for = |id: &crate::shell::personal_continuity::DeviceId| {
+    let label_for = |id: &DeviceId| {
         view.devices
             .iter()
             .find(|device| &device.id == id)
@@ -181,14 +253,13 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
 
     for media in &view.local_media {
         for target in &media.targets {
-            let label = label_for(target);
             actions.push(DeviceAction {
                 id: media_handoff_action_id(&media.session_id, target),
                 title: t_args(
                     "search-continuity-play-on",
                     &[
                         ("source", media.title.as_str().into()),
-                        ("target", label.into()),
+                        ("target", label_for(target).into()),
                     ],
                 ),
                 subtitle: t("search-continuity-media-handoff-subtitle"),
@@ -233,34 +304,26 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
     for authorization in &view.bluetooth_authorizations {
-        for (approved, title_key) in [
-            (true, "search-continuity-bluetooth-allow"),
-            (false, "search-continuity-bluetooth-decline"),
-        ] {
-            actions.push(DeviceAction {
-                id: format!(
-                    "bluetooth.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque(
-                        "so.tilo.continuity.bluetooth-request.v1",
-                        &authorization.request_id
-                    )
-                ),
-                title: t_args(
-                    title_key,
-                    &[
-                        ("accessory", authorization.accessory_name.as_str().into()),
-                        ("device", authorization.source_label.as_str().into()),
-                    ],
-                ),
-                subtitle: t("search-continuity-bluetooth-consent-subtitle"),
-                action: DeviceFabricUiAction::AuthorizeBluetoothHandoff {
-                    request_id: authorization.request_id,
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
+        actions.extend(consent_pair(
+            "bluetooth",
+            &opaque(
+                "so.tilo.continuity.bluetooth-request.v1",
+                &authorization.request_id,
+            ),
+            [
+                "search-continuity-bluetooth-allow",
+                "search-continuity-bluetooth-decline",
+            ],
+            &[
+                ("accessory", authorization.accessory_name.as_str().into()),
+                ("device", authorization.source_label.as_str().into()),
+            ],
+            "search-continuity-bluetooth-consent-subtitle",
+            |approved| DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                request_id: authorization.request_id,
+                approved,
+            },
+        ));
     }
     for status in &view.bluetooth_handoffs {
         let (verb, title_key, action) = match status.phase {
@@ -330,17 +393,15 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             "so.tilo.continuity.audio-input.v1",
             &input.node_id.to_le_bytes(),
         );
+        let title_args = [("input", input.label.as_str().into())];
         if input.is_default {
-            for (raise, title_key) in [
-                (true, "search-continuity-input-raise"),
-                (false, "search-continuity-input-lower"),
+            for (raise, verb, title_key) in [
+                (true, "raise", "search-continuity-input-raise"),
+                (false, "lower", "search-continuity-input-lower"),
             ] {
                 actions.push(DeviceAction {
-                    id: format!(
-                        "audio.input-level.{}.{token}",
-                        if raise { "raise" } else { "lower" }
-                    ),
-                    title: t_args(title_key, &[("input", input.label.as_str().into())]),
+                    id: format!("audio.input-level.{verb}.{token}"),
+                    title: t_args(title_key, &title_args),
                     subtitle: t("search-continuity-input-level-subtitle"),
                     action: DeviceFabricUiAction::StepInputLevel {
                         node_id: input.node_id,
@@ -352,10 +413,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         } else {
             actions.push(DeviceAction {
                 id: format!("audio.input.{token}"),
-                title: t_args(
-                    "search-continuity-input-select",
-                    &[("input", input.label.as_str().into())],
-                ),
+                title: t_args("search-continuity-input-select", &title_args),
                 subtitle: t("search-continuity-input-select-subtitle"),
                 action: DeviceFabricUiAction::SelectLocalInput {
                     node_id: input.node_id,
@@ -364,6 +422,8 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             });
         }
     }
+    let source_token =
+        |token: u64| opaque("so.tilo.continuity.audio-source.v1", &token.to_le_bytes());
     for source in &view.remote_audio.sources {
         for target in eligible
             .iter()
@@ -373,14 +433,8 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             actions.push(DeviceAction {
                 id: format!(
                     "audio.forward.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.audio-source.v1",
-                        &source.token.to_le_bytes()
-                    ),
-                    opaque(
-                        "so.tilo.continuity.device.v1",
-                        target.id.as_str().as_bytes()
-                    )
+                    source_token(source.token),
+                    device_token(&target.id)
                 ),
                 title: t_args(
                     "search-continuity-play-on",
@@ -399,25 +453,20 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
     for consent in &view.remote_audio.consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-audio-allow"),
-            (false, "search-continuity-audio-decline"),
-        ] {
-            actions.push(DeviceAction {
-                id: format!(
-                    "audio.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque("so.tilo.continuity.audio-session.v1", &consent.session_id)
-                ),
-                title: t_args(title_key, &[("device", consent.label.as_str().into())]),
-                subtitle: t("search-continuity-audio-consent-subtitle"),
-                action: DeviceFabricUiAction::AuthorizeRemoteAudio {
-                    session_id: consent.session_id,
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
+        actions.extend(consent_pair(
+            "audio",
+            &opaque("so.tilo.continuity.audio-session.v1", &consent.session_id),
+            [
+                "search-continuity-audio-allow",
+                "search-continuity-audio-decline",
+            ],
+            &[("device", consent.label.as_str().into())],
+            "search-continuity-audio-consent-subtitle",
+            |approved| DeviceFabricUiAction::AuthorizeRemoteAudio {
+                session_id: consent.session_id,
+                approved,
+            },
+        ));
     }
     for route in &view.remote_audio.routes {
         actions.push(DeviceAction {
@@ -442,17 +491,13 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
     };
     for consent in &view.speaker_groups.consents {
         let kind = consent.scope.kind();
-        for approved in [true, false] {
+        let topic = match kind {
+            SpeakerConsentKind::Play => "consent",
+            SpeakerConsentKind::Listen => "listen",
+        };
+        for (approved, verb) in [(true, "allow"), (false, "decline")] {
             actions.push(DeviceAction {
-                id: format!(
-                    "speakers.{}.{}.{}",
-                    match kind {
-                        SpeakerConsentKind::Play => "consent",
-                        SpeakerConsentKind::Listen => "listen",
-                    },
-                    if approved { "allow" } else { "decline" },
-                    speaker_id(consent.group)
-                ),
+                id: format!("speakers.{topic}.{verb}.{}", speaker_id(consent.group)),
                 title: consent.action_title(approved),
                 subtitle: consent.action_subtitle(),
                 action: DeviceFabricUiAction::ResolveSpeakerGroupConsent {
@@ -466,15 +511,12 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
     }
     for membership in &view.speaker_groups.memberships {
         let kind = membership.scope.kind();
+        let verb = match kind {
+            SpeakerConsentKind::Play => "leave",
+            SpeakerConsentKind::Listen => "listen.stop",
+        };
         actions.push(DeviceAction {
-            id: match kind {
-                SpeakerConsentKind::Play => {
-                    format!("speakers.leave.{}", speaker_id(membership.group))
-                }
-                SpeakerConsentKind::Listen => {
-                    format!("speakers.listen.stop.{}", speaker_id(membership.group))
-                }
-            },
+            id: format!("speakers.{verb}.{}", speaker_id(membership.group)),
             title: membership.leave_title(),
             subtitle: membership.leave_subtitle(),
             action: DeviceFabricUiAction::LeaveSpeakerGroup {
@@ -494,10 +536,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             actions.push(DeviceAction {
                 id: format!(
                     "speakers.play.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.audio-source.v1",
-                        &source.token.to_le_bytes()
-                    ),
+                    source_token(source.token),
                     speaker_id(group.id)
                 ),
                 title: t_args(
@@ -553,6 +592,8 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
     }
 
     for device in eligible.iter().copied().filter(|device| device.display) {
+        let token = device_token(&device.id);
+        let title_args = [("device", device.label.as_str().into())];
         for (edge, edge_name, title_key) in [
             (DisplayEdge::Left, "left", "search-continuity-place-left"),
             (DisplayEdge::Right, "right", "search-continuity-place-right"),
@@ -564,14 +605,8 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             ),
         ] {
             actions.push(DeviceAction {
-                id: format!(
-                    "spatial.place.{edge_name}.{}",
-                    opaque(
-                        "so.tilo.continuity.device.v1",
-                        device.id.as_str().as_bytes()
-                    )
-                ),
-                title: t_args(title_key, &[("device", device.label.as_str().into())]),
+                id: format!("spatial.place.{edge_name}.{token}"),
+                title: t_args(title_key, &title_args),
                 subtitle: t("search-continuity-place-subtitle"),
                 action: DeviceFabricUiAction::Place {
                     device: device.id.clone(),
@@ -580,83 +615,58 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 confirm: true,
             });
         }
-        let (title_key, action) = if device.controls_local {
+        let controller = device.id.clone();
+        let (verb, title_key, action) = if device.controls_local {
             (
+                "revoke",
                 "search-continuity-control-revoke",
-                DeviceFabricUiAction::RevokeControl {
-                    controller: device.id.clone(),
-                },
+                DeviceFabricUiAction::RevokeControl { controller },
             )
         } else {
             (
+                "grant",
                 "search-continuity-control-grant",
-                DeviceFabricUiAction::GrantControl {
-                    controller: device.id.clone(),
-                },
+                DeviceFabricUiAction::GrantControl { controller },
             )
         };
         actions.push(DeviceAction {
-            id: format!(
-                "spatial.control.{}.{}",
-                if device.controls_local {
-                    "revoke"
-                } else {
-                    "grant"
-                },
-                opaque(
-                    "so.tilo.continuity.device.v1",
-                    device.id.as_str().as_bytes()
-                )
-            ),
-            title: t_args(title_key, &[("device", device.label.as_str().into())]),
+            id: format!("spatial.control.{verb}.{token}"),
+            title: t_args(title_key, &title_args),
             subtitle: t("search-continuity-control-subtitle"),
             action,
             confirm: !device.controls_local,
         });
     }
     for proposal in &view.calibration_proposals {
-        for (verb, action) in [
+        let token = device_token(&proposal.peer);
+        let title_args = [("device", label_for(&proposal.peer).into())];
+        let device = || proposal.peer.clone();
+        for (verb, title_key, action, confirm) in [
             (
                 "apply",
-                DeviceFabricUiAction::ApplyCalibration {
-                    device: proposal.peer.clone(),
-                },
+                "search-continuity-calibration-apply",
+                DeviceFabricUiAction::ApplyCalibration { device: device() },
+                true,
             ),
             (
                 "dismiss",
-                DeviceFabricUiAction::DismissCalibration {
-                    device: proposal.peer.clone(),
-                },
+                "search-continuity-calibration-dismiss",
+                DeviceFabricUiAction::DismissCalibration { device: device() },
+                false,
             ),
         ] {
             actions.push(DeviceAction {
-                id: format!(
-                    "spatial.calibration.{verb}.{}",
-                    opaque(
-                        "so.tilo.continuity.device.v1",
-                        proposal.peer.as_str().as_bytes()
-                    )
-                ),
-                title: t_args(
-                    if verb == "apply" {
-                        "search-continuity-calibration-apply"
-                    } else {
-                        "search-continuity-calibration-dismiss"
-                    },
-                    &[("device", label_for(&proposal.peer).into())],
-                ),
+                id: format!("spatial.calibration.{verb}.{token}"),
+                title: t_args(title_key, &title_args),
                 subtitle: t("search-continuity-calibration-subtitle"),
                 action,
-                confirm: verb == "apply",
+                confirm,
             });
         }
     }
     for peer in &view.revertible_calibrations {
         actions.push(DeviceAction {
-            id: format!(
-                "spatial.calibration.revert.{}",
-                opaque("so.tilo.continuity.device.v1", peer.as_str().as_bytes())
-            ),
+            id: format!("spatial.calibration.revert.{}", device_token(peer)),
             title: t_args(
                 "search-continuity-calibration-revert",
                 &[("device", label_for(peer).into())],
@@ -669,110 +679,12 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
 
-    for consent in &view.display_mirror_consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-mirror-allow"),
-            (false, "search-continuity-mirror-decline"),
-        ] {
-            actions.push(DeviceAction {
-                id: format!(
-                    "display.mirror.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque(
-                        "so.tilo.continuity.display-mirror-session.v1",
-                        &consent.session_id
-                    )
-                ),
-                title: t_args(
-                    title_key,
-                    &[("device", consent.source_label.as_str().into())],
-                ),
-                subtitle: t("search-continuity-mirror-consent-subtitle"),
-                action: DeviceFabricUiAction::ResolveDisplayMirror {
-                    session_id: consent.session_id,
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
-    }
-    for status in &view.display_mirrors {
-        if !matches!(
-            status.phase,
-            DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
-        ) {
-            actions.push(DeviceAction {
-                id: format!(
-                    "display.mirror.stop.{}",
-                    opaque(
-                        "so.tilo.continuity.display-mirror-session.v1",
-                        &status.session_id
-                    )
-                ),
-                title: t_args(
-                    "search-continuity-mirror-stop",
-                    &[("device", status.peer_label.as_str().into())],
-                ),
-                subtitle: t("search-continuity-mirror-stop-subtitle"),
-                action: DeviceFabricUiAction::StopDisplayMirror {
-                    session_id: status.session_id,
-                },
-                confirm: false,
-            });
-        }
-    }
-    if view.display_mirror_available {
-        for target in eligible
-            .iter()
-            .copied()
-            .filter(|device| device.video_output)
-        {
-            let already_active = view.display_mirrors.iter().any(|status| {
-                status.outbound
-                    && status.peer == target.id
-                    && !matches!(
-                        status.phase,
-                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
-                    )
-            });
-            if !already_active {
-                actions.push(DeviceAction {
-                    id: format!(
-                        "display.mirror.request.{}",
-                        opaque(
-                            "so.tilo.continuity.device.v1",
-                            target.id.as_str().as_bytes()
-                        )
-                    ),
-                    title: t_args(
-                        "search-continuity-mirror-request",
-                        &[("device", target.label.as_str().into())],
-                    ),
-                    subtitle: t("search-continuity-mirror-request-subtitle"),
-                    action: DeviceFabricUiAction::RequestDisplayMirror {
-                        target: target.id.clone(),
-                    },
-                    confirm: true,
-                });
-            }
-        }
-    }
-
-    let tethering_peers = view
-        .tethering
-        .iter()
-        .map(|status| &status.peer)
-        .collect::<Vec<_>>();
-    for phone in eligible
-        .iter()
-        .copied()
-        .filter(|device| device.kind == DeviceKind::Phone && !tethering_peers.contains(&&device.id))
-    {
+    for phone in eligible.iter().copied().filter(|device| {
+        device.kind == DeviceKind::Phone
+            && !view.tethering.iter().any(|status| status.peer == device.id)
+    }) {
         actions.push(DeviceAction {
-            id: format!(
-                "tether.request.{}",
-                opaque("so.tilo.continuity.device.v1", phone.id.as_str().as_bytes())
-            ),
+            id: format!("tether.request.{}", device_token(&phone.id)),
             title: t_args(
                 "search-continuity-tether-request",
                 &[("device", phone.label.as_str().into())],
@@ -785,37 +697,28 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
     for status in &view.tethering {
+        let token = opaque("so.tilo.continuity.tether-request.v1", &status.request_id);
+        let title_args = [("device", status.peer_label.as_str().into())];
         if status.phase == TetheringPhase::ConsentRequired {
-            for (approved, title_key) in [
-                (true, "search-continuity-tether-allow"),
-                (false, "search-continuity-tether-decline"),
-            ] {
-                actions.push(DeviceAction {
-                    id: format!(
-                        "tether.consent.{}.{}",
-                        if approved { "allow" } else { "decline" },
-                        opaque("so.tilo.continuity.tether-request.v1", &status.request_id)
-                    ),
-                    title: t_args(title_key, &[("device", status.peer_label.as_str().into())]),
-                    subtitle: t("search-continuity-tether-consent-subtitle"),
-                    action: DeviceFabricUiAction::AuthorizePhoneTethering {
-                        request_id: status.request_id,
-                        approved,
-                    },
-                    confirm: approved,
-                });
-            }
+            actions.extend(consent_pair(
+                "tether",
+                &token,
+                [
+                    "search-continuity-tether-allow",
+                    "search-continuity-tether-decline",
+                ],
+                &title_args,
+                "search-continuity-tether-consent-subtitle",
+                |approved| DeviceFabricUiAction::AuthorizePhoneTethering {
+                    request_id: status.request_id,
+                    approved,
+                },
+            ));
         }
         if status.can_disconnect() {
             actions.push(DeviceAction {
-                id: format!(
-                    "tether.disconnect.{}",
-                    opaque("so.tilo.continuity.tether-request.v1", &status.request_id)
-                ),
-                title: t_args(
-                    "search-continuity-tether-disconnect",
-                    &[("device", status.peer_label.as_str().into())],
-                ),
+                id: format!("tether.disconnect.{token}"),
+                title: t_args("search-continuity-tether-disconnect", &title_args),
                 subtitle: t("search-continuity-tether-disconnect-subtitle"),
                 action: DeviceFabricUiAction::DisconnectPhoneTethering {
                     request_id: status.request_id,
@@ -825,80 +728,125 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
 
-    let receiver_kinds = [
-        (
-            RemoteCaptureKind::Camera,
-            view.remote_capture.local_receivers.camera,
-            "camera",
-            "search-continuity-capture-camera",
-        ),
-        (
-            RemoteCaptureKind::Microphone,
-            view.remote_capture.local_receivers.microphone,
-            "microphone",
-            "search-continuity-capture-microphone",
-        ),
-        (
-            RemoteCaptureKind::DocumentScanner,
-            view.remote_capture.local_receivers.scanner,
-            "scanner",
-            "search-continuity-capture-scanner",
-        ),
-    ];
-    for peer in &eligible {
-        for (kind, available, name, title_key) in receiver_kinds {
-            if available {
-                actions.push(DeviceAction {
-                    id: format!(
-                        "capture.request.{name}.{}",
-                        opaque("so.tilo.continuity.device.v1", peer.id.as_str().as_bytes())
-                    ),
-                    title: t_args(title_key, &[("device", peer.label.as_str().into())]),
-                    subtitle: t("search-continuity-capture-request-subtitle"),
-                    action: DeviceFabricUiAction::RequestRemoteCapture {
-                        peer: peer.id.clone(),
-                        kind,
-                    },
-                    confirm: true,
-                });
-            }
-        }
-    }
-    for consent in &view.remote_capture.consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-capture-allow"),
-            (false, "search-continuity-capture-decline"),
+    for unlock in &view.device_unlocks {
+        let device = if unlock.device_label.is_empty() {
+            t("search-continuity-certified-device")
+        } else {
+            unlock.device_label.clone()
+        };
+        for (approved, verb, title_key) in [
+            (true, "approve", "search-continuity-unlock-approve"),
+            (false, "deny", "search-continuity-unlock-deny"),
         ] {
             actions.push(DeviceAction {
+                // The code is the one the waiting boot shows.
                 id: format!(
-                    "capture.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque("so.tilo.continuity.capture-request.v1", &consent.request_id)
+                    "{}.{verb}.{}",
+                    crate::shell::device_unlock::DEVICE_UNLOCK_ACTION,
+                    unlock.approval_code
                 ),
-                title: t_args(title_key, &[("app", consent.app_label.as_str().into())]),
-                subtitle: t("search-continuity-capture-consent-subtitle"),
-                action: DeviceFabricUiAction::AuthorizeRemoteCapture {
-                    request_id: consent.request_id,
+                title: t_args(
+                    title_key,
+                    &[
+                        ("device", device.as_str().into()),
+                        ("code", unlock.approval_code.as_str().into()),
+                    ],
+                ),
+                subtitle: t("search-continuity-unlock-subtitle"),
+                action: DeviceFabricUiAction::AuthorizeDeviceUnlock {
+                    request_digest: unlock.request_digest,
                     approved,
                 },
                 confirm: approved,
             });
         }
     }
+    for device in view.devices.iter().filter(|device| !device.is_local) {
+        actions.push(DeviceAction {
+            id: format!("device.remove.{}", device_token(&device.id)),
+            title: t_args(
+                "search-continuity-device-remove",
+                &[("device", device.label.as_str().into())],
+            ),
+            subtitle: t("search-continuity-device-remove-subtitle"),
+            action: DeviceFabricUiAction::RemoveDevice {
+                device: device.id.clone(),
+            },
+            confirm: true,
+        });
+    }
+
+    let receivers = &view.remote_capture.local_receivers;
+    let receiver_kinds = [
+        (
+            RemoteCaptureKind::Camera,
+            receivers.camera,
+            "camera",
+            "search-continuity-capture-camera",
+        ),
+        (
+            RemoteCaptureKind::Microphone,
+            receivers.microphone,
+            "microphone",
+            "search-continuity-capture-microphone",
+        ),
+        (
+            RemoteCaptureKind::DocumentScanner,
+            receivers.scanner,
+            "scanner",
+            "search-continuity-capture-scanner",
+        ),
+    ];
+    for peer in &eligible {
+        for (kind, _, name, title_key) in receiver_kinds
+            .iter()
+            .copied()
+            .filter(|(_, available, ..)| *available)
+        {
+            actions.push(DeviceAction {
+                id: format!("capture.request.{name}.{}", device_token(&peer.id)),
+                title: t_args(title_key, &[("device", peer.label.as_str().into())]),
+                subtitle: t("search-continuity-capture-request-subtitle"),
+                action: DeviceFabricUiAction::RequestRemoteCapture {
+                    peer: peer.id.clone(),
+                    kind,
+                },
+                confirm: true,
+            });
+        }
+    }
+    for consent in &view.remote_capture.consents {
+        actions.extend(consent_pair(
+            "capture",
+            &opaque("so.tilo.continuity.capture-request.v1", &consent.request_id),
+            [
+                "search-continuity-capture-allow",
+                "search-continuity-capture-decline",
+            ],
+            &[("app", consent.app_label.as_str().into())],
+            "search-continuity-capture-consent-subtitle",
+            |approved| DeviceFabricUiAction::AuthorizeRemoteCapture {
+                request_id: consent.request_id,
+                approved,
+            },
+        ));
+    }
     for session in &view.remote_capture.sessions {
         let Some(session_id) = session.session_id else {
             continue;
         };
-        let (title_key, action, confirm) = if session.receiving
+        let (verb, title_key, action, confirm) = if session.receiving
             && session.phase == RemoteCaptureSessionPhase::AppApprovalRequired
         {
             (
+                "approve",
                 "search-continuity-capture-approve-app",
                 DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id },
                 true,
             )
         } else {
             (
+                "stop",
                 "search-continuity-capture-stop",
                 DeviceFabricUiAction::StopRemoteCapture { session_id },
                 false,
@@ -906,8 +854,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         };
         actions.push(DeviceAction {
             id: format!(
-                "capture.session.{}.{}",
-                if confirm { "approve" } else { "stop" },
+                "capture.session.{verb}.{}",
                 opaque("so.tilo.continuity.capture-session.v1", &session_id)
             ),
             title: t_args(title_key, &[("device", label_for(&session.peer).into())]),
@@ -937,66 +884,52 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 },
                 confirm: false,
             });
-        } else {
-            for target in &eligible {
-                actions.push(DeviceAction {
-                    id: format!(
-                        "controller.start.{}.{}",
-                        opaque(
-                            "so.tilo.continuity.controller-source.v1",
-                            &gamepad.token.to_le_bytes()
-                        ),
-                        opaque(
-                            "so.tilo.continuity.device.v1",
-                            target.id.as_str().as_bytes()
-                        )
-                    ),
-                    title: t_args(
-                        "search-continuity-controller-start",
-                        &[
-                            ("controller", gamepad.name.as_str().into()),
-                            ("device", target.label.as_str().into()),
-                        ],
-                    ),
-                    subtitle: t("search-continuity-controller-start-subtitle"),
-                    action: DeviceFabricUiAction::StartPhysicalGamepad {
-                        source_token: gamepad.token,
-                        target: target.id.clone(),
-                    },
-                    confirm: true,
-                });
-            }
+            continue;
+        }
+        let source = opaque(
+            "so.tilo.continuity.controller-source.v1",
+            &gamepad.token.to_le_bytes(),
+        );
+        for target in &eligible {
+            actions.push(DeviceAction {
+                id: format!("controller.start.{source}.{}", device_token(&target.id)),
+                title: t_args(
+                    "search-continuity-controller-start",
+                    &[
+                        ("controller", gamepad.name.as_str().into()),
+                        ("device", target.label.as_str().into()),
+                    ],
+                ),
+                subtitle: t("search-continuity-controller-start-subtitle"),
+                action: DeviceFabricUiAction::StartPhysicalGamepad {
+                    source_token: gamepad.token,
+                    target: target.id.clone(),
+                },
+                confirm: true,
+            });
         }
     }
     for authorization in &view.gamepad_authorizations {
-        for (approved, title_key) in [
-            (true, "search-continuity-controller-allow"),
-            (false, "search-continuity-controller-decline"),
-        ] {
-            actions.push(DeviceAction {
-                id: format!(
-                    "controller.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque(
-                        "so.tilo.continuity.controller-forwarding.v1",
-                        &authorization.forwarding_id
-                    )
-                ),
-                title: t_args(
-                    title_key,
-                    &[
-                        ("controller", authorization.controller_label.as_str().into()),
-                        ("device", authorization.source_label.as_str().into()),
-                    ],
-                ),
-                subtitle: t("search-continuity-controller-consent-subtitle"),
-                action: DeviceFabricUiAction::AuthorizeGamepadForwarding {
-                    forwarding_id: authorization.forwarding_id,
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
+        actions.extend(consent_pair(
+            "controller",
+            &opaque(
+                "so.tilo.continuity.controller-forwarding.v1",
+                &authorization.forwarding_id,
+            ),
+            [
+                "search-continuity-controller-allow",
+                "search-continuity-controller-decline",
+            ],
+            &[
+                ("controller", authorization.controller_label.as_str().into()),
+                ("device", authorization.source_label.as_str().into()),
+            ],
+            "search-continuity-controller-consent-subtitle",
+            |approved| DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                forwarding_id: authorization.forwarding_id,
+                approved,
+            },
+        ));
     }
     actions
 }
@@ -1077,22 +1010,13 @@ fn page_results(
         end = end.saturating_add(1);
     }
     let exhausted = end == results.len();
-    SearchPage {
-        revision: revision.clone(),
-        // end starts at start and only grows, so this cannot saturate.
-        results: results
-            .into_iter()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect(),
-        next_cursor: (!exhausted).then(|| SearchCursor {
-            revision,
-            token: end.to_string(),
-        }),
-        exhausted,
-        stale_cursor: false,
-        budget_exhausted: !exhausted,
-    }
+    // end starts at start and only grows, so this cannot saturate.
+    let results = results
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    SearchPage::continuing(revision, results, (!exhausted).then(|| end.to_string()))
 }
 
 fn device_projection(
@@ -1102,53 +1026,95 @@ fn device_projection(
     view: &DeviceFabricView,
 ) -> (String, Vec<SearchResult>) {
     let actions = device_actions(view);
+    let wake = wake_row(view);
     let revision = projection_revision(
         "so.tilo.continuity.device-action-revision.v1",
         ctx.needle,
-        actions.iter().map(|entry| {
-            (
-                entry.id.as_str(),
-                entry.title.as_str(),
-                entry.subtitle.as_str(),
-                entry.confirm,
-                format!("{:?}", entry.action),
-            )
-        }),
+        actions
+            .iter()
+            .map(ContinuityAction::revision_row)
+            .chain(wake.as_ref().map(|(title, subtitle)| {
+                (
+                    WAKE_ACTION_ID,
+                    title.as_str(),
+                    subtitle.as_str(),
+                    false,
+                    String::new(),
+                )
+            })),
     );
-    let fields: Vec<_> = actions
-        .iter()
-        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
-        .collect();
+    let mut fields: Vec<_> = actions.iter().map(ContinuityAction::fields).collect();
+    let wake_result = wake.map(|(title, subtitle)| {
+        fields.push(action_fields(&title, &subtitle, WAKE_ACTION_ID));
+        wake_search_result(bridge, title, subtitle)
+    });
     let results = actions
         .into_iter()
         .map(|entry| {
             let bridge = Rc::clone(bridge);
-            let expected = entry.action.clone();
-            let confirm = entry.confirm;
-            SearchResult {
-                kind: ResourceKind::Action,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                provider_id: DEVICE_PROVIDER_ID.into(),
-                id: entry.id,
-                title: entry.title,
-                subtitle: Some(entry.subtitle),
-                badge: None,
-                score: 0,
-                params: confirmation_params(confirm),
-                contract: Some(contract(confirm)),
-                on_open: Rc::new(move |_doc, _root, _chrome, args| {
-                    ensure_confirmed(args, confirm)?;
-                    dispatch_device_action(&bridge, &expected, true, confirm)
-                }),
-                on_invoke: None,
-                on_begin_invoke: None,
-            }
+            // `into_result` has already demanded any required confirmation.
+            entry.into_result(DEVICE_PROVIDER_ID, move |expected| {
+                dispatch_device_action(&bridge, expected, true, true)
+            })
         })
+        .chain(wake_result)
         .collect();
     (
         revision,
         crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
     )
+}
+
+/// Wake one of the person's sleeping devices, named by device id or label.
+pub const WAKE_ACTION_ID: &str = "device.wake";
+
+/// The wake row's title and subtitle, offered while the person has another
+/// device to wake.
+fn wake_row(view: &DeviceFabricView) -> Option<(String, String)> {
+    view.devices.iter().any(|device| !device.is_local).then(|| {
+        (
+            t("search-continuity-wake-device"),
+            t("search-continuity-wake-device-subtitle"),
+        )
+    })
+}
+
+fn wake_search_result(
+    bridge: &DeviceFabricBridge,
+    title: String,
+    subtitle: String,
+) -> SearchResult {
+    let bridge = Rc::clone(bridge);
+    SearchResult {
+        shortcut: None,
+        kind: ResourceKind::Action,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        provider_id: DEVICE_PROVIDER_ID.into(),
+        id: WAKE_ACTION_ID.into(),
+        title,
+        subtitle: Some(subtitle),
+        badge: None,
+        score: 0,
+        params: vec![ActionParam::required(
+            "device",
+            ParamType::Text,
+            "The device to wake: its name or its device id",
+        )],
+        contract: Some(contract(false)),
+        on_open: Rc::new(move |_doc, _root, _chrome, args| {
+            let device = args
+                .text("device")
+                .filter(|device| !device.trim().is_empty())
+                .ok_or_else(|| ActionError::Refused("name the device to wake".into()))?;
+            bridge(DeviceFabricUiAction::WakeDevice {
+                device: device.to_owned(),
+            })
+            .map_err(ActionError::Refused)?;
+            Ok(())
+        }),
+        on_invoke: None,
+        on_begin_invoke: None,
+    }
 }
 
 pub struct DeviceContinuityActionsProvider {
@@ -1232,10 +1198,7 @@ fn call_actions(
                         "so.tilo.continuity.call-session.v1",
                         source.session.as_bytes()
                     ),
-                    opaque(
-                        "so.tilo.continuity.device.v1",
-                        target.id.as_str().as_bytes()
-                    )
+                    device_token(&target.id)
                 ),
                 title: t_args(
                     "search-continuity-call-move",
@@ -1254,28 +1217,23 @@ fn call_actions(
         }
     }
     for consent in &view.consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-call-allow"),
-            (false, "search-continuity-call-decline"),
-        ] {
-            actions.push(CallAction {
-                id: format!(
-                    "call.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque(
-                        "so.tilo.continuity.call-session.v1",
-                        consent.session.as_bytes()
-                    )
-                ),
-                title: t_args(title_key, &[("room", consent.room_label.as_str().into())]),
-                subtitle: t("search-continuity-call-consent-subtitle"),
-                action: RealtimeContinuityUiAction::ResolveConsent {
-                    session: consent.session.clone(),
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
+        actions.extend(consent_pair(
+            "call",
+            &opaque(
+                "so.tilo.continuity.call-session.v1",
+                consent.session.as_bytes(),
+            ),
+            [
+                "search-continuity-call-allow",
+                "search-continuity-call-decline",
+            ],
+            &[("room", consent.room_label.as_str().into())],
+            "search-continuity-call-consent-subtitle",
+            |approved| RealtimeContinuityUiAction::ResolveConsent {
+                session: consent.session.clone(),
+                approved,
+            },
+        ));
     }
     actions
 }
@@ -1292,58 +1250,30 @@ fn call_projection(
     let revision = projection_revision(
         "so.tilo.continuity.call-action-revision.v1",
         ctx.needle,
-        actions.iter().map(|entry| {
-            (
-                entry.id.as_str(),
-                entry.title.as_str(),
-                entry.subtitle.as_str(),
-                entry.confirm,
-                format!("{:?}", entry.action),
-            )
-        }),
+        actions.iter().map(ContinuityAction::revision_row),
     );
-    let fields: Vec<_> = actions
-        .iter()
-        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
-        .collect();
+    let fields: Vec<_> = actions.iter().map(ContinuityAction::fields).collect();
     let results = actions
         .into_iter()
         .map(|entry| {
             let realtime = Rc::clone(realtime);
             let device_bridge = Rc::clone(device_bridge);
-            let expected = entry.action.clone();
-            let confirm = entry.confirm;
-            SearchResult {
-                kind: ResourceKind::Action,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                provider_id: CALL_PROVIDER_ID.into(),
-                id: entry.id,
-                title: entry.title,
-                subtitle: Some(entry.subtitle),
-                badge: None,
-                score: 0,
-                params: confirmation_params(confirm),
-                contract: Some(contract(confirm)),
-                on_open: Rc::new(move |_doc, _root, _chrome, args| {
-                    ensure_confirmed(args, confirm)?;
-                    let current = realtime(RealtimeContinuityUiAction::Snapshot)
-                        .map_err(ActionError::Refused)?;
-                    let devices = device_bridge(DeviceFabricUiAction::SnapshotFresh)
-                        .map_err(ActionError::Refused)?;
-                    if !call_actions(&current, &devices)
-                        .iter()
-                        .any(|entry| entry.action == expected)
-                    {
-                        return Err(ActionError::Refused(
-                            "call handoff action is no longer available".into(),
-                        ));
-                    }
-                    realtime(expected.clone()).map_err(ActionError::Refused)?;
-                    Ok(())
-                }),
-                on_invoke: None,
-                on_begin_invoke: None,
-            }
+            entry.into_result(CALL_PROVIDER_ID, move |expected| {
+                let current =
+                    realtime(RealtimeContinuityUiAction::Snapshot).map_err(ActionError::Refused)?;
+                let devices = device_bridge(DeviceFabricUiAction::SnapshotFresh)
+                    .map_err(ActionError::Refused)?;
+                if !call_actions(&current, &devices)
+                    .iter()
+                    .any(|entry| entry.action == *expected)
+                {
+                    return Err(ActionError::Refused(
+                        "call handoff action is no longer available".into(),
+                    ));
+                }
+                realtime(expected.clone()).map_err(ActionError::Refused)?;
+                Ok(())
+            })
         })
         .collect();
     (
@@ -1471,6 +1401,7 @@ impl ContinueFromDeviceProvider {
     ) -> SearchResult {
         let expected = expected.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: CONTINUE_PROVIDER_ID.into(),
@@ -1588,7 +1519,6 @@ impl SearchProvider for ContinueFromDeviceProvider {
 mod tests {
     use crate::shell::state::FreshId as _;
     use std::cell::RefCell;
-    use std::sync::Arc;
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -1596,7 +1526,6 @@ mod tests {
     use crate::shell::personal_continuity::DeviceId;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
 
     fn device(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()
@@ -1649,22 +1578,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            display_mirror_consents: vec![
-                crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
-                    session_id: [0x46; 16],
-                    source_label: "Laptop".into(),
-                },
-            ],
-            display_mirrors: vec![
-                crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
-                    session_id: [0x47; 16],
-                    peer: device("mirror-peer-secret-id"),
-                    peer_label: "Desk display".into(),
-                    outbound: false,
-                    phase: DisplayMirrorPhase::Streaming,
-                },
-            ],
-            display_mirror_available: true,
             tethering: vec![
                 crate::shell::personal_tethering_runtime::TetheringStatusView {
                     request_id: [0x43; 16],
@@ -1687,7 +1600,7 @@ mod tests {
             .workspaces
             .push(Workspace::new(id, "Continuity"));
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 
@@ -1706,13 +1619,10 @@ mod tests {
                 for secret in [
                     "certified-peer-secret-looking-id",
                     "private-session-token",
-                    "mirror-peer-secret-id",
                     "2f6465762f",
                     "43434343",
                     "44444444",
                     "45454545",
-                    "46464646",
-                    "47474747",
                 ] {
                     assert!(
                         !descriptor.contains(secret),
@@ -1725,13 +1635,6 @@ mod tests {
                     == DeviceFabricUiAction::AuthorizeBluetoothHandoff {
                         request_id: [0x44; 16],
                         approved: true,
-                    }
-                    && action.confirm
-            }));
-            assert!(actions.iter().any(|action| {
-                action.action
-                    == DeviceFabricUiAction::RequestDisplayMirror {
-                        target: device("certified-peer-secret-looking-id"),
                     }
                     && action.confirm
             }));
@@ -1750,7 +1653,7 @@ mod tests {
         // Phase `speaker_groups_project_consent_play_and_leave_without_disclosing_ids`.
         {
             use crate::shell::speaker_group::{
-                EndpointSelector, SpeakerGroupId, SpeakerMemberState, SpeakerRole, SpeakerTrim,
+                EndpointSelector, SpeakerGroupId, SpeakerMemberStatus, SpeakerRole, SpeakerTrim,
                 StereoSide,
             };
             use crate::shell::speaker_group_runtime::{
@@ -1808,7 +1711,7 @@ mod tests {
                     output_label: None,
                     role: SpeakerRole::Stereo(StereoSide::Left),
                     trim: SpeakerTrim::default(),
-                    state: SpeakerMemberState::Ready,
+                    state: SpeakerMemberStatus::Ready,
                 }],
             });
             let actions = device_actions(&view);
@@ -1879,9 +1782,6 @@ mod tests {
         // Phase `dynamic_revision_changes_and_more_than_one_page_is_reachable`.
         {
             let mut view = fixture();
-            view.display_mirror_available = false;
-            view.display_mirror_consents.clear();
-            view.display_mirrors.clear();
             view.devices = (0..60)
                 .map(|index| FabricDeviceView {
                     id: device(&format!("certified-device-{index}")),
@@ -1910,6 +1810,8 @@ mod tests {
             let doc = AutoCommit::new();
             let wanted = [ResourceKind::Action];
             let context = |needle| SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &wanted,
                 chrome: &chrome,
@@ -1997,42 +1899,43 @@ mod tests {
         }
     }
 
+    fn continuity_test_group(
+        id: u64,
+        tab_id: u64,
+        title: &str,
+    ) -> crate::shell::state::WindowGroup {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: title.into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: title.into(),
+                    note: String::new(),
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }
+    }
+
     #[test]
     fn palette_continue_focuses_the_offered_tab_and_then_retires() {
         use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
         use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         let workspace = tree.desktop.workspaces[0].id;
         let strip = tree.desktop.workspaces[0].strips[0].id;
-        let tab = |id: u64, title: &str| Tab {
-            id,
-            title: title.into(),
-            tile: TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: title.into(),
-                note: String::new(),
-            },
-        };
         tree.desktop.workspaces[0].strips[0].window_groups = vec![
-            WindowGroup {
-                id: 1,
-                tabs: vec![tab(11, "Terminal")],
-                active_tab: 11,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
-            WindowGroup {
-                id: 2,
-                tabs: vec![tab(22, "Notes")],
-                active_tab: 22,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
+            continuity_test_group(1, 11, "Terminal"),
+            continuity_test_group(2, 22, "Notes"),
         ];
         tree.desktop.active = workspace;
         tree.desktop.active_strip.insert(workspace, strip);
@@ -2083,7 +1986,12 @@ mod tests {
         catalog
             .select(&ResourceRef::new(CONTINUE_PROVIDER_ID, CONTINUE_ID))
             .expect("continue row")
-            .invoke(&mut doc, &automerge::ROOT, &chrome, [])
+            .invoke(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                [],
+            )
             .expect("accepted");
         let focused_group = chrome
             .borrow()

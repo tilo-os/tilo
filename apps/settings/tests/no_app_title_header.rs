@@ -1,25 +1,16 @@
 //! The OS draws the window chrome; the app must NOT draw its own title / app-
 //! name header (that would duplicate the compositor's window-group pill). This
 //! guards the removal of the old in-pane **app-name** title and the sidebar's
-//! "Personal Settings" title. A category page heading is intentional: it says
-//! where the detail screen is, especially after a narrow-screen back affordance.
+//! "Personal Settings" title. The category's name is the page's heading, in
+//! the shell's header row: it says where the detail screen is, especially
+//! after a narrow-screen back affordance.
 //!
 //! It asserts on the real composed tree: it walks every widget's accessibility
 //! node (a `Text`'s accessible name *is* its rendered string) and proves the
 //! app name is not painted anywhere, while the title is still exposed the
 //! sanctioned way — through `AppWidget::app_title`, which the OS reads for the
-//! pill. The selected category's label and subtitle are deliberately rendered
-//! as the content page's hierarchy, not as a duplicate app header.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
+//! pill. The selected category's label is the page's heading, not a duplicate
+//! app header, and there is no subtitle under it.
 
 use settings::SettingsApp;
 use settings::categories::Category;
@@ -39,13 +30,21 @@ fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
     )
 }
 
-/// Every accessible name rendered anywhere in the composed tree.
+/// Every accessible name rendered anywhere in the composed tree, including
+/// the nodes a widget publishes for parts it paints itself (the shell's
+/// column headings).
 fn rendered_names(app: &SettingsApp) -> Vec<String> {
-    fn walk(w: &dyn Widget, out: &mut Vec<String>) {
-        if let Some(node) = w.accessibility()
-            && let Some(name) = node.name
-        {
+    fn collect(node: ui::a11y::AccessNode, out: &mut Vec<String>) {
+        if let Some(name) = node.name.clone() {
             out.push(name);
+        }
+        for child in node.children {
+            collect(child, out);
+        }
+    }
+    fn walk(w: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(node) = w.accessibility() {
+            collect(node, out);
         }
         for c in w.children() {
             walk(c, out);
@@ -54,6 +53,19 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
     let mut out = Vec::new();
     walk(app, &mut out);
     out
+}
+
+/// Whether the tree publishes a heading named `label`.
+fn has_heading(app: &SettingsApp, label: &str) -> bool {
+    fn found(node: &ui::a11y::AccessNode, label: &str) -> bool {
+        (matches!(node.role, ui::a11y::Role::Heading { .. }) && node.name.as_deref() == Some(label))
+            || node.children.iter().any(|child| found(child, label))
+    }
+    fn walk(w: &dyn Widget, label: &str) -> bool {
+        w.accessibility().is_some_and(|node| found(&node, label))
+            || w.children().into_iter().any(|c| walk(c, label))
+    }
+    walk(app, label)
 }
 
 /// The title is exposed through the app widget and no pane draws it.
@@ -72,8 +84,8 @@ fn app_title_lives_only_in_the_window_chrome() {
     {
         let config = crate::support::ScratchConfig::new();
         // Across a representative set of categories, the app must never paint its
-        // own name. It must paint the selected destination and its explanatory
-        // subtitle so the detail pane stands on its own outside the sidebar.
+        // own name. The selected destination is the page's heading in the
+        // window's header row, with no tagline under it.
         for &cat in &[
             Category::Network,
             Category::ExternalAccounts,
@@ -90,13 +102,13 @@ fn app_title_lives_only_in_the_window_chrome() {
              (the OS pill carries it); rendered names were {names:?}"
             );
             assert!(
-                names.iter().any(|n| *n == cat.label()),
-                "{cat:?}: the selected settings destination needs an in-content heading; \
+                has_heading(&app, &cat.label()),
+                "{cat:?}: the selected settings destination is the page's heading; \
              rendered names were {names:?}"
             );
             assert!(
-                names.iter().any(|n| *n == cat.subtitle()),
-                "{cat:?}: the heading needs its explanatory subtitle; rendered names were {names:?}"
+                !names.iter().any(|n| *n == cat.subtitle()),
+                "{cat:?}: a heading has no tagline under it; rendered names were {names:?}"
             );
         }
     }

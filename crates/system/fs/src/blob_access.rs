@@ -23,13 +23,14 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use collab_types::FileRecordId;
+use fs_protocol::FileRecordId;
 use iroh_blobs::Hash;
 
 use crate::acl::IdentityKey;
 use crate::namespace::{LiveBlobOwner, Namespace};
 use crate::store::ContentStore;
 use crate::sync::PeerPolicy;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// Chunk entries held by the decoded-manifest cache (about 40 bytes each).
 const MANIFEST_CHUNK_BUDGET: u64 = 2 * 1024 * 1024;
@@ -103,16 +104,12 @@ impl BlobAccessIndex {
     }
 
     fn heads(&self) -> Vec<automerge::ChangeHash> {
-        self.namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads()
+        self.namespace.lock_recover().heads()
     }
 
     fn cached(&self, heads: &[automerge::ChangeHash]) -> Option<Arc<Snapshot>> {
         self.snapshot
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .as_ref()
             .filter(|snapshot| snapshot.heads == heads)
             .cloned()
@@ -126,10 +123,7 @@ impl BlobAccessIndex {
         // One rebuild at a time; concurrent requests wait for it.
         let _rebuild = self.rebuild.lock().await;
         let (heads, owners) = {
-            let mut namespace = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut namespace = self.namespace.lock_recover();
             let heads = namespace.heads();
             if let Some(snapshot) = self.cached(&heads) {
                 return snapshot;
@@ -140,10 +134,7 @@ impl BlobAccessIndex {
             heads,
             roots: index_owners(owners),
         });
-        *self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&snapshot));
+        *self.snapshot.write_recover() = Some(Arc::clone(&snapshot));
         snapshot
     }
 

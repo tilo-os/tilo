@@ -1,0 +1,112 @@
+{
+  "cohort": "analysis sessions only, fixed before error inspection",
+  "baseline": {
+    "records": 9602,
+    "literal": {
+      "eligible": 9356,
+      "in_vocabulary": 7627,
+      "top1_correct": 6214,
+      "top3_correct": 7051,
+      "top8_correct": 7324,
+      "top64_correct": 7519
+    },
+    "lexical": {
+      "eligible": 9348,
+      "in_vocabulary": 8705,
+      "top1_correct": 6991,
+      "top3_correct": 7969,
+      "top8_correct": 8311,
+      "top64_correct": 8567
+    },
+    "no_candidates": 0,
+    "known_target_missing_from_top64": 138
+  },
+  "trials": [
+    {
+      "prior_hundredths": 25,
+      "statistics": {
+        "records": 9602,
+        "literal": {
+          "eligible": 9356,
+          "in_vocabulary": 7627,
+          "top1_correct": 6568,
+          "top3_correct": 7184,
+          "top8_correct": 7390,
+          "top64_correct": 7519
+        },
+        "lexical": {
+          "eligible": 9348,
+          "in_vocabulary": 8705,
+          "top1_correct": 7491,
+          "top3_correct": 8184,
+          "top8_correct": 8424,
+          "top64_correct": 8567
+        },
+        "no_candidates": 0,
+        "known_target_missing_from_top64": 138
+      },
+      "decode_p50_us": 3191,
+      "decode_p95_us": 7935
+    },
+    {
+      "prior_hundredths": 50,
+      "statistics": {
+        "records": 9602,
+        "literal": {
+          "eligible": 9356,
+          "in_vocabulary": 7627,
+          "top1_correct": 6762,
+          "top3_correct": 7278,
+          "top8_correct": 7422,
+          "top64_correct": 7519
+        },
+        "lexical": {
+          "eligible": 9348,
+          "in_vocabulary": 8705,
+          "top1_correct": 7690,
+          "top3_correct": 8288,
+          "top8_correct": 8459,
+          "top64_correct": 8567
+        },
+        "no_candidates": 0,
+        "known_target_missing_from_top64": 138
+      },
+      "decode_p50_us": 3342,
+      "decode_p95_us": 8190
+    },
+    {
+      "prior_hundredths": 100,
+      "statistics": {
+        "records": 9602,
+        "literal": {
+          "eligible": 9356,
+          "in_vocabulary": 7627,
+          "top1_correct": 6839,
+          "top3_correct": 7343,
+          "top8_correct": 7459,
+          "top64_correct": 7519
+        },
+        "lexical": {
+          "eligible": 9348,
+          "in_vocabulary": 8705,
+          "top1_correct": 7765,
+          "top3_correct": 8351,
+          "top8_correct": 8496,
+          "top64_correct": 8567
+        },
+        "no_candidates": 0,
+        "known_target_missing_from_top64": 138
+      },
+      "decode_p50_us": 3173,
+      "decode_p95_us": 7851
+    }
+  ],
+  "frozen_choice": {
+    "prior_hundredths": 100,
+    "shortlist": 64,
+    "samples": 32,
+    "band": 6,
+    "endpoint_weight": 0.15
+  },
+  "fixture_sha256": "8234c8ffff0b426c76ae26a28e3194ab68049491e6abde16cd16bc573d28bd37"
+}

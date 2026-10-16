@@ -1,0 +1,184 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "ebook.library"
+label = "Books"
+version = 1
+fields = [
+  { path = "entries", type = "Collection<LibraryEntry>", stored = "collection" },
+  { path = "entries.*.id", type = "String", readonly = true },
+  { path = "entries.*.shared", type = "bool", readonly = true },
+  { path = "entries.*.title", type = "String", label = true },
+  { path = "entries.*.author", type = "String" },
+  { path = "entries.*.subject", type = "String" },
+  { path = "entries.*.added", type = "u64", readonly = true },
+  { path = "entries.*.content", type = "Bytes", readonly = true },
+  { path = "progress", type = "Map<Progress>" },
+  { path = "settings", type = "Settings", stored = "record" },
+  { path = "settings.font_scale", type = "f32" },
+  { path = "settings.line_spacing", type = "f32" },
+  { path = "settings.font_id", type = "String" },
+  { path = "settings.theme", type = "ReadTheme" },
+  { path = "settings.scheme_id", type = "String" },
+  { path = "settings.mode", type = "ReadMode" },
+  { path = "settings.composition", type = "CompositionStyle" },
+  { path = "default_font", type = "Atom" },
+  { path = "prefs", type = "LibraryPrefs", stored = "record" },
+  { path = "prefs.sort", type = "LibrarySort" },
+  { path = "prefs.hide_read", type = "bool" },
+  { path = "fonts", type = "Collection<FontEntry>", stored = "collection" },
+  { path = "fonts.*.id", type = "String", readonly = true },
+  { path = "fonts.*.kind", type = "FontKind" },
+  { path = "fonts.*.name", type = "String", label = true },
+  { path = "fonts.*.size_mult", type = "f32" },
+  { path = "fonts.*.shown", type = "bool" },
+  { path = "schemes", type = "Collection<ColorScheme>", stored = "collection" },
+  { path = "schemes.*.id", type = "String", readonly = true },
+  { path = "schemes.*.name", type = "String", label = true },
+  { path = "schemes.*.page", type = "[u8; 3]" },
+  { path = "schemes.*.ink", type = "[u8; 3]" },
+  { path = "schemes.*.accent", type = "[u8; 3]" },
+  { path = "schemes.*.dark", type = "bool" },
+  { path = "schemes.*.enabled", type = "bool" },
+  { path = "schemes.*.builtin", type = "bool", readonly = true },
+  { path = "annotations", type = "Collection<Mark>", stored = "collection", unit = true },
+  { path = "annotations.*.id", type = "Uuid", readonly = true },
+  { path = "annotations.*.doc_id", type = "String", readonly = true },
+  { path = "annotations.*.kind", type = "AnnoKind", readonly = true },
+  { path = "annotations.*.chapter", type = "usize" },
+  { path = "annotations.*.block", type = "usize" },
+  { path = "annotations.*.start", type = "usize" },
+  { path = "annotations.*.end", type = "usize" },
+  { path = "annotations.*.excerpt", type = "String", label = true },
+  { path = "annotations.*.text", type = "RichText", ops = "sha256:1ce89d3350d639da" },
+  { path = "annotations.*.color", type = "HiColor" },
+  { path = "annotations.*.created", type = "u64" },
+  { path = "annotations.*.group", type = "Uuid", readonly = true },
+]
+
+[[resources.verbs]]
+id = "shelve"
+kind = "undoable"
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "author", required = true, schema = { type = "string" } },
+  { name = "subject", required = true, schema = { type = "string" } },
+  { name = "shared", required = true, schema = { type = "boolean" } },
+  { name = "content", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { hash = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["hash", "size"] } },
+]
+
+[[resources.verbs]]
+id = "shelve-found"
+kind = "undoable"
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "author", required = true, schema = { type = "string" } },
+  { name = "subject", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-from-library"
+destructive = true
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-progress"
+kind = "undoable"
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "chapter", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "block", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "fraction", required = true, schema = { type = "number" } },
+  { name = "opened", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "add-note"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "passage", required = true, schema = { type = "object", additionalProperties = false, properties = { block = { type = "integer", minimum = 0 }, book = { type = "string" }, chapter = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, excerpt = { type = "string" }, start = { type = "integer", minimum = 0 } }, required = ["book", "chapter", "block", "start", "end", "excerpt"] } },
+  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-comment"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "highlight", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "toggle-bookmark"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "chapter", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "block", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "excerpt", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "highlight"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "chapter", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+  { name = "replacing", required = true, schema = { type = "array", items = { type = "string", format = "uuid" } } },
+  { name = "pieces", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { block = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, excerpt = { type = "string" }, start = { type = "integer", minimum = 0 } }, required = ["block", "start", "end", "excerpt"] } } },
+]
+
+[[resources.verbs]]
+id = "change-color"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "highlight", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+]
+
+[[resources.verbs]]
+id = "delete-highlight"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "highlight", required = true, schema = { type = "string", format = "uuid" } },
+]
+
+[[resources.verbs]]
+id = "delete-annotation"
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "annotation", required = true, schema = { type = "string", format = "uuid" } },
+]
+
+[[resources.verbs]]
+id = "remove-font"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "font", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-scheme"
+destructive = true
+kind = "undoable"
+writes = ["record", "annotations.*"]
+params = [
+  { name = "scheme", required = true, schema = { type = "string" } },
+]
+

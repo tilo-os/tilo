@@ -381,10 +381,6 @@ impl Drop for XrgbHistoryTransaction<'_> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the bounded history fixtures use fixed, in-bounds test coordinates and dimensions"
-)]
 mod tests {
     use super::*;
 

@@ -6,9 +6,6 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo app store — surfaces Tilo registry entries and legacy Flatpak apps in one list."
 
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
 
 [lib]
 name = "store"
@@ -24,16 +21,18 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
 app-cli = { path = "../../crates/packaging/app-cli" }
-app-host = { path = "../../crates/packaging/app-host" }
+# The app host's client side only. Its daemon (`service`) is the privileged
+# door this app talks to over the launcher-issued capability, not code it
+# links; with it, the content store and the filesystem would also land in
+# the shared runtime every app maps.
+app-host = { path = "../../crates/packaging/app-host", default-features = false }
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
 registry-types = { path = "../../crates/packaging/registry-types" }
@@ -42,10 +41,8 @@ blake3.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
 tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -58,6 +55,12 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+base64.workspace = true
+flate2.workspace = true
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
+app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support"] }
+capnp.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

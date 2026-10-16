@@ -89,6 +89,7 @@ impl Device {
                 },
                 online: self.online,
                 last_seen_unix_ms: self.counter,
+                wake_routes: Vec::new(),
                 stamp: FabricStamp {
                     counter: self.counter,
                     device: owner,
@@ -99,6 +100,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: self.core.authored(endpoints, &stamp(self.name)),
         };
         assert_eq!(fabric.upsert(snapshot), Ok(true));
@@ -207,8 +209,8 @@ fn a_new_group_asks_only_remote_members_and_the_member_sees_one_prompt() {
     assert_eq!(
         fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
         vec![
-            SpeakerMemberState::Ready,
-            SpeakerMemberState::AwaitingConsent
+            SpeakerMemberStatus::Ready,
+            SpeakerMemberStatus::AwaitingConsent
         ]
     );
     shelf.handle(&fabric, &invites[0], "desk", now);
@@ -229,7 +231,7 @@ fn approving_authors_a_membership_that_makes_the_member_ready() {
     let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
     assert_eq!(
         fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
-        vec![SpeakerMemberState::Ready, SpeakerMemberState::Ready]
+        vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
     );
     assert!(
         shelf
@@ -554,8 +556,8 @@ fn changing_a_members_role_voids_its_consent_and_asks_again() {
     assert_eq!(
         fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
         vec![
-            SpeakerMemberState::Ready,
-            SpeakerMemberState::AwaitingConsent
+            SpeakerMemberStatus::Ready,
+            SpeakerMemberStatus::AwaitingConsent
         ]
     );
     shelf.core.pump(&fabric, &shelf.id(), true, now);
@@ -581,7 +583,7 @@ fn a_calibration_trim_keeps_consent() {
     assert_eq!(published.member(&shelf.id()).unwrap().trim, trim);
     assert_eq!(
         fabric.speaker_member_states(published),
-        vec![SpeakerMemberState::Ready, SpeakerMemberState::Ready]
+        vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
     );
     assert!(
         desk.core

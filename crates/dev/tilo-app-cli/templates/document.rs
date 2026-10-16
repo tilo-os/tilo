@@ -9,20 +9,10 @@ pub struct Document {
     pub body: String,
 }
 
+/// Each field is edited at its path (`Document::paths().title`); the verbs
+/// are what one field edit cannot say.
 #[resource(kind = "generated.document", label = "Document")]
 impl Document {
-    /// Set the document title.
-    #[action]
-    pub fn set_title(&mut self, #[param("Document title")] title: String) {
-        self.title = title;
-    }
-
-    /// Set the document body.
-    #[action]
-    pub fn set_body(&mut self, #[param("Document body")] body: String) {
-        self.body = body;
-    }
-
     /// Replace the title and body in one undo step.
     #[action]
     pub fn set_content(
@@ -49,6 +39,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
         if document.title.trim().is_empty() {
@@ -59,13 +53,13 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
-        crate::install_catalog();
+        let p = cx.paths();
         let title = cx
-            .input(|document| document.title.clone(), Document::SET_TITLE)
+            .input(p.title)
             .with_id("document-title-input")
             .with_placeholder("document-title-placeholder");
         let body = cx
-            .input(|document| document.body.clone(), Document::SET_BODY)
+            .input(p.body)
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
             .multiline(true);

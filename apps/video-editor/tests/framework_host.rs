@@ -1,21 +1,21 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! The editor hosted by the app framework: its custom timeline keeps its own
 //! rendering and input, and every edit it makes takes the host's path —
 //! permission-checked, one undo step, attributed, replayable.
 
 use ui::prelude::*;
-use video_editor::actions::{VideoEditorAction, load_project_action};
-use video_editor::doc::sample_project;
-use video_editor::{VideoEditor, VideoProject};
+use ui::tilo_resource::Id;
+use video_editor::resource::load_project;
+use video_editor::seed::sample_project;
+use video_editor::{Project, VideoEditor};
 
 fn with_sample() -> HeadlessApp<VideoEditor> {
     let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
-    // The demo project goes in through the generic typed `apply` action — the
+    // The demo project goes in as one field edit of the whole project — the
     // same door a script or an agent would use to submit a whole edit.
-    // Replacing the whole project is destructive, so it is confirmed.
-    let invoke = Invoke::<VideoProject>::apply(&load_project_action(&sample_project())).unwrap();
-    app.invoke_confirmed(invoke).unwrap();
+    app.invoke_confirmed(Invoke::edit(&load_project(&sample_project())).unwrap())
+        .unwrap();
     app
 }
 
@@ -36,9 +36,10 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         for resource in &resources {
             walk(resource, &mut ids);
         }
-        assert!(ids.iter().any(|id| id == "video_editor.project"), "{ids:?}");
+        assert!(ids.iter().any(|id| id == "video-editor.project"), "{ids:?}");
         assert!(
-            ids.iter().any(|id| id.starts_with("video.clip:")),
+            ids.iter()
+                .any(|id| id.starts_with("video-editor.project/clips/")),
             "{ids:?}"
         );
     }
@@ -51,8 +52,10 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         assert_eq!(app.state().markers.len(), markers + 1);
         let last = app.versions().pop().unwrap();
         assert!(
-            last.summary()
-                .is_some_and(|summary| summary.contains("Project")),
+            last.context
+                .as_ref()
+                .and_then(|context| context.what.as_ref())
+                .is_some_and(|what| matches!(what, ui::tilo_actions::Did::Edit(_))),
             "{last:?}"
         );
         assert!(app.undo());
@@ -99,7 +102,7 @@ fn host_declarations_roles_and_replay_are_honoured() {
     // Case `named_declarations_are_offered_to_the_palette_and_agents`.
     {
         let mut app = with_sample();
-        app.invoke(VideoProject::ADD_MARKER.with((12.5, "Chorus".into())))
+        app.invoke(Project::PLACE_MARKER.with((12.5, "Chorus".into())))
             .unwrap();
         assert!(
             app.state()
@@ -107,14 +110,13 @@ fn host_declarations_roles_and_replay_are_honoured() {
                 .iter()
                 .any(|marker| marker.name == "Chorus")
         );
-        let refused = app.invoke(VideoProject::ADD_MARKER.with((-1.0, "Before time".into())));
+        let refused = app.invoke(Project::PLACE_MARKER.with((-1.0, "Before time".into())));
         assert!(refused.is_err());
     }
     // Case `a_viewer_sees_the_timeline_but_cannot_change_it`.
     {
         let mut app = HeadlessApp::<VideoEditor>::with_role(ui::Role::Viewer).unwrap();
-        let invoke =
-            Invoke::<VideoProject>::apply(&load_project_action(&sample_project())).unwrap();
+        let invoke = Invoke::edit(&load_project(&sample_project())).unwrap();
         assert!(app.invoke_confirmed(invoke).is_err());
         app.harness().click_named("video_editor_root").unwrap();
         app.harness().key("m");
@@ -122,19 +124,21 @@ fn host_declarations_roles_and_replay_are_honoured() {
     }
     // Case `existing_actions_replay_byte_identically_through_the_resource_contract`.
     {
-        let mut origin = Replica::<VideoProject>::new();
+        let mut origin = Replica::<Project>::new();
         let mut peer = origin.fork();
         origin
-            .apply_action(&load_project_action(&sample_project()), "Open project")
+            .apply(Invoke::edit(&load_project(&sample_project())).unwrap())
             .unwrap();
-        let first = origin.state().unwrap().clips.first().unwrap().id;
+        // A clip with no linked clips, so the delete takes exactly one.
+        let state = origin.state().unwrap();
+        let lone = state
+            .clips
+            .iter()
+            .find(|clip| state.link_partners(clip.id).is_empty())
+            .unwrap()
+            .id;
         origin
-            .apply_action(
-                &VideoEditorAction::DeleteClip {
-                    id: first.to_string(),
-                },
-                "Delete clip",
-            )
+            .apply_confirmed(Project::REMOVE_CLIP.with(Id::from_raw(lone.to_string())))
             .unwrap();
         for envelope in origin.log().to_vec() {
             peer.replay(&envelope).unwrap();
@@ -145,10 +149,6 @@ fn host_declarations_roles_and_replay_are_honoured() {
             sample_project().clips.len() - 1
         );
     }
-}
-
-fn typed(action: &VideoEditorAction) -> Invoke<VideoProject> {
-    Invoke::<VideoProject>::apply(action).unwrap()
 }
 
 #[test]
@@ -162,21 +162,36 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         // A trim — any edit that keeps the work — applies directly.
         let mut trimmed = clip.clone();
         trimmed.out_point = trimmed.in_point + (trimmed.out_point - trimmed.in_point) / 2.0;
-        app.invoke(typed(&video_editor::actions::upsert_clip_action(&trimmed)))
-            .unwrap();
+        let clip_key = Id::from_raw(clip.id.to_string());
+        app.invoke(
+            Invoke::edit(
+                &Project::paths()
+                    .clips
+                    .item(&clip_key)
+                    .out_point
+                    .set(trimmed.out_point),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let stored = app.state().clip(clip.id).cloned().unwrap();
         assert!((stored.out_point - trimmed.out_point).abs() < 1e-9);
 
         // Deleting it is destructive: refused until confirmed, like a declared
         // destructive action.
-        let delete = typed(&video_editor::actions::delete_clip_action(&clip.id));
+        let delete = Project::REMOVE_CLIP.with(clip_key);
         assert!(matches!(
             app.invoke(delete.clone()),
             Err(tilo_actions::DoorError::ConfirmationRequired)
         ));
         assert_eq!(app.state().clips.len(), clips, "nothing was deleted");
+        let partners = app.state().link_partners(clip.id).len();
         app.invoke_confirmed(delete).unwrap();
-        assert_eq!(app.state().clips.len(), clips - 1);
+        assert_eq!(
+            app.state().clips.len(),
+            clips - 1 - partners,
+            "the clip goes with the clips linked to it"
+        );
     }
     // Case `a_delete_key_on_the_surface_waits_for_confirmation`.
     {
@@ -203,4 +218,46 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         app.harness().key("Delete");
         assert_eq!(app.state().clips.len(), clips);
     }
+}
+
+#[test]
+fn edits_bound_to_the_playhead_reach_the_door() {
+    let mut app = with_sample();
+    let clip = app
+        .state()
+        .clips
+        .iter()
+        .max_by(|a, b| a.duration().total_cmp(&b.duration()))
+        .cloned()
+        .expect("the sample has clips");
+    let at = clip.start + clip.duration() / 2.0;
+    let clips = app.state().clips.len();
+
+    // An agent names the clip and the instant; the editor's view supplies
+    // the rest of the project the cut is made in.
+    app.call(
+        "split-clip",
+        serde_json::json!({ "clip": clip.id.to_string(), "at": at }),
+    )
+    .expect("the split is offered on the project");
+    assert!(app.state().clips.len() > clips, "the clip was cut");
+    assert!(app.undo(), "the cut is one undo step");
+    assert_eq!(app.state().clips.len(), clips);
+
+    // A mark sets the render range and nothing else.
+    let name = app.state().name;
+    app.call("mark-in", serde_json::json!({ "at": at }))
+        .expect("marking is offered on the project");
+    let marked = app.state();
+    assert_eq!(marked.mark_in, Some(at));
+    assert_eq!(marked.name, name);
+
+    // A time the clip does not cover is refused, not applied somewhere else.
+    assert!(
+        app.call(
+            "split-clip",
+            serde_json::json!({ "clip": clip.id.to_string(), "at": clip.end() + 1000.0 }),
+        )
+        .is_err()
+    );
 }

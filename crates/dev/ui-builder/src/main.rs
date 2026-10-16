@@ -1,41 +1,82 @@
+//! A native visual editor for Tilo serialized UI graphs: `tilo-ui-builder
+//! FILE` opens the graph in FILE and saves it back there.
+//!
+//! The graph is the file, not a document: the app's resource holds nothing,
+//! and the editor is the surface over it.
+
 use std::path::{Path, PathBuf};
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, run_or_exit};
-use ui::persist::DocWriter;
-use ui::{State, Theme, UiGraphEditor, UiGraphHandle, Widget};
+use ui::framework::{ResourceApp, ResourceSurface, ViewCx};
+use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
+use ui::widget::{Decorator, Element, Text};
+use ui::{Theme, UiGraphEditor, UiGraphHandle};
 
-const APP_ID: &str = "so.tilo.ui-builder";
+/// The editor's resource: the door its window is published on. The graph it
+/// edits is the file the launch names.
+struct UiGraph;
 
-fn main() {
-    run_or_exit(
-        &LaunchSpec::new_with_args(APP_ID, root)
-            .max_positionals(1)
-            .open_state_with_args(transient_preview_state),
-    );
+impl Resource for UiGraph {
+    const KIND: &'static str = "ui-builder.graph";
+    const LABEL: &'static str = "UI graph";
+    const ACTION_TYPE: &'static str = "ui-builder.action";
+
+    type State = ();
+    type Action = NoAction;
+
+    fn read(_doc: &Doc) -> Result<(), ModelError> {
+        Ok(())
+    }
 }
 
-fn transient_preview_state(_: &'static str, _: &LaunchArgs) -> (State, DocWriter) {
-    (
-        State::new(),
-        DocWriter::disabled("UI builder preview state is session-local"),
-    )
+struct UiBuilder;
+
+impl ResourceApp for UiBuilder {
+    type Resource = UiGraph;
+    const ID: &'static str = "so.tilo.ui-builder";
+    const TITLE: &'static str = "UI Builder";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<UiGraph>) -> Element {
+        let Some(path) = cx.launch_arguments().first().map(PathBuf::from) else {
+            return Box::new(Text::new("tilo-ui-builder requires a UI graph path"));
+        };
+        match editor(&path) {
+            Ok(editor) => cx.surface(GraphSurface(editor)),
+            Err(error) => Box::new(Text::new(&error)),
+        }
+    }
 }
 
-fn root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let path = args
-        .positionals()
-        .first()
-        .map(PathBuf::from)
-        .ok_or_else(|| LaunchError::Operation("tilo-ui-builder requires a UI graph path".into()))?;
-    let source =
-        std::fs::read_to_string(&path).map_err(|error| operation("read", &path, &error))?;
+/// The editor of the graph in `path`, saving back to it.
+fn editor(path: &Path) -> Result<UiGraphEditor, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
     let handle = UiGraphHandle::from_json(&source)
-        .map_err(|error| LaunchError::Operation(format!("invalid {}: {error}", path.display())))?;
-    let save_path = path.clone();
-    let editor = UiGraphEditor::new(handle, Theme::dark())
-        .map_err(|error| LaunchError::Operation(format!("build {}: {error}", path.display())))?
-        .on_save(move |source| save(&save_path, source));
-    Ok(Box::new(editor))
+        .map_err(|error| format!("invalid {}: {error}", path.display()))?;
+    let save_path = path.to_path_buf();
+    Ok(UiGraphEditor::new(handle, Theme::dark())
+        .map_err(|error| format!("build {}: {error}", path.display()))?
+        .on_save(move |source| save(&save_path, source)))
+}
+
+/// The graph editor as the surface over the app's resource, which holds
+/// nothing for it to present.
+struct GraphSurface(UiGraphEditor);
+
+impl Decorator for GraphSurface {
+    type Inner = UiGraphEditor;
+
+    fn inner(&self) -> &UiGraphEditor {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut UiGraphEditor {
+        &mut self.0
+    }
+}
+
+impl ResourceSurface<UiGraph> for GraphSurface {
+    fn present(&mut self, _state: &std::rc::Rc<()>) {}
 }
 
 fn save(path: &Path, source: &str) -> Result<(), String> {
@@ -48,45 +89,11 @@ fn save(path: &Path, source: &str) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt as _;
 
         let mode = std::fs::metadata(path).map_or(0o644, |metadata| metadata.permissions().mode());
-        atomic_file::write_with_mode(path, canonical.as_bytes(), mode)
+        tilo_files::native::atomic::write_with_mode(path, canonical.as_bytes(), mode)
     };
     #[cfg(not(unix))]
-    let result = atomic_file::write(path, canonical.as_bytes());
+    let result = tilo_files::native::atomic::write(path, canonical.as_bytes());
     result.map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-fn operation(action: &str, path: &Path, error: &std::io::Error) -> LaunchError {
-    LaunchError::Operation(format!("{action} {}: {error}", path.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt as _;
-
-    #[test]
-    fn save_replaces_a_graph_without_leaving_a_partial_file() {
-        let directory = std::env::temp_dir().join(format!(
-            "tilo-ui-builder-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("save")
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("screen.json");
-        std::fs::write(&path, "long previous contents").unwrap();
-        #[cfg(unix)]
-        {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        }
-        save(&path, "{}").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
-        #[cfg(unix)]
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o640
-        );
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_dir(directory).unwrap();
-    }
-}
+ui::main!(UiBuilder);

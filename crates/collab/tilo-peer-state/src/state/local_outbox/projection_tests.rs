@@ -18,6 +18,7 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
         .collect::<Vec<_>>();
     let original_bytes = postcard::to_allocvec(&originals).unwrap();
     let reservation = member
+        .outbox()
         .reserve_local_recovery(&originals, None, key.verifying_key().to_bytes())
         .unwrap();
     assert_eq!(reservation.entries(), 1);
@@ -29,6 +30,7 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
         let old = projection.clone();
         let before_projection = member.clone();
         projection = member
+            .outbox_mut()
             .reconcile_local_recovery_projection(&originals, None, &old, &key, later)
             .unwrap();
         assert_eq!(projection.len(), 1);
@@ -73,6 +75,7 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
         }
         assert_eq!(postcard::to_allocvec(&originals).unwrap(), original_bytes);
         member
+            .outbox()
             .validate_local_recovery_projection(
                 &originals,
                 None,
@@ -92,6 +95,7 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
         )
         .unwrap();
         member
+            .outbox()
             .validate_local_recovery_projection(
                 &originals,
                 None,
@@ -120,11 +124,13 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
     checkpoint(&mut governor, &mut member, &governor_key, later, true);
     assert!(originals.iter().all(|message| {
         member
+            .outbox()
             .retained_local_document_retired(message, key.verifying_key().to_bytes())
             .unwrap()
     }));
     assert!(
         member
+            .outbox_mut()
             .reconcile_local_recovery_projection(&originals, None, &projection, &key, later)
             .unwrap()
             .is_empty()
@@ -140,11 +146,13 @@ fn local_projection_legacy_history_does_not_require_invented_original_signatures
     let history = member.clone();
     let original_history = history.durable().unwrap();
     let reservation = member
+        .outbox()
         .reserve_local_recovery(&[], Some(&history), key.verifying_key().to_bytes())
         .unwrap();
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(&[], Some(&history), &[], &key, later)
         .unwrap();
     assert_eq!(projection.len(), reservation.entries());
@@ -157,7 +165,12 @@ fn local_projection_legacy_history_does_not_require_invented_original_signatures
         )
         .unwrap();
     checkpoint(&mut governor, &mut member, &governor_key, later, true);
-    assert!(member.retained_local_history_retired(&history).unwrap());
+    assert!(
+        member
+            .outbox()
+            .retained_local_history_retired(&history)
+            .unwrap()
+    );
     assert_eq!(history.durable().unwrap(), original_history);
 }
 
@@ -168,6 +181,7 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(std::slice::from_ref(&first), None, &[], &key, later)
         .unwrap();
     let NeighbourMsg::AppDocument {
@@ -195,12 +209,14 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     assert!(next_sequence > reserved.seq);
     assert!(
         member
+            .outbox()
             .lookup_retained_local_document(&first, key.verifying_key().to_bytes())
             .unwrap()
             .is_some()
     );
     assert!(
         member
+            .outbox()
             .lookup_retained_local_document(&second, key.verifying_key().to_bytes())
             .unwrap()
             .is_some()
@@ -208,6 +224,7 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     let before = member.durable().unwrap();
     assert!(
         member
+            .outbox_mut()
             .reconcile_local_recovery_projection(
                 &[first.clone(), second.clone()],
                 None,
@@ -222,6 +239,7 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let before = member.clone();
     let refreshed = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(&[first, second], None, &projection, &key, later)
         .unwrap();
     assert!(member.admissions_since(&before).unwrap().is_empty());
@@ -242,6 +260,7 @@ fn local_projection_lost_reply_then_durable_governor_ack_retires_before_resignin
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -262,11 +281,13 @@ fn local_projection_lost_reply_then_durable_governor_ack_retires_before_resignin
     let before = member.durable().unwrap();
     assert!(
         member
+            .outbox()
             .retained_local_document_retired(&original, key.verifying_key().to_bytes())
             .unwrap()
     );
     assert!(
         member
+            .outbox_mut()
             .reconcile_local_recovery_projection(&[original], None, &projection, &key, reconnected)
             .unwrap()
             .is_empty()
@@ -281,6 +302,7 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let first = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -291,10 +313,12 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
         .unwrap();
     let unrelated = local_edit(&mut member, &key, later, false, "unrelated");
     let unrelated_projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(&[unrelated], None, &[], &key, later)
         .unwrap();
     assert!(
         member
+            .outbox()
             .validate_local_recovery_projection(
                 std::slice::from_ref(&original),
                 None,
@@ -305,6 +329,7 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
     );
     assert!(
         member
+            .outbox()
             .validate_local_recovery_projection(
                 std::slice::from_ref(&original),
                 None,
@@ -332,12 +357,13 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
             }
             2 => *record_id = "wrong-record".into(),
             _ => {
-                envelope.op_class = OpClass::Redact;
+                envelope.kind = OpKind::Redaction;
                 collab_types::sign_op(envelope, &key).unwrap();
             }
         }
         assert!(
             member
+                .outbox()
                 .validate_local_recovery_projection(
                     std::slice::from_ref(&original),
                     None,
@@ -360,6 +386,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -369,6 +396,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
         )
         .unwrap();
     member
+        .outbox()
         .authorize_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -385,15 +413,29 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     room_doc.set_actor(automerge::ActorId::from(
         governor_key.verifying_key().to_bytes().to_vec(),
     ));
-    let caps = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let role = member
+    let caps = room_doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let person = member
         .permissions(key.verifying_key().to_bytes(), later)
         .unwrap()
-        .0;
-    let restriction = collab_types::caps::CapOverride::restrict_role_in_app(
-        role,
-        "test.app",
-        collab_types::caps::Verb::Read,
+        .person;
+    // The structural owner cannot be restricted: hand the room to someone
+    // else and keep this person as an editor, then restrict them.
+    room_doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
+    room_doc
+        .put(
+            &members,
+            person.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+        )
+        .unwrap();
+    let restriction = tilo_action_policy::Grant::new(
+        "projection-write-denial",
+        tilo_action_policy::Subject::Person(person.clone()),
+        tilo_action_policy::TreePath::room(member.room()).app("test.app"),
+        tilo_action_policy::KindSet::UNDOABLE.union(tilo_action_policy::KindSet::OUTSIDE),
+        tilo_action_policy::Answer::Deny,
+        tilo_action_policy::Subject::Role(collab_types::Role::Owner),
     );
     room_doc
         .put(
@@ -429,6 +471,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
         "membership alone is insufficient"
     );
     member
+        .outbox()
         .validate_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -437,6 +480,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
         )
         .unwrap();
     member
+        .outbox()
         .reserve_local_recovery(
             std::slice::from_ref(&original),
             None,
@@ -445,6 +489,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
         .unwrap();
     assert!(
         member
+            .outbox()
             .authorize_local_recovery_projection(
                 std::slice::from_ref(&original),
                 None,
@@ -456,6 +501,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     );
     assert!(
         member
+            .outbox_mut()
             .reconcile_local_recovery_projection(&[original], None, &projection, &key, later)
             .is_err()
     );
@@ -469,6 +515,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -498,6 +545,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
         .unwrap();
     let before = member.durable().unwrap();
     member
+        .outbox()
         .validate_local_recovery_projection(
             std::slice::from_ref(&original),
             None,
@@ -507,6 +555,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
         .unwrap();
     assert!(
         member
+            .outbox()
             .authorize_local_recovery_projection(
                 std::slice::from_ref(&original),
                 None,
@@ -518,6 +567,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
     );
     assert!(
         member
+            .outbox_mut()
             .reconcile_local_recovery_projection(&[original], None, &projection, &key, later)
             .is_err()
     );
@@ -535,6 +585,7 @@ fn local_projection_reservation_bounds_actual_binary_and_decimal_floor_serializa
         };
         let history = member.clone();
         let reservation = member
+            .outbox()
             .reserve_local_recovery(&originals, Some(&history), key.verifying_key().to_bytes())
             .unwrap();
         let before = member.durable().unwrap();
@@ -589,7 +640,14 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     let base = branch.get_heads();
     branch.set_actor(automerge::ActorId::from(vec![71; 32]));
     branch.put(ROOT, "small-independent", true).unwrap();
-    let large = local_edit(&mut member, &key, now, true, &"large".repeat(500));
+    branch.commit_edit("fixture", "small-independent");
+    // Large even compressed: the projection compresses its history.
+    let large_text = (0..1200_u64).fold(String::new(), |mut text, n| {
+        use std::fmt::Write as _;
+        let _ = write!(text, "{:x}", n.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        text
+    });
+    let large = local_edit(&mut member, &key, now, true, &large_text);
     let small = member
         .publish_incremental("test.app", "tab:1", branch.save_after(&base), &key, now)
         .unwrap();
@@ -616,6 +674,7 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     let later = now + Duration::from_secs(301);
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let projection = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(
             &[large.clone(), small.clone()],
             None,
@@ -627,15 +686,18 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     checkpoint(&mut governor, &mut member, &governor_key, later, true);
     assert!(
         member
+            .outbox()
             .retained_local_document_retired(&large, key.verifying_key().to_bytes())
             .unwrap()
     );
     assert!(
         !member
+            .outbox()
             .retained_local_document_retired(&small, key.verifying_key().to_bytes())
             .unwrap()
     );
     let reserve = member
+        .outbox()
         .reserve_local_recovery(
             std::slice::from_ref(&small),
             None,
@@ -643,6 +705,7 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
         )
         .unwrap();
     let replacement = member
+        .outbox_mut()
         .reconcile_local_recovery_projection(&[small], None, &projection, &key, later)
         .unwrap();
     assert!(publication_size(&replacement).unwrap() <= reserve.max_encoded_bytes());
@@ -657,6 +720,7 @@ fn local_projection_late_previous_and_replacement_converge_in_either_order() {
         let later = now + Duration::from_secs(301);
         checkpoint(&mut governor, &mut member, &governor_key, later, false);
         let old = member
+            .outbox_mut()
             .reconcile_local_recovery_projection(
                 std::slice::from_ref(&first),
                 None,
@@ -667,6 +731,7 @@ fn local_projection_late_previous_and_replacement_converge_in_either_order() {
             .unwrap();
         let second = local_edit(&mut member, &key, later, false, "new-effect");
         let current = member
+            .outbox_mut()
             .reconcile_local_recovery_projection(
                 &[first.clone(), second.clone()],
                 None,
@@ -707,6 +772,7 @@ fn local_projection_late_previous_and_replacement_converge_in_either_order() {
         for original in [first, second] {
             assert!(
                 member
+                    .outbox()
                     .retained_local_document_retired(&original, key.verifying_key().to_bytes())
                     .unwrap()
             );
@@ -723,11 +789,13 @@ fn local_projection_legacy_history_cannot_regress_a_genuine_reserved_floor() {
     checkpoint(&mut governor, &mut member, &governor_key, later, false);
     let mut later_history = member.clone();
     later_history
+        .outbox_mut()
         .reconcile_local_recovery_projection(&[original], None, &[], &key, later)
         .unwrap();
     assert!(later_history.admissions_since(&member).unwrap().is_empty());
     assert!(
         member
+            .outbox()
             .reserve_local_recovery(&[], Some(&later_history), key.verifying_key().to_bytes())
             .is_err(),
         "real history with a later reserved floor cannot be recovered into a regressed peer"

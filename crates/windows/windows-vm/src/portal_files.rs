@@ -11,7 +11,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::io::AsRawFd as _;
-use std::os::unix::io::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,14 +76,7 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| {
-            // SAFETY: `geteuid` only reads the process credentials and has no
-            // preconditions.
-            let uid = unsafe { libc::geteuid() };
-            PathBuf::from(format!("/run/user/{uid}"))
-        })
-        .join("tilo/windows-vm/leases")
+    tilo_paths::xdg::runtime_dir_or_default().join("tilo/windows-vm/leases")
 }
 
 impl PortalDocumentStore {
@@ -147,20 +139,6 @@ impl PortalDocumentStore {
             .map_err(|_| portal_error("portal document store is unavailable"))?
             .insert(handle.clone(), document);
         Ok(PortalDocumentGrant { handle, access })
-    }
-
-    /// Registers the descriptor received over the compatibility service's
-    /// `SCM_RIGHTS` portal handoff.  This makes the descriptor boundary
-    /// explicit at the service/compositor seam and avoids ever reopening a
-    /// client-supplied pathname.
-    pub fn register_owned_fd(
-        &self,
-        workspace_id: &str,
-        application_id: &str,
-        source: OwnedFd,
-        access: PortalDocumentAccess,
-    ) -> Result<PortalDocumentGrant, LaunchError> {
-        self.register(workspace_id, application_id, File::from(source), access)
     }
 
     fn materialize(
@@ -331,7 +309,7 @@ impl CapabilityBroker for PortalRailCapabilityBroker {
         // a partially-live lease.
         let shares = self.documents.materialize(&lease_id, request)?;
         let network_proxy = if request.grants.network {
-            match crate::GuestNetworkProxy::start(request.grants.network_hosts.clone()) {
+            match crate::GuestNetworkProxy::start(&request.grants.network_hosts) {
                 Ok(proxy) => Some(proxy),
                 Err(error) => {
                     let _ = self.documents.revoke_checked(&lease_id);
@@ -493,10 +471,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn portal_projections_follow_their_lease_mode_and_never_replaced_links() {
         // Phase `read_only_portal_file_is_projected_under_only_its_lease_and_revoked`.
         {

@@ -11,18 +11,6 @@
 //! separate, administrator-authorised recovery operation and is intentionally
 //! absent from the public launch API.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 #![allow(
     clippy::missing_errors_doc,
     reason = "public traits expose typed boundary failures documented by their error enums"

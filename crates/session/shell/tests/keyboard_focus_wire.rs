@@ -5,27 +5,21 @@
 //! go to the *new* focus, exactly once; sending it back to the old surface
 //! would contradict the Wayland ordering and create a stuck key.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
+#![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 #![allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+
+use crate::support::wayland::foreign_id;
 
 #[derive(Debug, PartialEq, Eq)]
 enum KeyboardWire {
@@ -40,49 +34,25 @@ struct Client {
     keyboard: Vec<KeyboardWire>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 fn surface_id(surface: &wl_surface::WlSurface) -> u32 {
     surface.id().protocol_id()
 }
 
-/// Construct the same minimal `WindowEvent` that the DRM/test-control input
-/// adapters feed to the capture path. `KeyEvent` keeps platform data private,
-/// hence zero-init plus the fields consumed by the compositor.
+/// Construct the same minimal `WindowEvent` that the DRM/test-control input adapters feed to the
+/// capture path.
 fn captured_key_event(logical: Key, pressed: bool) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    event.repeat = false;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
+    let event = ui::synthetic_input::key_event(
+        logical,
+        None,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
+    ui::synthetic_input::keyboard_input(event)
 }
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
@@ -125,135 +95,19 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
-
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 
-struct Harness {
-    display: Display<shell::compositor::state::State>,
-    state: shell::compositor::state::State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, shell::compositor::state::State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)?
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
-    }
-}
-
-fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
-    state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign {
-                app_id: actual,
-                surface_id,
-            } if actual == app_id => Some(*surface_id),
-            _ => None,
-        })
-        .expect("foreign surface was adopted")
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 #[test]
 fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
@@ -320,15 +174,9 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
     // help and must follow the same foreign-client boundary.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-            .expect("xdg shell");
-        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
@@ -437,9 +285,13 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         );
         let mut doc = automerge::AutoCommit::new();
         let mut focus = None;
-        assert!(
-            frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,)
-        );
+        assert!(frame.dispatch_event(
+            &custom_press,
+            &ctrl,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
         assert!(
             !shell::compositor::client_input::route_input(
                 &mut h.state,
@@ -496,7 +348,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         assert!(frame.dispatch_event(
             &f1_press,
             &no_modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -528,15 +380,9 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
     // restored client input.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-            .expect("xdg shell");
-        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
@@ -656,10 +502,6 @@ fn drain_edges(
 /// it, queues `Activated`, and on release queues `Deactivated` (which
 /// push-to-talk clients wait for) without ever showing the client either
 /// edge.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the grant, the focused client and both key edges form one wire transcript"
-)]
 #[test]
 fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_release() {
     use shell::portal::global_shortcuts::{
@@ -668,15 +510,9 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     };
 
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
     let surface = compositor.create_surface(&qh, ());
@@ -689,13 +525,21 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     h.pump();
     h.client.keyboard.clear();
 
-    // Grant Ctrl+Shift+T to another app through the reviewed consent path.
+    // Grant Ctrl+Shift+M to another app through the reviewed consent path.
     let session = "/org/freedesktop/portal/desktop/session/talk";
     let dialogs = shell::shell::portal_dialog::PortalDialogQueue::default();
     let service = ShellGlobalShortcutsService::with_dialogs(dialogs.clone());
     let events =
         GlobalShortcutsHandle::with_bound_session_for_tests(session, "org.example.Talk", &["talk"]);
     service.attach_event_bridge(events.clone());
+    assert!(
+        service.is_reserved("CTRL+SHIFT+KEYT"),
+        "reopen belongs to the shell"
+    );
+    assert!(
+        !service.is_reserved("CTRL+SHIFT+KEYM"),
+        "the reviewed grant is unreserved"
+    );
     h.state.global_shortcuts = service.clone();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
@@ -709,7 +553,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
                 shortcuts: vec![GlobalShortcut {
                     id: "talk".into(),
                     description: Some("Push to talk".into()),
-                    preferred_trigger: Some("Ctrl+Shift+T".into()),
+                    preferred_trigger: Some("Ctrl+Shift+M".into()),
                 }],
             },
             reply,
@@ -723,13 +567,13 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
     let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     let press = physical_key_event(
-        Key::Character("T".into()),
-        winit::keyboard::KeyCode::KeyT,
+        Key::Character("M".into()),
+        winit::keyboard::KeyCode::KeyM,
         true,
     );
     let release = physical_key_event(
-        Key::Character("T".into()),
-        winit::keyboard::KeyCode::KeyT,
+        Key::Character("M".into()),
+        winit::keyboard::KeyCode::KeyM,
         false,
     );
     assert!(
@@ -771,15 +615,9 @@ fn focus_handoff_soak_has_one_release_per_backspace_press() {
     const MAX_DISPATCH: Duration = Duration::from_millis(500);
 
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 

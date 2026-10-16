@@ -4,6 +4,9 @@
 
 pub mod voice;
 
+#[cfg(feature = "tls")]
+pub mod tls;
+
 #[cfg(feature = "relay")]
 pub mod carrier;
 
@@ -15,6 +18,9 @@ pub mod relay;
 
 #[cfg(feature = "relay")]
 pub mod live;
+
+#[cfg(feature = "relay")]
+mod session_authority;
 
 #[cfg(feature = "relay")]
 pub mod client;
@@ -43,6 +49,16 @@ impl Task {
         self.0
             .as_ref()
             .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+    /// Finish owned work without detaching it if this wait is cancelled.
+    pub(crate) async fn wait(&mut self) -> Result<(), tokio::task::JoinError> {
+        let result = if let Some(task) = self.0.as_mut() {
+            task.await
+        } else {
+            Ok(())
+        };
+        self.0.take();
+        result
     }
 }
 

@@ -33,19 +33,6 @@
 //! Implement [`Provider`] and invoke `export_provider!`; the macro emits the
 //! exports above.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub mod guest;

@@ -5,10 +5,12 @@
 # Display, Power, Users and Date & Time panes read. Still no egress of
 # its own: every network action is delegated to nmcli.
 #
-# Beyond the system read profile it needs, as consented capabilities:
-# read+exec on the host bin dirs, read on the host inventory files
-# under /proc and /etc, and read+write on the shared `~/.config/tilo`
-# tree including the account store and credential vault.
+# The image, not this manifest, grants it the system it controls (the
+# launcher's `system_authority`): read+exec on the host bin dirs, read on
+# /etc, the system bus filtered to the named authorities, the PipeWire
+# socket and the compositor's runtime state. Printing stays behind the
+# Print portal. The launcher also binds the shared `~/.config/tilo` tree,
+# including the account store and credential vault.
 #
 
 
@@ -32,6 +34,9 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "settings", "network.http", "threads", "media.decode", "processes"]
+
+[resources]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -61,6 +66,11 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
+# The system interface: the contract with the system services Settings
+# drives (network, displays, power, accounts, updates…), served through the
+# image's system authority grant. A build is offered to, installed on and run
+# by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
+system = "required@1"
 collab = "optional@1"
 tilo-fs = "optional@1"
 tools = "optional@1"
@@ -79,9 +89,12 @@ splash-budget   = 250
 
 # The installed-image external AT-SPI client uses this safe navigation action
 # as a release certificate; it neither changes a preference nor needs hardware
-# or a configured account.
+# or a configured account. The root is the app surface's own landmark: the
+# app's name ("Personal Settings") is carried by the window chrome the
+# compositor draws, never repeated in the app's tree
+# (tests/no_app_title_header.rs).
 [accessibility.atspi_acceptance]
-root         = "Personal Settings"
+root         = "Settings"
 required     = ["Appearance", "Accessibility"]
 action       = "Accessibility"
 after_action = ["Screen reader"]
@@ -89,3 +102,6 @@ after_action = ["Screen reader"]
 [providers]
 mime = []
 ext  = []
+# `settings://models/<model-id>` opens Agent Models at that model's card;
+# `settings://<pane>` opens a pane. A link only shows; it changes nothing.
+schemes = ["settings"]

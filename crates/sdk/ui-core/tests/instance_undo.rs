@@ -110,8 +110,8 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         })
         .unwrap();
         host.records
-            .read_history(&checkout.id, |_, history| {
-                assert!(history.next_undo_in(&author(), 11).is_none());
+            .read_history(&checkout.id, |doc, history| {
+                assert!(history.next_undo_in(doc, &author(), 11).is_none());
             })
             .unwrap();
         a.invoke(&mut outer, |_, doc, _| doc.put(ROOT, "a", "a3").unwrap())
@@ -120,8 +120,10 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
         host.records
             .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &author(), 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author(), 11).is_none());
+                history
+                    .undo_in(doc, &author(), 11, None, None, None)
+                    .unwrap();
+                assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 assert_eq!(read_string(doc, "a"), None);
                 assert_eq!(read_string(doc, "b").as_deref(), Some("b1"));
             })
@@ -156,9 +158,9 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         }
         assert_eq!(outer.get_heads(), outer_heads);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert!(
-                    history.next_undo_as(Some(&author())).is_some(),
+                    history.next_undo_as(doc, Some(&author())).is_some(),
                     "B's first mutation must finalize A's pending boundary in the record history"
                 );
             })
@@ -186,7 +188,9 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
         host.records
             .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &author(), 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &author(), 11, None, None, None)
+                    .unwrap();
                 assert!(read_string(doc, "local").is_none());
                 assert_eq!(read_string(doc, "remote").as_deref(), Some("kept"));
                 assert_eq!(read_string(doc, "body").as_deref(), Some("initialized"));
@@ -197,7 +201,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
 
     // Case `foreign_noop_commit_notification_preserves_pending_owner`.
     {
-        use crate::support::application::{probe_commit_drains, request_probe_commit};
+        use crate::support::application::{probe_commit_drains, report_probe_action};
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
@@ -210,7 +214,9 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
                 let before = doc.get_heads();
                 doc.put(ROOT, "redo-b", true).unwrap();
                 history.record_committed_action_in(doc, before, None, None, author(), 12);
-                history.undo_in(doc, &author(), 12, None, None).unwrap();
+                history
+                    .undo_in(doc, &author(), 12, None, None, None)
+                    .unwrap();
             })
             .unwrap();
         let revision = host
@@ -219,46 +225,47 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
         let mut outer = AutoCommit::new();
         let outer_before = outer.get_heads();
+        // A's burst opens before its first write; its owner reports that boundary
+        // once the burst ends.
+        let a_burst = host
+            .records
+            .with(&checkout.id, AutoCommit::get_heads)
+            .unwrap();
         a.invoke(&mut outer, |widget, doc, _| {
             tilo_ui::undo::set_state(widget, "A metadata");
             doc.put(ROOT, "a", "first").unwrap();
         })
         .unwrap();
-        b.invoke(&mut outer, |widget, _, _| {
+        // B reports an action that wrote nothing while A's burst is pending.
+        b.invoke(&mut outer, |widget, doc, _| {
             tilo_ui::undo::set_state(widget, "B metadata");
-            request_probe_commit();
+            report_probe_action(doc.get_heads());
         })
         .unwrap();
         assert_eq!(probe_commit_drains(), 1);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert_eq!(history.revision(), revision);
-                assert!(history.next_undo_in(&author(), 11).is_none());
-                assert!(history.next_redo_in(&author(), 12).is_some());
+                assert!(history.next_undo_in(doc, &author(), 11).is_none());
+                assert!(history.next_redo_in(doc, &author(), 12).is_some());
             })
             .unwrap();
         a.invoke(&mut outer, |_, doc, _| {
             doc.put(ROOT, "a", "continued").unwrap();
-            request_probe_commit();
+            report_probe_action(a_burst);
         })
         .unwrap();
         assert_eq!(probe_commit_drains(), 2);
         host.records
             .with_history(&checkout.id, |doc, history| {
-                let entry = history.next_undo_in(&author(), 11).unwrap();
+                let entry = history.next_undo_in(doc, &author(), 11).unwrap();
                 assert_eq!(entry.widget_metadata.as_deref(), Some("A metadata"));
                 assert_eq!(entry.author.as_ref(), Some(&author()));
-                assert!(history.next_redo_in(&author(), 12).is_some());
-                let changes = doc.get_changes(&entry.before);
-                let context = changes
-                    .last()
-                    .unwrap()
-                    .message()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
+                assert!(history.next_redo_in(doc, &author(), 12).is_some());
+                history
+                    .undo_in(doc, &author(), 11, None, None, None)
                     .unwrap();
-                assert_eq!(context.action_label.as_str(), "A metadata");
-                history.undo_in(doc, &author(), 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author(), 11).is_none());
+                assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 assert!(doc.get(ROOT, "a").unwrap().is_none());
             })
             .unwrap();
@@ -293,12 +300,14 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
             .unwrap();
         host.records
             .with_history(&checkout.id, |doc, history| {
-                assert!(history.next_undo_in(&author(), 12).is_some());
-                history.undo_in(doc, &author(), 11, None, None).unwrap();
+                assert!(history.next_undo_in(doc, &author(), 12).is_some());
+                history
+                    .undo_in(doc, &author(), 11, None, None, None)
+                    .unwrap();
                 assert_eq!(read_string(doc, "a").as_deref(), Some("a1"));
                 assert_eq!(read_string(doc, "b").as_deref(), Some("b2"));
                 assert_eq!(
-                    history.next_undo_in(&author(), 11).unwrap().author,
+                    history.next_undo_in(doc, &author(), 11).unwrap().author,
                     Some(author())
                 );
             })
@@ -336,17 +345,22 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
         host.records
             .with_history(&checkout.id, |doc, history| {
                 assert_eq!(
-                    history.next_undo_in(&author(), 11).unwrap().instance_id,
+                    history
+                        .next_undo_in(doc, &author(), 11)
+                        .unwrap()
+                        .instance_id,
                     Some(11)
                 );
-                history.undo_in(doc, &author(), 11, None, None).unwrap();
+                history
+                    .undo_in(doc, &author(), 11, None, None, None)
+                    .unwrap();
                 assert_eq!(read_string(doc, "a"), None);
                 assert_eq!(read_string(doc, "b").as_deref(), Some("b1"));
             })
             .unwrap();
         host.records
-            .read_history(&other_checkout.id, |_, history| {
-                assert!(history.next_undo_in(&author(), 13).is_none());
+            .read_history(&other_checkout.id, |doc, history| {
+                assert!(history.next_undo_in(doc, &author(), 13).is_none());
             })
             .unwrap();
         assert!(outer.get_heads().is_empty());
@@ -365,7 +379,7 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
         assert_eq!(read_string(&doc, "body").as_deref(), Some("initialized"));
         assert_eq!(
             history
-                .undo_in(&mut doc, &author(), 12, None, None)
+                .undo_in(&mut doc, &author(), 12, None, None, None)
                 .unwrap()
                 .instance_id,
             Some(12)
@@ -373,14 +387,17 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
         assert_eq!(read_string(&doc, "body").as_deref(), Some("edited"));
         assert_eq!(
             history
-                .redo_in(&mut doc, &author(), 12, None, None)
+                .redo_in(&mut doc, &author(), 12, None, None, None)
                 .unwrap()
                 .instance_id,
             Some(12)
         );
         assert_eq!(read_string(&doc, "body").as_deref(), Some("initialized"));
         assert_eq!(
-            history.next_undo_in(&author(), 11).unwrap().instance_id,
+            history
+                .next_undo_in(&doc, &author(), 11)
+                .unwrap()
+                .instance_id,
             Some(11)
         );
     }
@@ -412,28 +429,31 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         edit(&mut doc, &mut history, 12, "b", "b1");
         edit(&mut doc, &mut history, 11, "a", "a2");
         assert_eq!(
-            history.next_undo_in(&author(), 11).unwrap().instance_id,
+            history
+                .next_undo_in(&doc, &author(), 11)
+                .unwrap()
+                .instance_id,
             Some(11)
         );
         assert_eq!(
-            history.next_undo_in(&author(), 12).unwrap().author,
+            history.next_undo_in(&doc, &author(), 12).unwrap().author,
             Some(author())
         );
         history
-            .undo_in(&mut doc, &author(), 11, None, None)
+            .undo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         assert_eq!(read_string(&doc, "a").as_deref(), Some("a1"));
         assert_eq!(read_string(&doc, "b").as_deref(), Some("b1"));
         assert_eq!(read_string(&doc, "remote").as_deref(), Some("kept"));
         history
-            .undo_in(&mut doc, &author(), 12, None, None)
+            .undo_in(&mut doc, &author(), 12, None, None, None)
             .unwrap();
         assert_eq!(read_string(&doc, "b"), None);
         history
-            .redo_in(&mut doc, &author(), 11, None, None)
+            .redo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         history
-            .redo_in(&mut doc, &author(), 12, None, None)
+            .redo_in(&mut doc, &author(), 12, None, None, None)
             .unwrap();
         assert_eq!(read_string(&doc, "a").as_deref(), Some("a2"));
         assert_eq!(read_string(&doc, "b").as_deref(), Some("b1"));
@@ -448,24 +468,27 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         let mut history = UndoLog::new(&mut doc);
         edit(&mut doc, &mut history, 11, "a", "a1");
         history
-            .undo_in(&mut doc, &author(), 11, None, None)
+            .undo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         edit(&mut doc, &mut history, 12, "b", "b1");
         assert_eq!(
-            history.next_redo_in(&author(), 11).unwrap().instance_id,
+            history
+                .next_redo_in(&doc, &author(), 11)
+                .unwrap()
+                .instance_id,
             Some(11)
         );
         history
-            .redo_in(&mut doc, &author(), 11, None, None)
+            .redo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         assert_eq!(read_string(&doc, "a").as_deref(), Some("a1"));
         assert_eq!(read_string(&doc, "b").as_deref(), Some("b1"));
         history
-            .undo_in(&mut doc, &author(), 11, None, None)
+            .undo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         assert!(
             history
-                .undo_in(&mut doc, &author(), 11, None, None)
+                .undo_in(&mut doc, &author(), 11, None, None, None)
                 .is_none()
         );
         assert_eq!(read_string(&doc, "schema").as_deref(), Some("initialized"));
@@ -481,20 +504,20 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         doc.put(ROOT, "unattributed", "kept").unwrap();
         history.record_committed_action(&mut doc, before, None, None);
         let selected = history
-            .undo_in(&mut doc, &author(), 11, None, None)
+            .undo_in(&mut doc, &author(), 11, None, None, None)
             .unwrap();
         assert_eq!(selected.instance_id, Some(11));
         assert_eq!(read_string(&doc, "a"), None);
         assert_eq!(read_string(&doc, "b").as_deref(), Some("b1"));
         assert_eq!(read_string(&doc, "unattributed").as_deref(), Some("kept"));
-        assert!(history.next_undo_in(&author(), 11).is_none());
+        assert!(history.next_undo_in(&doc, &author(), 11).is_none());
         assert!(
             history
-                .next_undo_in(&tilo_ui::permissions::UserId("other".into()), 12)
+                .next_undo_in(&doc, &tilo_ui::permissions::UserId("other".into()), 12)
                 .is_none()
         );
         assert_eq!(
-            history.next_redo_in(&author(), 11).unwrap().author,
+            history.next_redo_in(&doc, &author(), 11).unwrap().author,
             Some(author())
         );
     }

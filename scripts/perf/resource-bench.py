@@ -398,7 +398,7 @@ def drive(ctl: Control, phase: str, seconds: float, size: tuple[int, int]) -> No
             ctl.send({"op": "pointer_move", "x": w * (0.2 + 0.6 * (n % 120) / 120), "y": h * 0.5})
             time.sleep(1 / 60)
         elif phase == "palette":
-            ctl.super_key("k")
+            ctl.super_key("Space")
             ctl.send({"op": "type", "text": "calc"})
             time.sleep(0.4)
             ctl.send({"op": "key", "key": "Escape"})
@@ -530,7 +530,7 @@ def run(args: argparse.Namespace) -> dict:
             if apps:
                 # The application index is built by the palette's first open,
                 # not by the action API; open it once as a person would.
-                ctl.super_key("k")
+                ctl.super_key("Space")
                 time.sleep(2)
                 ctl.send({"op": "key", "key": "Escape"})
             for app in apps:

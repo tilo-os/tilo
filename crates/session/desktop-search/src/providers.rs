@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use tilo_actions::{ActionAddress, Availability, Resource};
 
-use crate::kind::ResourceKind;
 use crate::model::{ActionTarget, Hit, Source, Target};
-use crate::rank::{self, MAX_PROVIDER_SCORE};
+use crate::rank;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
 
 /// An application the desktop can open.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,7 +22,36 @@ pub struct AppEntry {
 
 /// Applications from the manifest registry, offered as `Open <App>`, and
 /// those this desktop cannot run, listed with their reason below them.
-pub struct Applications(pub Vec<AppEntry>);
+pub struct Applications {
+    entries: Vec<AppEntry>,
+    /// Each app's searchable text, built once with the list.
+    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
+    /// The apps' searchable text, indexed while it stays the same.
+    ranker: ui::search::ListIndex,
+}
+
+impl Applications {
+    #[must_use]
+    pub fn new(entries: Vec<AppEntry>) -> Self {
+        let fields = entries
+            .iter()
+            .map(|app| {
+                rank::application_fields(
+                    &app.title,
+                    &app.id,
+                    app.category.as_deref(),
+                    app.description.as_deref(),
+                )
+            })
+            .collect();
+        Self {
+            entries,
+            fields,
+            ranker: ui::search::ListIndex::default()
+                .with_ranks(ui::search::system::application_ranks),
+        }
+    }
+}
 
 impl Source for Applications {
     fn id(&self) -> &'static str {
@@ -30,17 +59,13 @@ impl Source for Applications {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
-        self.0
+        let ranks = rank::rank_rows(&self.ranker, needle, &self.fields);
+        self.entries
             .iter()
-            .filter_map(|app| {
-                let matched = rank::application_match_score(
-                    needle,
-                    &app.title,
-                    &app.id,
-                    app.category.as_deref(),
-                    app.description.as_deref(),
-                )?;
-                let (section, presented) = rank::empty_palette_presentation(&app.id);
+            .zip(ranks)
+            .filter_map(|(app, matched)| {
+                let matched = matched?;
+                let presented = ui::search::system::starting_point_rank(&app.id);
                 if let Some(reason) = &app.unavailable {
                     let score = if needle.trim().is_empty() {
                         presented
@@ -65,7 +90,14 @@ impl Source for Applications {
                     });
                 }
                 let (score, subtitle) = if needle.trim().is_empty() {
-                    (presented, format!("{section} · {}", app.id))
+                    (
+                        presented,
+                        format!(
+                            "{} · {}",
+                            ui::search::system::starting_point_group(&app.id),
+                            app.id
+                        ),
+                    )
                 } else {
                     let detail = app.category.as_deref().map_or_else(
                         || app.id.clone(),
@@ -153,7 +185,7 @@ impl Source for Commands {
                 let score = if needle.trim().is_empty() {
                     20
                 } else {
-                    rank::rank_fields(
+                    rank_fields(
                         needle,
                         &[
                             (&command.title, ui::search::FieldWeight::TITLE),
@@ -401,7 +433,7 @@ mod tests {
     use crate::model::search;
 
     fn apps() -> Applications {
-        Applications(vec![
+        Applications::new(vec![
             AppEntry {
                 id: "so.tilo.sheets".into(),
                 title: "Sheets".into(),
@@ -421,7 +453,7 @@ mod tests {
 
     #[test]
     fn an_app_this_desktop_cannot_run_is_listed_with_its_reason_below_those_it_can() {
-        let mut entries = apps().0;
+        let mut entries = apps().entries;
         entries.push(AppEntry {
             id: "so.tilo.sheets-server".into(),
             title: "Sheets Server".into(),
@@ -429,7 +461,7 @@ mod tests {
             description: None,
             unavailable: Some("Tilo OS only".into()),
         });
-        let hits = Applications(entries).query("sheets");
+        let hits = Applications::new(entries).query("sheets");
         let server = hits
             .iter()
             .find(|hit| hit.id == "so.tilo.sheets-server")
@@ -599,5 +631,112 @@ mod tests {
         }]);
         assert_eq!(commands.query("close").len(), 1);
         assert!(commands.query("launch").is_empty());
+    }
+
+    /// Every app of the manifest registry, as the portable desktop lists them.
+    fn registry_apps() -> Applications {
+        Applications::new(
+            crate::availability::catalog()
+                .iter()
+                .map(|app| AppEntry {
+                    id: app.id.into(),
+                    title: app.name.into(),
+                    category: (!app.category.is_empty()).then(|| app.category.into()),
+                    description: None,
+                    unavailable: None,
+                })
+                .collect(),
+        )
+    }
+
+    fn first_app(apps: &Applications, query: &str) -> Option<String> {
+        let groups = search(query, &[apps], 0);
+        let hit = groups.first()?.results.first()?;
+        Some(hit.id.clone())
+    }
+
+    #[test]
+    fn registry_apps_are_found_by_the_words_people_use() {
+        let apps = registry_apps();
+        for (query, id) in [
+            ("tube", "so.tilo.tube"),
+            ("youtube", "so.tilo.tube"),
+            ("Youtube", "so.tilo.tube"),
+            ("yotube", "so.tilo.tube"),
+            ("mail", "so.tilo.mail"),
+            ("email", "so.tilo.mail"),
+            ("e-mail", "so.tilo.mail"),
+            ("posteingang", "so.tilo.mail"),
+            ("preferences", "so.tilo.settings"),
+            ("excel", "so.tilo.sheets"),
+            ("taschenrechner", "so.tilo.calculator"),
+            ("wp", "so.tilo.word-processor"),
+        ] {
+            assert_eq!(
+                first_app(&apps, query).as_deref(),
+                Some(id),
+                "{query:?} should lead with {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_app_named_by_a_keyword_leads_a_note_that_merely_has_the_word() {
+        struct Notes;
+        impl Source for Notes {
+            fn id(&self) -> &'static str {
+                "notes"
+            }
+            fn query(&self, needle: &str) -> Vec<Hit> {
+                vec![Hit {
+                    kind: ResourceKind::Note,
+                    provider: "notes".into(),
+                    id: "n".into(),
+                    title: needle.into(),
+                    subtitle: None,
+                    score: MAX_PROVIDER_SCORE,
+                    target: Target::Window { tab: 1 },
+                }]
+            }
+        }
+        let apps = registry_apps();
+        let groups = search("youtube", &[&Notes, &apps], 0);
+        assert_eq!(groups[0].results[0].id, "so.tilo.tube");
+    }
+
+    #[test]
+    fn an_empty_query_gives_applications_no_launch_intent() {
+        // Launch intent is a reading of what was typed: with nothing typed,
+        // the recent rows the person chose lead the app list.
+        let apps = apps();
+        let mut recents = Recents::default();
+        recents.record(&apps.query("notes").remove(0));
+        let groups = search("", &[&apps, &recents], 0);
+        assert_eq!(groups[0].kind.label(), RECENT_KIND);
+    }
+
+    #[test]
+    fn a_query_against_every_registry_app_stays_under_two_milliseconds() {
+        let apps = registry_apps();
+        let _ = apps.query("warm");
+        for query in ["youtube", "email", "einstellungen", "setings", "wp"] {
+            // The least of the tries: the rest is the machine's other work.
+            let best = (0..25)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    let _ = search(query, &[&apps], 12);
+                    started.elapsed()
+                })
+                .min()
+                .unwrap_or_default();
+            // 2 ms optimised; the unoptimised test profile runs this code
+            // several times slower.
+            let budget =
+                std::time::Duration::from_millis(if cfg!(debug_assertions) { 10 } else { 2 });
+            assert!(
+                best < budget,
+                "{query:?} took {best:?} against the registry (budget {budget:?})"
+            );
+        }
     }
 }

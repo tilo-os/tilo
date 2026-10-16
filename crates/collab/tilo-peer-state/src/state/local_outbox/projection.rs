@@ -1,9 +1,10 @@
 //! Bounded replaceable recovery material; immutable obligations remain elsewhere.
 use super::{
     ArtifactKind, BTreeMap, ChannelState, DocumentMutation, Duration, Ed25519PublicKey,
-    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, NeighbourMsg, OpClass, ReadDoc, Role,
+    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpKind,
     Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size, room,
 };
+use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
 /// A historical byte/count estimate, never signing or document authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,9 +34,55 @@ impl LocalRecoveryReservation {
     }
 }
 
+/// A route's recovery obligation: the histories of its publications, in
+/// the order they are merged into the one history a recovery re-sends.
 struct RecoveryHistory {
-    doc: automerge::Automerge,
+    parts: Vec<std::sync::Arc<automerge::Automerge>>,
+    /// Each part's publication ([`super::history::key`]); `None` once a
+    /// part is not a retained publication's history.
+    keys: Option<Vec<super::history::Key>>,
+    merged: std::cell::OnceCell<Result<std::sync::Arc<automerge::Automerge>, String>>,
     original_sequence: u64,
+}
+impl RecoveryHistory {
+    /// The parts merged in order: each merges the changes of the next that
+    /// it lacks, as `Automerge::merge` does.
+    fn doc(&self) -> Result<&automerge::Automerge, String> {
+        let merged = self
+            .merged
+            .get_or_init(|| super::history::merged(self.keys.as_deref(), &self.parts));
+        merged.as_deref().map_err(Clone::clone)
+    }
+    /// Whether the merged history holds the change `hash`.
+    fn contains(&self, hash: &automerge::ChangeHash) -> bool {
+        self.parts
+            .iter()
+            .any(|part| part.get_change_meta_by_hash(hash).is_some())
+    }
+}
+
+/// The unsigned envelope re-sending a route's whole recovered history,
+/// claiming each of its changes.
+fn history_envelope(
+    room: &str,
+    route: &Route,
+    history: &automerge::Automerge,
+    author: Ed25519PublicKey,
+    timestamp: SystemTime,
+    sequence: u64,
+) -> Result<SignedOp, String> {
+    let mutation = DocumentMutation::Incremental(history.save());
+    // Every change re-sent names its action, as every signed change must.
+    collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
+    Ok(SignedOp::new_unsigned(
+        mutation.encode().map_err(err)?,
+        collab_types::document_artifact_id(&route.app, room, &route.record),
+        author,
+        collab_types::document_attestation_id(&route.app, room, &route.record),
+        OpKind::Change,
+        timestamp,
+        sequence,
+    ))
 }
 
 impl StatePeer {
@@ -49,16 +96,20 @@ impl StatePeer {
         let mut routes = BTreeMap::new();
         for original in originals {
             let local = self.retained_document(original, selected)?;
-            // A sealed write has no history anyone without its key could project.
+            // A sealed write has no history anyone without its key could
+            // project; its key holder renews it instead (`renew_local_sealed`).
             if local.mutation.is_none()
-                || self.retained_local_document_retired(original, selected)?
+                || self
+                    .outbox()
+                    .retained_local_document_retired(original, selected)?
             {
                 continue;
             }
+            let key = local.mutation.as_ref().map(super::history::key);
             add_history(
                 &mut routes,
                 local.route.clone(),
-                self.publication_history(&local)?,
+                (self.publication_history(&local)?, key),
                 local.admission.sequence(),
             )?;
         }
@@ -94,7 +145,12 @@ impl StatePeer {
                 add_history(
                     &mut routes,
                     route.clone(),
-                    automerge::Automerge::load(&old.doc.clone().save()).map_err(err)?,
+                    (
+                        std::sync::Arc::new(
+                            automerge::Automerge::load(&old.doc.clone().save()).map_err(err)?,
+                        ),
+                        None,
+                    ),
                     old.channel
                         .last_seq_per_author
                         .get(&Ed25519PublicKey::from_bytes(selected))
@@ -104,22 +160,6 @@ impl StatePeer {
             }
         }
         Ok(routes)
-    }
-
-    /// Reserve capacity for recovering `originals` as the selected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the originals are not authentic retained custody or exceed the
-    /// recovery budget.
-    pub fn reserve_local_recovery(
-        &self,
-        originals: &[NeighbourMsg],
-        legacy: Option<&StatePeer>,
-        selected: [u8; 32],
-    ) -> Result<LocalRecoveryReservation, String> {
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        self.recovery_reservation(&obligations, selected)
     }
 
     fn recovery_reservation(
@@ -132,31 +172,7 @@ impl StatePeer {
         let mut peer_growth = 0usize;
         let mut peer_decimal_growth = 0usize;
         for (route, history) in obligations {
-            // This unsigned shape is cost-only, never returned or admitted. Every
-            // byte except time/sequence is the actual future wire representation.
-            // u64::MAX reserves sequence width. Serde SystemTime encodes u64
-            // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
-            let envelope = SignedOp::new_unsigned(
-                DocumentMutation::Incremental(history.doc.save())
-                    .encode()
-                    .map_err(err)?,
-                collab_types::document_artifact_id(&route.app, &self.core.room, &route.record),
-                Ed25519PublicKey::from_bytes(selected),
-                collab_types::document_attestation_id(&route.app, &self.core.room, &route.record),
-                OpClass::Splice,
-                SystemTime::UNIX_EPOCH,
-                u64::MAX,
-            );
-            let shape = NeighbourMsg::AppDocument {
-                peer: peer_handle(&selected),
-                app_id: route.app.clone(),
-                cluster_id: self.core.room.clone(),
-                record_id: route.record.clone(),
-                envelope: Box::new(envelope),
-            };
-            let bytes = publication_size(&[shape])?
-                .checked_add(13)
-                .ok_or("projection reservation overflow")?;
+            let bytes = self.reserved_route_bytes(route, history, selected)?;
             total = total
                 .checked_add(bytes)
                 .filter(|total| *total <= MAX_PUBLICATION_BYTES)
@@ -209,6 +225,54 @@ impl StatePeer {
         })
     }
 
+    /// The encoded size of a recovery re-sending `history` on `route` as
+    /// `selected`, remembered for the same publications.
+    fn reserved_route_bytes(
+        &self,
+        route: &Route,
+        history: &RecoveryHistory,
+        selected: [u8; 32],
+    ) -> Result<usize, String> {
+        let key = history.keys.as_deref().map(|parts| {
+            super::history::reservation_key(
+                &self.core.room,
+                &route.app,
+                &route.record,
+                selected,
+                parts,
+            )
+        });
+        if let Some(bytes) = key.and_then(super::history::remembered_reservation) {
+            return Ok(bytes);
+        }
+        // This unsigned shape is cost-only, never returned or admitted. Every
+        // byte except time/sequence is the actual future wire representation.
+        // u64::MAX reserves sequence width. Serde SystemTime encodes u64
+        // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
+        let envelope = history_envelope(
+            &self.core.room,
+            route,
+            history.doc()?,
+            Ed25519PublicKey::from_bytes(selected),
+            SystemTime::UNIX_EPOCH,
+            u64::MAX,
+        )?;
+        let shape = NeighbourMsg::AppDocument {
+            peer: peer_handle(&selected),
+            app_id: route.app.clone(),
+            cluster_id: self.core.room.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(envelope),
+        };
+        let bytes = publication_size(&[shape])?
+            .checked_add(13)
+            .ok_or("projection reservation overflow")?;
+        if let Some(key) = key {
+            super::history::remember_reservation(key, bytes);
+        }
+        Ok(bytes)
+    }
+
     fn historical_projection(
         &self,
         message: &NeighbourMsg,
@@ -218,7 +282,7 @@ impl StatePeer {
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
             return Err("recovery projection is not an app document".into());
         };
-        if envelope.op_class != OpClass::Splice
+        if envelope.kind != OpKind::Change
             || !matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
             || local.admission.sequence() == 0
             || self
@@ -265,9 +329,13 @@ impl StatePeer {
             let acknowledged =
                 self.durable_receipt_checkpoint(&local.route.app, &local.route.record)?;
             if !history.get_heads().iter().all(|head| {
-                obligation.is_some_and(|entry| entry.doc.get_change_by_hash(head).is_some())
+                obligation.is_some_and(|entry| entry.contains(head))
                     || acknowledged.as_ref().is_some_and(|(_, accepted)| {
-                        accepted.doc.get_change_by_hash(head).is_some()
+                        accepted
+                            .doc
+                            .committed_document()
+                            .get_change_meta_by_hash(head)
+                            .is_some()
                     })
             }) {
                 return Err("recovery projection contains history outside actual obligations or durable acknowledgement".into());
@@ -276,35 +344,23 @@ impl StatePeer {
         Ok(())
     }
 
-    /// Check that `projection` exactly recovers `originals`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the projection adds, drops or alters a recovered publication.
-    pub fn validate_local_recovery_projection(
-        &self,
-        originals: &[NeighbourMsg],
-        legacy: Option<&StatePeer>,
-        projection: &[NeighbourMsg],
-        selected: [u8; 32],
-    ) -> Result<(), String> {
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        self.recovery_reservation(&obligations, selected)?;
-        self.validate_projection_history(&obligations, projection, selected)
-    }
-
     fn recovery_current_role(
         &self,
         route: &Route,
         envelope: &SignedOp,
         now: SystemTime,
-    ) -> Result<Role, String> {
+    ) -> Result<MemberAuthority, String> {
         let policy = self.validate_present_media_policy()?;
         if !self.fresh_local_recovery_checkpoint(route, now)? {
             return Err("recovery projection needs fresh genuine governor checkpoint".into());
         }
-        let role =
-            self.authorize_document(envelope.author.as_bytes(), &route.app, envelope, now)?;
+        let role = self.authorize_document(
+            envelope.author.as_bytes(),
+            &route.app,
+            &route.record,
+            envelope,
+            now,
+        )?;
         let document = self
             .core
             .documents
@@ -315,18 +371,18 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &document.doc,
+                &*document.doc,
             )
             .map_err(err)?;
         }
-        Ok(role)
+        role.ok_or_else(|| "recovery projection held: its app surface is not here yet".into())
     }
 
     fn recovery_validated_channel(
         &self,
         route: &Route,
         envelope: &SignedOp,
-        role: Role,
+        member: &MemberAuthority,
         now: SystemTime,
         reserved: bool,
     ) -> Result<ChannelState, String> {
@@ -343,15 +399,22 @@ impl StatePeer {
         channel
             .artifact_apps
             .insert(envelope.artifact, route.app.clone());
+        channel
+            .artifact_records
+            .insert(envelope.artifact, route.record.clone());
+        channel.room.clone_from(&self.core.room);
+        channel.grants.clone_from(&member.policy.grants);
+        channel.surfaces.clone_from(&self.surfaces);
         if reserved {
             // Historical proof already checked the real persisted floor. This
             // isolated validation copy must still run role/clearance/redaction
             // checks after replay validation; it is never committed.
             channel.last_seq_per_author.remove(&envelope.author);
         }
+        let bound = tilo_action_policy::roles::foreign_device_bound();
         collab_types::validate_admitted_inbound_op(
             envelope,
-            role,
+            &member.authority(&bound),
             &mut channel,
             now,
             Duration::from_secs(300),
@@ -359,7 +422,44 @@ impl StatePeer {
         .map_err(err)?;
         Ok(channel)
     }
-
+}
+impl PeerOutbox<'_> {
+    /// Reserve capacity for recovering `originals` as the selected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the originals are not authentic retained custody or exceed the
+    /// recovery budget.
+    pub fn reserve_local_recovery(
+        self,
+        originals: &[NeighbourMsg],
+        legacy: Option<&StatePeer>,
+        selected: [u8; 32],
+    ) -> Result<LocalRecoveryReservation, String> {
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        self.peer.recovery_reservation(&obligations, selected)
+    }
+    /// Check that `projection` exactly recovers `originals`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection adds, drops or alters a recovered publication.
+    pub fn validate_local_recovery_projection(
+        self,
+        originals: &[NeighbourMsg],
+        legacy: Option<&StatePeer>,
+        projection: &[NeighbourMsg],
+        selected: [u8; 32],
+    ) -> Result<(), String> {
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        self.peer.recovery_reservation(&obligations, selected)?;
+        self.peer
+            .validate_projection_history(&obligations, projection, selected)
+    }
     /// Check that the selected device may publish `projection` at `now`.
     ///
     /// # Errors
@@ -367,7 +467,7 @@ impl StatePeer {
     /// Returns an error if the projection is invalid or its author is not currently
     /// authorized.
     pub fn authorize_local_recovery_projection(
-        &self,
+        self,
         originals: &[NeighbourMsg],
         legacy: Option<&StatePeer>,
         projection: &[NeighbourMsg],
@@ -376,26 +476,30 @@ impl StatePeer {
     ) -> Result<(), String> {
         self.validate_local_recovery_projection(originals, legacy, projection, selected)?;
         for message in projection {
-            let local = self.historical_projection(message, selected)?;
+            let local = self.peer.historical_projection(message, selected)?;
             if !crate::outbox::fresh(message, now) {
                 return Err("recovery projection is not currently fresh".into());
             }
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
                 return Err("recovery projection is not an app document".into());
             };
-            let role = self.recovery_current_role(&local.route, envelope, now)?;
-            self.recovery_validated_channel(&local.route, envelope, role, now, true)?;
+            let role = self
+                .peer
+                .recovery_current_role(&local.route, envelope, now)?;
+            self.peer
+                .recovery_validated_channel(&local.route, envelope, &role, now, true)?;
         }
         Ok(())
     }
-
+}
+impl PeerOutboxMut<'_> {
     /// Sign the recovery projection's successors, returning them.
     ///
     /// # Errors
     ///
     /// Returns an error if the projection is invalid or cannot be signed.
     pub fn reconcile_local_recovery_projection(
-        &mut self,
+        self,
         originals: &[NeighbourMsg],
         legacy: Option<&StatePeer>,
         projection: &[NeighbourMsg],
@@ -403,10 +507,13 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let selected = key.verifying_key().to_bytes();
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        let reservation = self.recovery_reservation(&obligations, selected)?;
-        self.validate_projection_history(&obligations, projection, selected)?;
-        let mut candidate = self.clone();
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        let reservation = self.peer.recovery_reservation(&obligations, selected)?;
+        self.peer
+            .validate_projection_history(&obligations, projection, selected)?;
+        let mut candidate = self.peer.clone();
         let mut replacement = Vec::new();
         for (route, history) in &obligations {
             let route_budget = reservation
@@ -427,16 +534,16 @@ impl StatePeer {
                 }
                 if let Some(carried) = candidate.recovery_publication_history(&local)?
                     && history
-                        .doc
+                        .doc()?
                         .get_heads()
                         .iter()
-                        .all(|head| carried.get_change_by_hash(head).is_some())
+                        .all(|head| carried.get_change_meta_by_hash(head).is_some())
                 {
                     let NeighbourMsg::AppDocument { envelope, .. } = message else {
                         return Err("recovery projection is not an app document".into());
                     };
                     let role = candidate.recovery_current_role(route, envelope, now)?;
-                    candidate.recovery_validated_channel(route, envelope, role, now, true)?;
+                    candidate.recovery_validated_channel(route, envelope, &role, now, true)?;
                     reusable = Some(message.clone());
                     break;
                 }
@@ -457,29 +564,18 @@ impl StatePeer {
                     .unwrap_or(0)
                     .checked_add(1)
                     .ok_or("recovery projection sequence exhausted")?;
-                let mut envelope = SignedOp::new_unsigned(
-                    DocumentMutation::Incremental(history.doc.save())
-                        .encode()
-                        .map_err(err)?,
-                    collab_types::document_artifact_id(
-                        &route.app,
-                        &candidate.core.room,
-                        &route.record,
-                    ),
+                let mut envelope = history_envelope(
+                    &candidate.core.room,
+                    route,
+                    history.doc()?,
                     author,
-                    collab_types::document_attestation_id(
-                        &route.app,
-                        &candidate.core.room,
-                        &route.record,
-                    ),
-                    OpClass::Splice,
                     now,
                     sequence,
-                );
+                )?;
                 let role = candidate.recovery_current_role(route, &envelope, now)?;
                 collab_types::sign_op(&mut envelope, key).map_err(err)?;
                 let channel =
-                    candidate.recovery_validated_channel(route, &envelope, role, now, false)?;
+                    candidate.recovery_validated_channel(route, &envelope, &role, now, false)?;
                 // This transmission introduces no new data or exact admission.
                 // The existing durable watermark reserves its sequence for every
                 // later original/projection and prevents local echo re-admission.
@@ -503,7 +599,7 @@ impl StatePeer {
             return Err("recovery projection exceeded reserved representation".into());
         }
         candidate.validate_projection_history(&obligations, &replacement, selected)?;
-        *self = candidate;
+        *self.peer = candidate;
         Ok(replacement)
     }
 }
@@ -511,11 +607,18 @@ impl StatePeer {
 fn add_history(
     routes: &mut BTreeMap<Route, RecoveryHistory>,
     route: Route,
-    mut doc: automerge::Automerge,
+    (doc, key): (
+        std::sync::Arc<automerge::Automerge>,
+        Option<super::history::Key>,
+    ),
     sequence: u64,
 ) -> Result<(), String> {
     if let Some(existing) = routes.get_mut(&route) {
-        existing.doc.merge(&mut doc).map_err(err)?;
+        existing.parts.push(doc);
+        existing.keys = existing.keys.take().zip(key).map(|(mut keys, key)| {
+            keys.push(key);
+            keys
+        });
         existing.original_sequence = existing.original_sequence.max(sequence);
     } else {
         if routes.len() == MAX_PUBLICATIONS {
@@ -524,7 +627,9 @@ fn add_history(
         routes.insert(
             route,
             RecoveryHistory {
-                doc,
+                parts: vec![doc],
+                keys: key.map(|key| vec![key]),
+                merged: std::cell::OnceCell::new(),
                 original_sequence: sequence,
             },
         );

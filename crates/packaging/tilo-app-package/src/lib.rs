@@ -15,6 +15,10 @@
 //!   checks beyond TOML decode.
 //! - [`BlobHash`], [`Collection`] and the streaming [`BlobSource`] /
 //!   [`BlobSink`] edges — see [`blobs`].
+//! - [`chunks`] — the payload objects (`<blob>.blob`, `<blob>.chunks`) that
+//!   complete a thin package, chunked and verified with bounded memory.
+//! - [`compressed`] — the zstd twins packages and payload objects travel
+//!   as, decompressed with a bound before they are verified (native only).
 //! - [`PackageMeta`] — the signed root, manifest and collection with every
 //!   hash link checked. See [`package`].
 //! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
@@ -33,25 +37,18 @@
 //! - No networking. Fetching the payload of a thin `.tapp` belongs to
 //!   whoever knows where bytes are.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod blobs;
+pub mod chunks;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compressed;
+pub mod continuity_schema;
 pub mod desktop;
 pub mod id;
+pub mod image;
 pub mod manifest;
 pub mod pack;
 pub mod package;
+pub mod search_keywords;
 pub mod signed;
 pub mod tapp;
 pub mod trust;
@@ -59,26 +56,33 @@ pub mod unpack;
 pub mod validate;
 pub mod verify;
 pub mod version;
-pub mod web;
+pub mod view;
 
 pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
-    HashingReader, OpenBlob,
+    HashingReader, OpenBlob, PackageFetcher,
 };
 pub use id::{Kind, PackageId, ParsePackageIdError};
-pub use manifest::{
-    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Manifest, ManifestParseError,
-    NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement, Sandbox, SandboxFs,
-    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust,
-    TrustAttestation,
+pub use image::{
+    ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image, seal_image_for,
 };
-pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
+pub use manifest::{
+    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
+    ManifestParseError, NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement,
+    Sandbox, SandboxFs, SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
+    SplashSegmentError, Target, Trust, TrustAttestation,
+};
+pub use pack::{
+    PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,
+};
 pub use package::{MetaError, PackageMeta, is_safe_path};
+/// The versioned system-interface contracts packages require and images serve.
+pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
 pub use trust::{
-    ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustLoadError, TrustedAttestor,
-    TrustedAttestors, attestation_preimage, default_revoked_keys_path,
+    ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustFile, TrustLoadError,
+    TrustedAttestor, TrustedAttestors, attestation_preimage, default_revoked_keys_path,
     default_trusted_attestors_path,
 };
 pub use unpack::{UnpackError, unpack, validate_materialized_payload};
@@ -128,6 +132,21 @@ pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
 /// Bound filesystem work/inodes independently of bytes. Empty files are not
 /// allowed to bypass the materialized-byte limit indefinitely.
 pub const MAX_APP_PAYLOAD_ENTRIES: usize = 4096;
+
+/// Distinct payload bytes a `kind = "runtime"` package may reference. Runtime
+/// bundles are shared by every app built against them, so they travel thin,
+/// their payload hosted as chunked objects (see [`chunks`]).
+pub const MAX_RUNTIME_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// The ceiling on the distinct payload bytes the package `manifest`
+/// describes may reference: its [`app_size_limit`] for an application,
+/// [`MAX_RUNTIME_PAYLOAD_BYTES`] for a runtime, `None` for other kinds.
+pub fn payload_size_limit(manifest: &Manifest) -> Option<u64> {
+    if manifest.package.kind == Kind::Runtime {
+        return Some(MAX_RUNTIME_PAYLOAD_BYTES);
+    }
+    app_size_limit(manifest)
+}
 
 /// Whether a package of `kind` and wire `size` satisfies the thin-app limit.
 /// Non-app bundles are shared infrastructure and use their own distribution

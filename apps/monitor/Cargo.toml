@@ -5,9 +5,6 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
 
 [lib]
 name = "monitor"
@@ -24,7 +21,6 @@ test-support = ["ui/test-support"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +28,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 sysinfo.workspace = true
+tracing.workspace = true
 host-info = { path = "../../crates/system/host-info" }
 workspace-hack = { version = "0.1" }
 

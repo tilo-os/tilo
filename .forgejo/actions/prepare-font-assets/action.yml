@@ -1,0 +1,39 @@
+name: Prepare immutable font assets
+description: Prewarm verified font artifacts before isolated offline checks.
+inputs:
+  source:
+    description: Exact source checkout relative to the workspace.
+    default: "."
+runs:
+  using: composite
+  steps:
+    - id: paths
+      shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+      run: |
+        source=$(realpath "$SOURCE")
+        printf 'source=%s\ncache=%s/target/font-artifacts\n' "$source" "$source" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: ${{ steps.paths.outputs.cache }}
+        key: fonts-${{ hashFiles(format('{0}/crates/sdk/ui-core/assets/fonts/manifest.toml', inputs.source), format('{0}/crates/sdk/ui-core/assets/fonts/artifacts.json', inputs.source)) }}
+        restore-keys: fonts-
+    - name: Verify and prepare source fonts
+      shell: bash
+      env:
+        SOURCE: ${{ steps.paths.outputs.source }}
+        CACHE: ${{ steps.paths.outputs.cache }}
+      run: |
+        if python3 -c 'import pathlib,sys; sys.exit("def prepared_root(" not in pathlib.Path(sys.argv[1]).read_text())' "$SOURCE/tools/font-catalog.py"; then
+          python3 "$SOURCE/tools/font-catalog.py" root "$SOURCE/crates/sdk/ui-core/assets/fonts" --scope fixtures --cache "$CACHE"
+          printf 'TILO_FONT_ASSET_CACHE=%s\nTILO_FONT_ASSETS_OFFLINE=1\n' "$CACHE" >> "$GITHUB_ENV"
+        else
+          # Historical sources are usable only when their tracked catalog exists.
+          python3 "$SOURCE/tools/font-catalog.py" verify "$SOURCE/crates/sdk/ui-core/assets/fonts" --scope fixtures
+        fi
+    - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      continue-on-error: true
+      with:
+        path: ${{ steps.paths.outputs.cache }}
+        key: fonts-${{ hashFiles(format('{0}/crates/sdk/ui-core/assets/fonts/manifest.toml', inputs.source), format('{0}/crates/sdk/ui-core/assets/fonts/artifacts.json', inputs.source)) }}

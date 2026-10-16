@@ -109,6 +109,95 @@ impl IncrementalHighlights {
     }
 }
 
+/// A continuous large-file parse, delivered in bounded row batches through
+/// the host background executor. Its receiver belongs to one immutable line
+/// snapshot; dropping it prevents stale work entering a replacement buffer.
+pub(crate) struct BackgroundHighlights {
+    receiver: std::sync::mpsc::Receiver<HighlightBatch>,
+    background: ui::rt::background::Background,
+    wake: ui::WakeHandle,
+}
+
+struct HighlightBatch {
+    lines: std::sync::Arc<Vec<String>>,
+    state: SyntaxState,
+    next: usize,
+    spans: Vec<Vec<Span>>,
+}
+
+impl HighlightBatch {
+    fn parse(mut self) -> Self {
+        self.spans.clear();
+        for line in self.lines.iter().skip(self.next).take(8) {
+            self.spans.push(highlight_line(&mut self.state, line));
+            self.next = self.next.saturating_add(1);
+        }
+        self
+    }
+}
+
+impl BackgroundHighlights {
+    pub(crate) fn start(
+        language: Language,
+        lines: std::sync::Arc<Vec<String>>,
+        wake: ui::WakeHandle,
+    ) -> Option<Self> {
+        if language == Language::PlainText {
+            return None;
+        }
+        let background = ui::rt::background::Background::current();
+        let batch = HighlightBatch {
+            lines,
+            state: highlighter(language).start(),
+            next: 0,
+            spans: Vec::new(),
+        };
+        let receiver = Self::queue(&background, &wake, batch)?;
+        Some(Self {
+            receiver,
+            background,
+            wake,
+        })
+    }
+
+    fn queue(
+        background: &ui::rt::background::Background,
+        wake: &ui::WakeHandle,
+        batch: HighlightBatch,
+    ) -> Option<std::sync::mpsc::Receiver<HighlightBatch>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = wake.clone();
+        background
+            .spawn("code-syntax", move || {
+                if sender.send(batch.parse()).is_ok() {
+                    wake.wake();
+                }
+            })
+            .ok()?;
+        Some(receiver)
+    }
+
+    /// Admit one completed batch without waiting. Returning false retires the
+    /// completed/refused job. Unknown rows continue drawing their exact text.
+    pub(crate) fn collect(&mut self, spans: &mut Vec<Vec<Span>>) -> bool {
+        match self.receiver.try_recv() {
+            Ok(mut batch) => {
+                spans.append(&mut batch.spans);
+                if batch.next >= batch.lines.len() {
+                    return false;
+                }
+                let Some(receiver) = Self::queue(&self.background, &self.wake, batch) else {
+                    return false;
+                };
+                self.receiver = receiver;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "highlight_incremental_tests.rs"]
 mod incremental_tests;
@@ -135,6 +224,8 @@ mod tests {
             Language::C,
             Language::Cpp,
             Language::Go,
+            Language::Verilog,
+            Language::SystemVerilog,
         ] {
             assert_ne!(
                 highlighter(language).name(),
@@ -162,6 +253,31 @@ mod tests {
             spans.iter().all(|s| s.kind == TokenKind::Text),
             "plain text is all Text"
         );
+    }
+
+    #[test]
+    fn hardware_grammars_classify_keywords_literals_and_multiline_comments() {
+        for language in [Language::Verilog, Language::SystemVerilog] {
+            let mut state = highlighter(language).start();
+            let line = "module mac; // multiply and accumulate";
+            let spans = state.highlight_line(line);
+            assert!(
+                spans.iter().any(|span| {
+                    span.kind == TokenKind::Keyword && &line[span.range.clone()] == "module"
+                }),
+                "{language:?} module keyword"
+            );
+            assert!(spans.iter().any(|span| span.kind == TokenKind::Comment));
+
+            let spans = state.highlight_line("localparam WIDTH = 8;");
+            assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
+            state.highlight_line("/* disabled logic");
+            let spans = state.highlight_line("assign out = 8;");
+            assert!(spans.iter().all(|span| span.kind == TokenKind::Comment));
+            let spans = state.highlight_line("*/ assign out = 8;");
+            assert!(spans.iter().any(|span| span.kind == TokenKind::Keyword));
+            assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
+        }
     }
 }
 

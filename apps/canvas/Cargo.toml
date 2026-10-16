@@ -1,0 +1,78 @@
+[package]
+name = "canvas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "canvas"
+path = "src/lib.rs"
+
+[[bin]]
+name = "canvas"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+# Paint and find subjects through the painting engines' library in the runtime
+# bundle (libtilo_paint_engine.so, crates/runtime/engines/paint) instead of
+# the executable. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links the engines statically, because the engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-paint-engine/thin"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-paint-engine = { path = "../../crates/runtime/engines/paint", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Oil and watercolour layers are painted by the shared media simulation.
+tilo-wet-media = { path = "../../crates/media/wet-media" }
+# A look or export is stored as content and answered by its address.
+tilo-content = { path = "../../crates/system/content" }
+serde.workspace = true
+serde_json.workspace = true
+# Ids derived from an action's content, so every replica names marks alike.
+blake3.workspace = true
+# Tiles an export or a look waits for are painted side by side.
+rayon = "1.12.0"
+# Ids minted where a layer is authored.
+uuid.workspace = true
+# Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
+png = "0.18"
+# Pictures are PNGs, JPEGs or WebPs; exports are any of the three.
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
+# SVG import; without its font stack, text is read by hand.
+usvg = { version = "0.47", default-features = false }
+# SVG export embeds a painted layer's picture.
+base64.workspace = true
+# Recent artworks that cannot be remembered are reported in the log.
+tracing.workspace = true
+# Selections and shapes are combined (union, subtract, intersect, exclude)
+# exactly, as polygons.
+i_overlay = { version = "9.0", default-features = false }
+# An SVG or reference picture named by a path is read where files have one.
+tilo-files = { path = "../../crates/platform/tilo-files" }
+# A photo's subject is found on this device by the model the person set
+# up, through the model gateway; its edge is refined to the picture here.
+tilo-subject = { path = "../../crates/platform/tilo-subject" }
+# A saved artwork is a ZIP package carrying its pictures.
+zip.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Saving to and opening from a file in Files, in a directory of the test's.
+tempfile.workspace = true
+# A fresh content store, for opening a saved artwork where its pictures
+# never were.
+tilo-test-env = { path = "../../crates/dev/test-env" }
+# A stand-in subject model on the gateway's own descriptor and wire, held
+# mid-inference to show the window keeps taking input.
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
+
+[lints]
+workspace = true

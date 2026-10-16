@@ -1,0 +1,43 @@
+[package]
+name = "tilo-workspace-join"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+# `tilo-relay-protocol` is published and re-exports the delegations, so this is too.
+publish = true
+repository.workspace = true
+homepage.workspace = true
+description = "Signed workspace invitations, join and membership proofs, and transport hints"
+
+# The invitation and join contract, below room state: pure types and signature
+# checks, no Automerge, admission or transport. Browsers and the relay client
+# speak it; `tilo-peer-state` re-exports it as `tilo_peer_state::join`.
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
+[dependencies]
+serde.workspace = true
+serde_bytes.workspace = true
+# Invitations, proofs and delegations are signed over postcard bytes.
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+ed25519-dalek.workspace = true
+# The invitation text form.
+base64.workspace = true
+# Invite ids and tagged proof digests.
+blake3.workspace = true
+# A room id is a canonical UUID; a transport hint's payload is JSON.
+uuid.workspace = true
+serde_json.workspace = true
+# A member role maps onto the collaboration role.
+collab-types = { version = "0.1.0", path = "../collab-types" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+# Why a delegation is not usable.
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

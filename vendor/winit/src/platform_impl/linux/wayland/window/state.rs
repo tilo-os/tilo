@@ -102,6 +102,8 @@ pub struct WindowState {
 
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
+    presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
+    private_text_input: Option<super::super::types::tilo_text_input::PrivateTextField>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -111,6 +113,7 @@ pub struct WindowState {
 
     /// The current IME purpose.
     ime_purpose: ImePurpose,
+    ime_multiline: bool,
 
     /// The text inputs observed on the window.
     text_inputs: Vec<ZwpTextInputV3>,
@@ -163,6 +166,18 @@ pub struct WindowState {
 }
 
 impl WindowState {
+    pub fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        let Some(field) = &self.private_text_input else {
+            return false;
+        };
+        field.update(snapshot);
+        true
+    }
+    pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        if let Some(field) = &self.private_text_input {
+            field.acknowledge(serial, outcome);
+        }
+    }
     /// Create new window state.
     pub fn new(
         connection: Connection,
@@ -187,6 +202,11 @@ impl WindowState {
             blur: None,
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
+            presentation: winit_state.presentation.clone(),
+            private_text_input: winit_state
+                .private_text_input
+                .as_ref()
+                .map(|manager| manager.field(window.wl_surface(), queue_handle)),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),
@@ -200,6 +220,7 @@ impl WindowState {
             has_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
+            ime_multiline: false,
             last_configure: None,
             max_inner_size: None,
             min_inner_size: MIN_WINDOW_SIZE,
@@ -223,15 +244,29 @@ impl WindowState {
         }
     }
 
+    pub fn observe_next_present(
+        &self,
+        observer: crate::platform::wayland::WaylandPresentationObserver,
+    ) -> bool {
+        let Some(presentation) = &self.presentation else {
+            return false;
+        };
+        presentation.observe(self.window.wl_surface(), &self.queue_handle, observer);
+        true
+    }
+
     /// Apply closure on the given pointer.
     fn apply_on_pointer<F: FnMut(&ThemedPointer<WinitPointerData>, &WinitPointerData)>(
         &self,
         mut callback: F,
     ) {
-        self.pointers.iter().filter_map(Weak::upgrade).for_each(|pointer| {
-            let data = pointer.pointer().winit_data();
-            callback(pointer.as_ref(), data);
-        })
+        self.pointers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .for_each(|pointer| {
+                let data = pointer.pointer().winit_data();
+                callback(pointer.as_ref(), data);
+            })
     }
 
     /// Get the current state of the frame callback.
@@ -249,6 +284,13 @@ impl WindowState {
         self.frame_callback_state = FrameCallbackState::None;
     }
 
+    /// Ask for a frame callback for a frame drawn elsewhere, leaving the
+    /// redraw throttle alone: its `done` only marks a callback received.
+    pub fn announce_frame(&mut self) {
+        let surface = self.window.wl_surface();
+        surface.frame(&self.queue_handle, surface.clone());
+    }
+
     /// Request a frame callback if we don't have one for this window in flight.
     pub fn request_frame_callback(&mut self) {
         let surface = self.window.wl_surface();
@@ -256,7 +298,7 @@ impl WindowState {
             FrameCallbackState::None | FrameCallbackState::Received => {
                 self.frame_callback_state = FrameCallbackState::Requested;
                 surface.frame(&self.queue_handle, surface.clone());
-            },
+            }
             FrameCallbackState::Requested => (),
         }
     }
@@ -296,11 +338,11 @@ impl WindowState {
                     // Hide the frame if we were asked to not decorate.
                     frame.set_hidden(!self.decorate);
                     self.frame = Some(frame);
-                },
+                }
                 Err(err) => {
                     warn!("Failed to create client side decorations frame: {err}");
                     self.csd_fails = true;
-                },
+                }
             }
         } else if configure.decoration_mode == DecorationMode::Server {
             // Drop the frame for server side decorations to save resources.
@@ -319,7 +361,7 @@ impl WindowState {
                     let width = width.map(|w| w.get()).unwrap_or(1);
                     let height = height.map(|h| h.get()).unwrap_or(1);
                     ((width, height).into(), false)
-                },
+                }
                 (..) if stateless => (self.stateless_size, true),
                 _ => (self.size, true),
             }
@@ -334,8 +376,10 @@ impl WindowState {
         // Apply configure bounds only when compositor let the user decide what size to pick.
         if constrain {
             let bounds = self.inner_size_bounds(&configure);
-            new_size.width =
-                bounds.0.map(|bound_w| new_size.width.min(bound_w.get())).unwrap_or(new_size.width);
+            new_size.width = bounds
+                .0
+                .map(|bound_w| new_size.width.min(bound_w.get()))
+                .unwrap_or(new_size.width);
             new_size.height = bounds
                 .1
                 .map(|bound_h| new_size.height.min(bound_h.get()))
@@ -379,7 +423,10 @@ impl WindowState {
         }
 
         let new_state = configure.state;
-        let old_state = self.last_configure.as_ref().map(|configure| configure.state);
+        let old_state = self
+            .last_configure
+            .as_ref()
+            .map(|configure| configure.state);
 
         let state_change_requires_resize = old_state
             .map(|old_state| {
@@ -417,7 +464,10 @@ impl WindowState {
                 configure_bounds.0.unwrap_or(NonZeroU32::new(1).unwrap()),
                 configure_bounds.1.unwrap_or(NonZeroU32::new(1).unwrap()),
             );
-            (configure_bounds.0.and(width), configure_bounds.1.and(height))
+            (
+                configure_bounds.0.and(width),
+                configure_bounds.1.and(height),
+            )
         } else {
             configure_bounds
         }
@@ -508,7 +558,7 @@ impl WindowState {
                     _ => return None,
                 };
                 self.window.resize(seat, serial, edge);
-            },
+            }
             FrameAction::ShowMenu(x, y) => self.window.show_window_menu(seat, serial, (x, y)),
             _ => (),
         };
@@ -691,7 +741,12 @@ impl WindowState {
 
     /// Try to resize the window when the user can do so.
     pub fn request_inner_size(&mut self, inner_size: Size) -> PhysicalSize<u32> {
-        if self.last_configure.as_ref().map(Self::is_stateless).unwrap_or(true) {
+        if self
+            .last_configure
+            .as_ref()
+            .map(Self::is_stateless)
+            .unwrap_or(true)
+        {
             self.resize(inner_size.to_logical(self.scale_factor()))
         }
 
@@ -717,7 +772,10 @@ impl WindowState {
                 );
             }
 
-            (frame.location(), frame.add_borders(self.size.width, self.size.height).into())
+            (
+                frame.location(),
+                frame.add_borders(self.size.width, self.size.height).into(),
+            )
         } else {
             ((0, 0), self.size)
         };
@@ -764,12 +822,16 @@ impl WindowState {
     /// Set the custom cursor icon.
     pub(crate) fn set_custom_cursor(&mut self, cursor: RootCustomCursor) {
         let cursor = match cursor {
-            RootCustomCursor { inner: PlatformCustomCursor::Wayland(cursor) } => cursor.0,
+            RootCustomCursor {
+                inner: PlatformCustomCursor::Wayland(cursor),
+            } => cursor.0,
             #[cfg(x11_platform)]
-            RootCustomCursor { inner: PlatformCustomCursor::X(_) } => {
+            RootCustomCursor {
+                inner: PlatformCustomCursor::X(_),
+            } => {
                 tracing::error!("passed a X11 cursor to Wayland backend");
                 return;
-            },
+            }
         };
 
         let cursor = {
@@ -806,7 +868,11 @@ impl WindowState {
                 viewport.set_destination(size.width, size.height);
                 scale
             } else {
-                let scale = surface.data::<SurfaceData>().unwrap().surface_data().scale_factor();
+                let scale = surface
+                    .data::<SurfaceData>()
+                    .unwrap()
+                    .surface_data()
+                    .scale_factor();
                 surface.set_buffer_scale(scale);
                 scale as f64
             };
@@ -828,7 +894,9 @@ impl WindowState {
 
             let hotspot =
                 PhysicalPosition::new(cursor.hotspot_x, cursor.hotspot_y).to_logical(scale);
-            pointer.pointer().set_cursor(serial, Some(surface), hotspot.x, hotspot.y);
+            pointer
+                .pointer()
+                .set_cursor(serial, Some(surface), hotspot.x, hotspot.y);
         });
     }
 
@@ -916,7 +984,7 @@ impl WindowState {
                     data.unlock_pointer();
                     unset_old = true;
                 });
-            },
+            }
         }
 
         // In case we haven't unset the old mode, it means that we don't have a cursor above
@@ -941,7 +1009,7 @@ impl WindowState {
             CursorGrabMode::None => {
                 // Current lock/confine was already removed.
                 set_mode = true;
-            },
+            }
         }
 
         // Replace the current grab mode after we've ensure that it got updated.
@@ -969,9 +1037,11 @@ impl WindowState {
 
         // Position can be set only for locked cursor.
         if self.cursor_grab_mode.current_grab_mode != CursorGrabMode::Locked {
-            return Err(ExternalError::Os(os_error!(crate::platform_impl::OsError::Misc(
-                "cursor position can be set only for locked cursor."
-            ))));
+            return Err(ExternalError::Os(os_error!(
+                crate::platform_impl::OsError::Misc(
+                    "cursor position can be set only for locked cursor."
+                )
+            )));
         }
 
         self.apply_on_pointer(|_, data| {
@@ -994,7 +1064,9 @@ impl WindowState {
             for pointer in self.pointers.iter().filter_map(|pointer| pointer.upgrade()) {
                 let latest_enter_serial = pointer.pointer().winit_data().latest_enter_serial();
 
-                pointer.pointer().set_cursor(latest_enter_serial, None, 0, 0);
+                pointer
+                    .pointer()
+                    .set_cursor(latest_enter_serial, None, 0, 0);
             }
         }
     }
@@ -1015,12 +1087,19 @@ impl WindowState {
 
         self.decorate = decorate;
 
-        match self.last_configure.as_ref().map(|configure| configure.decoration_mode) {
+        match self
+            .last_configure
+            .as_ref()
+            .map(|configure| configure.decoration_mode)
+        {
             Some(DecorationMode::Server) if !self.decorate => {
                 // To disable decorations we should request client and hide the frame.
-                self.window.request_decoration_mode(Some(DecorationMode::Client))
-            },
-            _ if self.decorate => self.window.request_decoration_mode(Some(DecorationMode::Server)),
+                self.window
+                    .request_decoration_mode(Some(DecorationMode::Client))
+            }
+            _ if self.decorate => self
+                .window
+                .request_decoration_mode(Some(DecorationMode::Server)),
             _ => (),
         }
 
@@ -1052,7 +1131,7 @@ impl WindowState {
             applied = true;
             if allowed {
                 text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose);
+                text_input.set_content_type_by_purpose(self.ime_purpose, self.ime_multiline);
             } else {
                 text_input.disable();
             }
@@ -1080,7 +1159,7 @@ impl WindowState {
         self.ime_purpose = purpose;
 
         for text_input in &self.text_inputs {
-            text_input.set_content_type_by_purpose(purpose);
+            text_input.set_content_type_by_purpose(purpose, self.ime_multiline);
             text_input.commit();
         }
     }
@@ -1088,6 +1167,21 @@ impl WindowState {
     /// Get the IME purpose.
     pub fn ime_purpose(&self) -> ImePurpose {
         self.ime_purpose
+    }
+
+    pub fn set_ime_multiline(&mut self, multiline: bool) {
+        if self.ime_multiline == multiline {
+            return;
+        }
+        self.ime_multiline = multiline;
+        for text_input in &self.text_inputs {
+            text_input.set_content_type_by_purpose(self.ime_purpose, multiline);
+            text_input.commit();
+        }
+    }
+
+    pub fn ime_multiline(&self) -> bool {
+        self.ime_multiline
     }
 
     /// Set the scale factor for the given window.
@@ -1117,7 +1211,10 @@ impl WindowState {
                 info!("Blur manager unavailable, unable to change blur")
             }
         } else if !blurred && self.blur.is_some() {
-            self.blur_manager.as_ref().unwrap().unset(self.window.wl_surface());
+            self.blur_manager
+                .as_ref()
+                .unwrap()
+                .unset(self.window.wl_surface());
             self.blur.take().unwrap().release();
         }
     }
@@ -1206,7 +1303,10 @@ struct GrabState {
 
 impl GrabState {
     fn new() -> Self {
-        Self { user_grab_mode: CursorGrabMode::None, current_grab_mode: CursorGrabMode::None }
+        Self {
+            user_grab_mode: CursorGrabMode::None,
+            current_grab_mode: CursorGrabMode::None,
+        }
     }
 }
 

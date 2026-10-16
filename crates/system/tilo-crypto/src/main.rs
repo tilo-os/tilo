@@ -2,7 +2,7 @@ use std::{
     ffi::CString,
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::fd::FromRawFd,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::ffi::OsStrExt,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -21,6 +21,8 @@ const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const EFI_IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 const SECURE_BOOT_ATTRIBUTES: u32 = 0x27;
 
+// Deliberately not `tilo_files::native::nofollow`: the signing tool depends on
+// no workspace crate, so development-signing builds stay off workspace-hack.
 fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<fs::File> {
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;
@@ -57,12 +59,70 @@ fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<fs::File> {
         )
     };
     if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
+        let error = std::io::Error::last_os_error();
+        // systemd's RestrictSUIDSGID= answers openat2 with ENOSYS (seccomp
+        // cannot inspect its mode). Walk the path instead, refusing a
+        // symlink at every component exactly as RESOLVE_NO_SYMLINKS does.
+        if error.raw_os_error() == Some(libc::ENOSYS) {
+            return open_components_without_symlinks(path.as_bytes());
+        }
+        return Err(error);
     }
     let descriptor = i32::try_from(descriptor)
         .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
     // SAFETY: openat2 returned this owned descriptor and no other File owns it.
     Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+/// `openat` one component at a time: every directory with `O_NOFOLLOW |
+/// O_DIRECTORY` (a symlink fails with ENOTDIR), the file with `O_NOFOLLOW`
+/// (a symlink fails with ELOOP).
+fn open_components_without_symlinks(path: &[u8]) -> std::io::Result<fs::File> {
+    fn openat(dir: libc::c_int, name: &[u8], flags: libc::c_int) -> std::io::Result<OwnedFd> {
+        let name = CString::new(name).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains a NUL byte")
+        })?;
+        // SAFETY: name is a live C string; a successful descriptor is owned below.
+        let descriptor = unsafe { libc::openat(dir, name.as_ptr(), flags | libc::O_CLOEXEC) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned this descriptor and nothing else owns it.
+        Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+    }
+    let mut components = path
+        .split(|byte| *byte == b'/')
+        .filter(|component| !component.is_empty() && *component != b".")
+        .peekable();
+    let mut current = if path.starts_with(b"/") {
+        Some(openat(
+            libc::AT_FDCWD,
+            b"/",
+            libc::O_PATH | libc::O_DIRECTORY,
+        )?)
+    } else {
+        None
+    };
+    while let Some(component) = components.next() {
+        let dir = current.as_ref().map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
+        if components.peek().is_none() {
+            let file = openat(
+                dir,
+                component,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW,
+            )?;
+            return Ok(fs::File::from(file));
+        }
+        current = Some(openat(
+            dir,
+            component,
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        )?);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "path names no file",
+    ))
 }
 
 fn read_bounded(path: &Path, limit: u64, kind: &str) -> Result<Vec<u8>, String> {
@@ -107,8 +167,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
     // A privileged signer must not consume a key controlled by another local
     // account merely because root can bypass that account's mode-0600 read
     // restriction. Check ownership on the same open inode as the contents.
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(format!(
             "private key {} is not owned by the signing account",
             path.display()
@@ -144,7 +203,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto verify-p256-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
@@ -182,8 +241,7 @@ fn durable_unlink_command(
             path.display()
         ));
     }
-    // SAFETY: geteuid takes no arguments and cannot fail.
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(format!(
             "durable unlink target is not owned by the caller: {}",
             path.display()
@@ -777,6 +835,21 @@ fn verify_rsa_sha256_command(
     tilo_crypto::verify_rsa_sha256(&key, &message, &signature)
 }
 
+fn verify_p256_sha256_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let signature = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let key = read_text_bounded(&key, MAX_CERTIFICATE_BYTES, "public key")?;
+    let message = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "signed input")?;
+    let signature = read_bounded(&signature, MAX_SIGNATURE_BYTES, "signature")?;
+    tilo_crypto::verify_p256_sha256(&key, &message, &signature)
+}
+
 fn efi_signature_count_command(
     mut args: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), String> {
@@ -812,6 +885,7 @@ fn run() -> Result<(), String> {
         Some("key-matches-certificate") => key_matches_certificate_command(args),
         Some("verify-rsa-sha256") => verify_rsa_sha256_command(args, false),
         Some("verify-rsa-sha256-efi") => verify_rsa_sha256_command(args, true),
+        Some("verify-p256-sha256") => verify_p256_sha256_command(args),
         Some("sign-module") => sign_module_command(args),
         Some("verify-module") => verify_module_command(args),
         Some("sign-efi") => sign_efi_command(args),
@@ -846,6 +920,27 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn component_walk_opens_files_and_refuses_every_symlink() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let real = temp.path().join("real");
+        fs::create_dir(&real).expect("directory");
+        fs::write(real.join("key.pub"), b"public").expect("file");
+        symlink(&real, temp.path().join("linked-dir")).expect("directory link");
+        symlink(real.join("key.pub"), temp.path().join("linked.pub")).expect("file link");
+        let open = |path: &Path| open_components_without_symlinks(path.as_os_str().as_bytes());
+
+        let mut content = String::new();
+        open(&real.join("key.pub"))
+            .expect("plain path opens")
+            .read_to_string(&mut content)
+            .expect("readable");
+        assert_eq!(content, "public");
+        assert!(open(&temp.path().join("linked-dir/key.pub")).is_err());
+        assert!(open(&temp.path().join("linked.pub")).is_err());
+        assert!(open(&real.join("missing")).is_err());
+    }
 
     #[test]
     fn detached_efi_signature_check_accepts_large_uki_without_widening_generic_rsa() {

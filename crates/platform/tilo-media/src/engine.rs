@@ -75,6 +75,9 @@ pub struct EngineConfig {
     pub hw_policy: HwPolicy,
     /// Starting output volume, `0.0..=1.0`.
     pub volume: f32,
+    /// Whether the engine plays sound at all. Without it no audio stream is
+    /// decoded and no audio device is opened.
+    pub audio_output: bool,
 }
 
 impl Default for EngineConfig {
@@ -83,6 +86,7 @@ impl Default for EngineConfig {
             acceptance: FrameAcceptance::Rgba,
             hw_policy: HwPolicy::from_env(),
             volume: 0.8,
+            audio_output: true,
         }
     }
 }
@@ -102,6 +106,17 @@ impl EngineConfig {
     #[must_use]
     pub fn silent(mut self) -> Self {
         self.volume = 0.0;
+        self
+    }
+
+    /// Decode pictures only: thumbnails, export and the editor's preview,
+    /// which never make a sound. No audio stream is decoded and no audio
+    /// device is opened, so a machine without one, or an audio server that
+    /// is busy or gone, never stops a picture.
+    #[must_use]
+    pub fn frames_only(mut self) -> Self {
+        self.volume = 0.0;
+        self.audio_output = false;
         self
     }
 
@@ -135,27 +150,6 @@ const SYNTH_H: u32 = 270;
 const SYNTH_ROW_BYTES: usize = SYNTH_W as usize * 4;
 const SYNTH_RGBA_BYTES: usize = SYNTH_ROW_BYTES * SYNTH_H as usize;
 
-/// One channel of the synthesized gradient: `n` scaled to a byte across
-/// `span`, rolling over at 256.
-///
-/// The roll-over is the animation. `n` carries the playhead-driven hue shift,
-/// which grows without bound, and letting the scaled value wrap is what makes
-/// the gradient cycle instead of pinning at white.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the truncation is the feature, not an accident: `& 0xff` on the \
-              same line asks for the low byte, and rolling over at 256 is what \
-              cycles the hue. Widening the result would pin the gradient at \
-              white instead"
-)]
-fn gradient_byte(n: usize, span: usize) -> u8 {
-    // `span` is a picture dimension. `.max(1)` keeps zero out of the divisor
-    // and `checked_div` is how that guarantee is stated rather than assumed,
-    // so the fallback below never runs.
-    let scaled = n.saturating_mul(255).checked_div(span.max(1)).unwrap_or(0);
-    (scaled & 0xff) as u8
-}
-
 /// Process-monotonic millisecond clock for the fallback playhead. A lazily
 /// pinned `Instant` base keeps it cheap and immune to wall-clock jumps.
 fn mono_now_ms() -> u64 {
@@ -165,6 +159,26 @@ fn mono_now_ms() -> u64 {
     // wrap its playhead back to zero.
     u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
+
+/// Why [`MediaEngine::seek_and_wait`] returned without a picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeekWaitError {
+    /// The pipeline reported a fatal error.
+    Failed(String),
+    /// No picture landed before the timeout.
+    TimedOut,
+}
+
+impl std::fmt::Display for SeekWaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(reason) => write!(f, "the pipeline failed: {reason}"),
+            Self::TimedOut => f.write_str("no picture arrived in time"),
+        }
+    }
+}
+
+impl std::error::Error for SeekWaitError {}
 
 /// A collaborative, source-agnostic media engine. Construct with [`Self::new`],
 /// point it at a [`Source`] with [`Self::open`], drive it with `play` / `pause`
@@ -187,8 +201,9 @@ pub struct MediaEngine {
 
 enum Backend {
     Synth(SynthState),
+    /// Boxed: the pipeline state is far larger than the other backends.
     #[cfg(gst_decode)]
-    Gst(crate::gst_backend::GstState),
+    Gst(Box<crate::gst_backend::GstState>),
     #[cfg(web_page)]
     Web(crate::web::WebState),
 }
@@ -222,6 +237,16 @@ impl MediaEngine {
         self.refresh_handoff();
     }
 
+    /// Start the decode backend's one-time process set-up in the background,
+    /// so the first engine built later finds it done: an app calls this when
+    /// it learns it will play something soon (a person opened a video whose
+    /// stream is still being resolved), and the set-up overlaps that wait.
+    /// A no-op without the decode backend and after the first call.
+    pub fn prepare_in_background() {
+        #[cfg(gst_decode)]
+        crate::gst_backend::prepare_in_background();
+    }
+
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
     /// this stands up a `GStreamer` pipeline; if `GStreamer` can't initialise
@@ -229,15 +254,6 @@ impl MediaEngine {
     /// backend. Never fails.
     pub fn new() -> Self {
         Self::with_config(EngineConfig::default())
-    }
-
-    /// Build an engine that keeps pictures in whatever memory the decoder
-    /// produced them in — a dmabuf when the hardware can export one, planar
-    /// YUV otherwise. Read frames with [`Self::latest`] and import or upload
-    /// them yourself; [`Self::latest_frame`] stays empty for a non-RGBA
-    /// payload rather than converting behind your back.
-    pub fn new_gpu() -> Self {
-        Self::with_config(EngineConfig::gpu())
     }
 
     /// Build an engine from an explicit configuration.
@@ -259,13 +275,15 @@ impl MediaEngine {
         }
         #[cfg(gst_decode)]
         {
-            if let Some(gst) =
-                crate::gst_backend::GstState::new(config.acceptance, config.hw_policy)
-            {
+            if let Some(gst) = crate::gst_backend::GstState::new(
+                config.acceptance,
+                config.hw_policy,
+                config.audio_output,
+            ) {
                 return Self {
                     handoff_id: Self::next_handoff_id(),
                     handoff_controller_bus_name: None,
-                    backend: Backend::Gst(gst),
+                    backend: Backend::Gst(Box::new(gst)),
                     source: None,
                     volume: config.volume,
                     muted: false,
@@ -444,14 +462,23 @@ impl MediaEngine {
         accepted
     }
 
-    /// Seek to `ms` and pump until the picture for that time has landed, or
-    /// `timeout` elapses. Returns whether a frame arrived.
+    /// Seek to `ms` and pump until the picture for that time has landed, the
+    /// pipeline fails, or `timeout` elapses.
     ///
     /// The blocking counterpart to [`Self::seek_ms`], for callers that need a
     /// specific frame in hand rather than eventually — extracting a thumbnail,
     /// or settling a scrub before a screenshot. An interactive preview should
     /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
-    pub fn seek_and_wait(&mut self, ms: u64, timeout: tilo_clock::Duration) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`SeekWaitError::Failed`] with the pipeline's reason, or
+    /// [`SeekWaitError::TimedOut`] when no picture landed in `timeout`.
+    pub fn seek_and_wait(
+        &mut self,
+        ms: u64,
+        timeout: tilo_clock::Duration,
+    ) -> Result<(), SeekWaitError> {
         // `Instant + Duration` panics on overflow, and the only way to reach
         // that is a `timeout` of hundreds of billions of years — a caller
         // spelling "wait as long as it takes" as `Duration::MAX`. `None` here
@@ -463,8 +490,14 @@ impl MediaEngine {
         if matches!(self.backend, Backend::Web(_)) {
             let _ = timeout;
             let accepted = self.seek_with(ms, SeekMode::Accurate);
-            self.poll();
-            return accepted && self.frame_is_current();
+            if let Some(reason) = Self::failure(self.poll()) {
+                return Err(SeekWaitError::Failed(reason));
+            }
+            return if accepted && self.frame_is_current() {
+                Ok(())
+            } else {
+                Err(SeekWaitError::TimedOut)
+            };
         }
         let deadline = Instant::now().checked_add(timeout);
         // A pipeline that has not finished prerolling refuses seeks, so the
@@ -482,15 +515,25 @@ impl MediaEngine {
             if !accepted {
                 accepted = self.seek_with(ms, SeekMode::Accurate);
             }
-            self.poll();
+            // A pipeline error stops the engine: no picture is coming.
+            if let Some(reason) = Self::failure(self.poll()) {
+                return Err(SeekWaitError::Failed(reason));
+            }
             if accepted && self.frame_is_current() {
-                return true;
+                return Ok(());
             }
             if deadline.is_some_and(|d| Instant::now() >= d) {
-                return false;
+                return Err(SeekWaitError::TimedOut);
             }
             std::thread::sleep(tilo_clock::Duration::from_millis(5));
         }
+    }
+
+    fn failure(events: Vec<MediaEvent>) -> Option<String> {
+        events.into_iter().find_map(|event| match event {
+            MediaEvent::Error(reason) => Some(reason),
+            _ => None,
+        })
     }
 
     /// Set output volume in `0.0..=1.0`.
@@ -1007,54 +1050,34 @@ impl SynthState {
         frac.clamp(0.0, 1.0)
     }
 
-    /// Draw the synthesized test pattern for the current playhead: a slowly
-    /// drifting hue gradient with diagonal content stripes and a bright scan
-    /// bar at the playhead fraction, so a capture unmistakably shows a moving
-    /// picture and the correct progress.
+    /// Draw the synthesized picture for the current playhead: a calm diagonal
+    /// gradient between two muted colours whose blend drifts with the
+    /// playhead, so a capture shows a quiet picture that still changes as it
+    /// plays.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "pixel coordinates are below 1000 and every channel is a blend \
+                  of two bytes rounded back into 0..=255"
+    )]
     fn render_frame(&mut self) {
-        let width = SYNTH_W as usize;
-        let height = SYNTH_H as usize;
+        /// Dusk blue, top left.
+        const FROM: [f64; 3] = [36.0, 48.0, 82.0];
+        /// Muted teal, bottom right.
+        const TO: [f64; 3] = [86.0, 120.0, 134.0];
         let mut rgba = vec![0u8; SYNTH_RGBA_BYTES];
-        let frac = self.playhead_fraction();
-        // `frac` is clamped to 0.0..=1.0, so this lands inside the picture.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "frac is 0.0..=1.0 and SYNTH_W is 480, so the product is \
-                      a non-negative value no larger than 479"
-        )]
-        let scan_x = (frac * (f64::from(SYNTH_W) - 1.0)) as usize;
-        // The playhead drives the hue. Saturating so an absurd position slides
-        // the gradient to its limit instead of overflowing the products below;
-        // the synthesized backend clamps its own duration to an hour, so a real
-        // shift is at most 90 000.
-        let hue_shift = usize::try_from(self.position / 40).unwrap_or(usize::MAX);
+        let drift = self.playhead_fraction() * 0.25;
+        let span = f64::from(SYNTH_W + SYNTH_H - 2).max(1.0);
         for (y, row) in rgba.chunks_exact_mut(SYNTH_ROW_BYTES).enumerate() {
             for (x, px) in row.chunks_exact_mut(4).enumerate() {
-                // Base gradient: x drives red/green, y drives blue; hue_shift
-                // slides it so the pattern visibly animates over time. The
-                // scaled values are reduced mod 256 rather than clipped —
-                // rolling over is what makes the hue cycle.
-                let red = gradient_byte(x.saturating_add(hue_shift), width);
-                let green = gradient_byte(y, height);
-                let blue = gradient_byte(
-                    x.saturating_add(y).saturating_add(hue_shift),
-                    width.saturating_add(height),
-                );
-                // Diagonal content stripes for texture.
-                let stripe =
-                    if (x.saturating_add(y).saturating_add(hue_shift) / 24).is_multiple_of(2) {
-                        24
-                    } else {
-                        0
-                    };
-                // Bright scan bar at the playhead, otherwise the gradient.
-                if x.abs_diff(scan_x) <= 1 {
-                    px.copy_from_slice(&[255, 255, 255, 255]);
-                } else {
-                    px.copy_from_slice(&[red.saturating_add(stripe), green, blue, 255]);
-                }
+                let t = (x.saturating_add(y) as f64 / span * 0.75 + drift).clamp(0.0, 1.0);
+                let [r, g, b] = std::array::from_fn::<u8, 3, _>(|i| {
+                    let (from, to) = (FROM.get(i).copied(), TO.get(i).copied());
+                    from.zip(to)
+                        .map_or(0, |(from, to)| (from + (to - from) * t).round() as u8)
+                });
+                px.copy_from_slice(&[r, g, b, 255]);
             }
         }
         let frame = VideoFrame::new(SYNTH_W, SYNTH_H, rgba, self.position);
@@ -1090,7 +1113,7 @@ mod tests {
                 url: "https://x/v.mp4".into(),
             });
             assert!(
-                e.seek_and_wait(1_000, tilo_clock::Duration::MAX),
+                e.seek_and_wait(1_000, tilo_clock::Duration::MAX).is_ok(),
                 "an unbounded wait still returns the frame it waited for"
             );
         }

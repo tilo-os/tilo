@@ -1,0 +1,37 @@
+[package]
+autotests = false
+name = "tilo-egress"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "DNS-allowlisted egress for a sandbox's own network namespace: a DNS stub that answers only granted names, and nftables that admit only the addresses it answered."
+
+[lib]
+name = "tilo_egress"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The DNS stub's stop signal: an eventfd its threads block on with their socket.
+bounded-command = { path = "../../system/bounded-command" }
+# The grant grammar and the policy over it, shared with the launcher's gate.
+collab-types = { path = "../../collab/collab-types" }
+libc.workspace = true
+rustix = { workspace = true, features = ["net", "std"] }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

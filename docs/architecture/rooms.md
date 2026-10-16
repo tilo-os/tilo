@@ -176,6 +176,13 @@ document exists to remove: the moment "personal" is a different sort of thing
 from "shared", every feature has to be built twice and sharing becomes a
 migration instead of a reference.
 
+What the person keeps for themselves alone — watch history, the words the
+keyboard learned — lives in the **person's own room**: a room like any other,
+except that its members are the person's certified devices by derivation from
+their root key, with no roster to invite anyone into. An app keeps such a
+record beside the one it shows, in whatever room that is
+(`docs/architecture/storage.md` §13.9, "Person records").
+
 ## An app's disk is per-room; its index is not
 
 "An app opened in a room starts empty" holds on disk. An app does not name a

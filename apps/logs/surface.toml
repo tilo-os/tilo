@@ -1,0 +1,17 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "logs.journal"
+label = "System journal"
+version = 1
+fields = [
+  { path = "severity", type = "Priority" },
+  { path = "unit", type = "Atom" },
+  { path = "boot", type = "Atom" },
+  { path = "search", type = "String" },
+]
+
+[[resources.verbs]]
+id = "clear-filters"
+kind = "undoable"
+

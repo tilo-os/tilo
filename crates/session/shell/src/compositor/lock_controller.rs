@@ -27,6 +27,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use super::lock_auth::PasswordVerifier;
 use ui::text_selection::prev_char_boundary;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The non-leaky error shown if the verify worker vanishes without a result
 /// (thread panic / dropped channel). Fail-closed: treat it as "stay locked",
@@ -104,7 +105,7 @@ impl LockController {
     /// each time it engages. Dropping `pending` cancels interest in a verify
     /// left over from a prior lock episode.
     pub fn reset(&mut self) {
-        self.buffer.clear();
+        self.buffer.zeroize();
         self.error = None;
         self.pending = None;
     }
@@ -145,8 +146,33 @@ impl LockController {
 
     /// Clear the buffer (Escape). Also clears any shown error.
     pub fn clear_input(&mut self) {
-        self.buffer.clear();
+        self.buffer.zeroize();
         self.error = None;
+    }
+
+    /// Submit a private semantic credential to the ordinary verification worker.
+    ///
+    /// # Errors
+    /// Refuses a concurrent attempt or an empty, oversized, or control-containing
+    /// credential without retaining it or changing the current attempt.
+    pub fn submit_secret(&mut self, mut password: Zeroizing<String>) -> Result<(), &'static str> {
+        if self.is_verifying() {
+            return Err("Password verification is already running");
+        }
+        if password.is_empty()
+            || password.chars().count() > MAX_PASSWORD_LEN
+            || password.chars().any(char::is_control)
+        {
+            return Err("The password is empty or exceeds the supported input limits");
+        }
+        self.buffer.zeroize();
+        self.buffer = std::mem::take(&mut *password);
+        self.submit();
+        if self.is_verifying() {
+            Ok(())
+        } else {
+            Err(WORKER_LOST_MSG)
+        }
     }
 
     /// Begin an unlock attempt with the current buffer, **asynchronously**.
@@ -168,7 +194,7 @@ impl LockController {
         // verify returns.
         let verifier = Arc::clone(&self.verifier);
         let username = self.username.clone();
-        let password = std::mem::take(&mut self.buffer);
+        let password = Zeroizing::new(std::mem::take(&mut self.buffer));
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
             .name("tilo-lock-verify".to_string())
@@ -211,7 +237,7 @@ impl LockController {
             Ok(Err(message)) => {
                 self.pending = None;
                 self.error = Some(message);
-                self.buffer.clear();
+                self.buffer.zeroize();
                 Some(UnlockOutcome::StillLocked)
             }
             Err(TryRecvError::Empty) => None,
@@ -220,7 +246,7 @@ impl LockController {
                 // failed check, never as an unlock.
                 self.pending = None;
                 self.error = Some(WORKER_LOST_MSG.to_string());
-                self.buffer.clear();
+                self.buffer.zeroize();
                 Some(UnlockOutcome::StillLocked)
             }
         }

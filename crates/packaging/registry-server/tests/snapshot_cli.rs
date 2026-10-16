@@ -78,6 +78,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .unwrap();
     let mut entry = RegistryEntry {
         package_id: "so.tilo.test".into(),
+        kind: registry_types::EntryKind::App,
         name: "Test".into(),
         description: "Test app".into(),
         tagline: "Test on Tilo OS".into(),
@@ -92,17 +93,20 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         publisher_pubkey_hex: publisher_hex,
         versions: vec![RegistryVersion {
             version: "1".into(),
-            tapp_url: "https://apps.tilo.so/artifacts/test-x86_64.tapp".into(),
-            tapp_root_hash_hex: "ab".repeat(32),
-            tapp_size_bytes: 1,
             released_at_unix: 1,
-            tapp_blake3_hex: "cd".repeat(32),
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: "https://apps.tilo.so/artifacts/test-x86_64.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
+                tapp_blake3_hex: "cd".repeat(32),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),

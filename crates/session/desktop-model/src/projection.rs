@@ -13,6 +13,7 @@
 //! key's shape never changes under the same name.
 
 use automerge::{AutoCommit, ReadDoc};
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
@@ -44,8 +45,14 @@ pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
 pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
-/// Key a room document stores its permission profiles under, by lowercase name.
-pub const ROOM_PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
+/// Key a room document stores its named grant sets under, by lowercase name.
+pub const ROOM_PRESETS_KEY: &str = "presets_v1";
+/// Key of the map from member person id to the role preset they hold.
+pub const ROOM_MEMBERS_KEY: &str = "members";
+/// Key of the map from grant id to the grant (JSON bytes).
+pub const ROOM_GRANTS_KEY: &str = "grants";
+/// Key of the map from sandbox capability id to the capability (JSON bytes).
+pub const ROOM_SANDBOX_KEY: &str = "sandbox";
 /// Key a room document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
@@ -78,40 +85,6 @@ pub struct ReplicatedStrip {
     pub order: u64,
     pub name: Option<String>,
     pub groups: Vec<ReplicatedGroup>,
-}
-
-/// Write `value` at `key` only when the document does not already say
-/// it, so a document accumulates a change per changed value rather than
-/// one per export — otherwise each sync round manufactures ops out of
-/// untouched state and two peers exporting to each other never fall
-/// quiet.
-pub fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current.as_deref() != Some(value) {
-        let _ = doc.put(obj, key, value.to_string());
-    }
-}
-
-/// [`put_str_if_changed`] for an unsigned integer.
-pub fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: u64) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current != Some(value) {
-        let _ = doc.put(obj, key, ScalarValue::Uint(value));
-    }
 }
 
 // ---- concurrently created containers ---------------------------------------
@@ -351,37 +324,38 @@ pub fn project_workspace_shortcuts(
     Ok(())
 }
 
-/// Project a workspace's permission profiles as one map value per lowercase
-/// profile name. The capabilities an assignment expands to are governance and
-/// travel separately; a profile itself grants nothing.
-///
-/// # Errors
-///
-/// The document's error when the profiles map cannot be created.
-pub fn project_workspace_permission_profiles(
+/// Make the map at `key` hold exactly `entries` (key → JSON bytes), writing
+/// only what changed. A missing map is created only when there is something
+/// to write.
+/// The map at `key`, created empty when there is none.
+fn ensure_map(doc: &mut AutoCommit, key: &str) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+    if doc.get(&ROOT, key)?.is_none() {
+        doc.put_object(&ROOT, key, ObjType::Map)?;
+    }
+    Ok(())
+}
+
+fn project_blob_map(
     doc: &mut AutoCommit,
-    profiles: &[collab_types::PermissionProfile],
+    key: &str,
+    entries: Vec<(String, Vec<u8>)>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() {
+    let map = match doc.get(&ROOT, key).ok().flatten() {
         Some((_, id)) => id,
-        None if profiles.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)?,
+        None if entries.is_empty() => return Ok(()),
+        None => doc.put_object(&ROOT, key, ObjType::Map)?,
     };
-    let key = |profile: &collab_types::PermissionProfile| profile.name.trim().to_lowercase();
     let stale: Vec<String> = doc
         .keys(&map)
-        .filter(|name| !profiles.iter().any(|profile| key(profile) == *name))
+        .filter(|held| !entries.iter().any(|(name, _)| name == held))
         .collect();
     for name in stale {
         doc.delete(&map, name.as_str())?;
     }
-    for profile in profiles {
-        let Ok(blob) = serde_json::to_vec(profile) else {
-            continue;
-        };
-        let name = key(profile);
+    for (name, blob) in entries {
         let unchanged = matches!(
             doc.get(&map, name.as_str()).ok().flatten(),
             Some((Value::Scalar(value), _))
@@ -394,26 +368,206 @@ pub fn project_workspace_permission_profiles(
     Ok(())
 }
 
-/// The permission profiles a room document carries, by name. A value that
-/// does not decode is skipped.
-pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::PermissionProfile> {
+/// The values of the map at `key` that decode, with their keys.
+fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Vec<(String, T)> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
-    let Some((_, map)) = doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() else {
+    let Some((_, map)) = doc.get(&ROOT, key).ok().flatten() else {
         return Vec::new();
     };
-    let mut profiles: Vec<collab_types::PermissionProfile> = doc
-        .keys(&map)
-        .filter_map(|key| match doc.get(&map, key.as_str()).ok().flatten() {
+    doc.keys(&map)
+        .filter_map(|name| match doc.get(&map, name.as_str()).ok().flatten() {
             Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                ScalarValue::Bytes(blob) => {
+                    serde_json::from_slice(blob).ok().map(|value| (name, value))
+                }
                 _ => None,
             },
             _ => None,
         })
+        .collect()
+}
+
+/// Project a workspace's named grant sets as one map value per lowercase
+/// name. A set itself grants nothing; the grants an assignment expands to
+/// travel with the room's policy.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn project_workspace_presets(
+    doc: &mut AutoCommit,
+    presets: &[tilo_action_policy::Preset],
+) -> Result<(), automerge::AutomergeError> {
+    let entries = presets
+        .iter()
+        .filter_map(|preset| {
+            Some((
+                preset.name.trim().to_lowercase(),
+                serde_json::to_vec(preset).ok()?,
+            ))
+        })
         .collect();
-    profiles.sort_by_key(|profile| profile.name.to_lowercase());
-    profiles
+    project_blob_map(doc, ROOM_PRESETS_KEY, entries)
+}
+
+/// The named grant sets a room document carries, by name. A value that does
+/// not decode or validate is skipped.
+pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset> {
+    let mut presets: Vec<tilo_action_policy::Preset> = blob_map_of(doc, ROOM_PRESETS_KEY)
+        .into_iter()
+        .map(|(_, preset)| preset)
+        .filter(|preset: &tilo_action_policy::Preset| preset.validate().is_ok())
+        .collect();
+    crate::grants::sort_presets(&mut presets);
+    presets
+}
+
+/// Project a room's authority: its owner, each member's role and every grant.
+///
+/// # Errors
+///
+/// The document's error when a value cannot be written.
+pub fn project_room_policy(
+    doc: &mut AutoCommit,
+    policy: &tilo_action_policy::RoomPolicy,
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+
+    match &policy.owner {
+        Some(owner) => {
+            doc.put_str_if_changed(&ROOT, ROOM_OWNER_KEY, owner)?;
+        }
+        None => {
+            if doc.get(&ROOT, ROOM_OWNER_KEY).ok().flatten().is_some() {
+                doc.delete(&ROOT, ROOM_OWNER_KEY)?;
+            }
+        }
+    }
+    let members = policy
+        .members
+        .iter()
+        .filter_map(|(person, role)| Some((person.clone(), serde_json::to_vec(role).ok()?)))
+        .collect();
+    // The room's members and grants are always present, if empty: readers
+    // of the room's security basis require both.
+    ensure_map(doc, ROOM_MEMBERS_KEY)?;
+    ensure_map(doc, ROOM_GRANTS_KEY)?;
+    project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
+    let grants = policy
+        .grants
+        .iter()
+        .filter_map(|grant| {
+            Some((
+                grant.id.as_str().to_owned(),
+                serde_json::to_vec(grant).ok()?,
+            ))
+        })
+        .collect();
+    project_blob_map(doc, ROOM_GRANTS_KEY, grants)
+}
+
+/// The authority a room document records for `room`. Values that do not
+/// decode are skipped; grants on another room's nodes are dropped.
+/// The grant sets of the open tasks `doc` holds: every grant naming a task
+/// as its subject, while that task is open.
+#[must_use]
+pub fn task_grants_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Grant> {
+    let open = open_task_ids(doc);
+    blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
+        .filter(|grant| matches!(&grant.subject, tilo_action_policy::Subject::Task(task) if open.contains(task)))
+        .collect()
+}
+
+/// Remove from `doc`'s grants every one that lapsed with its task
+/// ([`tilo_action_policy::Grant::lapsed_with_tasks`]), so every reader of the
+/// room's grants, the relay's included, stops honouring it. The ids removed.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn lapse_task_grants(
+    doc: &mut AutoCommit,
+) -> Result<Vec<tilo_action_policy::GrantId>, automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+
+    let open = open_task_ids(doc);
+    let lapsed: Vec<(String, tilo_action_policy::GrantId)> = blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .filter(|(_, grant): &(String, tilo_action_policy::Grant)| {
+            grant.lapsed_with_tasks(|task| open.contains(task))
+        })
+        .map(|(name, grant)| (name, grant.id))
+        .collect();
+    if let Some((_, map)) = doc.get(&ROOT, ROOM_GRANTS_KEY)?
+        && !lapsed.is_empty()
+    {
+        for (name, _) in &lapsed {
+            doc.delete(&map, name.as_str())?;
+        }
+    }
+    Ok(lapsed.into_iter().map(|(_, id)| id).collect())
+}
+
+/// The ids of the tasks `doc` holds that are still open: a grant given for
+/// a task ([`tilo_action_policy::Lifetime::Task`]) lives while it is one.
+#[must_use]
+pub fn open_task_ids(doc: &AutoCommit) -> std::collections::HashSet<String> {
+    workspace_tasks_of(doc)
+        .into_iter()
+        .filter(|task| !task.status.is_finished())
+        .map(|task| task.id)
+        .collect()
+}
+
+pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
+    use automerge::{ROOT, ReadDoc};
+
+    let owner = doc
+        .get(&ROOT, ROOM_OWNER_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok());
+    let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
+    let open = open_task_ids(doc);
+    let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
+        .filter(|grant| grant.node.room_id() == Some(room))
+        .filter(|grant| !grant.lapsed_with_tasks(|task| open.contains(task)))
+        .collect();
+    tilo_action_policy::RoomPolicy {
+        room: room.to_owned(),
+        owner,
+        members,
+        grants,
+    }
+}
+
+/// Project a room's sandbox capabilities, by id.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn project_room_sandbox(
+    doc: &mut AutoCommit,
+    sandbox: &[collab_types::caps::CapOverride],
+) -> Result<(), automerge::AutomergeError> {
+    let entries = sandbox
+        .iter()
+        .filter_map(|cap| Some((cap.id.clone(), serde_json::to_vec(cap).ok()?)))
+        .collect();
+    project_blob_map(doc, ROOM_SANDBOX_KEY, entries)
+}
+
+/// The sandbox capabilities a room document carries.
+pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
+    blob_map_of(doc, ROOM_SANDBOX_KEY)
+        .into_iter()
+        .map(|(_, cap)| cap)
+        .collect()
 }
 
 /// The shortcuts a room document carries, by id. A value that does not
@@ -666,10 +820,10 @@ pub fn project_owned_contents(
         if owns_strip {
             live_strips.insert(skey.clone());
             if empty == EmptyStrips::Retain {
-                put_uint_if_changed(doc, &strip_entry, STRIP_RETAINED_EMPTY_KEY, 1);
+                let _ = doc.put_uint_if_changed(&strip_entry, STRIP_RETAINED_EMPTY_KEY, 1);
             }
-            put_str_if_changed(doc, &strip_entry, "name", &strip.name);
-            put_uint_if_changed(doc, &strip_entry, "order", si as u64);
+            let _ = doc.put_str_if_changed(&strip_entry, "name", &strip.name);
+            let _ = doc.put_uint_if_changed(&strip_entry, "order", si as u64);
         }
 
         // A strip whose groups cannot be written is skipped; the sweep
@@ -736,7 +890,7 @@ fn project_owned_groups_in(
         };
         if owns_group {
             live_groups.insert(gkey.clone());
-            put_uint_if_changed(doc, &group_entry, "order", gi as u64);
+            let _ = doc.put_uint_if_changed(&group_entry, "order", gi as u64);
             // Width, maximization and active-tab selection are local
             // presentation preferences. Old room documents may still
             // contain the first two fields, but no current peer writes
@@ -796,8 +950,8 @@ fn project_owned_tabs_in(
         let Ok(tab_entry) = winner_or_create(doc, &tab_copies, &tabs_id, tkey.as_str()) else {
             continue;
         };
-        put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
-        put_str_if_changed(doc, &tab_entry, "title", &tab.title);
+        let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
+        let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
         if let Ok(blob) = serde_json::to_vec(&tab.tile) {
             let unchanged = matches!(
                 doc.get(&tab_entry, "tile_json").ok().flatten(),
@@ -834,15 +988,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             _ => None,
         }
     };
-    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> {
-        match doc.get(obj, key).ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(t) => Some(t.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    };
+    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> { doc.str_at(obj, key) };
 
     let contents_all = map_candidates(doc, &ROOT, ROOM_CONTENTS_KEY);
     let mut strips: Vec<ReplicatedStrip> = Vec::new();
@@ -1072,6 +1218,7 @@ pub fn hydrate_group(rep: ReplicatedGroup) -> WindowGroup {
         active_tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -1097,13 +1244,17 @@ pub fn hydrate_tab(rep: ReplicatedTab) -> Tab {
 /// app id survives as [`TileContent::PeerWindow`]. `current` is
 /// preferred once a local instance is bound, or the peer's
 /// re-projection would take the window away again every round.
+///
+/// A peer's [`TileContent::LocalApp`] (a window it is still restoring) is
+/// the same news as its live window. A [`TileContent::HostedWindow`] stays
+/// exactly as published: that window runs only on its host.
 pub fn localise_tile(
     tile: TileContent,
     current: Option<&TileContent>,
     tab_title: &str,
 ) -> TileContent {
     match tile {
-        TileContent::Foreign { app_id, .. } => {
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
             // Already resolved here, to our own instance or the same
             // waypoint — the remote tile has nothing to add.
             match current {
@@ -1124,6 +1275,7 @@ pub fn localise_tile(
                 app_id,
                 label,
                 note: String::new(),
+                missing: None,
             }
         }
         // A governed room's owner places in-process kinds; a member that bound
@@ -1188,16 +1340,7 @@ pub fn project_room_records(
         };
         // Compared before writing, like every other value here — a
         // re-projection of unchanged state must not manufacture one.
-        let current = match doc.get(&entry, "kind").ok().flatten() {
-            Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
-                automerge::ScalarValue::Str(k) => Some(k.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if current.as_deref() != Some(kind.as_str()) {
-            let _ = doc.put(&entry, "kind", kind.clone());
-        }
+        let _ = doc.put_str_if_changed(&entry, "kind", kind);
     }
     Ok(())
 }
@@ -1205,7 +1348,7 @@ pub fn project_room_records(
 /// Read a room document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
+    use automerge::{ObjType, ROOT, ReadDoc, Value};
 
     // `records` is created on first projection, so two peers whose room
     // documents started empty may each have minted one: a key conflict
@@ -1234,13 +1377,7 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
         if out.iter().any(|(seen, _)| *seen == key) {
             continue;
         }
-        let kind = match doc.get(&entry, "kind").ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(k) => k.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
+        let kind = doc.str_at(&entry, "kind").unwrap_or_default();
         out.push((key, kind));
     }
     out.sort();
@@ -1361,14 +1498,7 @@ pub fn merge_room_contents(
 /// one. A payload naming a different room than the one it answers must be
 /// refused before anything else reads it.
 pub fn declared_room(candidate: &AutoCommit) -> Option<RoomId> {
-    use automerge::{ROOT, ScalarValue, Value};
-    match candidate.get(&ROOT, ROOM_ID_KEY).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+    RoomId::parse(&candidate.str_at(&automerge::ROOT, ROOM_ID_KEY)?)
 }
 
 /// How many entries this peer owns that `candidate` would rewrite,
@@ -1426,7 +1556,7 @@ pub fn apply_admitted_room(
             raw = raw.checked_add(1).ok_or("workspace identities exhausted")?;
         }
         let mut workspace = Workspace::new(WorkspaceId(raw), &name);
-        workspace.room = room;
+        workspace.set_room(room);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
@@ -1440,13 +1570,13 @@ pub fn apply_admitted_room(
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
-    workspace.owner = owner;
+    workspace.policy.owner = owner;
     let shortcuts = workspace_shortcuts_of(doc);
     let reshortcut = workspace.shortcuts != shortcuts;
     workspace.shortcuts = shortcuts;
-    let profiles = workspace_permission_profiles_of(doc);
-    let reprofiled = workspace.permission_profiles != profiles;
-    workspace.permission_profiles = profiles;
+    let presets = workspace_presets_of(doc);
+    let reprofiled = workspace.presets != presets;
+    workspace.presets = presets;
     let changed = merge_room_contents(tree, room, contents_of(doc), Reader::Viewer);
     Ok(changed || renamed || reshortcut || reprofiled)
 }
@@ -1468,15 +1598,6 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
             Some((salt, value.as_str()?.to_owned()))
         })
         .collect()
-}
-
-/// The next counter a durable topology owner mints from, when the room
-/// records one.
-pub fn desktop_counter_of(doc: &AutoCommit) -> Option<u64> {
-    doc.get(&automerge::ROOT, ROOM_DESKTOP_COUNTER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_u64())
 }
 
 #[cfg(test)]
@@ -1502,6 +1623,7 @@ mod tests {
             app_id: "so.tilo.notes".into(),
             label: "Notes".into(),
             note: String::new(),
+            missing: None,
         };
         assert_eq!(
             localise_tile(placeholder.clone(), Some(&waiting), "Notes"),
@@ -1518,6 +1640,49 @@ mod tests {
         assert_eq!(
             localise_tile(placeholder.clone(), None, "Notes"),
             placeholder
+        );
+    }
+
+    #[test]
+    fn a_hosted_window_arrives_as_itself_and_a_restoring_one_as_a_peer_window() {
+        let hosted = TileContent::HostedWindow {
+            app_id: "org.gimp.GIMP".into(),
+            label: "Poster.xcf".into(),
+            host: "ab".repeat(32),
+            host_label: "Laptop".into(),
+        };
+        // Neither a fresh arrival nor a later round turns it into
+        // something this device would launch.
+        assert_eq!(localise_tile(hosted.clone(), None, "Poster.xcf"), hosted);
+        assert_eq!(
+            localise_tile(hosted.clone(), Some(&hosted), "Poster.xcf"),
+            hosted
+        );
+        let tab = hydrate_tab(ReplicatedTab {
+            id: 9,
+            order: 0,
+            title: "Poster.xcf".into(),
+            tile: Some(hosted.clone()),
+        });
+        assert_eq!(tab.tile, hosted);
+        assert_eq!(
+            crate::apps::canonical_app_id(&hosted).as_deref(),
+            Some("org.gimp.GIMP")
+        );
+
+        let restoring = TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        };
+        assert_eq!(
+            localise_tile(restoring, None, "Groceries"),
+            TileContent::PeerWindow {
+                app_id: "so.tilo.notes".into(),
+                label: "Groceries".into(),
+                note: String::new(),
+                missing: None,
+            }
         );
     }
 

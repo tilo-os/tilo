@@ -20,6 +20,18 @@ def _hw(ctx) -> dict:
     return {k: int(v) for k, _, v in (l.partition("=") for l in out.splitlines()) if v.strip().isdigit()}
 
 
+def _named(action_id: str, names) -> bool:
+    """Whether an action's address ends in one of `names` (an app's action
+    address is its provider, resource and action joined by \\x1f)."""
+    return action_id.rsplit("\x1f", 1)[-1] in names
+
+
+def _offered(ctx, names) -> list:
+    """Every published action named one of `names`, with its availability."""
+    return [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
+            if _named(a["id"], names)]
+
+
 def _action(ctx, query, action_id):
     return next((a for a in ctx.vm.actions(query) if a["id"] == action_id), None)
 
@@ -74,6 +86,12 @@ def wifi(ctx, res):
     problems, targets = _no_hardware_control(ctx, res, "wifi", "wifi",
                                              "quick-settings.wifi.set-enabled", {"enabled": True},
                                              ("wifi", "wi-fi", "wlan"))
+    # Settings switches the same radio; it must not offer what Quick Settings withholds.
+    settings = _offered(ctx, ("set-wifi", "set-hotspot", "start-hotspot"))
+    res.metrics["settings_actions"] = settings
+    live = [a for a, av in settings if av.get("state") == "available"]
+    if live:
+        problems.append(f"Wi-Fi actions offered as available with no adapter: {live}")
     expect(not problems, "; ".join(problems))
 
 
@@ -83,8 +101,11 @@ def bluetooth(ctx, res):
     res.metrics["hardware"] = hw
     if hw.get("bluetooth"):
         raise Unobservable("this VM has a Bluetooth adapter")
-    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions("bluetooth")
-               if "bluetooth" in a["id"] and "pairing" not in a["id"]]
+    # Settings' radio effects by name (`set-discovering` does not say
+    # "bluetooth"), and every other Bluetooth action but the pairing prompts.
+    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
+               if ("bluetooth" in a["id"] and "pairing" not in a["id"])
+               or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth"))]
     res.metrics["actions"] = actions
     targets = _qs_targets(ctx, ("bluetooth",))
     res.metrics["quick_settings_targets"] = targets
@@ -135,12 +156,11 @@ def keyboard_layout(ctx, res):
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
 
 
-@check("B07", AREA, "Keyboard layout import: GNOME de+nodeadkeys and compose:ralt become the session's layout")
-def keyboard_import(ctx, res):
-    # firstboot imports the host's GNOME input settings only in host-desktop install mode
-    # (Tilo installed on an existing GNOME system); a Tilo OS session never runs it.
-    raise Unobservable("the GNOME input import runs only when Tilo is installed on a GNOME host "
-                       "(host-desktop mode); a Tilo OS VM cannot exercise it: verify it on the local install")
+# The GNOME keyboard import is not checked here: the session imports the host's GNOME
+# input settings only in host-desktop mode (`--host-desktop-session`, which only the
+# packaged tilo-session-runner passes), so a Tilo OS session never runs it. The
+# host-desktop VM test (dist/session/vm-e2e, H05) seeds GNOME de+nodeadkeys and
+# compose:ralt and requires the session to import them.
 
 
 @check("B05", AREA, "Display arrangement: mirror and extend apply, and revert restores")
@@ -163,8 +183,53 @@ def arrangement(ctx, res):
 
 @check("B06", AREA, "Monitor hotplug: unplugging and replugging an output moves windows and restores the layout")
 def hotplug(ctx, res):
-    helptext = ctx.vm.run("slot", "--help")
-    if "hotplug" not in helptext and "unplug" not in helptext:
-        raise Unobservable("tilo-vm cannot unplug or replug a slot's virtual output, "
-                           "so hotplug cannot be driven")
-    raise Unobservable("tilo-vm offers output hotplug, but this suite does not drive it yet")
+    # The guest kernel's DRM connector status is the hotplug: forcing it off and back to
+    # detect sends the same uevent a real cable does, so the compositor's own path runs.
+    ctx.reset()
+    st = ctx.state()
+    rects = core.display_rects(st)
+    expect(len(rects) >= 2, f"two outputs present (have {len(rects)})")
+    g = ctx.new_terminal_window()["id"]
+    st = ctx.state()
+    # Unplug whichever output the new window landed on.
+    d1 = core.display_of_group(st, g)
+    expect(d1 is not None, "the new window is on an output")
+    monitor = next((d.get("monitor", "") for d in st["workspace_tree"]["outputs"]["displays"]
+                    if d["id"] == d1), "")
+    name = monitor.removeprefix("connector:")
+    if not name or name == monitor:
+        raise Unobservable(f"display {d1} names no DRM connector (monitor={monitor!r})")
+    found = ctx.vm.root_exec(f"ls -d /sys/class/drm/card*-{name} 2>/dev/null").split()
+    if len(found) != 1:
+        raise Unobservable(f"connector {name} of display {d1} is not one DRM connector: {found}")
+    victim = found[0]
+    res.metrics["unplugged"] = victim
+
+    card = victim.rsplit("/", 1)[1].split("-", 1)[0]
+    widths = {d: r[2:4] for d, r in rects.items() if d != d1}
+
+    def force(state):
+        # Forcing a connector's status sends no uevent; the card's synthetic change
+        # event is the hotplug notification compositors listen for.
+        ctx.vm.vm_cmd("ssh", "--", f"sh -c 'echo {state} > {victim}/status && "
+                      f"echo change > /sys/class/drm/{card}/uevent'", timeout=60)
+
+    force("off")
+    try:
+        st = ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects) - 1, 10,
+                            "the unplugged output is gone from the layout")
+        ctx.shot("B06-unplugged")
+        kept = {d: r[2:4] for d, r in core.display_rects(st).items()}
+        res.metrics["remaining_sizes"] = kept
+        expect(all(kept.get(d) == wh for d, wh in widths.items()),
+               f"remaining outputs keep their modes: had {widths}, now {kept}")
+        ctx.wait_state(lambda s: core.display_of_group(s, g) not in (None, d1), 5,
+                       "the window moved to a remaining output")
+    finally:
+        force("detect")
+    ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects), 10,
+                   "the replugged output is back in the layout")
+    st = ctx.wait_state(lambda s: core.display_of_group(s, g) == d1, 5,
+                        f"the window returned to the replugged output {d1}")
+    res.metrics["restored_rects"] = core.display_rects(st)
+    ctx.shot("B06-replugged")

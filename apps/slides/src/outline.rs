@@ -20,17 +20,19 @@
 use std::fmt::Write as _;
 
 use automerge::AutoCommit;
+use ui::tilo_resource::Resource as _;
 
-use crate::doc::SlidesDoc;
 use crate::model::{Deck, ElementKind};
 
 /// The outline of the deck in `doc`, or `None` when it holds no deck.
 pub fn of_document(doc: &AutoCommit) -> Option<String> {
-    SlidesDoc::load(doc).map(|deck| of_deck(&deck))
+    crate::deck::Deck::read(doc)
+        .ok()
+        .map(|deck| of_deck(&crate::deck::mirror(&deck)))
 }
 
 pub fn of_deck(deck: &Deck) -> String {
-    let mut out = format!("{} · {} slides\n", deck.title.trim(), deck.slides.len());
+    let mut out = format!("{} ({} slides)\n", deck.title.trim(), deck.slides.len());
     for (index, slide) in deck.slides.iter().enumerate() {
         let _ = writeln!(
             out,
@@ -66,11 +68,6 @@ pub fn of_deck(deck: &Deck) -> String {
     out
 }
 
-/// What `read` and the deck's edits declare they return.
-pub fn result_schema() -> serde_json::Value {
-    serde_json::json!({"type": ["string", "null"]})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,7 +76,11 @@ mod tests {
 
     #[test]
     fn titles_bodies_shapes_and_notes_read_in_deck_order_with_their_ids() {
-        let mut cover = authored_slide(Some("Product Launch"), Some("October 2026"), Some("title"));
+        let mut cover = authored_slide(
+            Some("Product Launch"),
+            Some("October 2026"),
+            Some(crate::model::Layout::Title),
+        );
         cover.notes = "Welcome everyone".into();
         let mut agenda = authored_slide(Some("Agenda"), Some("Goals\nTimeline"), None);
         agenda
@@ -99,7 +100,7 @@ mod tests {
         };
         let (c, a) = (ids(&cover), ids(&agenda));
         let expected = format!(
-            "Launch · 2 slides\n\
+            "Launch (2 slides)\n\
              \nSlide 1 (title) {{#{}}}\n# Product Launch {{#{}}}\nOctober 2026 {{#{}}}\nNotes: Welcome everyone\n\
              \nSlide 2 (title-content) {{#{}}}\n# Agenda {{#{}}}\n[rect] {{#{}}}\nGoals↵Timeline {{#{}}}\n[image] {{#{}}}\n",
             cover.id, c[0], c[1], agenda.id, a[0], a[1], a[2], a[3]

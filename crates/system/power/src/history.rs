@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const MAX_AGE_MINUTES: u64 = 30 * 24 * 60;
-const MIN_INTERVAL_MINUTES: u64 = 15;
+/// The history's resolution: at most one point per this many minutes.
+pub const MIN_INTERVAL_MINUTES: u64 = 15;
 const MAX_POINTS: usize = 30 * 24 * 4;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +23,18 @@ pub struct BatteryHistoryPoint {
     pub capacity: u32,
     pub health: Option<u32>,
     pub on_ac: bool,
+}
+
+impl BatteryHistoryPoint {
+    /// A point sampled at `unix_minute`, percentages clamped to 100.
+    pub fn sampled(unix_minute: u64, capacity: u32, health: Option<u32>, on_ac: bool) -> Self {
+        Self {
+            unix_minute,
+            capacity: capacity.min(100),
+            health: health.map(|value| value.min(100)),
+            on_ac,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,22 +91,99 @@ pub fn record_power_history(
     let path = history_path(kind).ok_or("no private per-user state directory is available")?;
     record_power_history_at(
         &path,
-        BatteryHistoryPoint {
-            unix_minute: now,
-            capacity: capacity.min(100),
-            health: health.map(|value| value.min(100)),
-            on_ac,
-        },
+        BatteryHistoryPoint::sampled(now, capacity, health, on_ac),
     )
 }
 
 fn history_path(kind: PowerSourceKind) -> Option<PathBuf> {
-    let base = xdg_paths::xdg::state_home()?;
+    Some(history_path_in(&tilo_paths::xdg::state_home()?, kind))
+}
+
+fn history_path_in(state_home: &Path, kind: PowerSourceKind) -> PathBuf {
     let name = match kind {
         PowerSourceKind::Battery => "power-history.json",
         PowerSourceKind::Ups => "ups-history.json",
     };
-    Some(base.join("tilo").join(name))
+    state_home.join("tilo").join(name)
+}
+
+/// The power service's history writer. It reads each history file once,
+/// keeps it, and rewrites a file only when a point lands in it — so sampling
+/// costs no disk I/O between points.
+#[derive(Debug)]
+pub struct PowerHistoryWriter {
+    state_home: Option<PathBuf>,
+    battery: Option<BatteryHistory>,
+    ups: Option<BatteryHistory>,
+}
+
+impl Default for PowerHistoryWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PowerHistoryWriter {
+    /// Write under the user's private state directory.
+    pub fn new() -> Self {
+        Self::in_state_home(tilo_paths::xdg::state_home())
+    }
+
+    /// Write under `state_home` (`None`: nowhere; every record fails).
+    pub fn in_state_home(state_home: Option<PathBuf>) -> Self {
+        Self {
+            state_home,
+            battery: None,
+            ups: None,
+        }
+    }
+
+    /// Record a point for `kind` at `point.unix_minute` when the cadence
+    /// allows it; `Ok(true)` when it landed and the file was rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no private state directory or the file
+    /// cannot be written; the point stays in memory and reaches the disk with
+    /// the next one that lands.
+    pub fn record(
+        &mut self,
+        kind: PowerSourceKind,
+        point: BatteryHistoryPoint,
+    ) -> Result<bool, String> {
+        let path = self
+            .state_home
+            .as_deref()
+            .map(|home| history_path_in(home, kind))
+            .ok_or("no private per-user state directory is available")?;
+        let history = self.loaded(kind, &path);
+        if !history.record(point) {
+            return Ok(false);
+        }
+        write_history_at(&path, history)?;
+        Ok(true)
+    }
+
+    /// The first minute at which a point for `kind` can land, or `None`
+    /// before one has been recorded or read.
+    pub fn next_due_minute(&self, kind: PowerSourceKind) -> Option<u64> {
+        let history = match kind {
+            PowerSourceKind::Battery => self.battery.as_ref(),
+            PowerSourceKind::Ups => self.ups.as_ref(),
+        }?;
+        history
+            .points
+            .last()
+            .map(|last| last.unix_minute.saturating_add(MIN_INTERVAL_MINUTES))
+    }
+
+    fn loaded(&mut self, kind: PowerSourceKind, path: &Path) -> &mut BatteryHistory {
+        let slot = match kind {
+            PowerSourceKind::Battery => &mut self.battery,
+            PowerSourceKind::Ups => &mut self.ups,
+        };
+        slot.get_or_insert_with(|| load_history_at(path))
+    }
 }
 
 fn load_history_at(path: &Path) -> BatteryHistory {
@@ -108,13 +198,18 @@ fn record_power_history_at(path: &Path, point: BatteryHistoryPoint) -> Result<bo
     if !history.record(point) {
         return Ok(false);
     }
-    let mut bytes = serde_json::to_vec(&history).map_err(|error| error.to_string())?;
+    write_history_at(path, &history)?;
+    Ok(true)
+}
+
+fn write_history_at(path: &Path, history: &BatteryHistory) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(history).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())?;
-    Ok(true)
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -179,5 +274,67 @@ mod tests {
             assert!(!text.contains("serial"));
             assert!(!text.contains("application"));
         }
+    }
+
+    #[test]
+    fn the_writer_reads_once_and_rewrites_only_when_a_point_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path_in(dir.path(), PowerSourceKind::Battery);
+        let point = |unix_minute| BatteryHistoryPoint {
+            unix_minute,
+            capacity: 60,
+            health: None,
+            on_ac: false,
+        };
+        // A point from an earlier session is on disk.
+        assert!(record_power_history_at(&path, point(1_000)).unwrap());
+
+        let mut writer = PowerHistoryWriter::in_state_home(Some(dir.path().to_path_buf()));
+        assert_eq!(writer.next_due_minute(PowerSourceKind::Battery), None);
+        assert!(
+            !writer
+                .record(PowerSourceKind::Battery, point(1_005))
+                .unwrap(),
+            "the earlier session's point sets the cadence"
+        );
+        assert_eq!(
+            writer.next_due_minute(PowerSourceKind::Battery),
+            Some(1_000 + MIN_INTERVAL_MINUTES)
+        );
+
+        // Kept in memory: a file that vanished is not re-read, and a sample
+        // that does not land writes nothing.
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !writer
+                .record(PowerSourceKind::Battery, point(1_010))
+                .unwrap()
+        );
+        assert!(!path.exists(), "no point landed, so nothing was written");
+
+        assert!(
+            writer
+                .record(PowerSourceKind::Battery, point(1_015))
+                .unwrap()
+        );
+        let written: BatteryHistory =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            written
+                .points
+                .iter()
+                .map(|p| p.unix_minute)
+                .collect::<Vec<_>>(),
+            vec![1_000, 1_015],
+            "the rewrite carries the history read at start plus the new point"
+        );
+        assert_eq!(
+            writer.next_due_minute(PowerSourceKind::Battery),
+            Some(1_015 + MIN_INTERVAL_MINUTES)
+        );
+        assert_eq!(writer.next_due_minute(PowerSourceKind::Ups), None);
+
+        let mut nowhere = PowerHistoryWriter::in_state_home(None);
+        assert!(nowhere.record(PowerSourceKind::Ups, point(1)).is_err());
     }
 }

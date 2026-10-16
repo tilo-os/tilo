@@ -153,7 +153,7 @@ if grep -Fq 'root_gib=$(((image_bytes * 3 + gib - 1) / gib))' "$builder" \
    && grep -Fq -- '--root-min "${root_gib}G"' "$builder" \
    && grep -Fq 'TILO_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
    && grep -Fq "qemu-img create -f qcow2 -F qcow2 -b '\$disk' '\$work_disk'" "$repo_root/os/dev/vm.sh" \
-   && grep -Fq -- '-drive file=$work_disk,format=qcow2,if=virtio' "$repo_root/os/dev/vm.sh"; then
+   && grep -Fq '$(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium)' "$repo_root/os/dev/vm.sh"; then
   ok "live media is capacity-sized and VM cycles preserve the release artifact"
 else
   bad "live-media capacity or pristine-artifact VM isolation regressed"
@@ -354,7 +354,7 @@ if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encry
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$repo_root/os/scripts/build-initramfs.sh" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \
@@ -409,16 +409,22 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
    && grep -Fq 'valid_sha512_crypt "$hash"' "$firstboot_user" \
    && grep -Fq 'rounds=([1-9][0-9]{3,8})' "$firstboot_user" \
-   && grep -Fq 'useradd -m -p "$hash"' "$firstboot_user" \
-   && ! grep -Fq 'chpasswd -e' "$firstboot_user"; then
-  ok "first boot revalidates credentials and creates a password-bearing account atomically"
+   && grep -Fq 'useradd -M -p "$lock_value"' "$firstboot_user" \
+   && ! grep -Fq 'useradd -m ' "$firstboot_user" \
+   && ! grep -Fq -- '-p "$hash"' "$firstboot_user" \
+   && grep -Fq '| chpasswd --encrypted' "$firstboot_user"; then
+  ok "first boot revalidates credentials and installs the hash through stdin into a locked account"
 else
-  bad "installer can reset a privileged account or leave a new account without its password"
+  bad "installer can reset a privileged account, expose its hash in argv, or create an unlocked account"
 fi
 if bash "$repo_root/os/tests/firstboot_password_hash.sh" >/dev/null; then
   ok "first boot accepts only complete SHA-512 crypt password hashes"
 else
   bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
+fi
+
+if ! python3 -B "$repo_root/os/tests/test_installer_firstboot_runtime.py"; then
+  bad "installer does not provision firstboot accounts on older signed targets"
 fi
 
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
@@ -493,6 +499,14 @@ else
   bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
+if grep -Fq 'die "setup handoff contains the human root secret"' "$backend" \
+   && grep -Fq 'for public in user-identity/pubkey.bin device/cert.bin' "$backend" \
+   && grep -Fq 'find "$HANDOFF_VAR/lib/tilo/device/certs"' "$backend"; then
+  ok "installed handoff refuses the human root secret and keeps the enrolled identity's public files readable"
+else
+  bad "installed handoff can copy the human root secret or leave public identity files root-only"
+fi
+
 if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"' "$backend"; then
   ok "installed greeter configuration receives an enforcing-compatible /etc label"
 else
@@ -559,6 +573,30 @@ if [ -x "$guided_partitioner" ] \
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only Tilo partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
+fi
+
+# bootc#1929: with two ESPs, stock bootc can write the first (Windows) ESP
+# even though the installer mounted a different Tilo ESP under /target.
+if python3 - "$backend" "$repo_root/os/dev/build-custom-installer.sh" <<'PY'
+from pathlib import Path
+import sys
+
+backend = Path(sys.argv[1]).read_text()
+builder = Path(sys.argv[2]).read_text()
+guard = backend.index('ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside')
+mutation = backend.index('GUIDED_RESULT="$(', guard)
+assert guard < mutation
+assert '&& [ "$(' in backend[guard:mutation]
+assert 'alongside install requires the pinned mounted-ESP bootc helper' in backend[guard:mutation]
+assert backend.count('"${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}"') == 2
+assert '--entrypoint /run/tilo-bootc-alongside' in backend
+assert '0002-select-mounted-esp.patch' in builder
+assert 'rootfs/usr/libexec/tilo-bootc-alongside' in builder
+PY
+then
+  ok "alongside install selects a mounted-ESP bootc before any GPT mutation"
+else
+  bad "alongside install could run unpatched bootc against Windows ESP"
 fi
 
 # root=tilo-auto boots exactly one Tilo root per disk: both alongside paths

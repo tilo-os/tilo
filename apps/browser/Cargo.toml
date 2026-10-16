@@ -1,13 +1,10 @@
 [package]
 name = "browser"
 version = "0.1.0"
+description = "Web browser: one page per instance, tabs are desktop tabs"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
 
 [lib]
 name = "browser"
@@ -18,16 +15,12 @@ name = "browser"
 path = "src/main.rs"
 
 [features]
-# Live WPE WebKit engine. Needs the WPE stack from os/dev/build-wpe.sh
-# (PKG_CONFIG_PATH/LD_LIBRARY_PATH pointing at its prefix). Normal launches
-# use the pinned Chromium/CEF helper. Headless fixtures and unit tests use
-# the deterministic test engine.
-wpe = ["ui/webview"]
+# Live browsing runs the Chromium engine runtime (ui::webview::chromium).
+# Headless fixtures and unit tests use the deterministic test engine.
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
-private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
@@ -47,6 +40,8 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 host-info = { path = "../../crates/system/host-info" }
 sha2.workspace = true
 base64.workspace = true
+# CRX3 proofs are RSA PKCS#1 v1.5 or ECDSA P-256 signatures over SHA-256.
+ring = "0.17"
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
@@ -65,37 +60,17 @@ tracing.workspace = true
 # Direct quick-ui adjacent deps (matches the set quick-terminal +
 # file-explorer pull in for their `Widget` impls).
 automerge.workspace = true
-tilo-automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+hex.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-accesskit_consumer = "0.39"
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true
-# block_on for the headless dmabuf probe examples
-pollster.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-
-# Zero-copy composite probe — needs the WPE engine's dmabuf import.
-[[example]]
-name = "dmabuf_composite_probe"
-required-features = ["wpe"]
-
-[[example]]
-name = "adblock_blank_repro"
-required-features = ["wpe"]
-
-[[example]]
-name = "key_modifier_repro"
-required-features = ["wpe"]
-
-[[example]]
-name = "startup_flicker_capture"
-required-features = ["wpe"]
 
 [lints]
 workspace = true

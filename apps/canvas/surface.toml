@@ -1,0 +1,292 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "canvas.artwork"
+label = "Artwork"
+version = 1
+fields = [
+  { path = "title", type = "String", label = true },
+  { path = "width", type = "f64" },
+  { path = "height", type = "f64" },
+  { path = "ground", type = "Ground" },
+  { path = "layers", type = "Keyed<Layer>", stored = "keyed" },
+  { path = "layers.*.id", type = "String", readonly = true },
+  { path = "layers.*.name", type = "String", label = true },
+  { path = "layers.*.group", type = "String" },
+  { path = "layers.*.order", type = "String", readonly = true },
+  { path = "layers.*.medium", type = "String" },
+  { path = "layers.*.opacity", type = "f64" },
+  { path = "layers.*.visible", type = "bool" },
+  { path = "layers.*.texture", type = "f64" },
+  { path = "layers.*.locked", type = "bool" },
+  { path = "layers.*.adjust", type = "Option<Adjust>" },
+  { path = "layers.*.mask_of", type = "String", readonly = true },
+  { path = "layers.*.base", type = "f64" },
+  { path = "layers.*.invert", type = "bool" },
+  { path = "layers.*.clip", type = "bool" },
+  { path = "layers.*.unlinked", type = "bool" },
+  { path = "marks", type = "Keyed<Mark>", stored = "keyed" },
+  { path = "marks.*.id", type = "String", readonly = true },
+  { path = "marks.*.layer", type = "String" },
+  { path = "marks.*.order", type = "String", readonly = true },
+  { path = "marks.*.name", type = "String", label = true },
+  { path = "marks.*.shape", type = "Shape" },
+  { path = "marks.*.style", type = "Style" },
+  { path = "marks.*.transform", type = "Option<[f64; 6]>" },
+  { path = "marks.*.group", type = "String" },
+  { path = "marks.*.clip", type = "String" },
+  { path = "marks.*.area", type = "String", readonly = true },
+  { path = "media", type = "Map<crate::media::MediumSpec>" },
+  { path = "reference", type = "Option<Reference>" },
+  { path = "selection", type = "Option<Selection>" },
+]
+
+[[resources.verbs]]
+id = "paint"
+kind = "undoable"
+params = [
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "strokes", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = ["string", "null"] }, angle = { type = ["number", "null"] }, brush = { type = ["string", "null"] }, clip = { type = ["string", "null"] }, colour = { type = "string" }, dab_length = { type = ["number", "null"] }, dabs = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, forks = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, hatch = { type = ["number", "null"] }, id = { type = ["string", "null"] }, opacity = { type = ["number", "null"] }, params = { type = ["object", "null"] }, points = { type = "array", items = { type = "array", items = { type = "number" } } }, scatter = { type = ["number", "null"] }, size = { type = "number" }, spread = { type = ["number", "null"] }, wet = { type = ["boolean", "null"] } }, required = ["points", "size"] } } },
+  { name = "group", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "draw"
+kind = "undoable"
+params = [
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "marks", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = ["string", "null"] }, angle = { type = ["number", "null"] }, blend = { type = ["string", "null"] }, brush = { type = ["string", "null"] }, brush_size = { type = ["number", "null"] }, cap = { type = ["string", "null"] }, clip = { type = ["string", "null"] }, dash = { type = ["array", "null"], items = { type = "number" } }, feather = { type = ["number", "null"] }, fill = { type = ["string", "null"] }, gradient = { type = ["object", "null"], additionalProperties = false, properties = { focal = { type = ["array", "null"], items = { type = "number" }, maxItems = 2, minItems = 2 }, from = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 }, kind = { type = "string" }, stops = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } }, to = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } }, required = ["kind", "from", "to", "stops"] }, grain = { type = ["number", "null"] }, group = { type = ["string", "null"] }, id = { type = ["string", "null"] }, inner_shadow = { type = ["object", "null"] }, join = { type = ["string", "null"] }, opacity = { type = ["number", "null"] }, params = { type = ["object", "null"] }, pixelated = { type = ["boolean", "null"] }, shadow = { type = ["object", "null"], additionalProperties = false, properties = { blur = { type = "number" }, colour = { type = ["string", "null"] }, offset = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } }, shape = { oneOf = [{ type = "object", additionalProperties = false, properties = { height = { type = "number" }, kind = { type = "string", const = "rect" }, radius = { type = "number" }, width = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["kind", "x", "y", "width", "height"] }, { type = "object", additionalProperties = false, properties = { cx = { type = "number" }, cy = { type = "number" }, kind = { type = "string", const = "ellipse" }, rx = { type = "number" }, ry = { type = "number" } }, required = ["kind", "cx", "cy", "rx", "ry"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "polygon" }, points = { type = "array", items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } }, required = ["kind", "points"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "line" }, points = { type = "array", items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } }, required = ["kind", "points"] }, { type = "object", additionalProperties = false, properties = { d = { type = "string" }, kind = { type = "string", const = "path" } }, required = ["kind", "d"] }, { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, align = { type = ["string", "null"] }, font = { type = ["string", "null"] }, italic = { type = "boolean" }, kind = { type = "string", const = "text" }, line_height = { type = ["number", "null"] }, size = { type = "number" }, text = { type = "string" }, tracking = { type = ["number", "null"] }, weight = { type = ["integer", "null"], maximum = 65535, minimum = 0 }, width = { type = ["number", "null"] }, x = { type = "number" }, y = { type = "number" } }, required = ["kind", "x", "y", "text", "size"] }, { type = "object", additionalProperties = false, properties = { dab_length = { type = ["number", "null"] }, dabs = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, forks = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, hatch = { type = ["number", "null"] }, kind = { type = "string", const = "stroke" }, points = { type = "array", items = { type = "array", items = { type = "number" } } }, scatter = { type = ["number", "null"] }, size = { type = "number" }, spread = { type = ["number", "null"] } }, required = ["kind", "points", "size"] }, { type = "object", additionalProperties = false, properties = { crop = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 }, height = { type = "number" }, kind = { type = "string", const = "image" }, src = { type = "string" }, straighten = { type = ["number", "null"] }, width = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["kind", "src", "x", "y"] }] }, stroke = { type = ["string", "null"] }, stroke_width = { type = ["number", "null"] }, transform = { type = ["array", "null"], items = { type = "number" }, maxItems = 6, minItems = 6 }, wet = { type = ["boolean", "null"] } }, required = ["shape"] } } },
+]
+
+[[resources.verbs]]
+id = "edit-marks"
+kind = "undoable"
+params = [
+  { name = "pixelated", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "ids", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "shape", required = false, schema = { type = ["object", "null"] } },
+  { name = "dash", required = false, schema = { type = ["array", "null"], items = { type = "number" } } },
+  { name = "cap", required = false, schema = { type = ["string", "null"] } },
+  { name = "join", required = false, schema = { type = ["string", "null"] } },
+  { name = "blend", required = false, schema = { type = ["string", "null"] } },
+  { name = "shadow", required = false, schema = { type = ["object", "null"] } },
+  { name = "inner_shadow", required = false, schema = { type = ["object", "null"] } },
+  { name = "grain", required = false, schema = { type = ["number", "null"] } },
+  { name = "feather", required = false, schema = { type = ["number", "null"] } },
+  { name = "group", required = false, schema = { type = ["string", "null"] } },
+  { name = "clip", required = false, schema = { type = ["string", "null"] } },
+  { name = "fill", required = false, schema = { type = ["string", "null"] } },
+  { name = "gradient", required = false, schema = { type = ["object", "null"] } },
+  { name = "stroke", required = false, schema = { type = ["string", "null"] } },
+  { name = "stroke_width", required = false, schema = { type = ["number", "null"] } },
+  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
+  { name = "brush", required = false, schema = { type = ["string", "null"] } },
+  { name = "size", required = false, schema = { type = ["number", "null"] } },
+  { name = "brush_size", required = false, schema = { type = ["number", "null"] } },
+  { name = "angle", required = false, schema = { type = ["number", "null"] } },
+  { name = "wet", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "params", required = false, schema = { type = ["object", "null"] } },
+  { name = "move_by", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 2, minItems = 2 } },
+  { name = "scale", required = false, schema = { type = ["number", "null"] } },
+  { name = "rotate", required = false, schema = { type = ["number", "null"] } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "transform", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 6, minItems = 6 } },
+  { name = "flip", required = false, schema = { type = ["string", "null"] } },
+  { name = "crop", required = false, schema = { type = ["array", "null"], items = { type = "number" } } },
+  { name = "straighten", required = false, schema = { type = ["number", "null"] } },
+  { name = "adjust", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { blur = { type = ["number", "null"] }, contrast = { type = ["number", "null"] }, curve = { type = ["array", "null"], items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } }, exposure = { type = ["number", "null"] }, grayscale = { type = ["boolean", "null"] }, highlights = { type = ["number", "null"] }, hue = { type = ["number", "null"] }, invert = { type = ["boolean", "null"] }, saturation = { type = ["number", "null"] }, shadows = { type = ["number", "null"] }, sharpen = { type = ["number", "null"] }, temperature = { type = ["number", "null"] }, tint = { type = ["number", "null"] }, vibrance = { type = ["number", "null"] }, vignette = { type = ["number", "null"] } } } },
+  { name = "smooth", required = false, schema = { type = ["number", "null"] } },
+  { name = "simplify", required = false, schema = { type = ["number", "null"] } },
+  { name = "extend", required = false, schema = { type = ["array", "null"], items = { type = "array", items = { type = "number" } } } },
+  { name = "split", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 2, minItems = 2 } },
+  { name = "merge", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-marks"
+kind = "undoable"
+params = [
+  { name = "ids", required = false, schema = { type = "array", items = { type = "string" } } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "along", required = false, schema = { type = ["array", "null"], items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } },
+]
+
+[[resources.verbs]]
+id = "arrange"
+kind = "undoable"
+params = [
+  { name = "ids", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "to", required = true, schema = { type = "string" } },
+  { name = "of", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "add-layer"
+kind = "undoable"
+params = [
+  { name = "id", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "medium", required = false, schema = { type = ["string", "null"] } },
+  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
+  { name = "above", required = false, schema = { type = ["string", "null"] } },
+  { name = "texture", required = false, schema = { type = ["number", "null"] } },
+]
+
+[[resources.verbs]]
+id = "edit-layer"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "group", required = false, schema = { type = ["string", "null"] } },
+  { name = "medium", required = false, schema = { type = ["string", "null"] } },
+  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
+  { name = "visible", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "locked", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "to", required = false, schema = { type = ["string", "null"] } },
+  { name = "texture", required = false, schema = { type = ["number", "null"] } },
+  { name = "adjust", required = false, schema = { type = ["object", "null"] } },
+  { name = "mask", required = false, schema = { type = ["string", "null"] } },
+  { name = "invert", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "clip", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-layer"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-artwork"
+kind = "undoable"
+params = [
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "width", required = false, schema = { type = ["number", "null"] } },
+  { name = "height", required = false, schema = { type = ["number", "null"] } },
+  { name = "texture", required = false, schema = { type = ["string", "null"] } },
+  { name = "ground_colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "crop", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+  { name = "fit", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "save-medium"
+kind = "undoable"
+params = [
+  { name = "medium", required = true, schema = { type = "object", additionalProperties = false, properties = { description = { type = "string" }, engine = { type = "string" }, ground = { type = ["string", "null"] }, id = { type = "string" }, label = { type = "string" }, palette = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, colour = { type = "string" }, granulation = { type = "number" }, strength = { type = "number" } }, required = ["name", "colour"] } }, params = { type = "object" } }, required = ["id", "label", "engine"] } },
+]
+
+[[resources.verbs]]
+id = "remove-medium"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "align"
+kind = "undoable"
+params = [
+  { name = "ids", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "edge", required = false, schema = { type = ["string", "null"] } },
+  { name = "distribute", required = false, schema = { type = ["string", "null"] } },
+  { name = "to", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-reference"
+kind = "undoable"
+params = [
+  { name = "image", required = false, schema = { type = ["string", "null"] } },
+  { name = "frame", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
+  { name = "visible", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "remove", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "import-svg"
+kind = "undoable"
+params = [
+  { name = "svg", required = true, schema = { type = "string" } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "group", required = false, schema = { type = ["string", "null"] } },
+  { name = "fit", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+]
+
+[[resources.verbs]]
+id = "open-picture"
+kind = "undoable"
+params = [
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "new-artwork"
+kind = "undoable"
+params = [
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "size", required = false, schema = { type = ["string", "null"] } },
+  { name = "landscape", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "width", required = false, schema = { type = ["number", "null"] } },
+  { name = "height", required = false, schema = { type = ["number", "null"] } },
+  { name = "start", required = false, schema = { type = ["string", "null"] } },
+  { name = "texture", required = false, schema = { type = ["string", "null"] } },
+  { name = "ground_colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "medium", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "open-artwork"
+kind = "undoable"
+params = [
+  { name = "file", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "select"
+kind = "undoable"
+params = [
+  { name = "rect", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+  { name = "ellipse", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+  { name = "points", required = false, schema = { type = ["array", "null"], items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } },
+  { name = "d", required = false, schema = { type = ["string", "null"] } },
+  { name = "marks", required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
+  { name = "at", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 2, minItems = 2 } },
+  { name = "subject", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "refine", required = false, schema = { type = ["number", "null"] } },
+  { name = "matte", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { rect = { type = "array", items = { type = "number" }, maxItems = 4, minItems = 4 }, src = { type = "string" } }, required = ["src", "rect"] } },
+  { name = "colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "tolerance", required = false, schema = { type = ["number", "null"] } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "mode", required = false, schema = { type = ["string", "null"] } },
+  { name = "feather", required = false, schema = { type = ["number", "null"] } },
+  { name = "grow", required = false, schema = { type = ["number", "null"] } },
+  { name = "invert", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "use-selection"
+kind = "undoable"
+params = [
+  { name = "do", required = true, schema = { type = "string" } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+  { name = "colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "width", required = false, schema = { type = ["number", "null"] } },
+  { name = "id", required = false, schema = { type = ["string", "null"] } },
+  { name = "defringe", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "cleaned", required = false, schema = { type = ["array", "null"], items = { type = "array", items = { type = "string" }, maxItems = 2, minItems = 2 } } },
+]
+
+[[resources.verbs]]
+id = "combine"
+kind = "undoable"
+params = [
+  { name = "ids", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "op", required = true, schema = { type = "string" } },
+]
+

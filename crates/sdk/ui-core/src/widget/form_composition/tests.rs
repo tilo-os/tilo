@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::theme::Theme;
+use crate::widget::ButtonRole;
 use crate::widget::TextInput;
 
 fn fixture() -> Element {
@@ -15,6 +16,74 @@ fn fixture() -> Element {
         ),
     )
 }
+
+#[test]
+fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    for scale in [1.0, 2.0] {
+        let offset = Rc::new(Cell::new((0.0, 0.0)));
+        let mut section = FormSection::new("Details");
+        for index in 0..20 {
+            let name = format!("Detail {index}");
+            section = section.field(Field::new(
+                name.clone(),
+                TextInput::local().with_id(&name).with_accessible_name(name),
+            ));
+        }
+        let page = FormPage::new("Long form", Form::new().section(section))
+            .with_persisted_offset(Rc::clone(&offset));
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(page),
+            (360, 420),
+            Theme::dark().with_text_scale(scale),
+        );
+        assert!(harness.targets()["Detail 19"].y0 > 420.0);
+        assert!(offset.get().1.abs() < f32::EPSILON);
+
+        let input_node = |harness: &FrameHarness, name: &str| {
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some(name) && node.role() == crate::accesskit::Role::TextInput
+                })
+                .unwrap()
+                .0
+        };
+        let last = input_node(&harness, "Detail 19");
+        harness
+            .perform_a11y_action(last, &crate::a11y::Action::Focus)
+            .unwrap();
+        assert_eq!(harness.a11y_focus().unwrap().0, last);
+        let revealed = harness.targets()["Detail 19"];
+        assert!(revealed.y0 >= 0.0 && revealed.y1 <= 420.0, "{revealed:?}");
+        let revealed_offset = offset.get().1;
+        assert!(revealed_offset > 0.0);
+
+        // A real wheel event may move the focused field off screen. Re-layout
+        // must not undo that deliberate scroll while focus stays unchanged.
+        harness.send(&crate::synthetic_input::cursor_moved(180.0, 210.0));
+        harness.scroll(0.0, 3.0);
+        let manual_offset = offset.get().1;
+        assert!(manual_offset < revealed_offset);
+        assert_eq!(harness.a11y_focus().unwrap().0, last);
+        harness.recompose().unwrap();
+        assert!((offset.get().1 - manual_offset).abs() < f32::EPSILON);
+
+        let first = input_node(&harness, "Detail 0");
+        harness
+            .perform_a11y_action(first, &crate::a11y::Action::Focus)
+            .unwrap();
+        assert_eq!(harness.a11y_focus().unwrap().0, first);
+        let revealed = harness.targets()["Detail 0"];
+        assert!(revealed.y0 >= 0.0 && revealed.y1 <= 420.0, "{revealed:?}");
+        assert!(offset.get().1 < manual_offset);
+    }
+}
+
 fn collect<'a>(node: &'a InspectionNode, name: &str, out: &mut Vec<&'a InspectionNode>) {
     if node.widget == name {
         out.push(node);
@@ -133,7 +202,9 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn fixed_control_needs_do_not_inherit_an_expandable_entry_minimum() {
         let mut field = Field::new(
             "Count",
-            super::super::NumberInput::new(3.0).with_size(96.0, 47.0),
+            super::super::NumberInput::new(3.0)
+                .with_range(0.0, 99.0)
+                .compact(),
         );
         solve(&mut field, 220.0, &Theme::dark());
         assert_eq!(
@@ -141,8 +212,11 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
             LabelPlacement::Beside
         );
         let control = field.children()[1].children()[0].get_rect();
-        assert_eq!(control.width(), 96.0);
-        assert_eq!(control.height(), 47.0);
+        assert!(control.width() < 140.0, "{control:?}");
+        assert_eq!(
+            control.height(),
+            super::super::ControlSize::Regular.height(&Theme::dark())
+        );
     }
 
     wide_fields_align_controls_beside_measured_labels();
@@ -172,8 +246,29 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).primary())
-                .secondary(super::super::Button::new("cancel", "Cancel", None)))
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").role(ButtonRole::Primary))
+                .secondary(super::super::Button::new("cancel", "Cancel")))
+}
+/// A field with a validation error marks its control invalid: the control
+/// reports it to assistive technology (and edges itself in danger ink),
+/// while a field without one stays valid.
+#[test]
+fn a_validation_error_marks_its_control_invalid() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(long_form()),
+        (900, 700),
+        Theme::dark(),
+    );
+    let root = harness.inspection().root;
+    let invalid = |id: &str| {
+        named(&root, id)
+            .semantics
+            .as_ref()
+            .is_some_and(|node| node.state.invalid)
+    };
+    assert!(invalid("email"), "the field with an error is invalid");
+    assert!(!invalid("name"), "a field without one is not");
 }
 #[test]
 fn form_page_edges_and_resize_match_fresh_layout() {
@@ -190,8 +285,15 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             collect(&snapshot.root, "Form", &mut forms);
             let mut sections = Vec::new();
             collect(&snapshot.root, "FormSection", &mut sections);
-            assert!(forms[0].rect[2] <= 720.0);
-            assert!((forms[0].rect[0] * 2.0 + forms[0].rect[2] - f64::from(width)).abs() < 1.0);
+            let theme = Theme::dark();
+            assert!(forms[0].rect[2] <= f64::from(theme.tokens.metrics.readable_width));
+            // On the page's leading edge, one gutter in, whatever the width.
+            let gutter = f64::from(theme.tokens.spacing.rhythm.group);
+            assert!(
+                (forms[0].rect[0] - gutter).abs() < 0.5,
+                "{:?}",
+                forms[0].rect
+            );
             for section in sections {
                 assert_eq!(section.rect[0], forms[0].rect[0]);
             }
@@ -307,8 +409,8 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             );
         }
         assert!(
-            (controls[0][0] - controls[1][0]).abs() < 0.5,
-            "wide: sibling choosers share one column: {:?} {:?}",
+            (controls[0][0] + controls[0][2] - controls[1][0] - controls[1][2]).abs() < 0.5,
+            "wide: sibling choosers share one trailing edge: {:?} {:?}",
             controls[0],
             controls[1]
         );
@@ -316,7 +418,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         let narrow = FrameHarness::new_with_theme(
             crate::State::new(),
             trailing_fixture(),
-            (320, 600),
+            (240, 600),
             Theme::dark(),
         );
         let snapshot = narrow.inspection();
@@ -342,9 +444,43 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         }
     }
 
+    /// In a plain form a chooser keeps its own width but starts where the
+    /// fields around it start: on the control column's leading edge.
+    fn a_plain_forms_chooser_starts_on_the_fields_edge() {
+        use crate::widget::{Dropdown, TextInput};
+        let form: Element = Box::new(
+            Form::new().section(
+                FormSection::new("Machine")
+                    .field(Field::new("Host", TextInput::local().with_id("host")))
+                    .field(
+                        Field::new(
+                            "Protocol",
+                            Dropdown::new(vec!["SSH".into(), "VNC".into()], "protocol")
+                                .with_id("protocol"),
+                        )
+                        .with_trailing_control(),
+                    ),
+            ),
+        );
+        let wide =
+            FrameHarness::new_with_theme(crate::State::new(), form, (1000, 400), Theme::dark());
+        let snapshot = wide.inspection();
+        let host = named(&snapshot.root, "host").rect;
+        let protocol = named(&snapshot.root, "protocol").rect;
+        assert!(
+            (protocol[0] - host[0]).abs() < 0.5,
+            "the chooser starts on the field's edge: {host:?} {protocol:?}"
+        );
+        assert!(
+            protocol[2] < host[2] / 2.0,
+            "and keeps its own width: {protocol:?}"
+        );
+    }
+
     page_readable_width_and_single_gutter_leave_common_content_edges();
     resized_layout_matches_fresh_and_retains_focus_order();
     trailing_controls_switch_with_their_section_and_share_the_trailing_edge();
+    a_plain_forms_chooser_starts_on_the_fields_edge();
 }
 fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
     let mut tree = TaffyTree::new();
@@ -509,11 +645,142 @@ fn form_overrides_apply_and_reset_independently() {
     page_width_override_and_reset_leave_label_adaptation_active();
     clearing_section_and_field_overrides_restores_only_the_selected_property();
 }
+#[test]
+fn grouped_sections_are_settings_rows_with_separators() {
+    use crate::widget::{Dropdown, Toggle};
+    let theme = Theme::dark();
+    let section = FormSection::new("Camera")
+        .grouped()
+        .field(Field::new("Grid lines", Toggle::new("grid", "grid")))
+        .field(Field::new(
+            "Photo format",
+            Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
+        ));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(section)),
+        (720, 400),
+        theme.clone(),
+    );
+    let snapshot = harness.inspection();
+    let mut fields = Vec::new();
+    collect(&snapshot.root, "Field", &mut fields);
+    assert_eq!(fields.len(), 2);
+    let row = f64::from(theme.tokens.metrics.panel_row_height + theme.tokens.spacing.s2);
+    for field in &fields {
+        assert!(
+            field.rect[3] >= row - 0.5,
+            "a grouped row is at least {row} tall"
+        );
+    }
+    // Rows sit edge to edge; the separator lives between them.
+    let gap = fields[1].rect[1] - (fields[0].rect[1] + fields[0].rect[3]);
+    assert!(gap.abs() < 0.5, "rows touch, got {gap}");
+    let mut titles = Vec::new();
+    collect(&snapshot.root, "Text", &mut titles);
+    let title = titles.first().expect("section title");
+    let expected = f64::from(theme.text(TextRole::Heading).line_height_px());
+    assert!(
+        (title.rect[3] - expected).abs() < 1.0,
+        "the title is a Heading"
+    );
+}
+
+fn value_fixture(german: bool) -> Element {
+    let pairs = if german {
+        [
+            ("Lokale Modelle", "Bleiben auf diesem Gerät"),
+            ("Downloads", "Nur mit deiner Zustimmung"),
+            ("Kompatibilität", "Nicht genug Speicher"),
+            (
+                "Empfohlenes Modell",
+                "Warte auf den signierten Modellkatalog",
+            ),
+        ]
+    } else {
+        [
+            ("Local models", "Stay on this device"),
+            ("Downloads", "Only with your approval"),
+            ("Compatibility", "Not enough memory"),
+            ("Recommended model", "Waiting for signed model catalog"),
+        ]
+    };
+    Box::new(pairs.into_iter().fold(
+        FormSection::untitled().grouped(),
+        |section, (label, value)| section.field(Field::value(label, value)),
+    ))
+}
+
+#[test]
+fn read_only_values_reserve_readable_phrase_width_in_both_themes() {
+    // The content width left by an ordinary Settings window and its sidebar.
+    for theme in [Theme::light(), Theme::dark()] {
+        for german in [false, true] {
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                value_fixture(german),
+                (500, 768),
+                theme.clone(),
+            );
+            let snapshot = harness.inspection();
+            let mut fields = Vec::new();
+            collect(&snapshot.root, "Field", &mut fields);
+            assert_eq!(fields.len(), 4);
+            for field in fields {
+                let label = &field.children[0];
+                let body = &field.children[1];
+                assert!(body.rect[0] >= label.rect[0] + label.rect[2]);
+                assert!(body.rect[2] >= 0.4 * field.rect[2], "{:?}", body.rect);
+                assert!(body.rect[0] + body.rect[2] <= 500.5);
+                let mut texts = Vec::new();
+                collect(body, "Text", &mut texts);
+                assert_eq!(texts.len(), 1);
+                let line = f64::from(theme.text(TextRole::Body).line_height_px());
+                assert!(texts[0].rect[3] <= 2.0 * line + 1.0, "{:?}", texts[0].rect);
+            }
+        }
+    }
+}
+
+#[test]
+fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
+    for theme in [Theme::light(), Theme::dark()] {
+        for german in [false, true] {
+            for scale in [1.0, 2.0] {
+                let harness = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    value_fixture(german),
+                    (320, 1600),
+                    theme.clone().with_text_scale(scale),
+                );
+                let snapshot = harness.inspection();
+                let mut fields = Vec::new();
+                collect(&snapshot.root, "Field", &mut fields);
+                assert_eq!(fields.len(), 4);
+                for field in &fields {
+                    let label = &field.children[0];
+                    let body = &field.children[1];
+                    assert!(body.rect[1] >= label.rect[1] + label.rect[3]);
+                    assert!((body.rect[0] - label.rect[0]).abs() < 0.5);
+                    assert!(body.rect[0] + body.rect[2] <= 320.5);
+                    let mut names = Vec::new();
+                    semantic_names(field, &mut names);
+                    assert_eq!(names.len(), 2, "each field retains its label and value");
+                }
+                for pair in fields.windows(2) {
+                    assert!(pair[1].rect[1] >= pair[0].rect[1] + pair[0].rect[3]);
+                }
+            }
+        }
+    }
+}
+
 fn trailing_fixture() -> Element {
     use crate::widget::Dropdown;
     Box::new(
         Form::new().section(
             FormSection::new("Formats")
+                .grouped()
                 .field(
                     Field::new(
                         "Currency",
@@ -532,4 +799,267 @@ fn trailing_fixture() -> Element {
                 ),
         ),
     )
+}
+
+fn semantic_names(node: &InspectionNode, out: &mut Vec<(crate::a11y::Role, String)>) {
+    if let Some(access) = &node.semantics
+        && let Some(name) = &access.name
+    {
+        out.push((access.role, name.clone()));
+    }
+    for child in &node.children {
+        semantic_names(child, out);
+    }
+}
+
+fn first_text(node: &InspectionNode) -> &InspectionNode {
+    let mut texts = Vec::new();
+    collect(node, "Text", &mut texts);
+    texts[0]
+}
+
+#[test]
+fn untitled_sections_custom_fields_and_control_rows() {
+    use crate::widget::{Button, Row};
+    let form = Form::new()
+        .section(
+            FormSection::untitled()
+                .field(Field::new("Name", TextInput::local().with_id("name")))
+                .field(Field::custom(
+                    "Version",
+                    Box::new(Text::new("2.4.1").with_id("version")),
+                ))
+                .control_row(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new("export", "Export")))
+                        .push(Box::new(Button::new("import", "Import"))),
+                )),
+        )
+        .section(
+            FormSection::new("Account details for this device")
+                .field(Field::new("Email", TextInput::local().with_id("email"))),
+        );
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(form),
+        (1000, 700),
+        Theme::dark(),
+    );
+    let root = harness.inspection().root;
+    let mut names = Vec::new();
+    semantic_names(&root, &mut names);
+    // No heading for the untitled section; the titled one keeps its own.
+    let headings: Vec<_> = names
+        .iter()
+        .filter(|(role, _)| matches!(role, crate::a11y::Role::Heading { .. }))
+        .collect();
+    assert_eq!(headings.len(), 1, "{headings:?}");
+    // A control's label is read once, through the control.
+    assert_eq!(
+        names.iter().filter(|(_, name)| name == "Name").count(),
+        1,
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|(role, name)| *role == crate::a11y::Role::Label && name == "Version"),
+        "a custom field's label is a label: {names:?}"
+    );
+    // One label column across both sections: the controls line up even
+    // though the second section's label is the longer one.
+    let name = named(&root, "name").rect;
+    let email = named(&root, "email").rect;
+    let version = named(&root, "version").rect;
+    assert!((name[0] - email[0]).abs() < 0.5, "{name:?} {email:?}");
+    assert!((version[0] - email[0]).abs() < 0.5, "{version:?} {email:?}");
+    // The control row spans both columns: its first button starts on the
+    // label column.
+    let export = named(&root, "export").rect;
+    let mut labels = Vec::new();
+    collect(&root, "FieldLabel", &mut labels);
+    assert!((export[0] - labels[0].rect[0]).abs() < 0.5, "{export:?}");
+}
+
+#[test]
+fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
+    let field = || {
+        Field::new("Name", TextInput::local().with_id("name")).with_help("Shown to collaborators.")
+    };
+    let wide = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(FormSection::untitled().field(field()))),
+        (900, 400),
+        Theme::dark(),
+    );
+    let root = wide.inspection().root;
+    let mut fields = Vec::new();
+    collect(&root, "Field", &mut fields);
+    let label = fields[0].children[0].rect;
+    let help = fields[0].children[2].rect;
+    let control = named(&root, "name").rect;
+    assert!(help[1] >= label[1] + label[3], "help under the label");
+    assert!((help[0] - label[0]).abs() < 0.5, "in the label column");
+    assert!(help[0] + help[2] <= control[0] + 0.5, "beside the control");
+
+    let narrow = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(FormSection::untitled().field(field()))),
+        (220, 400),
+        Theme::dark().with_text_scale(2.0),
+    );
+    let root = narrow.inspection().root;
+    let mut fields = Vec::new();
+    collect(&root, "Field", &mut fields);
+    let help = fields[0].children[2].rect;
+    let control = named(&root, "name").rect;
+    assert!(
+        help[1] >= control[1] + control[3],
+        "stacked: help under the control"
+    );
+}
+
+#[test]
+fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
+    use crate::widget::{Dropdown, Toggle};
+    let section = || {
+        FormSection::new("Camera")
+            .grouped()
+            .field(Field::new(
+                "Grid lines",
+                Toggle::new("grid", "grid").with_id("grid"),
+            ))
+            .field(Field::new(
+                "Photo format",
+                Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format").with_id("format"),
+            ))
+    };
+    let wide = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(section())),
+        (800, 400),
+        Theme::dark(),
+    );
+    let root = wide.inspection().root;
+    let mut sections = Vec::new();
+    collect(&root, "FormSection", &mut sections);
+    let edge = sections[0].rect[0] + sections[0].rect[2];
+    let grid = named(&root, "grid").rect;
+    let format = named(&root, "format").rect;
+    assert!(
+        (grid[0] + grid[2] - edge).abs() < 0.5,
+        "switch on the trailing edge: {grid:?} {edge}"
+    );
+    assert!((format[0] + format[2] - edge).abs() < 0.5, "{format:?}");
+
+    let narrow = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(section())),
+        (200, 500),
+        Theme::dark().with_text_scale(2.0),
+    );
+    let root = narrow.inspection().root;
+    let mut fields = Vec::new();
+    collect(&root, "Field", &mut fields);
+    let gap = fields[1].rect[1] - (fields[0].rect[1] + fields[0].rect[3]);
+    let theme = Theme::dark();
+    assert!(
+        gap >= f64::from(theme.tokens.spacing.s3) - 0.5,
+        "stacked rows are spaced: {gap}"
+    );
+    let format = named(&root, "format").rect;
+    let mut sections = Vec::new();
+    collect(&root, "FormSection", &mut sections);
+    // A stacked chooser leaves the trailing edge for its row's leading
+    // edge, under its label (as wide as the column lets an expandable
+    // control be; a dropdown sized to its options keeps that size).
+    assert!(
+        (format[0] - sections[0].rect[0]).abs() < 0.5,
+        "a stacked chooser starts under its label: {format:?}"
+    );
+    assert!(format[0] + format[2] <= sections[0].rect[0] + sections[0].rect[2] + 0.5);
+}
+
+#[test]
+fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
+    use crate::widget::{Button, Section};
+    let theme = Theme::dark();
+    let page = Page::new()
+        .head(Box::new(Text::new("Summary").with_id("head")))
+        .section(Box::new(Section::titled(
+            "First",
+            vec![Box::new(Text::new("One").with_id("one"))],
+        )))
+        .section(Box::new(Section::titled(
+            "Second",
+            vec![Box::new(Text::new("Two").with_id("two"))],
+        )))
+        .with_pinned_actions(Actions::new(
+            Button::new("save", "Save").role(ButtonRole::Primary),
+        ));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(page),
+        (1600, 600),
+        theme.clone(),
+    );
+    let root = harness.inspection().root;
+    let gutter = f64::from(theme.tokens.spacing.rhythm.group);
+    let head = named(&root, "head").rect;
+    assert!((head[0] - gutter).abs() < 0.5, "leading edge: {head:?}");
+    let mut sections = Vec::new();
+    collect(&root, "Section", &mut sections);
+    let between = sections[1].rect[1] - (sections[0].rect[1] + sections[0].rect[3]);
+    assert!(
+        (between - gutter).abs() < 0.5,
+        "sections a group apart: {between}"
+    );
+    let save = named(&root, "save").rect;
+    let readable = f64::from(theme.tokens.metrics.readable_width);
+    assert!(
+        (save[0] + save[2] - gutter - readable).abs() < 0.5,
+        "the pinned action ends where the readable column ends: {save:?}"
+    );
+    assert!(
+        save[1] + save[3] <= 600.0 && save[1] > 500.0,
+        "pinned to the bottom: {save:?}"
+    );
+}
+
+#[test]
+fn a_form_page_titles_in_large_title_or_not_at_all() {
+    use crate::widget::Button;
+    let theme = Theme::dark();
+    let titled = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            FormPage::new("Account", long_form()).with_header_action(Button::new("reset", "Reset")),
+        ),
+        (1000, 800),
+        theme.clone(),
+    );
+    let root = titled.inspection().root;
+    let title = first_text(&root);
+    let expected = f64::from(theme.text(TextRole::LargeTitle).line_height_px());
+    assert!((title.rect[3] - expected).abs() < 1.0, "{:?}", title.rect);
+    let reset = named(&root, "reset").rect;
+    assert!(
+        reset[0] > title.rect[0] + title.rect[2],
+        "the action beside the title"
+    );
+
+    let untitled = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(FormPage::untitled(long_form())),
+        (1000, 800),
+        theme,
+    );
+    let mut names = Vec::new();
+    semantic_names(&untitled.inspection().root, &mut names);
+    assert!(
+        !names
+            .iter()
+            .any(|(role, _)| matches!(role, crate::a11y::Role::Heading { level: 1 })),
+        "{names:?}"
+    );
 }

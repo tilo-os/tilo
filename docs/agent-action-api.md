@@ -4,9 +4,177 @@ Tilo apps export typed actions. A program that cannot see the screen can ask the
 shell what is possible right now, and then perform one of those things by name.
 No screenshot, no hit-test, no synthetic click.
 
-Two ops on the `TILO_TEST_CONTROL` socket carry this. Both use the existing
+Two ops carry this, on either control socket: the device admin's (below) or a
+development session's `TILO_TEST_CONTROL` socket. Both use the existing
 newline-delimited JSON framing described in `docs/headless-testing.md`: one JSON
 object per line, request and response.
+
+## Driving a device as its admin
+
+Every compositor build serves the action model at
+`$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the device admin's
+session, once first login is complete. `tilo-control` (in every image) uses it
+by default for `actions list|invoke|status|cancel`, `windows` and `state-dump`:
+
+```bash
+ssh admin@device
+tilo-control actions list notes
+tilo-control actions invoke applications so.tilo.notes   # typed receipt
+tilo-control windows                                     # the window it opened
+tilo-control actions invoke files /home/admin/Documents/report.md
+tilo-control actions invoke session lock
+```
+
+Nothing about the session changes because the socket exists: first-use
+onboarding, the lock screen and the capability gate behave exactly as with no
+client attached. While the session is locked, ordinary app invocations are
+refused with `session_locked`. The authenticated owner's `session-lock`
+provider remains available for the normal PAM unlock conversation.
+
+Who may use it is decided by the system's own identity and process model, not
+by a token:
+
+- **Only the device admin's session binds it**: an account in `wheel` whose
+  active identity is the one that claimed the device at its first login and
+  holds its primary device certificate
+  (`tilo_identity_host::provisioning::active_identity_owns_device`). Another
+  account on the machine, or the admin before first login, has no socket.
+- **Only the admin's own unconfined processes connect.** Each connection is
+  checked against the kernel's `SO_PEERCRED`: same uid as the session, same
+  user and mount namespaces (a sandboxed app has its own, and is never shown
+  the path), and not a process this session launched, confined or not. An app
+  acts through its own collaboration connection and grants, never with the
+  admin's. The socket is 0600 in a 0700 directory besides.
+- **It serves the action model only**: enumerate, invoke, status, cancel,
+  `windows`, `state_dump` and `foreign_frames`. Synthetic input, screenshots, grants,
+  fixtures and agent seats are refused with `not_permitted`, naming the
+  development socket that serves them.
+- **Every invocation passes the same capability gate** as the palette, as the
+  person at this session.
+
+`actions invoke` answers once the action has settled (up to 5 s; `--wait=MS`
+for another bound, at most 30 s), with its result and a nonzero exit when it
+failed; `--no-wait` answers the admission receipt, and an invocation sent
+`--device` to another machine answers once that device has it. There is no
+`actions status` to poll for an action that finishes.
+
+`actions list` leads with what the desktop's apps offer: live app resources and
+their actions, then applications and the rest in the palette's order. Files and
+folders stay out unless asked (`--files`, or `--kind file`), because a search
+for an app's action is otherwise answered by every same-named file on the disk
+ahead of it. `--kind KIND` (repeatable; `application`, `action`, `note`,
+`record`, `tab`, `file`, …) narrows to those kinds:
+
+```bash
+tilo-control actions list markdown --kind application --kind action
+tilo-control actions list markdown --files          # now the files too, after the apps
+```
+
+On the wire these are `kinds` and `files` on `actions_enumerate`.
+
+### An agent in a terminal uses the agent door, not this socket
+
+An AI agent running in a terminal inside the person's own session (Claude
+Code in Alacritty, say) is a descendant of an app this session launched, so
+this socket refuses it — rightly: it would carry the admin's whole authority,
+unattributed. It connects to the session's **agent door** instead
+(`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
+`tilo-runtime-mcp --connect`, and acts as an agent member the person admits:
+attributed, limited to what the workspace grants that agent, and revoked with
+its membership. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,
+`tilo_do`, `tilo_find`) rather than ids: `notes/Todo/body#append-paragraph`.
+See [`runtime-mcp.md`](runtime-mcp.md#inside-a-tilo-session).
+### Observing an installed native application's exact window
+
+Store's native `open` action is a background action with an explicit JSON result.
+After real adopted-window readiness and revalidation of the original caller, its
+`launch.adopted_window` identifies the surface, package, room and an opaque host-issued adoption UUID.
+The UUID identifies that resource lifetime, including across numeric ID reuse;
+knowing it grants no authority. It contains no
+kernel PID. Legacy hosts may return `launch: null`; that proves no particular
+window and cannot qualify resident-package acceptance. Flatpak Open retains its
+unit-job result contract.
+
+The authenticated device owner's existing `state-dump` adds
+`chrome.native_window_provenance`: at most 128 current window associations from
+confined, launcher-attributed Wayland connections. Each row carries the current
+room, tab, surface, matching adoption UUID, package, local record instance and
+kernel peer PID/start time.
+The dump omits unattested, missing, closed, foreign or reused-process associations;
+`omitted` reports overflow. Agent-control cannot request this owner diagnostic.
+
+The official Store acceptance runner joins only the adopted surface to this
+current association, before and after reading retained kernel executable and SDK
+file descriptors. A closed/replaced window or changed process lifetime refuses
+acceptance. Existing unrelated app workers are reported separately, never required
+to use the newly installed package and never closed by the runner.
+
+### Unlocking the owner's session remotely
+
+Use the owner's existing unconfined login and the owner socket. Discover the
+current `session-lock` actions, then submit the `password` Secret parameter to
+`unlock@session-lock` as a private JSON object on standard input:
+
+```bash
+env -u TILO_TEST_CONTROL tilo-control \
+  --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" \
+  actions list session-lock --json
+env -u TILO_TEST_CONTROL tilo-control \
+  --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" \
+  actions invoke session-lock unlock@session-lock --args-stdin
+```
+
+Supply stdin through the existing private credential channel, never a password
+in arguments, receipts or logs. The invocation starts the same PAM verifier
+as the lock screen; its acknowledgement does not prove authentication succeeded.
+Inspect `chrome.session_locked` and `chrome.lock_auth` in `state-dump` to observe
+completion. An incorrect credential leaves the session locked.
+
+The management transport `tilo-vm vm ssh` executes commands as root. When using
+that transport, run the control client as the actual session owner with
+`runuser -u OWNER --`, set that owner's `XDG_RUNTIME_DIR`, and keep the secret on
+stdin. Root itself does not pass the owner socket's peer checks. This unlocks an
+existing login session; the pre-session greeter has its separate sign-in action
+below, and encrypted-disk unlock is a separate boundary.
+
+Permission requests use that same authenticated session surface. When a portal
+or Terminal is waiting for consent, query `actions list permission-prompts` and
+use the returned exact UUID-scoped decision: `allow-once@<id>`,
+`allow-session@<id>`, `allow-always@<id>` or `deny@<id>` from provider
+`permission-prompts`, with `{"confirm": true}`. Only the current queue head is
+offered; listing and invoking require the current workspace owner. The action
+rechecks ownership and request identity before releasing the waiting request.
+It cannot create a grant without a prompt, answer a replaced request or reopen a
+Host session as a person on an agent's behalf. The portal/ush supervisor still
+owns private persistence and Host's existing person/device-owner checks.
+A successful decision receipt confirms the answer, not a running PTY: inspect
+Terminal's local session afterward to observe its actual startup outcome.
+
+Reading is an action too. A framework resource that sets
+`Resource::READABLE` and answers `Resource::read_content` is published with
+the framework's `read` view: no arguments answers the resource itself, `item`
+answers one nested resource it lists. It needs read permission only, passes
+the same gate as every other action, and is tagged as the document read, so
+the runtime MCP finds it too. Notes answers its pages and tags, and one page
+(`notes.page:<id>`) as its title, text and blocks with the ids its edit
+actions take:
+
+```bash
+tilo-control read so.tilo.notes                    # {"pages": [{"item": "notes.page:…", "title": …}], …}
+tilo-control read so.tilo.notes notes.page:<id>    # {"title": …, "text": …, "blocks": [{"id", "kind", "text"}]}
+```
+
+`read APP [ITEM]` finds the open app's `read` row among the `app-actions` the
+desktop lists and invokes it, so the caller needs no opaque id.
+
+The CLI teaches its own use: `tilo-control --help` leads with the action
+model, a socket it cannot reach is explained (and how to get one), and
+`unknown_action` / `invalid_arguments` refusals print the next command to try.
+
+`os/tests/installed-admin-actions.sh` proves this on a booted image in
+`build-image.yml`: after first login, over the admin's ssh and with no
+`TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
+back through `tilo-control windows`. It then creates a note through Notes' `new-page` action and reads it back through `read`.
 
 ## `actions_enumerate`
 
@@ -18,11 +186,120 @@ object per line, request and response.
 {"answer":{"query":"terminal","count":2,"actions":[
   {"provider":"actions","id":"window.new.terminal","kind":"Actions",
    "title":"New terminal window","subtitle":null,"score":0}
-]}}
+],"total":2,"truncated":false,"next_cursor":null,
+ "revision":"3f9c0a17d2b4e861","complete":true}}
 ```
+
+`complete` is `false` while a source that would change the answer is still on
+its way: the app action index rebuilding after an app published, or an app's
+directory page not yet in. That is a different thing from `truncated` (see
+paging below). `truncated` says this page is not all of the listing, and
+following `next_cursor` gets the rest. `complete: false` says the listing
+itself is not all there yet. `revision` names the listing: it is the identity
+its cursors are cut from, and it changes when its rows do. Neither is a reason
+to poll. `wait_ms` holds the
+answer until the listing is complete (capped at 30 s); add
+`"after_revision":"…"` and it is held until the listing also differs from the
+one you have, which is how to wait for an app that was just opened to publish
+its actions. A waited answer carries `settled`: `false` when the wait ran out
+first, with the latest listing.
+
+```json
+{"op":"actions_enumerate","query":"read","wait_ms":10000,"after_revision":"3f9c0a17d2b4e861"}
+```
+
+```bash
+tilo-control actions list read --wait        # 5 s; --wait=MS for another bound
+```
+
+A held listing is parked rather than polled. It runs again, through the same
+path and the same capability checks, only when the action surface moves: an
+invocation or publication in the broker, the index finishing, a directory page
+arriving. Each of these wakes the compositor.
+
+Machine-oriented operations can be included explicitly through the same door:
+
+```sh
+tilo-control actions list so.tilo.browser --programmatic --json
+```
+
+```json
+{"op":"actions_enumerate","query":"so.tilo.browser","include_programmatic":true}
+```
+
+This adds programmatic descriptors to bounded enumeration. It keeps the same
+workspace, membership and capability checks and does not alter the human palette.
+Use the returned provider, ID, contract and parameter schema with `actions invoke`.
+A programmatic page read may carry Write authority; the generic `read` convenience
+command is limited to declared read-only operations.
+
+Workspace Activity's morning sources use the same `actions` provider. In
+**Activity → Explore → Details**, select an existing workspace resource and
+invoke `room.activity.morning.toggle` (the **Choose for morning** / **Remove
+morning source** control). The choice is private to this device and room, with
+up to eight resources. Selecting it does not grant access, refresh a provider,
+connect an account or acknowledge activity.
+
+**Activity → Catch up** shows these choices with their latest admitted resource
+history and last recorded activity time. The native host separately reads bounded
+provider previews through its certified, room-bound action catalogue. Provider
+source, observation/fetch time and freshness remain provider-owned data, distinct
+from history time; an unavailable preview makes no fresh-data claim. Weather
+publishes its existing cached observation, never a fabricated summary.
+One chosen source is shown at a time with a bounded visual preview; full
+provider text stays available to accessibility. Use the keyboard source pager
+or the room-bound `room.activity.morning.next.<room>.<key>` navigation action
+to inspect the remaining choices, including unavailable sources.
+
+Open/remove actions are enumerated for the current room as
+`room.activity.morning.open.<room>.<key>` and
+`room.activity.morning.remove.<room>.<key>`. Native opening invokes the existing
+provider's exact resource `open` action through the ordinary broker, including
+its launch and current permission checks. Hosts without that adapter retain the
+history launcher. Missing history evidence is unavailable and can still be removed.
+
+`room.activity.morning.refresh.<room>.<key>` requests the selected resource's
+currently offered, nullary read-effect `refresh`. The broker rechecks the real
+operation at invocation; status reports a request, not a fabricated refresh result.
+`room.activity.morning.draft.<room>.<key>` imports an unsaved, authority-free
+single-resource refresh program into Shortcuts through `draft-shortcut` on
+`shortcuts.workbench`. Use returned IDs rather than constructing keys. Queued
+commands remain room-bound. No catalogue read connects accounts or refreshes data.
+
+In Shortcuts, **Daily schedule** chooses a daily device-local time on the draft
+through its `set-schedule` action. The existing permission review shows the time
+and the exact action grant; only the person's explicit save uses the existing
+owner-checked shortcut library and scheduler. The existing durable schedule ledger,
+fire claims and catch-up policy avoid duplicate restart fires. Disable and save
+to stop future runs. Importing a draft drops imported triggers, consents and saver
+identity; opening the editor creates no user schedule. Real sources/account access
+and real schedule creation require the user's applicable authorization.
 
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
+
+The answer is one page of the listing: up to 200 rows unless the request names
+a `limit` (at most 2,000). Every answer says where it is:
+
+```json
+{"answer":{"query":"","count":200,"total":431,"truncated":true,
+           "next_cursor":"200.5f0c3d2a9e81b7c4","actions":[...]}}
+```
+
+While `truncated`, ask again with `cursor` set to `next_cursor` for the next
+page; the last page has `"next_cursor":null`. If the listing changed between
+pages, the request is refused with `stale_cursor`; list again from the start.
+`"detail":"compact"` leaves each row's `contract` out, which is most of a row's
+size; `params` stay, so a compact row can still be invoked:
+
+```json
+{"op":"actions_enumerate","query":"","limit":100,"cursor":"200.5f0c3d2a9e81b7c4","detail":"compact"}
+```
+
+A client that predates paging gets the first page, with `truncated` saying
+whether there is more. `tilo-control actions list` takes `--limit ROWS` and
+`--cursor NEXT`, asks for compact rows unless `--json`, and prints the next
+page's cursor on stderr.
 
 An empty `query` lists every provider's default set rather than guessing a
 needle. The descriptors come from the same provider registry that backs the
@@ -48,6 +325,85 @@ are deliberately indistinguishable, so probing cannot map what you may not see:
         "message":"no visible action addressed by (actions, nope) in the current catalogue"}}
 ```
 
+An application action answers once it is admitted: its receipt carries the
+broker job (`broker_invocation_id`) and usually the state `accepted`, and
+`actions_status` follows the job from there. `wait_ms` holds the answer instead
+until the job settles — succeeds, fails or is cancelled — or the wait runs out
+(capped at 30 s), and answers with the job's latest receipt either way. The
+desktop is woken by the job itself, not polled, so the answer leaves as soon as
+it settles:
+
+```json
+{"op":"actions_invoke","provider":"app-actions","id":"…","wait_ms":5000}
+```
+
+```bash
+tilo-control actions invoke app-actions "$ID" --wait        # 5 s; --wait=MS for another bound
+```
+
+`--wait` exits 1 when the action failed or was cancelled, and names the job to
+follow with `actions status` when it is still running. Without `wait_ms` the
+answer is the admission receipt, as before; with `device` it is ignored.
+`actions_status` takes the same `wait_ms` (`tilo-control actions status ID
+--wait`), so following a job is one held request rather than a loop of reads.
+`tilo-control read` uses both waits: one listing and one invocation, and no
+sleeps.
+
+A client making many calls can keep one connection: `tilo-control actions
+session` reads one wire request per stdin line and writes one answer per stdout
+line, in order, over a single connection.
+
+## `windows` and `state_dump`
+
+`windows` lists the open windows, one row per tab, read straight off the live
+tree:
+
+```json
+{"op":"windows"}
+```
+
+```json
+{"answer":{"windows":[
+  {"workspace":"Home","strip":"Main","group":100,"tab":1000,"kind":"Foreign",
+   "app_id":"so.tilo.notes","title":"Notes","active":true}
+]}}
+```
+
+`active` marks the tab in front of the active workspace's active group. A
+workspace or strip without a name is named by its id. `tilo-control windows`
+asks for this op, and reads the state dump instead when a compositor predates
+it.
+
+`state_dump` answers `workspace_tree`, `chrome`, `peers` and `sharing`. The
+tree is the desktop as it is now. A workspace's append-only history is left
+out: `effect_receipts`, `ownership_transfer_audit`,
+`ownership_transfer_cancellations` and each task's `audit`. That history grows
+with every action ever taken, so the dump stays the same size however long the
+desktop has been in use. Ask for the history explicitly when you need it:
+
+```json
+{"op":"state_dump","include_history":true}
+```
+
+```sh
+tilo-control state-dump --history --pretty
+```
+
+Polling `windows` or the plain dump after each action is cheap. A dump with
+history costs time on the compositor's thread in proportion to that history.
+
+## Reading a terminal session
+
+For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared
+session target, screen and cursor, with an explicit truncation flag when output
+exceeds 64 KiB. That record can outlive the process or describe a collaborator's
+screen. Discover and invoke the read-only **Inspect session** action for this
+participant's actual lifecycle, attached process identity, input availability
+and startup cause. Neither getter opens, restarts or grants a session. A command
+is unavailable until the local process has opened; sending to a placeholder
+writer cannot report success. The device's own shell continues to require the
+person, device ownership and an explicit grant; agents use managed environments.
+
 ## Why enumeration and invocation are separate steps
 
 They answer different questions and carry different risk. "What can I do here"
@@ -61,9 +417,30 @@ modes distinguishable: "that action does not exist for you" and "I ran it and
 nothing happened" must not look alike to a caller with no way to check the
 screen.
 
+Unlocked native desktop `actions list --json` includes `completion` alongside `count` and
+`actions`. The top-level `complete` and `completion.complete` are true only when every
+selected provider exhausted its bounded traversal and has no outstanding work or
+failed reply. `truncated` and `next_cursor` still describe paging of the returned
+catalogue, independently of whether the source catalogue is complete.
+An empty `actions` array with `complete: false` is not proof that the application
+publishes nothing. `completion.incomplete` names the provider and the observed
+reason (`pending`, `refused`, `unavailable`, `timed_out`, `stale_cursor`,
+`budget_exhausted`, `continuation`, or `invalid_input`); it exposes no document contents or
+additional authority. Older transports without this field do not establish
+completion. Keep any returned actions, but require completion before treating an
+empty listing as authoritative or using a listing for readiness acceptance.
+
 Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer
-valid now fails loudly instead of running something else.
+valid now fails loudly instead of running something else. The request runs from
+that one resolution: nothing else runs between resolving the address and
+invoking it. An application's directory action is admitted bound to the
+directory revision it was resolved at, which the invocation journal records;
+the host that runs it refuses (`published_invocation_revision_changed`) when
+the app's directory moved on before it ran, rather than acting on something
+other than what was resolved. A remote caller that names no revision is bound
+to the one the app resolved at, except for an action whose contract asks for
+confirmation: that one needs the revision it was shown at.
 
 ## Why enumeration carries no invoke handle
 
@@ -182,6 +559,37 @@ Input injection is not served; the surface is semantic only.
 `tilo-vm scenario install` drives the installer this way end to end
 (`tilo-vm guide scenarios`).
 
+The greeter publishes `sign-in@greeter`, account and session selection, and
+the available fingerprint action. Sign-in uses the existing greetd/PAM
+conversation and the selected installed session; its `password` parameter
+is `Secret`. Use `actions invoke greeter sign-in@greeter --args-stdin` with
+a private JSON object on standard input, rather than placing a credential
+in the command line. An accepted invocation means the attempt started;
+`state-dump` reports authentication progress and the mapped result.
+
+For a bounded timing measurement, `configure-session-diagnostics@greeter`
+configures this greeter's next ordinary sign-in with four required booleans:
+`presentation`, `gpu_stages`, `gpu_timestamps`, `gpu_dispatch_timestamps`.
+Dispatch timestamps require GPU timestamps. The selection is transient and
+inspectable as `session_diagnostics`; a fresh greeter starts without a selection,
+and normal diagnostic flags are off unless explicitly configured by the host.
+Set all four false to disable them for this sign-in. Authentication in progress
+refuses changes. These are fixed content-free timing switches, never arbitrary
+environment, session argv, output paths or input gates. Invoke normal `sign-in`
+through private stdin afterward; PAM and the installed session remain authoritative.
+No measurement qualifies without the matching actual input, body revision and
+hardware presentation proof; GPU-feature support must be observed separately.
+
+If PAM requires another answer, the current challenge has a unique ID and
+a `secret` or `visible` response kind, and its bounded normal PAM question
+with literal echoes of private answers removed. `respond-challenge@greeter` takes that
+ID as `challenge` and a private `Secret` argument named `response`. Stale
+IDs cannot answer a later prompt. `cancel-authentication@greeter` sends the
+ordinary greetd cancellation request and keeps the attempt busy until its
+worker finishes; no cancelled response can start a session. Credentials
+and raw PAM diagnostics never enter resource values, encoded operations,
+state dumps, action replies or logs.
+
 ## Carrying one action result into the next
 
 An action sequence is a data path, not just a list of commands. The broker's
@@ -237,6 +645,11 @@ refuses it again at run time.
 | What | Where |
 |---|---|
 | Command + response shapes | `crates/session/shell/src/compositor/test_control.rs` |
+| Device admin's control socket | `crates/session/shell/src/compositor/admin_control.rs` |
+| Session agent door (peer check, serving) | `crates/session/shell/src/compositor/agent_door.rs`, client route and MCP gate in `crates/runtime/tilo-runtime/src/session_door.rs` |
+| Agent door consent | `crates/session/shell/src/shell/agent_admission.rs` |
+| CLI (`tilo-control`) | `crates/session/control-cli` |
+| Launcher coverage proof | `crates/session/shell/src/shell/overlay_host/launcher_action_coverage_tests.rs` |
 | Live enumerate / resolve | `crates/session/shell/src/compositor/native.rs` |
 | Catalogue + visibility seam | `crates/session/shell/src/shell/search/action_api.rs` |
 | Capability gate + policy | `crates/session/shell/src/shell/search/visibility.rs` |
@@ -248,3 +661,200 @@ refuses it again at run time.
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |
+
+### Unlocking the device-owner session
+
+The existing device-owner `admin-control.sock` publishes the `session-lock`
+resource while locked. Invoke `unlock@session-lock` with a Secret `password`,
+using `tilo-control actions invoke session-lock unlock@session-lock --args-stdin`.
+Supply the JSON object through private stdin; never place a credential in argv.
+The reply acknowledges asynchronous verification, rather than claiming unlock.
+Wait for the ordinary `state-dump` `chrome.session_locked` transition and
+`chrome.lock_auth.verifying`/non-leaky error fields. The normal PAM helper
+verifies the existing session owner; no caller may replace the username.
+Agent-scoped and enrolled-device actions do not receive this local capability.
+Other app actions remain refused while locked.
+## This device's shell
+
+A live launcher-authenticated Terminal exposes owner operations through the
+Shell's `terminal-device-shell` provider. List `device shell` to obtain the
+exact per-connection addresses. Invoke `request@<connection>` with
+`confirm: true` to select the ordinary Host target. This does not grant it:
+answer its existing permission request using `permission-prompts`, then use
+`inspect@<connection>` to obtain the current local session UUID.
+
+`run@<connection>` requires that exact `session`, a single reviewed `command`
+(up to 8 KiB), and `confirm: true`. Its acknowledgement says `submitted` only
+after the existing PTY accepted the bytes; it does not claim an exit status.
+`read@<connection>` requires the same session UUID and returns at most 32 KiB
+of visible output, including retained output after the process exits. Read
+and inspect expose no clipboard, credential or arbitrary host-file API.
+
+Only a person administrator/owner may use this provider. App, agent and token
+principals remain refused even with an Admin override. Generic app-broker
+Terminal operations cannot open Host or send input to an existing Host PTY;
+Default environments retain their normal app actions. Closed connections,
+changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
+The matched Shell, SDK runtime and Terminal versions are required for this
+owner lifecycle operation; unsupported workers do not report success.
+
+### Workspace membership and invitations
+
+The `actions` provider publishes workspace membership under the canonical ids
+and parameter names of `tilo_action_broker::collaboration_admin`, acting on the
+active workspace:
+
+| Action | Parameters | Output |
+| --- | --- | --- |
+| `member.role.set` | `participant_id`, `role` (`viewer`, `commenter` or `editor`) | none |
+| `member.remove` | `participant_id` | none |
+| `invitation.issue` | `role`, `expires_in_seconds` (1 to 30 days), optional `invitee_name`, optional `recipient` | `{"invite": token}` |
+| `invitation.list` | none | `{"invitations": [{invite_id, name, role, expires_at}]}` |
+| `invitation.resend` | `invite_id` | `{"invite": token}` |
+| `invitation.cancel` | `invite_id` | `{"canceled": true}` |
+
+Each also takes `confirm: true`; the contracts are privileged, sensitive or
+destructive and require `Admin` on the workspace. `participant_id` is the
+member's person id as the roster reports it. Setting a role only changes an
+existing member's role; admitting someone new is an invitation. `recipient` is
+the invitee's 64-hex person key (or a `tilo-identity:` card); with it, only
+that person's devices can redeem the token, which is otherwise a bearer
+credential. The invitation actions need peer sync and complete on a later
+frame, so callers poll the pending invocation. The Members tab in workspace
+settings calls the same functions as `member.role.set` and `member.remove`, so
+a click and an invocation pass the same authority check.
+
+### Reviewing a Tilo package in Store
+
+Store accepts `.tapp` files through the normal file-open handoff, its shared
+“Review package” file chooser, and the declared `import-package` action. Discover
+Store's current bound resource/action IDs before invoking them; resource IDs are
+session-bound. The action accepts either a sandbox-readable `path` or a handed
+`content` hash, never both. Omitting both opens the ordinary file chooser.
+Opening or reviewing a file does not install it. The optional `reported_size`
+is a preflight refusal hint for oversized handoffs; it never replaces independent
+byte bounds, archive verification or the repository offer size.
+
+Full and thin archives use the same review: every carried payload is hash-checked,
+then signed metadata is matched to an independently verified configured
+repository offer (app, version, root and publisher). The independently authenticated
+offer size is retained for the installer's exact download-size check; full and thin
+local files can encode the same identity at different lengths. An archive's
+own key never creates publisher trust. Unlisted packages require independently
+provisioned identity-scoped trust, as described below; component and runtime
+archives use the system updater.
+
+After the review job succeeds, `inspect-catalogue` exposes `imported_package`
+with its app, root and file version. The app details show that version, its signed
+identity and whether the app was already installed. Invoke the separate
+`install-imported-package` action with that exact `app` and `root`, or activate
+“Install reviewed package” in those details. Store rechecks the current offer
+before passing it to the existing authenticated `InstallOffer` installer. The
+installer obtains the canonical offer and validates its runtime and device target;
+reviewing a full file does not bypass fetching or authorize an unavailable runtime.
+Poll each numeric broker job to a terminal outcome, then separately inspect the
+selected app's installed state before invoking its ordinary Open action. A
+pre-existing installed app is an update/reuse test, not a first installation.
+
+### Trusted local `.tapp` files in Store
+
+Store's existing **Review package** and **Install reviewed package** actions also
+accept unlisted local app packages when the user's host-side
+`~/.config/tilo/trusted-attestors.toml` already authorizes a valid scoped
+attestation. The host checks `revoked-keys.toml` before honoring that attestation.
+Opening the file never grants publisher trust or installs anything. Valid
+self-signatures alone are refused on this Store path, even though the standalone
+installer's default policy can warn and continue.
+
+The existing launcher-issued AppHost capability reviews handed bytes without
+receiving a publisher key or host filesystem path from the worker. Installation
+rechecks the exact reviewed archive digest and signed root against current host
+trust, then calls the canonical local installer with its verified attestor
+requirement. A publisher change is refused; normal pinned/held selection and
+runtime/interface policies remain in force. A thin local file needs its missing
+payload already in the canonical content store; Store does not invent an
+untrusted download source. The review reports actual installed state separately
+from the candidate, and successful installation requires the reviewed root to
+be the selected installed package.
+### Timing diagnostics in an active owner session
+
+The authenticated local owner socket publishes `session-diagnostics` with
+`configure@session-diagnostics` and `inspect@session-diagnostics`. Configure
+requires exactly four booleans: `presentation`, `gpu_stages`, `gpu_timestamps`,
+and `gpu_dispatch_timestamps`. Dispatch timestamps require GPU timestamps.
+Use the ordinary `tilo-control actions invoke` argument JSON; no environment
+names or output paths are accepted.
+
+The setting is ephemeral to this desktop session. It sets or removes only the
+four existing diagnostic variables for subsequently launched children.
+Presentation also controls the compositor's existing physical input delivery
+observer immediately. Existing applications and the compositor's initialized
+GPU renderer retain their configuration; reopen the application to collect
+its new timing stream. Inspect returns the current fixed options and their
+scope, plus `launch_history`: at most 64 launch attempts with at most 12 events
+each, original epoch timestamps and monotonic elapsed times. It joins the
+immutable launch ID to its saved tab/record/workspace, launcher PID and kernel
+start time, original package hash, mapped surface, exit status and executing
+process-binding phases. App stderr is fully redacted; only its bounded retained
+line count and a fixed failure category are reported. Runtime cohort and shell
+source still require the matched component receipt and signed pins; missing
+evidence is not guessed. Eviction counters disclose lost history.
+
+For one app, use the optional `app_id` argument. These actions require the
+existing authenticated owner socket, not the test-control socket:
+
+```bash
+tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" actions invoke session-diagnostics inspect@session-diagnostics --args-json '{"app_id":"so.tilo.browser"}'
+```
+
+The history is captured directly by the compositor, not reconstructed from
+journal or flight-recorder replay. Inspect does not launch an app, replay an
+action or change diagnostic configuration. An unsupported connection receives
+`not_permitted` explaining the required owner socket. Agent-scoped, sandboxed, other-account and locked-session calls cannot
+configure this owner-only surface. No application content or typed keys are
+recorded by these timing options.
+
+## Cloud account mounts
+
+Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
+`settings.account:<id>` row while the cloud account service lists that account
+as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
+them. They are device-only jobs: the effect answers once the service has
+accepted the request, and the account's health still arrives through the
+account status store. `sync-now` cuts a failure back-off short and runs a pass
+(an account whose mount could not start is tried again); a pause stops
+background sync and uploads until resumed, survives restarts, and leaves
+on-demand reads working while edits queue.
+
+Settings reaches the mounts through the service's account socket,
+`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock` (`runtime_fs::cloud`, mode
+0600), whose directory its sandbox is granted. That socket lists, syncs,
+pauses and resumes mounts and refuses everything else. File requests (a
+file's provider revisions, restoring one of them, and a share link, each
+refused unless the provider's capabilities include it) are served only on the
+file socket, `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`, in a directory
+of its own that no grant of the account socket reaches. No credential crosses
+either socket. Files does not yet publish these file requests as entry
+actions, and no sandbox is granted the file socket yet.
+
+## Operating a portal file chooser
+
+When an application requests the normal portal chooser, the authenticated owner
+can discover its `file-picker` actions on the same control socket. Each opaque
+action ID includes the current request UUID. Inspect returns the requesting
+application, mode, a bounded page of entries, and a state token. Selection and
+navigation accept only entry IDs from that actual listing, together with its
+latest state token; they do not accept arbitrary paths. Inspect again after an
+operation before using the returned state for the next one.
+
+Confirming Open/Save and approving a replacement require `confirm: true`.
+Cancellation uses the same request-bound action. The original application's
+portal request resolves through the ordinary chooser/grant path. A successful
+chooser receipt is not an application install receipt: track the original
+application job and inspect its reviewed state separately.
+
+The chooser refuses expired requests, stale selections, entries escaping its
+permitted roots, unsupported mode operations, and queued operations whose
+workspace owner or lock state changed. Agent, app and bearer-token principals
+cannot approve personal file access through an Admin override. Staging a file in
+Downloads does not grant an application access to it.

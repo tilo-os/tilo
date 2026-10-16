@@ -4,9 +4,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -25,6 +22,8 @@ mod outsider_cannot_decrypt;
 mod provisioning;
 #[path = "sealed_persistence.rs"]
 mod sealed_persistence;
+#[path = "steward_store.rs"]
+mod steward_store;
 #[path = "third_member_joins.rs"]
 mod third_member_joins;
 #[path = "two_member_round_trip.rs"]

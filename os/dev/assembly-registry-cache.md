@@ -1,14 +1,14 @@
 # Development raw assembly cache
 
 The controller enables registry intermediate-layer caching only after successful
-complete reconstructed-native import with adopted WPE in full-build mode. It uses
+complete reconstructed-native import in full-build mode. It uses
 `registry.tilo.so/tilo/tilo-development-assembly-cache-ARCH-v1`, with layers enabled,
 cache-from/cache-to and skip-unused-stages. Existing registry authentication is
 used; credentials are not placed in image layers. This is a performance cache,
 not release artifact/signature acceptance. Final layer audit, retention, registry
 identity verification and cleanup remain mandatory.
 
-Native builder and WPE contexts are verified imported image IDs. Compiler secret
+Native builder contexts are verified imported image IDs. Compiler secret
 arguments are omitted for this path; the overridden native stage is not executed.
 Only public trust is an image context. Private signing keys remain outside the
 source tree and image contexts; raw mode exits before signing. Intermediate

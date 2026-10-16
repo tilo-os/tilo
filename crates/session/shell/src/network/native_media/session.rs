@@ -1,6 +1,7 @@
 use super::{
-    Action, Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
-    NativeWorkspaceOwner, Operation, Ordering, Reply, Ticket, Weak, devices, http, observer,
+    Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
+    NativeWorkspaceOwner, OPEN_DEADLINE, Operation, Ordering, Reply, Ticket, Weak, authority,
+    devices, observer,
 };
 use crate::{
     network::NetCmd,
@@ -14,12 +15,12 @@ use media::voice::{
 use runtime_collab::native_media::{Inventory, Issue, State as CallState};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
+use tilo_relay_protocol::voice::HEARTBEAT;
 use tokio::sync::mpsc;
 
 pub(crate) struct Factory {
     commands: mpsc::Sender<NetCmd>,
     owner: NativeWorkspaceOwner,
-    http: http::Http,
     devices: Arc<devices::Devices>,
     runtime: tokio::runtime::Handle,
 }
@@ -29,14 +30,13 @@ impl Factory {
         owner: NativeWorkspaceOwner,
         broker: Arc<std::sync::Mutex<CaptureBroker>>,
         runtime: tokio::runtime::Handle,
-    ) -> Result<Self, String> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             commands,
             owner,
-            http: http::Http::new().map_err(|_| "native HTTPS unavailable")?,
             devices: devices::Devices::start(broker, &runtime),
             runtime,
-        })
+        }
     }
 }
 impl MediaFactory for Factory {
@@ -48,11 +48,13 @@ impl MediaFactory for Factory {
     fn prepare(&self, target: CallTarget) -> Prepare {
         let commands = self.commands.clone();
         let owner = self.owner.clone();
-        let http = self.http.clone();
         let devices = self.devices.clone();
         let runtime = self.runtime.clone();
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
+                // From here until the call ends the observations it reads
+                // stay fresh; waiting for the grant can outlast them.
+                let fresh = devices.watch();
                 let observed = devices.prepare().await.map_err(|_| Issue::Unavailable)?;
                 let output = devices.output().ok_or(Issue::Unavailable)?;
                 if !observed.contains(output.cookie, output.node, output.serial, false) {
@@ -69,17 +71,15 @@ impl MediaFactory for Factory {
                 drop(observed);
                 let opened = command(&commands, Operation::Open { owner, target })
                     .await
-                    .map_err(|_| Issue::Denied)?;
-                let Reply::Opened(ticket, work) = opened else {
+                    .map_err(|_| {
+                        tracing::debug!("native voice open command refused");
+                        Issue::Denied
+                    })?;
+                let Reply::Opened(ticket) = opened else {
                     return Err(Issue::Unavailable);
                 };
-                let ready = drive(&commands, &http, &ticket, Reply::Work(work))
-                    .await
-                    .map_err(|_| {
-                        ticket.stop();
-                        Issue::TransportFailed
-                    })?;
-                if !matches!(ready, Reply::Grant) {
+                if ticket.granted(OPEN_DEADLINE).await.is_err() {
+                    tracing::debug!("native voice first grant unavailable");
                     ticket.stop();
                     return Err(Issue::Denied);
                 }
@@ -90,13 +90,23 @@ impl MediaFactory for Factory {
                     cancelled: AtomicBool::new(false),
                     task: Mutex::new(None),
                     commands: commands.clone(),
-                    http: http.clone(),
                     executor: tokio::runtime::Handle::current(),
                 });
                 let controller = runtime.clone();
                 let task = tokio::spawn(async move {
-                    let result = maintain(&commands, &http, &controller).await;
+                    let result = maintain(&commands, &controller).await;
                     if !controller.cancelled.load(Ordering::Acquire) {
+                        if result.is_err() {
+                            let category = match result.as_ref().err().map(String::as_str) {
+                                Some("native carrier retry budget exhausted") => {
+                                    "carrier_retry_exhausted"
+                                }
+                                Some("native actor deadline") => "actor_deadline",
+                                Some("the participation ended") => "participation_ended",
+                                _ => "unavailable",
+                            };
+                            tracing::warn!(category, "native call carrier maintenance ended");
+                        }
                         controller.ticket.stop();
                         *controller.state.lock() = result
                             .map(|()| CallState::Ended)
@@ -107,10 +117,13 @@ impl MediaFactory for Factory {
                 Ok(Box::new(Session {
                     runtime,
                     devices,
+                    _fresh: fresh,
                     output,
                     audio,
                     capture: None,
                     decoded_generation: None,
+                    first_packet_diagnosed: false,
+                    next_audio_diagnostic: Instant::now(),
                     publishers: Vec::new(),
                 }) as Box<dyn MediaSession>)
             }));
@@ -131,17 +144,19 @@ struct Running {
     cancelled: AtomicBool,
     task: Mutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<NetCmd>,
-    http: http::Http,
     executor: tokio::runtime::Handle,
 }
 impl Running {
     fn retire(&self) {
-        self.ticket.pause();
+        tracing::debug!("native carrier retirement started");
+        self.ticket.clear_carrier();
+        tracing::debug!("native carrier participation paused");
         let client = self.client.lock().take();
         if let Some(client) = client {
             client.close();
         }
         *self.state.lock() = Ok(CallState::Reconnecting);
+        tracing::debug!("native carrier retirement completed");
     }
 }
 async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Result<Reply, String> {
@@ -158,96 +173,18 @@ async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Resul
     .await
     .map_err(|_| "native actor deadline".to_string())?
 }
-async fn drive(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    ticket: &Arc<Ticket>,
-    mut reply: Reply,
-) -> Result<Reply, String> {
-    // Bootstrap + mutual HTTP + grant require at most eight bounded messages.
-    // No peer can manufacture an unbounded continuation chain.
-    for _ in 0..8 {
-        let Reply::Work(work) = reply else {
-            return Ok(reply);
-        };
-        ticket.completion_live()?;
-        let Ok(bytes) = http.send(&work.request).await else {
-            let _ = command(
-                commands,
-                Operation::Act {
-                    ticket: ticket.clone(),
-                    action: Action::Abandon,
-                },
-            )
-            .await;
-            return Err("native media HTTP unavailable".into());
-        };
-        reply = command(
-            commands,
-            Operation::Advance {
-                ticket: ticket.clone(),
-                serial: work.serial,
-                body: bytes,
-            },
-        )
-        .await?;
-    }
-    Err("native control continuation capacity".into())
-}
-async fn action(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    ticket: &Arc<Ticket>,
-    action: Action,
-) -> Result<Reply, String> {
-    drive(
-        commands,
-        http,
-        ticket,
-        command(
-            commands,
-            Operation::Act {
-                ticket: ticket.clone(),
-                action,
-            },
-        )
-        .await?,
-    )
-    .await
-}
-async fn install_carrier(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    running: &Arc<Running>,
-) -> Result<bool, String> {
+/// Start a carrier for the current grant; `false` when it admits no route.
+fn install_carrier(running: &Arc<Running>) -> Result<bool, String> {
     let ticket = &running.ticket;
-    let has_route = ticket
-        .state
-        .lock()
-        .grant
-        .as_ref()
-        .map(|grant| {
-            grant.view.directions.publish
-                || (grant.view.directions.subscribe && !grant.view.inventory.namespaces.is_empty())
-        })
-        .ok_or("native grant missing")?;
-    if !has_route {
+    let Some(connection) = ticket.next_carrier()? else {
         return Ok(false);
-    }
-    let Reply::Carrier(connection) = action(commands, http, ticket, Action::Relay).await? else {
-        return Err("native relay proof missing".into());
     };
     if running.cancelled.load(Ordering::Acquire) {
         return Err("native session closed".into());
     }
     let client =
         Arc::new(Client::start(connection, ticket.clone()).map_err(|error| error.to_string())?);
-    // The current read and listener ordering covers the brief installation gap.
-    ticket.inspect_current(|_, _| {
-        ticket.live()?;
-        ticket.stops.lock().client = Arc::downgrade(&client);
-        Ok(())
-    })?;
+    ticket.set_client(&client)?;
     *running.client.lock() = Some(client);
     Ok(true)
 }
@@ -256,23 +193,31 @@ fn later(delay: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(delay).unwrap_or(now)
 }
-async fn maintain(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    running: &Arc<Running>,
-) -> Result<(), String> {
+async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Result<(), String> {
     let ticket = &running.ticket;
-    let mut heartbeat = later(Duration::from_secs(5));
-    let mut renew = later(Duration::from_secs(20));
+    let mut heartbeat = later(HEARTBEAT);
     let mut failures = 0_u32;
     let mut live_since = None;
     let mut retry = Instant::now();
     loop {
+        let changed = ticket.changed().notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
         if running.cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
         ticket.live()?;
+        if !ticket.authorized() {
+            return Err("native participation lapsed".into());
+        }
         let now = Instant::now();
+        // A new grant with another scope (roster, directions) is followed by
+        // a new carrier; that is no failure.
+        if ticket.stale() {
+            live_since = None;
+            running.retire();
+            retry = now;
+        }
         let status = running.client.lock().as_ref().map(|client| client.status());
         match status {
             Some(Status::Live) => {
@@ -291,54 +236,38 @@ async fn maintain(
                 if failures >= 3 {
                     return Err("native carrier retry budget exhausted".into());
                 }
-                action(commands, http, ticket, Action::RetireCarrier).await?;
-                retry = now.checked_add(Duration::from_millis(200)).unwrap_or(now);
+                retry = later(Duration::from_millis(200));
             }
-            None if now >= retry => {
-                let installed = install_carrier(commands, http, running).await;
-                if installed.is_err() {
-                    failures = failures.saturating_add(1);
-                    if failures >= 3 {
-                        return Err("native carrier retry budget exhausted".into());
-                    }
-                    action(commands, http, ticket, Action::RetireCarrier).await?;
-                    retry = later(Duration::from_millis(200 << failures));
+            None if now >= retry && install_carrier(running).is_err() => {
+                running.retire();
+                failures = failures.saturating_add(1);
+                if failures >= 3 {
+                    return Err("native carrier retry budget exhausted".into());
                 }
+                retry = later(Duration::from_millis(200 << failures));
             }
             None => {}
         }
-        let bootstrap = { ticket.state.lock().bootstrap_at };
-        if now >= bootstrap {
-            running.retire();
-            let result = action(commands, http, ticket, Action::Bootstrap).await?;
-            if !matches!(result, Reply::Grant) {
-                return Err("native bootstrap renewal failed".into());
-            }
-            heartbeat = later(Duration::from_secs(5));
-            renew = later(Duration::from_secs(20));
-            retry = Instant::now();
-        } else if now >= renew {
-            if !matches!(
-                action(commands, http, ticket, Action::Renew).await?,
-                Reply::Grant
-            ) {
-                return Err("native grant renewal failed".into());
-            }
-            if running.client.lock().is_some() {
-                action(commands, http, ticket, Action::Refresh).await?;
-            }
-            renew = later(Duration::from_secs(20));
-            heartbeat = later(Duration::from_secs(5));
-        } else if now >= heartbeat {
-            action(commands, http, ticket, Action::Heartbeat).await?;
-            heartbeat = later(Duration::from_secs(5));
+        if now >= heartbeat {
+            command(
+                commands,
+                Operation::Heartbeat {
+                    ticket: ticket.clone(),
+                },
+            )
+            .await?;
+            heartbeat = later(HEARTBEAT);
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::select! {
+            () = changed => {}
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
     }
 }
 
 struct StopSlot {
     current: AtomicBool,
+    expired: AtomicBool,
     startup: AtomicU64,
     ready: AtomicBool,
     generation: Mutex<Option<(CaptureStop, Weak<Client>)>>,
@@ -347,6 +276,7 @@ impl StopSlot {
     fn new() -> Self {
         Self {
             current: AtomicBool::new(true),
+            expired: AtomicBool::new(false),
             startup: AtomicU64::new(0),
             ready: AtomicBool::new(false),
             generation: Mutex::new(None),
@@ -355,7 +285,7 @@ impl StopSlot {
     fn begin(&self) -> Result<u64, Issue> {
         let _generation = self.generation.lock();
         if !self.current.load(Ordering::SeqCst) {
-            return Err(Issue::PermissionDenied);
+            return Err(self.stopped_issue());
         }
         self.advance()
     }
@@ -369,7 +299,23 @@ impl StopSlot {
             .map_err(|_| Issue::CaptureFailed)
             .and_then(|value| value.checked_add(1).ok_or(Issue::CaptureFailed))
     }
-    fn pause(&self) {
+    // A nonterminal owner fence retires this startup, but preserves the
+    // explicit unmute intent. A terminal stop never becomes resumable.
+    fn check_startup(&self, startup: u64) -> Result<bool, Issue> {
+        if !self.current.load(Ordering::SeqCst) {
+            return Err(self.stopped_issue());
+        }
+        Ok(self.startup.load(Ordering::SeqCst) == startup)
+    }
+    fn stopped_issue(&self) -> Issue {
+        if self.expired.load(Ordering::SeqCst) {
+            Issue::CaptureFailed
+        } else {
+            Issue::PermissionDenied
+        }
+    }
+    fn pause(&self) -> u64 {
+        tracing::debug!("native capture slot pause started");
         let mut generation = self.generation.lock();
         // A timer or prepared FD from the previous start cannot affect a later
         // resume of the same explicit unmute intent.
@@ -382,6 +328,10 @@ impl StopSlot {
             }
             capture.stop();
         }
+        let idle = self.startup.load(Ordering::SeqCst);
+        drop(generation);
+        tracing::debug!("native capture slot pause completed");
+        idle
     }
     fn stop(&self) {
         self.current.store(false, Ordering::SeqCst);
@@ -390,6 +340,11 @@ impl StopSlot {
     fn expire(&self, startup: u64) {
         let mut generation = self.generation.lock();
         if self.startup.load(Ordering::SeqCst) == startup && !self.ready.load(Ordering::SeqCst) {
+            tracing::warn!(
+                installed = generation.is_some(),
+                "native microphone capture startup deadline expired"
+            );
+            self.expired.store(true, Ordering::SeqCst);
             self.current.store(false, Ordering::SeqCst);
             let _ = self.advance();
             if let Some((capture, client)) = generation.take() {
@@ -434,20 +389,51 @@ impl Drop for CaptureIntent {
         self.cancel_pending();
     }
 }
+fn installation_fence(
+    intent: &CaptureIntent,
+    ticket: Weak<Ticket>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let startup = intent.startup;
+    let slot = Arc::downgrade(&intent.slot);
+    let source = intent.source.clone();
+    let allowed = intent.allowed.clone();
+    Arc::new(move || {
+        let (Some(slot), Some(ticket)) = (slot.upgrade(), ticket.upgrade()) else {
+            return false;
+        };
+        slot.current.load(Ordering::SeqCst)
+            && slot.startup.load(Ordering::SeqCst) == startup
+            && allowed()
+            && source.current()
+            && ticket.live().is_ok()
+            && !ticket.leaving()
+            && ticket.authorized()
+    })
+}
+
 struct Session {
     runtime: Arc<Running>,
     devices: Arc<devices::Devices>,
+    /// Keeps `devices` refreshing for as long as the call lasts.
+    _fresh: devices::Watch,
     output: Arc<devices::Observation>,
     audio: VoiceAudio,
     capture: Option<CaptureIntent>,
     decoded_generation: Option<u64>,
+    first_packet_diagnosed: bool,
+    next_audio_diagnostic: Instant,
     publishers: Vec<voice::PublicationId>,
 }
 impl Session {
-    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<(), Issue> {
+    // False requests guarded recovery from a nonterminal owner fence.
+    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<bool, Issue> {
         let Some(intent) = &mut self.capture else {
-            return Ok(());
+            return Ok(true);
         };
+        if !intent.slot.check_startup(intent.startup)? {
+            intent.cancel_pending();
+            return Ok(false);
+        }
         if let Some(pending) = &mut intent.pending {
             match pending.receive.try_recv() {
                 Ok(Ok(observed)) => {
@@ -457,11 +443,11 @@ impl Session {
                 Ok(Err(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     return Err(Issue::SourceLost);
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(()),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(true),
             }
         }
         let Some(observed) = &intent.prepared else {
-            return Ok(());
+            return Ok(true);
         };
         if !observed.contains(
             intent.source.cookie,
@@ -473,31 +459,23 @@ impl Session {
         }
         let startup = intent.startup;
         let slot = intent.slot.clone();
-        let source = intent.source.clone();
-        let allowed = intent.allowed.clone();
-        let weak_slot = Arc::downgrade(&slot);
-        let ticket = Arc::downgrade(&self.runtime.ticket);
-        let current: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-            let (Some(slot), Some(ticket)) = (weak_slot.upgrade(), ticket.upgrade()) else {
-                return false;
-            };
-            slot.current.load(Ordering::SeqCst)
-                && slot.startup.load(Ordering::SeqCst) == startup
-                && allowed()
-                && source.current()
-                && ticket.alive.load(Ordering::SeqCst)
-                && !ticket.leaving.load(Ordering::SeqCst)
-                && ticket.base.elapsed().as_nanos()
-                    < u128::from(ticket.capture_until.load(Ordering::Acquire))
-        });
+        let current = installation_fence(intent, Arc::downgrade(&self.runtime.ticket));
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
-        client
-            .enable_publication()
-            .map_err(|_| Issue::PermissionDenied)?;
+        if client.enable_publication().is_err() {
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
+            tracing::warn!("native microphone publication authority refused");
+            return Err(Issue::PermissionDenied);
+        }
         let mut installing = slot.generation.lock();
         if !current() {
             client.stop_publication();
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
+            tracing::warn!("native microphone capture installation fence closed");
             return Err(Issue::PermissionDenied);
         }
         let (node, serial) = observed.call_capture_node(intent.source.node, intent.source.serial);
@@ -514,7 +492,7 @@ impl Session {
                 // Capacity is checked before any worker takes this socket.
                 // Keep it until the original two-second startup deadline.
                 client.stop_publication();
-                return Ok(());
+                return Ok(true);
             }
             Err(_) => {
                 client.stop_publication();
@@ -529,7 +507,7 @@ impl Session {
         *installing = Some((stop, Arc::downgrade(client)));
         drop(installing);
         intent.prepared = None;
-        Ok(())
+        Ok(true)
     }
     fn retire_decoders(&mut self) {
         for publisher in self.publishers.drain(..) {
@@ -546,6 +524,7 @@ impl MediaSession for Session {
     )]
     fn tick(&mut self, now: Instant) -> Result<CallState, Issue> {
         if !self.output.current() {
+            tracing::debug!("native call output observation is no longer current");
             self.stop_capture();
             return Err(Issue::SourceLost);
         }
@@ -578,43 +557,69 @@ impl MediaSession for Session {
                 return Ok(CallState::Reconnecting);
             }
         }
-        let generation = self
-            .runtime
-            .ticket
-            .state
-            .lock()
-            .carrier
-            .as_ref()
-            .map(|carrier| carrier.scope.carrier_generation);
+        let generation = self.runtime.ticket.carrier_generation();
         if self.decoded_generation != generation {
             for publisher in self.publishers.drain(..) {
                 self.audio.remove_publisher(&publisher);
             }
             self.decoded_generation = generation;
         }
-        if let Some(intent) = &self.capture
-            && (!intent.slot.current.load(Ordering::SeqCst)
-                || !(intent.allowed)()
-                || !intent.source.current())
-        {
-            self.stop_capture();
-            return Err(Issue::PermissionDenied);
+        if let Some(intent) = &self.capture {
+            let capture_current = intent.slot.current.load(Ordering::SeqCst);
+            let consent_current = (intent.allowed)();
+            let source_current = intent.source.current();
+            if !capture_current || !consent_current || !source_current {
+                tracing::warn!(
+                    capture_current,
+                    consent_current,
+                    source_current,
+                    "native microphone capture fence closed"
+                );
+                let issue = if consent_current && source_current {
+                    intent.slot.stopped_issue()
+                } else {
+                    Issue::PermissionDenied
+                };
+                self.stop_capture();
+                return Err(issue);
+            }
         }
-        self.install_prepared_capture(&client)?;
+        if !self.install_prepared_capture(&client)? {
+            return Ok(CallState::Reconnecting);
+        }
         if let Some(intent) = &self.capture {
             let installed = intent.slot.generation.lock().is_some();
             if installed {
-                for frame in self
+                let frames = self
                     .audio
                     .poll_capture(now)
-                    .map_err(|_| Issue::CaptureFailed)?
-                {
+                    .map_err(|_| Issue::CaptureFailed)?;
+                if now >= self.next_audio_diagnostic {
+                    tracing::debug!(
+                        frames = frames.len(),
+                        "native voice capture poll progressed"
+                    );
+                    self.next_audio_diagnostic = later(Duration::from_secs(1));
+                }
+                for frame in frames {
+                    let first_packet = !self.first_packet_diagnosed;
+                    self.first_packet_diagnosed = true;
+                    if first_packet {
+                        tracing::debug!("native voice first packet entering carrier");
+                    }
                     let result = client.try_send(client::CapturedOpus {
                         timestamp_48k: frame.timestamp_48k,
                         duration_samples: frame.duration_samples,
                         payload: frame.payload,
                         captured_at: frame.captured_at,
                     });
+                    if first_packet {
+                        tracing::debug!(
+                            accepted = result.is_ok(),
+                            expired = matches!(result, Err(client::ClientError::Expired)),
+                            "native voice first packet carrier returned"
+                        );
+                    }
                     if !matches!(result, Ok(()) | Err(client::ClientError::Expired)) {
                         self.pause_capture();
                         return Ok(CallState::Reconnecting);
@@ -636,6 +641,10 @@ impl MediaSession for Session {
             let Some(frame) = client.try_recv() else {
                 break;
             };
+            // Carrier arrivals are asynchronous: this frame can arrive after
+            // the tick began. Compare it with a fresh local clock observation,
+            // retaining its original arrival and expiry without clamping either.
+            let received_now = Instant::now();
             let publisher = voice::PublicationId {
                 namespace: frame.publisher.namespace,
                 carrier_generation: frame.publisher.carrier_generation,
@@ -654,11 +663,16 @@ impl MediaSession for Session {
                         received_at: frame.received_at,
                         expires_at: frame.expires_at,
                     },
-                    now,
+                    received_now,
                 )
-                .map_err(|_| Issue::TransportFailed)?;
+                .map_err(|error| {
+                    tracing::debug!(?error, "native voice receive admission failed");
+                    Issue::TransportFailed
+                })?;
         }
-        self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
+        self.audio
+            .playout(Instant::now())
+            .map_err(|_| Issue::Unavailable)?;
         Ok(CallState::Live)
     }
     fn inventory(&self) -> Inventory {
@@ -670,7 +684,7 @@ impl MediaSession for Session {
                 .as_ref()
                 .is_some_and(|client| client.status() == Status::Live)
         {
-            self.runtime.ticket.inventory()
+            authority::inventory(&self.runtime.ticket)
         } else {
             Inventory::default()
         }
@@ -728,15 +742,17 @@ impl MediaSession for Session {
         let startup = slot.begin()?;
         intent.startup = startup;
         let weak = Arc::downgrade(&slot);
-        self.runtime.ticket.stops.lock().capture = Some(Arc::new(move |terminal| {
-            if let Some(slot) = weak.upgrade() {
-                if terminal {
-                    slot.stop();
-                } else {
-                    slot.pause();
+        self.runtime
+            .ticket
+            .set_capture_stop(Arc::new(move |terminal| {
+                if let Some(slot) = weak.upgrade() {
+                    if terminal {
+                        slot.stop();
+                    } else {
+                        slot.pause();
+                    }
                 }
-            }
-        }));
+            }));
         let devices = self.devices.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
         let preparing = self.runtime.executor.spawn(async move {
@@ -774,7 +790,11 @@ impl MediaSession for Session {
     fn pause_capture(&mut self) {
         if let Some(intent) = &mut self.capture {
             intent.cancel_pending();
-            intent.slot.pause();
+            // Acknowledge the retired generation without starting capture.
+            // Otherwise a live replacement carrier keeps returning Reconnecting
+            // for this stale startup, while the service waits for Live before
+            // restarting under the existing current consent/source lease.
+            intent.startup = intent.slot.pause();
         }
         self.audio.stop_capture();
     }
@@ -801,23 +821,10 @@ impl MediaSession for Session {
         if first {
             let ticket = self.runtime.ticket.clone();
             let commands = self.runtime.commands.clone();
-            let http = self.runtime.http.clone();
+            // Best-effort leave; the local stop above never waits for the
+            // network, and the governor ends a silent participation anyway.
             self.runtime.executor.spawn(async move {
-                // Bounded best-effort remote cleanup; synchronous local stop
-                // above never waits for the network or makes cleanup authority.
-                let cleanup = async {
-                    if let Ok(reply) = command(
-                        &commands,
-                        Operation::End {
-                            ticket: ticket.clone(),
-                        },
-                    )
-                    .await
-                    {
-                        let _ = drive(&commands, &http, &ticket, reply).await;
-                    }
-                };
-                let _ = tokio::time::timeout(Duration::from_secs(9), cleanup).await;
+                let _ = command(&commands, Operation::End { ticket }).await;
             });
         }
     }
@@ -833,6 +840,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pending_capture_pause_reconnects_but_terminal_stop_refuses_resume() {
+        let slot = StopSlot::new();
+        let first = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(first), Ok(true));
+        slot.pause();
+        assert_eq!(slot.check_startup(first), Ok(false));
+        slot.expire(first);
+        let resumed = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
+
+    #[test]
+    fn acknowledged_idle_generation_is_not_ready_and_cannot_outlive_terminal_stop() {
+        let slot = StopSlot::new();
+        let old = slot.begin().unwrap();
+        slot.ready.store(true, Ordering::SeqCst);
+        let idle = slot.pause();
+        assert_eq!(slot.check_startup(old), Ok(false));
+        assert_eq!(slot.check_startup(idle), Ok(true));
+        assert!(!slot.ready.load(Ordering::SeqCst));
+        assert!(slot.generation.lock().is_none());
+        // The old watchdog cannot revoke idle recovery or a fresh startup.
+        slot.expire(old);
+        let resumed = slot.begin().unwrap();
+        assert_ne!(resumed, idle);
+        assert_eq!(slot.check_startup(idle), Ok(false));
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
+
+    #[test]
     fn paused_startup_timeout_cannot_revoke_resumed_intent_but_current_timeout_does() {
         let slot = StopSlot::new();
         let old = slot.begin().unwrap();
@@ -842,10 +885,8 @@ mod tests {
         assert!(slot.current.load(Ordering::SeqCst));
         slot.expire(resumed);
         assert!(!slot.current.load(Ordering::SeqCst));
-        assert!(
-            slot.begin().is_err(),
-            "deadline is terminal for this unmute"
-        );
+        assert_eq!(slot.check_startup(resumed), Err(Issue::CaptureFailed));
+        assert_eq!(slot.begin(), Err(Issue::CaptureFailed));
     }
 
     #[test]

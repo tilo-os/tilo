@@ -19,7 +19,6 @@
 #![allow(
     clippy::print_stdout,
     clippy::expect_used,
-    clippy::unwrap_used,
     reason = "a development tool: it reports on stdout and a failed setup is fatal"
 )]
 
@@ -106,6 +105,9 @@ async fn main() {
             },
             allowed_origins,
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .expect("serve browsers");

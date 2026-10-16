@@ -28,7 +28,7 @@ staging = recipe[recipe.index("    && build_phase rust-stage-outputs", end):
                  recipe.index("    && build_phase rust-thin-apps", end)]
 shipped = set(re.findall(r"target/release/([a-zA-Z0-9_-]+)", staging))
 vm_bins = {"tilo-windows-vm-control", "tilo-windows-rail"}
-desktop_bins = {"shell", "tilo-launcher", "tilo-unlock-helper"}
+desktop_bins = {"shell", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
 excluded = set()
 for browser in ("0", "1"):
     for desktop in ("0", "1"):
@@ -45,16 +45,15 @@ cargo() { printf '%s\\n' "$@"; }
         available = {t["name"] for name in selected_packages
                      for t in packages[name]["targets"] if "bin" in t["kind"]}
         expected = shipped - vm_bins
-        if browser == "0":
-            expected -= {"browser"}
         if desktop == "1":
             expected -= desktop_bins
         assert len(selected) == len(set(selected)), "duplicate binary selection"
         assert set(selected) == expected, (browser, desktop, set(selected) ^ expected)
         assert set(selected) <= available, set(selected) - available
-        assert ("browser/wpe" in argv) == (browser == "1"), argv
+        # The Browser is a tapp and its engine a runtime: no release binary.
+        assert not any("browser" in value for value in argv), argv
         excluded |= available - set(selected)
         print(f"PASS browser={browser} prebuilt_desktop={desktop}: {len(selected)} shipped binaries")
-assert {"shots", "tilo-control", "tilo-loadclient", "ux-bench", "click_test_client",
+assert {"shots", "tilo-loadclient", "ux-bench", "click_test_client",
         "tilo-model-catalog"} <= excluded, excluded
 print("Unshipped binaries excluded:", ", ".join(sorted(excluded)))

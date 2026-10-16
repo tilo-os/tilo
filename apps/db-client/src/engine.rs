@@ -17,7 +17,7 @@ use rusqlite::types::ValueRef;
 
 use crate::model::{
     Cell, ColumnInfo, ConnectionProfile, DatabaseSchema, Engine, ForeignKey, IndexInfo,
-    QueryResult, RelationKind, SchemaInfo, TableInfo, TypeClass,
+    QueryResult, RelationKind, SchemaInfo, TableInfo,
 };
 
 /// Hard cap for arbitrary query results. The grid virtualizes rendering, and
@@ -187,7 +187,6 @@ impl SqliteEngine {
                 let pk: i64 = r.get(5)?;
                 Ok(ColumnInfo {
                     name: r.get(1)?,
-                    class: TypeClass::classify(&decl),
                     decl_type: decl,
                     not_null: not_null != 0,
                     primary_key: pk != 0,

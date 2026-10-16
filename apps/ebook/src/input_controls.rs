@@ -15,56 +15,51 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::TextRole;
+use ui::framework::Dispatcher;
+use ui::paint::PaintCtx;
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    BlockEditor, Button, ButtonFace, ColorPicker, ColorPickerOutcome, ColorSwatch, CursorPlacement,
-    Embedded, NumberInput, Widget,
+    BlockEditor, Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ColorPicker,
+    ColorPickerOutcome, ColorSwatch, ControlSize, CursorPlacement, NumberInput, Widget,
 };
 
 use crate::model::{Annotation, FontEntry, Settings};
-use crate::paint;
 use crate::reader_theme::ReaderPalette;
+use crate::resource::Ebook;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
-/// text: each keystroke is an [`EbookAction::EditNoteText`] the field
-/// dispatches, undone a word at a time. Enter asks to finish, Shift+Enter
-/// breaks the line and Escape cancels.
-///
-/// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
+/// text: each keystroke is a field edit of the note's text the library's
+/// dispatcher applies, undone a word at a time. Enter asks to finish,
+/// Shift+Enter breaks the line and Escape cancels.
 pub(crate) struct NoteEditor {
     id: Uuid,
-    host: Embedded<RichTextSurface<RichTextField<crate::actions::EbookAction>>>,
+    host: tilo_rich_text::RichTextComposer<RichTextField>,
     /// The caret has been placed at the end of the note, once it was read.
     placed: bool,
 }
 
 impl NoteEditor {
-    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str) -> Self {
-        let context = tilo_actions::ActionContext::for_action(
-            "so.tilo.ebook",
-            "Ebook",
-            &crate::actions::edit_note_action(id, ""),
-        );
-        let field = RichTextField::new(
-            crate::actions::EBOOK_ACTION_TYPE,
-            move |doc| crate::doc::BooksDoc::annotation_text(doc, id),
-            move |edit| crate::actions::edit_note_text_action(id, edit),
-        )
-        .with_context(context);
+    pub(crate) fn new(id: Uuid, hint: &str, library: Option<&Dispatcher<Ebook>>) -> Self {
+        let text = crate::resource::note_text(id);
+        let mut field = RichTextField::view_only(move |doc| text.object(doc));
+        if let Some(library) = library {
+            field.attach(crate::resource::note_text_dispatcher(library, id));
+        }
         let mut surface = RichTextSurface::field(field)
             .with_editor(
                 BlockEditor::new()
                     .with_wrap_lines(true)
                     .with_compact_paragraph_spacing(true)
-                    .with_body_size(body_size),
+                    .with_block_handles(false),
             )
             .with_placeholder(hint)
             .with_submit(SubmitKey::Enter);
         surface.set_focus(true);
         Self {
             id,
-            host: Embedded::new(surface),
+            host: tilo_rich_text::RichTextComposer::new(surface),
             placed: false,
         }
     }
@@ -75,7 +70,7 @@ impl NoteEditor {
 
     /// Read the note from the document, placing the caret at its end the
     /// first time.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         self.host.sync(state, root);
         if !self.placed && self.host.widget().source().revision().is_some() {
             self.placed = true;
@@ -89,16 +84,16 @@ impl NoteEditor {
     /// Route one event to the editor; returns whether the person finished
     /// (Enter) or cancelled (Escape).
     pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Option<FieldOutcome> {
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.handle_event(
             ctx.event,
             ctx.scale_factor,
             &ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.root,
             ctx.handled,
         );
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.widget_mut().take_outcome()
     }
 
@@ -126,16 +121,6 @@ impl NoteEditor {
         );
     }
 
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        ui::undo::take_committed_action(self.host.widget_mut())
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(self.host.widget())
-    }
-
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.host.widget().accessibility()
     }
@@ -144,11 +129,13 @@ impl NoteEditor {
     pub(crate) fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         self.sync(state, root);
-        self.host.widget_mut().perform_action(action, state, root)
+        self.host
+            .widget_mut()
+            .perform_action(action, &[], state, root)
     }
 }
 
@@ -160,7 +147,7 @@ pub(crate) struct InputEventCtx<'a> {
     pub event: &'a WindowEvent,
     pub scale_factor: f64,
     pub modifiers: Modifiers,
-    pub state: &'a mut AutoCommit,
+    pub state: ui::widget::Edits<'a>,
     pub root: &'a ObjId,
     pub node_id: NodeId,
     pub taffy: &'a TaffyTree<()>,
@@ -173,11 +160,30 @@ impl InputEventCtx<'_> {
             event: self.event,
             scale_factor: self.scale_factor,
             modifiers: self.modifiers,
-            state: self.state,
+            state: self.state.reborrow(),
             root: self.root,
             node_id: self.node_id,
             taffy: self.taffy,
             handled,
+        }
+    }
+
+    /// A toolkit widget's event context for this input, with the widget's
+    /// own `handled` and `focus` flags.
+    pub(crate) fn widget_ctx<'a>(
+        &'a mut self,
+        handled: &'a mut bool,
+        focus: &'a mut Option<NodeId>,
+    ) -> ui::widget::EventCtx<'a> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.root,
+            handled,
+            focus_target: focus,
+            node_id: self.node_id,
+            taffy: self.taffy,
         }
     }
 }
@@ -190,19 +196,6 @@ pub(crate) enum NumberField {
 }
 
 impl NumberField {
-    /// The widest strings this field can display, in the shared
-    /// `NumberInput`'s own `"{value} {suffix}"` form, so a caller can size
-    /// the value slot once from a measurement instead of a fixed width that
-    /// clips wider digit runs. Two digit variants cover fonts whose widest
-    /// digit is `0` and those where it is `8`.
-    pub(crate) fn widest_displays(&self) -> [&'static str; 2] {
-        match self {
-            Self::FontScale => ["000 %", "888 %"],
-            Self::LineSpacing => ["0.00", "8.88"],
-            Self::FontMult(_) => ["0.00 ×", "8.88 ×"],
-        }
-    }
-
     fn semantic_target(&self) -> String {
         match self {
             Self::FontScale => "books.number.text-size".into(),
@@ -223,13 +216,15 @@ impl NumberField {
         match self {
             Self::FontScale => NumberInput::new(value)
                 .with_range(
-                    f64::from(Settings::FONT_MIN) * 100.0,
-                    f64::from(Settings::FONT_MAX) * 100.0,
+                    f64::from(Settings::READING_SCALE_MIN) * 100.0,
+                    f64::from(Settings::READING_SCALE_MAX) * 100.0,
                 )
                 .with_step(10.0)
                 .with_precision(0)
                 .with_suffix("%")
-                .with_id("ebook_text_size"),
+                .with_id("ebook_text_size")
+                .compact()
+                .control_size(ControlSize::Small),
             Self::LineSpacing => NumberInput::new(value)
                 .with_range(
                     f64::from(Settings::SPACING_MIN),
@@ -237,16 +232,21 @@ impl NumberField {
                 )
                 .with_step(0.1)
                 .with_precision(2)
-                .with_id("ebook_line_spacing"),
+                .with_id("ebook_line_spacing")
+                .compact()
+                .control_size(ControlSize::Small),
+            // A font's size against the reading size, as a percentage.
             Self::FontMult(id) => NumberInput::new(value)
                 .with_range(
-                    f64::from(FontEntry::MULT_MIN),
-                    f64::from(FontEntry::MULT_MAX),
+                    f64::from(FontEntry::MULT_MIN) * 100.0,
+                    f64::from(FontEntry::MULT_MAX) * 100.0,
                 )
-                .with_step(0.05)
-                .with_precision(2)
-                .with_suffix("×")
-                .with_id(&format!("ebook_font_multiplier_{id}")),
+                .with_step(5.0)
+                .with_precision(0)
+                .with_suffix("%")
+                .with_id(&format!("ebook_font_multiplier_{id}"))
+                .compact()
+                .control_size(ControlSize::Small),
         }
     }
 }
@@ -283,14 +283,14 @@ impl NumberControls {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<(NumberField, Option<f64>)> {
         let control = self
             .controls
             .iter_mut()
             .find(|control| control.active && control.field.semantic_target() == target)?;
-        if !control.input.perform_action(action, state, root) {
+        if !control.input.perform_action(action, &[], state, root) {
             return None;
         }
         Some((control.field.clone(), control.input.take_changed()))
@@ -299,6 +299,21 @@ impl NumberControls {
     pub(crate) fn begin_frame(&mut self) {
         for control in &mut self.controls {
             control.active = false;
+        }
+    }
+
+    /// The width `field` needs to show every value it can hold beside its
+    /// steppers, as the shared input measures it.
+    pub(crate) fn preferred_width(
+        &self,
+        field: &NumberField,
+        value: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        match self.controls.iter().find(|control| control.field == *field) {
+            Some(control) => control.input.preferred_width(theme, text_renderer),
+            None => field.input(value).preferred_width(theme, text_renderer),
         }
     }
 
@@ -350,16 +365,7 @@ impl NumberControls {
             let mut focus_target = None;
             control.input.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state,
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -415,7 +421,10 @@ struct NoteLayout {
     pad: f64,
     inner_width: f32,
     excerpt: String,
+    excerpt_y: f64,
     input_rect: Rect,
+    delete: Rect,
+    save: Rect,
 }
 
 impl Default for NoteComposer {
@@ -471,7 +480,7 @@ impl NoteComposer {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<NoteSemanticOutcome> {
         let editor = self.editor.as_mut()?;
@@ -494,8 +503,8 @@ impl NoteComposer {
     }
 
     /// Open the editor on note `id`; it shows the note on the next sync.
-    pub(crate) fn open(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…"));
+    pub(crate) fn open(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
+        self.editor = Some(NoteEditor::new(id, "Write a note", library));
     }
 
     pub(crate) fn close(&mut self) {
@@ -514,22 +523,10 @@ impl NoteComposer {
     }
 
     /// Bring the open note's text up to date with the document.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
         }
-    }
-
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.editor.as_mut().and_then(NoteEditor::take_committed)
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        self.editor
-            .as_ref()
-            .is_some_and(NoteEditor::keeps_step_open)
     }
 
     pub(crate) fn hit_test(&self, point: Point) -> Option<NoteAction> {
@@ -556,53 +553,89 @@ impl NoteComposer {
         editor.handle_event(ctx).is_some()
     }
 
-    /// Geometry for the card, header excerpt and input box — pure so it can
-    /// be computed once and shared by the chrome/button drawing helpers.
+    /// Geometry for the card, its header, excerpt, input box and buttons,
+    /// computed once and shared by the drawing helpers.
     fn compute_note_layout(
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         bounds: Rect,
         anchor_y: Option<f64>,
         annotation: &Annotation,
     ) -> NoteLayout {
-        let width = 344.0_f64.min(bounds.width() - 24.0);
-        let pad = 16.0;
-        let inner_width = (width - pad * 2.0) as f32;
+        let spacing = &theme.tokens.spacing;
+        let rhythm = &spacing.rhythm;
+        let margin = f64::from(spacing.s3);
+        let width =
+            f64::from(theme.tokens.metrics.panel_width_utility).min(bounds.width() - 2.0 * margin);
+        let pad = f64::from(rhythm.section);
+        let inner_width = ui::num::f32_of_f64((width - pad * 2.0).max(1.0));
         let excerpt = if annotation.excerpt.trim().is_empty() {
             "Selected passage".to_string()
         } else {
-            format!("“{}”", annotation.excerpt)
+            format!("\u{201C}{}\u{201D}", annotation.excerpt)
         };
-        let (_, excerpt_height) = text_renderer.measure(&excerpt, 12.0, Some(inner_width));
-        let input_height = 74.0;
-        let height = 34.0 + f64::from(excerpt_height) + 10.0 + input_height + 16.0 + 32.0 + pad;
+        let excerpt_style = theme.text(TextRole::Body).with_italic(true);
+        let (_, excerpt_height) =
+            text_renderer.measure_style(&excerpt, Some(inner_width), &excerpt_style);
+        let header = ChipFace::height(theme);
+        let input_height = 3.0 * f64::from(theme.text(TextRole::Body).line_height_px())
+            + 2.0 * f64::from(spacing.s2);
+        let button_h = ControlSize::Regular.height(theme);
+        let gap = f64::from(rhythm.related);
+        let height = pad
+            + header
+            + gap
+            + f64::from(excerpt_height)
+            + gap
+            + input_height
+            + f64::from(rhythm.section)
+            + button_h
+            + pad;
         let center = f64::midpoint(bounds.x0, bounds.x1);
         let x0 = (center - width / 2.0).clamp(
-            bounds.x0 + 12.0,
-            (bounds.x1 - 12.0 - width).max(bounds.x0 + 12.0),
+            bounds.x0 + margin,
+            (bounds.x1 - margin - width).max(bounds.x0 + margin),
         );
-        let top_limit = bounds.y0 + 62.0;
-        let bottom_limit = bounds.y1 - 16.0;
+        let top_limit = bounds.y0 + margin;
+        let bottom_limit = bounds.y1 - margin;
+        let offset = f64::from(rhythm.group);
         let y0 = match anchor_y {
-            Some(y) if y + 22.0 + height <= bottom_limit => y + 22.0,
-            Some(y) if y - 14.0 - height >= top_limit => y - 14.0 - height,
+            Some(y) if y + offset + height <= bottom_limit => y + offset,
+            Some(y) if y - gap - height >= top_limit => y - gap - height,
             _ => (bottom_limit - height).max(top_limit),
         };
         let card = Rect::new(x0, y0, x0 + width, y0 + height);
         let left = card.x0 + pad;
-        let input_y = card.y0 + pad + 26.0 + f64::from(excerpt_height) + 10.0;
+        let excerpt_y = card.y0 + pad + header + gap;
+        let input_y = excerpt_y + f64::from(excerpt_height) + gap;
         let input_rect = Rect::new(left, input_y, card.x1 - pad, input_y + input_height);
+        let button_y = input_rect.y1 + f64::from(rhythm.section);
+        let save_w = ButtonFace::new(Rect::ZERO, "Save")
+            .role(ButtonRole::Primary)
+            .intrinsic_width(text_renderer, theme);
+        let delete_w = ButtonFace::new(Rect::ZERO, "Delete note")
+            .role(ButtonRole::Destructive)
+            .intrinsic_width(text_renderer, theme);
         NoteLayout {
             card,
             left,
             pad,
             inner_width,
             excerpt,
+            excerpt_y,
             input_rect,
+            delete: Rect::new(left, button_y, left + delete_w, button_y + button_h),
+            save: Rect::new(
+                card.x1 - pad - save_w,
+                button_y,
+                card.x1 - pad,
+                button_y + button_h,
+            ),
         }
     }
 
-    /// Shadow, card background/border, the "Note" header, excerpt and the
-    /// (already laid-out) shared text input.
+    /// The floating card, the kind chip, the excerpt and the (already laid
+    /// out) shared text input.
     fn draw_note_chrome(
         &mut self,
         scene: &mut Scene,
@@ -612,45 +645,37 @@ impl NoteComposer {
         layout: &NoteLayout,
         annotation: &Annotation,
     ) {
-        let colors = &theme.tokens.colors;
-        // A floating Panel: elevation, ground and the derived Panel border.
-        // The focus ring belongs to the text input inside, not to the card.
-        crate::chrome::panel(scene, transform, theme, layout.card);
-
+        ui::widget::floating_surface::paint(scene, transform, layout.card, theme);
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
         let y = layout.card.y0 + layout.pad;
-        paint::circle(
-            scene,
-            transform,
-            Point::new(layout.left + 6.0, y + 7.0),
-            6.0,
-            ReaderPalette::highlight_swatch(annotation.color),
+        let lead = ChipLead::Dot(ReaderPalette::highlight_swatch(annotation.color));
+        let chip_w = ChipFace::intrinsic_width("Note", lead, false, ctx.text, &on_panel);
+        let chip = Rect::new(
+            layout.left,
+            y,
+            layout.left + chip_w,
+            y + ChipFace::height(&on_panel),
         );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Note",
-            13.5,
-            colors.text_primary,
-            transform * Affine::translate((layout.left + 20.0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        let excerpt_y = y + 26.0;
-        text_renderer.draw_text(
-            scene,
+        ChipFace::new(chip, "Note")
+            .lead(lead)
+            .paint(ctx.scene, ctx.transform, ctx.text, &on_panel);
+        let style = on_panel.text(TextRole::Body).with_italic(true);
+        ctx.text(
             &layout.excerpt,
-            12.0,
-            colors.text_dim,
-            transform * Affine::translate((layout.left, excerpt_y)),
+            &style,
+            on_panel.text_dim,
+            Point::new(layout.left, layout.excerpt_y),
             Some(layout.inner_width),
         );
 
         if let Some(editor) = self.editor.as_mut() {
-            editor.layout(layout.input_rect, theme, text_renderer);
-            editor.draw(scene, transform, text_renderer, theme);
+            editor.layout(layout.input_rect, &on_panel, text_renderer);
+            editor.draw(scene, transform, text_renderer, &on_panel);
         }
     }
 
-    /// Delete/Save buttons beneath the input box.
+    /// Delete and Save under the input box.
     fn draw_note_buttons(
         &mut self,
         scene: &mut Scene,
@@ -659,34 +684,25 @@ impl NoteComposer {
         theme: &Theme,
         layout: &NoteLayout,
     ) {
-        let button_y = layout.input_rect.y1 + 16.0;
-        self.delete = Rect::new(layout.left, button_y, layout.left + 76.0, button_y + 32.0);
-        self.save = Rect::new(
-            layout.card.x1 - layout.pad - 84.0,
-            button_y,
-            layout.card.x1 - layout.pad,
-            button_y + 32.0,
-        );
+        self.delete = layout.delete;
+        self.save = layout.save;
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
         Button::paint(
             scene,
             transform,
             text_renderer,
-            theme,
-            &ButtonFace::new(self.delete, "Delete")
-                .danger()
-                .radius(16.0)
-                .text_size(12.5)
+            &on_panel,
+            &ButtonFace::new(self.delete, "Delete note")
+                .role(ButtonRole::Destructive)
                 .hovered(self.delete.contains(self.cursor)),
         );
         Button::paint(
             scene,
             transform,
             text_renderer,
-            theme,
+            &on_panel,
             &ButtonFace::new(self.save, "Save")
-                .primary()
-                .radius(16.0)
-                .text_size(13.0)
+                .role(ButtonRole::Primary)
                 .hovered(self.save.contains(self.cursor)),
         );
     }
@@ -704,7 +720,7 @@ impl NoteComposer {
         if self.id() != Some(annotation.id) {
             return;
         }
-        let layout = Self::compute_note_layout(text_renderer, bounds, anchor_y, annotation);
+        let layout = Self::compute_note_layout(text_renderer, theme, bounds, anchor_y, annotation);
         self.card = layout.card;
         self.draw_note_chrome(scene, transform, text_renderer, theme, &layout, annotation);
         self.draw_note_buttons(scene, transform, text_renderer, theme, &layout);
@@ -715,44 +731,22 @@ impl NoteComposer {
 mod tests {
     use super::*;
     use taffy::TaffyTree;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{Key, NamedKey, PhysicalKey};
-
-    fn key(logical_key: Key) -> WindowEvent {
-        let text = match &logical_key {
-            Key::Character(text) => Some(text.clone()),
-            _ => None,
-        };
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.logical_key = logical_key;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::NamedKey;
 
     /// The note composer writes the note as it is typed and Enter finishes; hit testing keeps the card modal and tap-away saves.
     #[test]
     fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
         // --- phase: note_composer_writes_the_note_as_typed_and_enter_finishes ---
         {
-            let mut doc = AutoCommit::new();
             let note = crate::model::Annotation::new("book:x", crate::model::AnnoKind::Note, 0, 0)
                 .with_note("hello");
             let id = note.id;
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
-            doc.commit();
+            let mut doc = crate::resource::doc_with(&[], std::slice::from_ref(&note));
+            let library = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, Some(&library));
             let root = automerge::ROOT;
-            composer.sync(&mut doc, &root);
+            composer.sync(&doc, &root);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
             let press = |composer: &mut NoteComposer, doc: &mut AutoCommit, key: WindowEvent| {
@@ -761,7 +755,7 @@ mod tests {
                     event: &key,
                     scale_factor: 1.0,
                     modifiers,
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     root: &root,
                     node_id: NodeId::new(0),
                     taffy: &taffy,
@@ -772,11 +766,12 @@ mod tests {
                 assert!(!press(
                     &mut composer,
                     &mut doc,
-                    key(Key::Character(ch.into()))
+                    ui::synthetic_input::char_key(ch)
                 ));
             }
             let stored = |doc: &AutoCommit| {
-                crate::doc::BooksDoc::list_annotations(doc)
+                crate::resource::read_doc(doc)
+                    .marks()
                     .into_iter()
                     .find(|annotation| annotation.id == id)
                     .unwrap()
@@ -790,16 +785,12 @@ mod tests {
             assert!(press(
                 &mut composer,
                 &mut doc,
-                key(Key::Named(NamedKey::Enter))
+                ui::synthetic_input::named_key(NamedKey::Enter)
             ));
             assert_eq!(
                 stored(&doc),
                 "helloworld",
                 "Enter finishes, it does not break"
-            );
-            assert!(
-                composer.take_committed().is_some(),
-                "the typing is an undo step"
             );
         }
 
@@ -807,7 +798,7 @@ mod tests {
         {
             let id = Uuid::new_v4();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, Some(&crate::resource::library_dispatcher_for_test()));
             composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
             composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
             composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
@@ -890,7 +881,7 @@ pub(crate) struct SchemeColorSheet {
 impl SchemeColorSheet {
     fn title(target: &PickTarget) -> &'static str {
         match target {
-            PickTarget::NewScheme => "New scheme — pick a background",
+            PickTarget::NewScheme => "Page colour for the new scheme",
             PickTarget::Slot(_, 0) => "Page colour",
             PickTarget::Slot(_, 1) => "Text colour",
             PickTarget::Slot(..) => "Accent colour",
@@ -954,7 +945,7 @@ impl SchemeColorSheet {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<ColorSheetResponse> {
         let (_, picker) = self.open.as_mut()?;
@@ -978,21 +969,26 @@ impl SchemeColorSheet {
         let Some((_, picker)) = self.open.as_mut() else {
             return;
         };
-        crate::chrome::sheet_scrim(scene, transform, theme, viewport);
         let pad = f64::from(theme.tokens.spacing.s6);
-        // A utility panel's width: a roomy saturation/value field and every
-        // swatch on one row.
-        let w = f64::from(theme.tokens.metrics.panel_width_utility)
-            .min(viewport.width() - 2.0 * pad)
-            .max(0.0);
-        let h = picker.preferred_height(w);
-        let width = (w + 2.0 * pad).min(viewport.width());
-        let height = (h + 2.0 * pad).min(viewport.height());
-        let x = viewport.x0 + (viewport.width() - width) / 2.0;
-        let y = viewport.y0 + (viewport.height() - height) / 2.0;
-        self.panel = Rect::new(x, y, x + width, y + height);
-        crate::chrome::panel(scene, transform, theme, self.panel);
-        picker.apply_layout_external(Rect::new(x + pad, y + pad, x + pad + w, y + pad + h));
+        let max_width = f64::from(theme.tokens.metrics.panel_width_utility)
+            .max(picker.preferred_size().0)
+            + 2.0 * pad;
+        let spec = ui::widget::modal_dialog::ModalSpec::new("")
+            .closable(false)
+            .max_width(max_width / f64::from(theme.text_scale));
+        let width = ui::widget::modal_dialog::body_width(viewport, spec.max_width, theme);
+        let spec = spec.body_height(picker.preferred_height(width));
+        let layout = ui::widget::modal_dialog::layout(viewport, &spec, text_renderer, theme);
+        self.panel = layout.card;
+        ui::widget::modal_dialog::paint_backdrop(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &layout,
+            &spec,
+        );
+        picker.apply_layout_external(layout.body);
         picker.draw(
             scene,
             transform,
@@ -1048,16 +1044,7 @@ impl SchemeColorSheet {
             let mut local_handled = false;
             picker.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state,
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 picker.set_focus(true);

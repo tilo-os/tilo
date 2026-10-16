@@ -27,6 +27,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import blank_test_items  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "crates/sdk/ui-core/src"
 HOST_SRC = ROOT / "crates/sdk/tilo-host/src"
@@ -36,6 +39,7 @@ NATIVE_PREFIXES = ("native/",)
 # The native runner and the tools that drive it.
 NATIVE_RUNNER_FILES = {
     "app/native_runner.rs",
+    "app/native_runner/startup.rs",
     "application/host.rs",
     "dx12_shader_cache.rs",
     "headless.rs",
@@ -46,10 +50,9 @@ NATIVE_RUNNER_FILES = {
     "profiling/resource_trace.rs",
     "render_thread.rs",
     "webview/chromium/mod.rs",
+    "webview/chromium/runtime.rs",
     "webview/frame_trace.rs",
     "webview/profile.rs",
-    "webview/wpe/egl.rs",
-    "webview/wpe/mod.rs",
     "window_icon.rs",
 }
 
@@ -57,39 +60,12 @@ NATIVE_RUNNER_FILES = {
 PENDING: set[str] = set()
 
 ENV_READ = re.compile(r"\benv::(?:var|var_os|vars|vars_os|args|args_os)\b")
-TEST_ATTRIBUTE = re.compile(r"#\[cfg\((?:all\()?test\b[^\n]*\]")
 COMMENT = re.compile(r"(?m)//.*$")
-
-
-def blank(text: str, start: int, end: int) -> str:
-    """Replace text[start:end] with spaces, keeping newlines for line numbers."""
-    return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
 
 
 def production_source(text: str) -> str:
     """Drop comments and every item or block gated on `cfg(test)`."""
-    text = COMMENT.sub(lambda m: " " * len(m.group()), text)
-    position = 0
-    while match := TEST_ATTRIBUTE.search(text, position):
-        cursor = match.end()
-        brace = text.find("{", cursor)
-        semicolon = text.find(";", cursor)
-        if brace < 0 or (0 <= semicolon < brace):
-            end = semicolon + 1 if semicolon >= 0 else len(text)
-        else:
-            depth = 0
-            end = len(text)
-            for index in range(brace, len(text)):
-                if text[index] == "{":
-                    depth += 1
-                elif text[index] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = index + 1
-                        break
-        text = blank(text, match.start(), end)
-        position = match.start() + 1
-    return text
+    return blank_test_items(COMMENT.sub(lambda m: " " * len(m.group()), text))
 
 
 def is_exempt(relative: str) -> bool:

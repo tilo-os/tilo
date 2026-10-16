@@ -1,0 +1,18 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "git_client.repo"
+label = "Repository"
+version = 1
+fields = [
+  { path = "repository", type = "Atom" },
+  { path = "shared", type = "SharedRepo", readonly = true },
+]
+
+[[resources.verbs]]
+id = "record-repository"
+kind = "undoable"
+params = [
+  { name = "shared", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, author_email = { type = "string" }, author_name = { type = "string" }, branches = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, ahead = { type = "integer", maximum = 4294967295, minimum = 0 }, behind = { type = "integer", maximum = 4294967295, minimum = 0 }, is_head = { type = "boolean" }, is_remote = { type = "boolean" }, tip = { type = "string" }, upstream = { type = ["string", "null"] } }, required = ["name", "is_head", "is_remote", "ahead", "behind", "tip"] } }, commits = { type = "array", items = { type = "object", additionalProperties = false, properties = { author_email = { type = "string" }, author_name = { type = "string" }, body = { type = "string" }, files = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, additions = { type = "integer", maximum = 4294967295, minimum = 0 }, area = { oneOf = [{ type = "string", const = "Staged" }, { type = "string", const = "Unstaged" }, { type = "string", const = "Untracked" }] }, deletions = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["Added", "Modified", "Deleted", "Renamed", "Untracked", "Conflicted"] }, old_path = { type = ["string", "null"] } }, required = ["path", "area", "kind", "additions", "deletions"] } }, id = { type = "string" }, lane = { type = "integer", minimum = 0 }, parents = { type = "array", items = { type = "string" } }, refs = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, kind = { type = "string", enum = ["Head", "LocalBranch", "RemoteBranch", "Tag"] } }, required = ["name", "kind"] } }, summary = { type = "string" }, time = { type = "integer" }, when = { type = "string" } }, required = ["id", "summary", "body", "author_name", "author_email", "when", "time", "parents", "refs", "lane", "files"] } }, graph_width = { type = "integer", minimum = 0 }, head = { type = "string" }, remotes = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, url = { type = "string" } }, required = ["name", "url"] } }, stashes = { type = "array", items = { type = "object", additionalProperties = false, properties = { branch = { type = "string" }, index = { type = "integer", minimum = 0 }, message = { type = "string" } }, required = ["index", "message", "branch"] } }, tags = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, message = { type = ["string", "null"] }, target = { type = "string" } }, required = ["name", "target"] } }, workdir = { type = "string" } }, required = ["name", "head", "workdir", "commits", "branches", "tags", "stashes", "remotes", "graph_width", "author_name", "author_email"] } },
+]
+

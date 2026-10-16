@@ -1,7 +1,7 @@
 # Maintainer: Tilo contributors <tilo@code.tilo.so>
 pkgbase=tilo-session
 pkgname=(tilo-session tilo-session-devel)
-pkgver=0.1.12
+pkgver=0.1.13
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
 url='https://code.tilo.so/tilo/tilo'
@@ -11,10 +11,12 @@ arch=('x86_64' 'aarch64')
 # The release contract intentionally publishes only the runtime and devel
 # packages, so make that output deterministic across builder images.
 # Cargo controls Rust LTO. makepkg's separate LTO option injects GCC -flto
-# into CFLAGS/CXXFLAGS, which cc-rs also applies to ring and OpenH264.
+# into CFLAGS/CXXFLAGS, which cc-rs also applies to C sources such as ring's.
 # rust-lld cannot consume those GCC LTO archives at the final Rust link.
 # Keep native dependencies as ELF objects; Cargo's release LTO stays enabled.
-options=('!debug' '!lto')
+# `!strip` keeps the symbol table the release profile leaves in, so a crash
+# log names each frame's function.
+options=('!debug' '!lto' '!strip')
 makedepends=(
   'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto'
   'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
@@ -38,7 +40,8 @@ package_tilo-session() {
   depends=(
     'glibc' 'pam' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon' 'wayland'
     'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
-    'fontconfig' 'freetype2' 'harfbuzz' 'bubblewrap' 'systemd'
+    'fontconfig' 'freetype2' 'harfbuzz' 'gstreamer' 'gst-plugins-base-libs'
+    'bubblewrap' 'systemd'
     'xwayland-satellite' 'xdg-desktop-portal' 'xdg-dbus-proxy'
     'python'  # tilo-flight-recorder
   )

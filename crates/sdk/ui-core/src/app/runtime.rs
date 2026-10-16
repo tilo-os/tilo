@@ -20,7 +20,7 @@ use winit::window::CursorIcon;
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
         reason = "the safe area and content origin are read only by the native event-loop runner"
     )
@@ -43,6 +43,18 @@ pub(super) struct LayoutRuntime {
     pub(super) safe_area: crate::scale::SafeArea,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
+    /// How many times the taffy tree was rebuilt: a host comparing two
+    /// frames' widgets needs to know they are still the same ones.
+    pub(super) rebuilds: u64,
+    /// Whether every rebuild requested since the last one was a change the
+    /// widgets describe ([`crate::widget::StructureChange::Described`]).
+    /// Anything else that asks for a rebuild goes through
+    /// [`Self::request_rebuild`], which clears it.
+    pub(super) rebuild_described: bool,
+    /// Whether every rebuild since a host armed it (a frame that compares
+    /// itself with the last one) was described: that host keeps the frame's
+    /// damage instead of repainting whole.
+    pub(super) frame_rebuilds_described: bool,
 }
 
 impl LayoutRuntime {
@@ -57,36 +69,63 @@ impl LayoutRuntime {
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
+            rebuilds: 0,
+            rebuild_described: true,
+            frame_rebuilds_described: false,
         }
+    }
+
+    /// Rebuild the tree before the next layout, for a reason no widget
+    /// describes: the frame that does it repaints whole.
+    pub(super) fn request_rebuild(&mut self) {
+        self.structure_dirty = true;
+        self.rebuild_described = false;
     }
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "keyboard layout, gestures, cursor, tooltip, pen and pointer state are read only by the native event-loop runner"
     )
 )]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
+    /// Focused native configuration only; no logical key, compose or press history.
+    pub(super) keyboard_layout: Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
     pub(super) tooltip_host: crate::widget::TooltipHost,
+    /// Pen samples on their way to the pointer events they describe.
+    pub(super) pen: crate::pen::PenInput,
+    /// The app is shown inside a host whose focus order continues past it:
+    /// Tab at either end of the app's order leaves it for the host.
+    pub(super) tab_order_continues_in_host: bool,
+    /// The pointer buttons held down, one bit each; see `input_publication`.
+    pub(super) pointer_buttons: u32,
+    /// Where the pointer last moved, replayed before a press or release
+    /// that follows a rebuild under a still pointer.
+    pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
 }
 
 impl InputRuntime {
     pub(super) fn new() -> Self {
         Self {
             modifiers: winit::event::Modifiers::default(),
+            keyboard_layout: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
+            pen: crate::pen::PenInput::default(),
+            tab_order_continues_in_host: false,
+            pointer_buttons: 0,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }
 }
@@ -99,6 +138,11 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    /// Stable opener identity, never a node or pointer from the modal's old tree.
+    pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The control an accessibility action focused while the same action
+    /// replaced widgets: focused again once the next layout admits them.
+    pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -112,6 +156,9 @@ pub(super) struct ActionRuntime {
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    /// Publication refusals already logged, so a surface refused on every
+    /// frame logs each distinct reason once rather than at frame rate.
+    pub(super) refusals_logged: RefusalLog,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
     pub(super) action_directory_stamp: Option<(
@@ -129,7 +176,11 @@ pub(super) struct ActionRuntime {
     pub(super) resource_generation: Cell<u64>,
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
+    pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    /// What the broker holds of the surface `last_published_actions` names,
+    /// the base of the next delta.
+    pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -137,6 +188,15 @@ pub(super) struct ActionRuntime {
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
+    /// The invoker of each delivered invocation still running, for the
+    /// edits its effect submits.
+    pub(super) acting_for: std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    >,
+    /// Each edit an effect submitted for its invoker that the host is still
+    /// admitting, by broker request, to the effect invocation it continues.
+    pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -168,6 +228,8 @@ impl ActionRuntime {
         Self {
             published_invocations: Default::default(),
             action_palette: None,
+            ordinary_palette_return_focus: None,
+            focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -177,6 +239,7 @@ impl ActionRuntime {
             bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             last_published_bound_route: None,
+            refusals_logged: RefusalLog::default(),
             #[cfg(test)]
             bound_broker_route_for_test: None,
             action_directory_stamp: None,
@@ -187,11 +250,15 @@ impl ActionRuntime {
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
+            local_history_status: None,
             last_published_actions: None,
+            published_surface: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
+            acting_for: std::collections::HashMap::new(),
+            follow_ups: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
@@ -212,10 +279,27 @@ pub(super) struct AccessibilityRuntime {
     /// Separate from the effective theme so disabling high contrast restores
     /// the configured theme exactly.
     pub(super) base_theme: Theme,
+    /// Where and for whom the window is shown, as its host said: the
+    /// workspace's temperature and the person's colour, applied over
+    /// [`Self::base_theme`] on every rebuild so a settings change keeps
+    /// them.
+    pub(super) window: crate::theme::WindowAppearance,
     pub(super) a11y: crate::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
+    /// Whether anything [`Self::semantic_tree`] is read from may have
+    /// changed since it was last refreshed: the document, a widget, the
+    /// layout, focus or the declared resources. A refresh with this clear
+    /// would rebuild the tree it already holds, and publishes nothing
+    /// instead (`App::refresh_semantic_tree`).
+    pub(super) semantic_tree_stale: bool,
+    /// How many times [`Self::semantic_tree_stale`] was set, so a caller
+    /// can tell whether anything marked it during some work.
+    pub(super) semantic_tree_marks: u64,
+    /// The refreshes that rebuilt [`Self::semantic_tree`] rather than
+    /// finding nothing changed.
+    pub(super) semantic_tree_builds: u64,
 }
 
 impl AccessibilityRuntime {
@@ -230,10 +314,14 @@ impl AccessibilityRuntime {
             focus_trap_active: false,
             focus_before_trap: None,
             base_theme,
+            window: crate::theme::WindowAppearance::default(),
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
+            semantic_tree_stale: true,
+            semantic_tree_marks: 0,
+            semantic_tree_builds: 0,
         }
     }
 }
@@ -258,13 +346,17 @@ impl PersistenceRuntime {
 
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
+    pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
+    /// Distinguish a queued clear from an unknown prior projection.
+    pub(super) publication_initialized: bool,
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
@@ -273,10 +365,13 @@ pub(super) struct ContinuationRuntime {
 impl ContinuationRuntime {
     pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
+            owner_view: Default::default(),
             last_published: None,
+            publication_initialized: false,
             pending_restore,
             pending_view: None,
             last_private_route: None,
+            private_instance: None,
             retired: false,
         }
     }
@@ -297,6 +392,11 @@ pub(super) struct CollaborationRuntime {
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
     pub(super) channel_access: Option<crate::collaboration::ChannelAccessState>,
+    /// Ids in the last complete collaboration Context snapshot. This is kept
+    /// separately from ephemeral pointer/caret presence so a replacement can
+    /// retire departed certified members without touching unrelated local
+    /// presentation state.
+    pub(super) context_participants: std::collections::HashSet<crate::permissions::UserId>,
 }
 
 impl CollaborationRuntime {
@@ -304,6 +404,7 @@ impl CollaborationRuntime {
         manager: CollaborationManager,
         local_author: crate::permissions::UserId,
     ) -> Self {
+        crate::history_source::authors::read_as(&local_author.0);
         Self {
             manager,
             room_manager: None,
@@ -311,6 +412,7 @@ impl CollaborationRuntime {
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),
             channel_access: None,
+            context_participants: std::collections::HashSet::new(),
         }
     }
 }
@@ -318,9 +420,9 @@ impl CollaborationRuntime {
 /// Presence publication, follow, and frame-pump state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the last published presence is read only by the native event-loop runner"
     )
 )]
 pub(super) struct PresenceRuntime {
@@ -369,9 +471,9 @@ impl HistoryRuntime {
 /// Host window identity and fullscreen reconciliation state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "fullscreen state is read only by the native event-loop runner"
     )
 )]
 pub(super) struct WindowRuntime {
@@ -388,6 +490,50 @@ impl WindowRuntime {
             fullscreen_active: false,
             title: None,
             app_id: None,
+        }
+    }
+}
+
+/// The distinct publication refusals already reported. A refused surface is
+/// re-checked every frame; its reason is news only the first time.
+#[derive(Default)]
+pub(crate) struct RefusalLog {
+    seen: std::collections::HashSet<u64>,
+}
+
+impl RefusalLog {
+    /// Bounded: an app that keeps producing new reasons still logs them,
+    /// and memory stays flat.
+    const LIMIT: usize = 256;
+
+    /// Whether `refusal` has not been reported yet; records it as reported.
+    pub(crate) fn first(&mut self, refusal: &impl std::hash::Hash) -> bool {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let key = BuildHasherDefault::<DefaultHasher>::default().hash_one(refusal);
+        if self.seen.contains(&key) {
+            return false;
+        }
+        if self.seen.len() >= Self::LIMIT {
+            self.seen.clear();
+        }
+        self.seen.insert(key)
+    }
+}
+
+#[cfg(test)]
+mod refusal_log_tests {
+    use super::RefusalLog;
+
+    #[test]
+    fn a_refusal_repeated_every_frame_is_reported_once() {
+        let mut log = RefusalLog::default();
+        assert!(log.first(&("contract", "notes.page:1/open: missing handler")));
+        for _ in 0..60 {
+            assert!(!log.first(&("contract", "notes.page:1/open: missing handler")));
+        }
+        assert!(log.first(&("contract", "notes.page:2/open: missing handler")));
+        for index in 0..(RefusalLog::LIMIT * 2) {
+            assert!(log.first(&index), "new reasons keep being reported");
         }
     }
 }

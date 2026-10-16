@@ -6,12 +6,19 @@ set -euo pipefail
 
 command -v busctl >/dev/null
 command -v gdbus >/dev/null
+# TILO_FILES_SESSION_OPENER names a client that asks the running Tilo session
+# to open Files, as a user would, and prints its AT-SPI bus and pid. The
+# installed-image gate uses it: an installed app is launched by the session,
+# inside its sandbox and attached to the session's runtime host.
+session_opener="${TILO_FILES_SESSION_OPENER:-}"
 binary="${TILO_FILES_BINARY:-}"
-if [[ -z "$binary" ]]; then
+if [[ -n "$session_opener" ]]; then
+    :
+elif [[ -z "$binary" ]]; then
     repo_root=$(git rev-parse --show-toplevel)
     binary="$repo_root/target/debug/file-explorer"
 fi
-if [[ ! -x "$binary" ]]; then
+if [[ -z "$session_opener" && ! -x "$binary" ]]; then
     if [[ -n "${repo_root:-}" ]]; then
         cargo build -p file-explorer
     else
@@ -33,6 +40,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Request accessibility as a screen reader does. This smoke must also work
+# without a preceding compositor smoke enabling providers on the session bus.
+busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+
 atspi_address=$(
     gdbus call --session \
         --dest org.a11y.Bus \
@@ -41,11 +52,21 @@ atspi_address=$(
         | sed -E "s/^\('([^']+)'.*/\1/"
 )
 
-env \
-    XDG_CONFIG_HOME="$smoke_dir/config" \
-    TILO_USER_HOME="$smoke_dir" \
-    "$binary" >"$smoke_dir/file-explorer.log" 2>&1 &
-app_pid=$!
+app_bus=""
+if [[ -n "$session_opener" ]]; then
+    read -r app_bus app_pid < <("$session_opener" open Files 2>"$smoke_dir/file-explorer.log") || true
+    if [[ -z "${app_pid:-}" ]]; then
+        echo "the session did not open Files" >&2
+        sed -n '1,40p' "$smoke_dir/file-explorer.log" >&2
+        exit 1
+    fi
+else
+    env \
+        XDG_CONFIG_HOME="$smoke_dir/config" \
+        TILO_USER_HOME="$smoke_dir" \
+        "$binary" >"$smoke_dir/file-explorer.log" 2>&1 &
+    app_pid=$!
+fi
 
 property() {
     local bus_name=$1 object_path=$2 property_name=$3
@@ -68,8 +89,8 @@ first_object_path() {
     grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' | head -n 1
 }
 
-app_bus=""
 for _ in $(seq 1 200); do
+    [[ -n "$app_bus" ]] && break
     app_bus=$(
         busctl --address="$atspi_address" list --no-pager \
             | awk -v pid="$app_pid" '$2 == pid { print $1; exit }'
@@ -216,6 +237,22 @@ node_named() {
     return 1
 }
 
+# An app the session opened writes its output to the compositor's session
+# log, not to the opener's stderr. A tree that stops changing after an
+# accepted action says nothing on its own about why (a panic, a window that
+# never presents a frame, a refused renderer); Files' own lines there do.
+report_session_app_log() {
+    local session_log="$HOME/.local/state/tilo/session-logs/latest.log"
+    [[ -n "$session_opener" ]] || return 0
+    if [[ ! -r "$session_log" ]]; then
+        echo "no session log at $session_log" >&2
+        return 0
+    fi
+    echo "Files in the session log:" >&2
+    grep -E 'so\.tilo\.file-explorer|tilo::app_launch' "$session_log" \
+        | tail -n 60 | cut -c1-400 >&2 || true
+}
+
 wait_for_names() {
     local expected missing attempt
     missing=""
@@ -232,6 +269,7 @@ wait_for_names() {
     echo "AT-SPI tree never exposed:$missing" >&2
     printf '%s\n' "$names" >&2
     sed -n '1,120p' "$smoke_dir/file-explorer.log" >&2
+    report_session_app_log
     return 1
 }
 

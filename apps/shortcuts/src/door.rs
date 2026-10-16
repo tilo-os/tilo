@@ -9,45 +9,62 @@
 //! through `shortcuts.shortcut:<id>#run`, so the session executes the steps
 //! as that person within the shortcut's grant — never this app.
 //!
-//! Each operation is also an effect action the app publishes
-//! ([`resource`]), so the palette, an agent or a script saves or runs a
+//! Each operation is also an effect the app publishes on its drafts
+//! ([`DoorEffect`]), so the palette, an agent or a script saves or runs a
 //! shortcut through the same code the buttons use.
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::widget::{AppModel, ModelPath};
 
 use serde_json::{Map, Value, json};
 use tilo_automation::{ActionCatalog, SHORTCUTS_APP_ID, Shortcut, shortcut_resource_id};
-use ui::framework::Live;
+use ui::framework::{EffectReply, Live};
 use ui::prelude::*;
 use ui::tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, MAX_CATALOGUE_PAGE, RemoteActionTarget,
 };
-use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionParam, ActionSpec, ConfirmationPolicy, DiscoveryScope,
-    EncodedAction, ExecutionMode, InvocationUpdate, OperationKind, ParamType, ResultSpec,
-    RiskLevel,
-};
+use ui::tilo_actions::{ActionOutput, InvocationUpdate};
 use ui::widget::Decorator;
 use ui::{CatalogueCall, InvocationCall, LocalState, RemoteActions, RemoteCall};
 
 use crate::editor;
 use crate::model::Workbench;
 
-/// Kind of the resource carrying the door operations.
-pub const KIND: &str = "shortcuts.door";
-/// Read the library and the catalogue again.
-pub const REFRESH: &str = "refresh";
-/// Save a draft as a shortcut.
-pub const SAVE: &str = "save";
-/// Run a saved shortcut.
-pub const RUN: &str = "run";
-/// Delete a saved shortcut.
-pub const DELETE: &str = "delete";
-/// Ask the agent to draft a shortcut from a description.
-pub const DESCRIBE: &str = "describe";
+/// What the door does, published on the drafts for every caller.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "shortcuts.door", device_only)]
+pub enum DoorEffect {
+    /// Reload shortcuts.
+    #[effect(job)]
+    Refresh,
+    /// Save shortcut.
+    #[effect(job)]
+    Save {
+        #[param("Id of the draft to save")]
+        draft: String,
+    },
+    /// Run shortcut.
+    #[effect(job)]
+    Run {
+        #[param("Id of the saved shortcut")]
+        shortcut: String,
+        #[param("Values for the shortcut's inputs")]
+        inputs: Option<Map<String, Value>>,
+    },
+    /// Delete shortcut.
+    #[effect(job, destructive)]
+    Delete {
+        #[param("Id of the saved shortcut")]
+        shortcut: String,
+    },
+    /// Draft a shortcut with the agent.
+    #[effect(job)]
+    Describe {
+        #[param("What the shortcut should do, in your words")]
+        description: String,
+    },
+}
 
 /// The library's own actions, published by the session under this app's id.
 const LIBRARY_RESOURCE: &str = "shortcuts";
@@ -86,6 +103,8 @@ pub struct RunRecord {
     pub shortcut_id: String,
     pub name: String,
     pub status: RunStatus,
+    /// When the run started, as the person reads the clock.
+    pub started: String,
 }
 
 /// The outcome of the last save or delete, for the person to read.
@@ -137,7 +156,7 @@ impl DoorState {
     }
 }
 
-type Reply = Sender<Result<ActionOutput, String>>;
+type Reply = EffectReply;
 
 enum Purpose {
     Catalogue,
@@ -254,12 +273,8 @@ impl DoorCore {
         let catalog = catalog.ok_or("the action catalogue has not been read yet")?;
         self.state.update(|state| state.notice = None);
         let problems = editor::problems(&draft, &catalog, &saved);
-        if let Some((path, reasons)) = problems.iter().next() {
-            return Err(format!(
-                "{}: {}",
-                if path.is_empty() { "shortcut" } else { path },
-                reasons.join("; ")
-            ));
+        if let Some(first) = editor::problem_lines(&draft.program().steps, &problems).first() {
+            return Err(first.clone());
         }
         let shortcut = editor::candidate(&draft, &catalog);
         let action = if saved.iter().any(|other| other.id == shortcut.id) {
@@ -314,6 +329,7 @@ impl DoorCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: RunStatus::Running,
+                    started: ui::clock::time_of_day(&ui::clock::local_now()),
                 },
             );
         });
@@ -472,7 +488,7 @@ impl DoorCore {
             }
         }
         if let Some(reply) = call.reply {
-            let _ = reply.send(outcome.map(Option::unwrap_or_default));
+            reply.finish(outcome.map(Option::unwrap_or_default));
         }
     }
 
@@ -507,7 +523,7 @@ impl DoorCore {
             });
         });
         if let Some(reply) = reply {
-            let _ = reply.send(answer);
+            reply.finish(answer);
         }
     }
 
@@ -538,148 +554,24 @@ impl DoorCore {
         }
     }
 
-    /// Carry out one published door operation.
+    /// Carry out one door effect, answering `reply` once it settled.
     ///
     /// # Errors
     ///
-    /// Why the operation was refused before anything was sent.
-    pub fn perform(
-        &mut self,
-        payload: &[u8],
-    ) -> Result<Receiver<Result<ActionOutput, String>>, String> {
-        let request: Value = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let op = request
-            .get("op")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-        let text = |name: &str| {
-            args.get(name)
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| format!("`{name}` is required"))
-        };
-        let (reply, receiver) = channel();
-        match op {
-            REFRESH => self.refresh(Some(reply)),
-            SAVE => self.save(&text("draft")?, Some(reply))?,
-            RUN => {
-                let inputs = args
-                    .get("inputs")
-                    .and_then(Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
-                self.run(&text("shortcut")?, inputs, Some(reply))?;
+    /// Why the effect was refused before anything was sent.
+    pub fn perform(&mut self, effect: DoorEffect, reply: Reply) -> Result<(), String> {
+        let reply = Some(reply);
+        match effect {
+            DoorEffect::Refresh => self.refresh(reply),
+            DoorEffect::Save { draft } => self.save(&draft, reply)?,
+            DoorEffect::Run { shortcut, inputs } => {
+                self.run(&shortcut, inputs.unwrap_or_default(), reply)?;
             }
-            DELETE => self.delete(&text("shortcut")?, Some(reply))?,
-            DESCRIBE => self.describe(&text("description")?, Some(reply))?,
-            other => return Err(format!("unknown shortcuts operation `{other}`")),
+            DoorEffect::Delete { shortcut } => self.delete(&shortcut, reply)?,
+            DoorEffect::Describe { description } => self.describe(&description, reply)?,
         }
-        Ok(receiver)
+        Ok(())
     }
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "the bound arguments are already a JSON value, which always encodes"
-)]
-fn operation(
-    id: &'static str,
-    label: &'static str,
-    params: Vec<ActionParam>,
-    contract: ActionContract,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        "Enter the arguments",
-        OperationKind::Effect,
-        ui::widget::resource_actions::OPERATION_TYPE,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(
-                ui::widget::resource_actions::OPERATION_TYPE,
-                &json!({ "op": id, "args": args.to_json() }),
-            )
-            .expect("bound door arguments are JSON")
-        },
-    );
-    spec.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..contract
-    };
-    spec
-}
-
-/// The door operations this app publishes.
-#[must_use]
-pub fn resource() -> ui::tilo_actions::Resource {
-    let shortcut =
-        || ActionParam::required("shortcut", ParamType::Text, "Id of the saved shortcut");
-    let mut inputs = ActionParam::required(
-        "inputs",
-        ParamType::Object,
-        "Values for the shortcut's inputs",
-    );
-    inputs.required = false;
-    // The toolkit's descriptor for a hosted app resource, carrying this
-    // app's operations, each naming itself in its payload.
-    let mut resource = ui::widget::resource_actions::typed_resource(
-        KIND,
-        "Shortcuts",
-        REFRESH,
-        "Reload shortcuts",
-        Vec::new(),
-    );
-    resource.actions.clear();
-    resource
-        .with_action(operation(
-            REFRESH,
-            "Reload shortcuts",
-            Vec::new(),
-            ActionContract::default(),
-        ))
-        .with_action(operation(
-            SAVE,
-            "Save shortcut",
-            vec![ActionParam::required(
-                "draft",
-                ParamType::Text,
-                "Id of the draft to save",
-            )],
-            ActionContract::default(),
-        ))
-        .with_action(operation(
-            RUN,
-            "Run shortcut",
-            vec![shortcut(), inputs],
-            ActionContract::default(),
-        ))
-        .with_action(operation(
-            DELETE,
-            "Delete shortcut",
-            vec![shortcut()],
-            ActionContract {
-                risk: RiskLevel::Destructive,
-                confirmation: ConfirmationPolicy::Confirm,
-                ..ActionContract::default()
-            },
-        ))
-        .with_action(operation(
-            DESCRIBE,
-            "Draft a shortcut with the agent",
-            vec![ActionParam::required(
-                "description",
-                ParamType::Text,
-                "What the shortcut should do, in your words",
-            )],
-            ActionContract {
-                result: ResultSpec::Job,
-                ..ActionContract::default()
-            },
-        ))
 }
 
 /// Hosts the view, feeds the door's requests to the session and settles its
@@ -723,7 +615,7 @@ impl Decorator for Door {
         self.content.as_mut()
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.remote.poll();
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.pump();
@@ -734,25 +626,18 @@ impl Decorator for Door {
         self.content.update(state, path)
     }
 
+    /// The door is the session's collaborative endpoint; every other request
+    /// (the shell's header row, which hosts the window's History control)
+    /// passes to the hosted view.
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        request.provide::<dyn Collaborative>(&mut self.remote);
+        if request.wants::<dyn Collaborative>() {
+            request.provide::<dyn Collaborative>(&mut self.remote);
+        } else {
+            self.content.provide_mut(request);
+        }
     }
 
     fn name(&self) -> &'static str {
         "ShortcutsDoor"
-    }
-}
-
-/// The effect handler the toolkit host calls for [`resource`].
-pub fn handler(
-    core: Rc<RefCell<DoorCore>>,
-) -> impl FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String> + 'static {
-    move |payload| {
-        let mut core = core
-            .try_borrow_mut()
-            .map_err(|_| "the door is busy".to_owned())?;
-        let receiver = core.perform(payload)?;
-        core.pump();
-        Ok(receiver)
     }
 }

@@ -14,12 +14,14 @@
 //! The same area is the daemon's bounded cache: resident bytes of cached
 //! entries are kept under a byte budget, least recently used first, and
 //! pinned or local-only content is never evicted. A `moka` cache sits in
-//! front of loose blobs for hot reads. The provider serves both backings
+//! front of loose blobs for hot reads, bounded by bytes
+//! ([`BLOB_CACHE_BYTES`]) and holding only small blobs
+//! ([`MAX_CACHED_BLOB`]). The provider serves both backings
 //! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
     Arc, RwLock,
@@ -28,11 +30,12 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::Result;
+use bao_tree::io::mixed::EncodedItem;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh_blobs::api::Store;
-#[cfg(feature = "filesystem")]
 use iroh_blobs::api::blobs::BlobStatus;
+use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt as _};
 use iroh_blobs::provider::events::EventSender;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::mem::MemStore;
@@ -49,8 +52,11 @@ use crate::eviction::{
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 pub mod area;
+#[cfg(test)]
+mod cache_tests;
 mod content;
 mod files;
 mod serve;
@@ -99,21 +105,21 @@ pub enum BlobRecordLookupError {
     Namespace(#[from] LiveRecordBlobScanError),
     #[error("live record {record_id:?} manifest {manifest} is not locally available")]
     ManifestUnavailable {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         manifest: Hash,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} encoded bytes")]
     ManifestTooLarge {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
     #[error("live record {record_id:?} has a malformed manifest")]
     MalformedManifest {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} chunks")]
     TooManyChunks {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
 }
@@ -169,6 +175,8 @@ pub struct ContentStore {
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
+    /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
+    write_syncs: std::sync::atomic::AtomicU64,
     /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
     /// The directory of an ephemeral store's area, removed with it.
@@ -207,6 +215,63 @@ impl Drop for StoreRuntime {
             runtime.shutdown_background();
         }
     }
+}
+
+/// Heap the hot cache in front of loose blobs may hold, counting each
+/// entry's bookkeeping. It is for what is read again and again and is small:
+/// manifests, the chunks of small files, thumbnails.
+pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Largest blob the hot cache admits. Anything larger is file-backed content
+/// ([`crate::content::FILE_BACKED_MIN`] is the same size) or document media,
+/// both read by range, and one such blob would take a large share of the
+/// budget for a single read.
+pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
+
+/// What a cache entry costs beyond its bytes: the key, the `Bytes` handle
+/// and the cache's own node.
+const CACHE_ENTRY_OVERHEAD: u32 = 256;
+
+/// An insert at least this large settles the cache at once. moka applies
+/// writes in batches of 64, so without this a run of large inserts could sit
+/// above the budget until the next batch; with it, what waits is at most 64
+/// inserts smaller than this.
+const CACHE_SETTLE_AT: usize = 64 * 1024;
+
+/// The hot cache in front of loose blobs, bounded by bytes. Its admission
+/// weighs a newcomer's access frequency against that of every entry it would
+/// evict, so a run of cold large reads does not flush small hot entries.
+fn blob_cache() -> Cache<Hash, Bytes> {
+    Cache::builder()
+        .max_capacity(BLOB_CACHE_BYTES)
+        .weigher(|_, bytes: &Bytes| {
+            u32::try_from(bytes.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(CACHE_ENTRY_OVERHEAD)
+        })
+        .build()
+}
+
+/// Removes what imports left in the blob store's spill directory. A stream
+/// import spills to a file there and the store removes it only when the
+/// import succeeds, so an upload abandoned halfway leaves its part behind.
+/// Called right after the store loads, before anything imports, so every
+/// file there is from an earlier run.
+fn remove_import_spills(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Where a persistent store at `cache_dir` keeps its file-backed content,
+/// unless opened with [`ContentStore::open_with_files`].
+fn files_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("files")
 }
 
 /// Budget for cached file-backed content when the caller sets none: a
@@ -274,7 +339,29 @@ impl ContentStore {
         gc_interval: Duration,
     ) -> Result<Self> {
         let dir = cache_dir.as_ref();
-        Self::open_inner(dir, gc_interval, &dir.join("files")).await
+        Self::open_inner(dir, gc_interval, &files_dir(dir)).await
+    }
+
+    /// The whole of file version `content` (its manifest hash) from the
+    /// persistent store at `cache_dir` ([`Self::open`]), read without
+    /// opening the store: for another process beside the one that has it
+    /// open, which must not take its database locks. Only file-backed
+    /// versions ([`crate::content::FILE_BACKED_MIN`]) live where such a
+    /// reader can find them; any other is `Ok(None)`, as is one longer than
+    /// `max_bytes`.
+    ///
+    /// Nothing is verified and the version may be only partly resident: the
+    /// caller checks the bytes against a hash it trusts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the version's file exists but cannot be read.
+    pub fn read_file_version_unlocked(
+        cache_dir: &Path,
+        content: [u8; 32],
+        max_bytes: u64,
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        area::read_entry_unlocked(&files_dir(cache_dir), &content, max_bytes)
     }
 
     async fn open_inner(dir: &Path, gc_interval: Duration, files_dir: &Path) -> Result<Self> {
@@ -303,13 +390,15 @@ impl ContentStore {
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
+        remove_import_spills(&dir.join("temp"));
         Ok(Self {
             backend: Backend::Fs(store),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
             runtime: Some(runtime),
@@ -342,11 +431,12 @@ impl ContentStore {
         };
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(options)),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
             runtime: None,
@@ -371,7 +461,8 @@ impl ContentStore {
         &self.files
     }
 
-    #[cfg(all(test, feature = "filesystem"))]
+    #[cfg(test)]
+    #[cfg(feature = "filesystem")]
     #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         let scratch = tempfile::tempdir().unwrap();
@@ -383,11 +474,12 @@ impl ContentStore {
                     add_protected: None,
                 }),
             })),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: Some(scratch),
             runtime: None,
@@ -418,11 +510,16 @@ impl ContentStore {
     /// costs one sync instead of one per file. Callers end the group before
     /// anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
-        let mut deferred = self
-            .deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut deferred = self.deferred.lock_recover();
         deferred.0 = deferred.0.saturating_add(1);
+    }
+
+    /// How many database syncs the writes to this store have made so far: one
+    /// per write outside a deferred-durability group, one per group that
+    /// wrote. Each is an fsync, so a caller writing many blobs can check that
+    /// it pays for one rather than one per blob.
+    pub fn write_syncs(&self) -> u64 {
+        self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
@@ -434,10 +531,7 @@ impl ContentStore {
     /// pending for the next sync.
     pub async fn end_deferred_sync(&self) -> Result<()> {
         let sync = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
@@ -445,11 +539,12 @@ impl ContentStore {
             }
             sync
         };
+        if sync {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if sync && let Err(error) = self.store().sync_db().await {
-            self.deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .1 = true;
+            self.deferred.lock_recover().1 = true;
             return Err(error.into());
         }
         Ok(())
@@ -481,11 +576,157 @@ impl ContentStore {
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
-                self.cache.insert(hash, b.clone());
+                self.cache_insert(hash, b.clone());
                 Some(b)
             }
             Err(_) => self.local_chunk(hash).await,
         }
+    }
+
+    /// Keep `bytes` hot if they are small enough to be worth their share of
+    /// [`BLOB_CACHE_BYTES`].
+    fn cache_insert(&self, hash: Hash, bytes: Bytes) {
+        if bytes.len() > MAX_CACHED_BLOB {
+            return;
+        }
+        let settle = bytes.len() >= CACHE_SETTLE_AT;
+        self.cache.insert(hash, bytes);
+        if settle {
+            self.cache.run_pending_tasks();
+        }
+    }
+
+    /// Import content that arrives as a stream of pieces, hashing and
+    /// writing each as it comes: a persistent store spills it to a file
+    /// after the first 16 KiB and builds the BAO outboard from that file, so
+    /// it never holds the whole content. Returns the content's hash and
+    /// length. Never fills the hot cache.
+    ///
+    /// The stream is consumed before any lock is taken, so a slow producer
+    /// (an app uploading) holds up nothing else; the import is protected
+    /// from collection by its temporary tag until the owned tag is in
+    /// place, as for [`Self::ingest`]. A piece that is an error abandons the
+    /// import and stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stream's error, or an error if the blob store fails.
+    pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
+    where
+        S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
+        // iroh-blobs' `add_stream` stops forwarding at an error but keeps
+        // the import open, waiting for an end that never comes. So an error
+        // is never handed to it: it abandons the import here instead, and
+        // dropping the import ends the store's side of it.
+        let (abandon, abandoned) = tokio::sync::oneshot::channel::<std::io::Error>();
+        let mut abandon = Some(abandon);
+        let mut pieces = Box::pin(pieces);
+        let forwarded =
+            futures_util::stream::poll_fn(move |cx| match pieces.as_mut().poll_next(cx) {
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    if let Some(abandon) = abandon.take() {
+                        let _ = abandon.send(error);
+                    }
+                    std::task::Poll::Pending
+                }
+                other => other,
+            });
+        let import = async {
+            self.store()
+                .blobs()
+                .add_stream(forwarded)
+                .await
+                .temp_tag()
+                .await
+        };
+        let temporary = tokio::select! {
+            imported = import => imported?,
+            Ok(error) = abandoned => {
+                return Err(anyhow::Error::new(error).context("the streamed import was abandoned"));
+            }
+        };
+        let hash = temporary.hash();
+        let BlobStatus::Complete { size } = self.store().blobs().status(hash).await? else {
+            anyhow::bail!("streamed blob {hash} is not complete after its import");
+        };
+        let _mutation = self.mutation.lock().await;
+        let _owned_tags = self.owned_tags.lock().await;
+        self.store()
+            .tags()
+            .set(
+                owned_blob_tag(hash, temporary.format()),
+                temporary.hash_and_format(),
+            )
+            .await?;
+        self.sync_unless_deferred().await?;
+        drop(temporary);
+        Ok((hash, size))
+    }
+
+    /// Read a clipped range and the whole length of a locally complete blob.
+    /// Loose data is BAO-verified over the requested chunk groups only; an
+    /// empty range needs just its status. Existing cached bytes and bounded,
+    /// hash-checked file chunks remain readable. Never fills the blob cache.
+    pub async fn read_blob_range(
+        &self,
+        hash: Hash,
+        range: std::ops::Range<u64>,
+    ) -> Option<(Vec<u8>, u64)> {
+        if let Some(bytes) = self.cache.get(&hash) {
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        }
+        let Ok(BlobStatus::Complete { size }) = self.store().blobs().status(hash).await else {
+            let bytes = self.local_chunk(hash).await?;
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        };
+        let end = range.end.min(size);
+        let start = range.start.min(end);
+        if start == end {
+            return Some((Vec::new(), size));
+        }
+        let requested = end.checked_sub(start)?;
+        let mut out = Vec::with_capacity(usize::try_from(requested).ok()?);
+        let mut items = self
+            .store()
+            .blobs()
+            .export_bao(hash, ChunkRanges::bytes(start..end))
+            .stream();
+        while let Some(item) = items.next().await {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
+                }
+                EncodedItem::Size(actual) if actual != size => return None,
+                EncodedItem::Parent(_) | EncodedItem::Size(_) => {}
+                EncodedItem::Done => {
+                    return (out.len() as u64 == requested).then_some((out, size));
+                }
+                EncodedItem::Error(_) => return None,
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_cached(&self, hash: Hash) -> bool {
+        self.cache.contains_key(&hash)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_cached(&self, hash: Hash) {
+        self.cache.invalidate(&hash);
+    }
+
+    /// Bytes the hot cache holds once its pending writes are applied.
+    #[cfg(test)]
+    pub(crate) fn cached_bytes(&self) -> u64 {
+        self.cache.run_pending_tasks();
+        self.cache.weighted_size()
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.
@@ -617,6 +858,24 @@ impl ContentStore {
         }
     }
 
+    /// Make the writes just made durable now or, inside a deferred-durability
+    /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
+    async fn sync_unless_deferred(&self) -> Result<()> {
+        let deferred = {
+            let mut deferred = self.deferred.lock_recover();
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.store().sync_db().await?;
+        }
+        Ok(())
+    }
+
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
         self.persist_owned_batch(vec![data])
             .await?
@@ -659,25 +918,13 @@ impl ContentStore {
         // in-memory backend. Inside a deferred-durability group the group's
         // end syncs once instead; the owned tags are already installed, so
         // nothing collects the blobs meanwhile.
-        let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if deferred.0 > 0 {
-                deferred.1 = true;
-            }
-            deferred.0 > 0
-        };
-        if !deferred {
-            self.store().sync_db().await?;
-        }
+        self.sync_unless_deferred().await?;
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())
             .collect::<Vec<_>>();
         for (temporary, bytes) in protected {
-            self.cache.insert(temporary.hash(), bytes);
+            self.cache_insert(temporary.hash(), bytes);
             drop(temporary);
         }
         Ok(hashes)
@@ -708,7 +955,7 @@ impl ContentStore {
         namespace: &Namespace,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -729,7 +976,7 @@ impl ContentStore {
         roots: Vec<LiveRecordBlobRoots>,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -791,8 +1038,8 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
-        record_id: collab_types::FileRecordId,
-        version_id: collab_types::FileVersionId,
+        record_id: fs_protocol::FileRecordId,
+        version_id: fs_protocol::FileVersionId,
         manifest_hash: Hash,
     ) -> Result<VersionPayload> {
         let manifest_bytes = self
@@ -837,7 +1084,7 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
-        revision: &collab_types::ContentRevisionV1,
+        revision: &fs_protocol::ContentRevisionV1,
     ) -> Result<()> {
         revision.validate()?;
         let Some(content_hash) = revision.content_hash else {
@@ -1083,26 +1330,17 @@ struct GcGate {
 impl GcGate {
     /// Let the next sweeps collect everything outside `live`.
     fn authorize(&self, live: HashSet<Hash>) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        *self.live.write_recover() = Some(live);
         self.wake.notify_one();
     }
 
     /// Park the GC again once the sweep this live set was installed for is over.
     fn revoke(&self) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.write_recover() = None;
     }
 
     fn snapshot(&self) -> Option<HashSet<Hash>> {
-        self.live
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.live.read_recover().clone()
     }
 
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when
@@ -1306,8 +1544,8 @@ mod tests {
             let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
             let payload = store
                 .inspect_version_payload(
-                    collab_types::FileRecordId::new(),
-                    collab_types::FileVersionId::new(),
+                    fs_protocol::FileRecordId::new(),
+                    fs_protocol::FileVersionId::new(),
                     manifest_hash,
                 )
                 .await
@@ -1341,13 +1579,13 @@ mod tests {
                 }],
             );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-            let revision = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash(*manifest_hash.as_bytes())),
+            let revision = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
                 byte_len: 13,
-                metadata_hash: collab_types::ContentHash([1; 32]),
+                metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
         }
@@ -1358,8 +1596,8 @@ mod tests {
             let store = ContentStore::memory();
             let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
             let plan = EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::DestructiveOverride,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1396,8 +1634,8 @@ mod tests {
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
 
             let make_plan = |hash| EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1444,11 +1682,12 @@ mod tests {
     async fn backend_eviction_releases_only_owned_tags_for_fresh_roots() {
         // Phase `queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState, VersionPayload,
                 plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::open_with_gc_interval(
@@ -1472,10 +1711,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1599,10 +1838,11 @@ mod tests {
         }
         // Phase `backend_handoff_refuses_stale_shared_root_without_releasing_tag`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionQueue, VersionPayload, plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
@@ -1614,10 +1854,10 @@ mod tests {
                 .ingest(Bytes::from_static(b"other root"))
                 .await
                 .unwrap();
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1688,11 +1928,12 @@ mod tests {
         }
         // Phase `eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionQueue, EvictionRequestState, VersionPayload,
                 plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
@@ -1713,8 +1954,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let record_id = collab_types::FileRecordId::new();
-            let version_id = collab_types::FileVersionId::new();
+            let record_id = fs_protocol::FileRecordId::new();
+            let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut record = RecordAvailability::new(record_id, RecordKind::File);
@@ -1949,5 +2190,47 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn another_process_reads_file_backed_versions_while_the_store_is_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ContentStore::open(directory.path()).await.unwrap();
+        let large: Vec<u8> = (0..3 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let manifest = *store
+            .write_content(&large)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let small = *store
+            .write_content(b"a small file kept as loose blobs")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+
+        // The store stays open, holding its databases, while it is read.
+        let read = |content, max_bytes| {
+            ContentStore::read_file_version_unlocked(directory.path(), content, max_bytes).unwrap()
+        };
+        let len = u64::try_from(large.len()).unwrap();
+        assert_eq!(read(manifest, u64::MAX), Some(large.clone()));
+        assert_eq!(read(manifest, len), Some(large.clone()));
+        assert_eq!(read(manifest, len - 1), None, "over the bound");
+        assert_eq!(read(small, u64::MAX), None, "not file-backed");
+        assert_eq!(read([7; 32], u64::MAX), None, "unknown");
+
+        // A link where an entry's file belongs is not followed.
+        let elsewhere = directory.path().join("elsewhere");
+        std::fs::write(&elsewhere, &large).unwrap();
+        let linked = files_dir(directory.path())
+            .join("data")
+            .join(hex::encode([8; 32]));
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        assert_eq!(read([8; 32], u64::MAX), None);
+        drop(store);
     }
 }

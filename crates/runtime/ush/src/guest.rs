@@ -6,37 +6,41 @@
 //! `bwrap` performs the whole unshare/mount/`pivot_root`/seccomp/`exec`
 //! sequence itself, with the filter landing after the last privileged
 //! operation and before the guest exists — the supervisor never calls
-//! `mount(2)`, which is why its own seccomp filter can deny that syscall
-//! outright.
+//! `mount(2)`.
 //!
 //! ```text
-//! /usr    overlay: lower = [ephemeral layer,] persistent layer, host /usr
-//!                  upper = the session's writable layer
-//! /etc    overlay: same stack
+//! /usr, /etc     read-only overlay: lowers = [tool images…, env-runtime]
+//!                (/etc also carries the session's passwd, group and resolver
+//!                on top); no writable upper anywhere
 //! /bin /sbin /lib /lib64   symlinks into /usr, as on any usrmerge system
-//! /var/lib /var/cache /var/log   the layer's own, bound
-//! /var/tmp /tmp /run /proc /dev  fresh
-//! /run/ush/bin            the runtime and its command shims, read-only
-//! $HOME                   the store's guest home, bound over the real one
-//! <trusted dirs>          bound read-write, one per `perm trust-dir`
+//! /home/<user>   the environment's home
+//! <grants>       one bind per FsPath grant, at the same path as on the host
+//! /tmp /run /proc /dev     fresh
+//! /var           tmpfs, plus the environment's own /var/lib and /var/cache
+//! /run/ush/bin   the runtime and its command shims, read-only
 //! ```
 //!
-//! A path the guest was not granted is not missing a permission — it is
-//! not in the namespace.
+//! The guest runs as the real uid and gid — a single-id user namespace
+//! mapping — so a file written to a granted directory belongs to the user.
+//! It starts inside the session's own network namespace (see
+//! [`tilo_egress`]), whose resolver is the supervisor's DNS stub; `bwrap`'s
+//! user namespace nests inside the one that owns that network namespace, so
+//! nothing in the guest has any capability over its network.
+//! A path the guest was not granted is not missing a permission — it is not
+//! in the namespace.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::layer::BASE_SUBTREES;
-use crate::profile::Profile;
+/// The subtrees the images provide. Everything else in the guest's root is
+/// built fresh per session.
+pub const IMAGE_SUBTREES: &[&str] = &["usr", "etc"];
 
-/// Directories the layer owns outright rather than shadowing: `/var` can't
-/// be an overlay destination (see [`crate::layer::BASE_SUBTREES`]), and the
-/// host's `/var` is machine state a shell has no business reading.
-const LAYER_VAR_DIRS: &[&str] = &["var/lib", "var/cache", "var/log"];
+/// The environment's own state under `/var`, bound from the store.
+pub const ENVIRONMENT_VAR_DIRS: &[&str] = &["lib", "cache"];
 
-/// `PATH` inside a guest. The runtime's own commands come first so `pkg` means
-/// `pkg` even if a layer installs something by that name.
+/// `PATH` inside a guest. The runtime's own commands come first so `pkg`
+/// means `pkg` even if a tool ships something by that name.
 pub const GUEST_PATH: &str = "/run/ush/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin";
 
 /// The only variables a guest inherits from the supervisor's environment;
@@ -56,132 +60,303 @@ pub const INHERITED_ENV: &[&str] = &[
     "COLORTERM",
 ];
 
+/// Who the guest runs as: the real user, by the same uid and gid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestUser {
+    pub name: String,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl GuestUser {
+    /// The user running this process.
+    pub fn current() -> Self {
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
+        let name = std::env::var("USER")
+            .ok()
+            .filter(|n| is_user_name(n))
+            .unwrap_or_else(|| "user".to_owned());
+        Self { name, uid, gid }
+    }
+
+    /// Where the guest's home is mounted.
+    pub fn home(&self) -> PathBuf {
+        PathBuf::from("/home").join(&self.name)
+    }
+}
+
+/// A name safe to put in `passwd` and in a path: what `useradd` accepts.
+fn is_user_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && name != "."
+        && name != ".."
+}
+
 /// Everything needed to build one guest.
 #[derive(Debug, Clone)]
 pub struct GuestPlan {
-    pub profile: Profile,
-    /// The host root being shadowed. `/` in production.
-    pub base: PathBuf,
-    /// The writable layer — the overlay `upperdir`.
-    pub upper: PathBuf,
-    /// Layers stacked between the upper and the base, nearest the upper first.
-    /// Empty for a persistent session; `[persistent]` for an ephemeral one.
-    pub lower_layers: Vec<PathBuf>,
-    /// Where the overlay `workdir`s go; must be on the same filesystem as
-    /// `upper`, hence the store's session directory rather than `/tmp`.
-    pub workdir_root: PathBuf,
+    /// Image roots stacked for `/usr` and `/etc`, topmost first: the tools,
+    /// newest first, then the runtime last.
+    pub images: Vec<PathBuf>,
+    /// The machine's root: where the resolver configuration is read from and
+    /// where the brokered management commands (`tilo`, `app`) live.
+    pub host_root: PathBuf,
+    /// Per-session scratch on the store: the generated `/etc` entries.
+    pub session_dir: PathBuf,
+    /// The environment's `/var` state; holds [`ENVIRONMENT_VAR_DIRS`].
+    pub var_dir: PathBuf,
+    /// The environment's home, mounted at [`GuestUser::home`].
     pub guest_home: PathBuf,
-    /// Where it is mounted — the real user's home path, so `~` and any
-    /// absolute path a script has baked in still resolve.
-    pub home_mountpoint: PathBuf,
-    /// Directories the user trusted: bound read-write.
+    pub user: GuestUser,
+    /// The environment's name, for the prompt.
+    pub environment: String,
+    /// Host paths a grant may cover but the guest must never see — the
+    /// runtime's own store and the environment records. Covered by a tmpfs
+    /// after the grants are bound.
+    pub masked: Vec<PathBuf>,
+    /// Directories granted read-write.
     pub trusted_dirs: Vec<PathBuf>,
     /// Directories granted read but not write.
     pub readable_dirs: Vec<PathBuf>,
+    /// Where the granted directories' contents are, when not at their own
+    /// paths: a grant of `/a/b` binds `<grant_root>/a/b` at `/a/b`.
+    pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Private loader closure for a dynamically linked runtime.
+    pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
+    /// Installed legacy apps' commands: shims that ask the broker for a
+    /// `LegacyLaunch`.
+    pub legacy_commands: Vec<String>,
     pub broker_socket: PathBuf,
-    /// The compiled seccomp blob for [`Self::profile`].
+    /// The compiled seccomp blob.
     pub seccomp_blob: PathBuf,
     /// What to run. Empty means the interactive shell.
     pub command: Vec<String>,
     /// The shell to host when `command` is empty.
     pub shell: PathBuf,
+    /// The key the shell marks its command runs with ([`crate::runs`]):
+    /// `bash` then starts on the rc file that writes the marks.
+    pub runs: Option<String>,
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
+    /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
+    /// the machine's.
+    pub resolver: Option<String>,
+    /// Optional qualified native producer, never requested via a guest path.
+    pub editor: Option<crate::editor::GuestEditor>,
 }
 
 impl GuestPlan {
-    /// The overlay `workdir` for one base subtree.
-    pub fn workdir_for(&self, subtree: &str) -> PathBuf {
-        self.workdir_root.join("work").join(subtree)
+    /// Where a granted directory's contents are on this machine.
+    pub fn grant_source(&self, granted: &Path) -> PathBuf {
+        match &self.grant_root {
+            Some(root) => root.join(granted.strip_prefix("/").unwrap_or(granted)),
+            None => granted.to_path_buf(),
+        }
     }
 
-    /// Create the per-session directories the plan refers to: the `workdir`s
-    /// must exist and be empty, since `bwrap` will not create them.
+    /// The generated tree stacked on top of the images' `/etc`.
+    pub fn etc_overlay(&self) -> PathBuf {
+        self.session_dir.join("root")
+    }
+
+    /// Create what the plan refers to: the home, the environment's `/var`
+    /// state, and the session's own `/etc` entries — `passwd` and `group`
+    /// naming the real user (the images know only their system accounts) and
+    /// the resolver ([`Self::resolver`], else the machine's).
     ///
     /// # Errors
     ///
-    /// Returns an error if a stale workdir can't be cleared, or a workdir
-    /// or the guest home can't be created.
+    /// Returns an error if a directory or file can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
-        for subtree in BASE_SUBTREES {
-            let work = self.workdir_for(subtree);
-            // A workdir left behind by a crashed session holds overlayfs's half-finished
-            // copy-ups; reusing it fails the next mount with a message that reads like a bug.
-            remove_dir_all_forced(&work);
-            std::fs::create_dir_all(&work)?;
+        std::fs::create_dir_all(&self.session_dir)?;
+        if let Some(helper) = &self.helper_runtime {
+            helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
         }
         std::fs::create_dir_all(&self.guest_home)?;
+        if self.runs.is_some() {
+            std::fs::write(
+                self.session_dir.join("runs.bash"),
+                crate::runs::bash_rc(false),
+            )?;
+        }
+        for dir in ENVIRONMENT_VAR_DIRS {
+            std::fs::create_dir_all(self.var_dir.join(dir))?;
+        }
+        let etc = self.etc_overlay().join("etc");
+        std::fs::create_dir_all(&etc)?;
+        let image_file = |name: &str| {
+            self.images
+                .iter()
+                .map(|image| image.join("etc").join(name))
+                .find(|path| path.is_file())
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_default()
+        };
+        std::fs::write(
+            etc.join("passwd"),
+            passwd_with_user(&image_file("passwd"), &self.user, &self.shell),
+        )?;
+        std::fs::write(
+            etc.join("group"),
+            group_with_user(&image_file("group"), &self.user),
+        )?;
+        if let Some(resolver) = self
+            .resolver
+            .clone()
+            .or_else(|| host_resolver(&self.host_root))
+        {
+            std::fs::write(etc.join("resolv.conf"), resolver)?;
+        }
         Ok(())
     }
+}
+
+/// The images' `passwd` with the real user added, replacing any entry that
+/// claims the same name or uid.
+pub fn passwd_with_user(image: &str, user: &GuestUser, shell: &Path) -> String {
+    let mut out = without_claims(image, &user.name, user.uid);
+    out.push_str(&user.name);
+    out.push_str(":x:");
+    out.push_str(&user.uid.to_string());
+    out.push(':');
+    out.push_str(&user.gid.to_string());
+    out.push_str("::");
+    out.push_str(&user.home().to_string_lossy());
+    out.push(':');
+    out.push_str(&shell.to_string_lossy());
+    out.push('\n');
+    out
+}
+
+/// The lines of a `passwd`/`group` file that claim neither `name` nor `id`
+/// (the third field), each newline-terminated.
+fn without_claims(file: &str, name: &str, id: u32) -> String {
+    let mut out = String::new();
+    for line in file.lines() {
+        let mut fields = line.split(':');
+        let claimed_name = fields.next().unwrap_or_default();
+        let claimed_id = fields.nth(1).and_then(|u| u.parse::<u32>().ok());
+        if claimed_name != name && claimed_id != Some(id) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The images' `group` with the user's primary group added.
+pub fn group_with_user(image: &str, user: &GuestUser) -> String {
+    let mut out = without_claims(image, &user.name, user.gid);
+    out.push_str(&user.name);
+    out.push_str(":x:");
+    out.push_str(&user.gid.to_string());
+    out.push_str(":\n");
+    out
+}
+
+/// The machine's resolver configuration, read through `/etc/resolv.conf`
+/// (on a systemd-resolved host a link into `/run`). It describes the network
+/// the machine is on and carries no user content. `None` on a machine
+/// without one.
+pub fn host_resolver(host_root: &Path) -> Option<String> {
+    std::fs::read_to_string(host_root.join("etc/resolv.conf")).ok()
 }
 
 /// Build the `bwrap` argv for a plan. Pure: the vector starts with `bwrap`
 /// and ends with the guest's own argv, so `-v` output pastes into a shell.
 ///
 /// Each stage of the argv gets its own helper below, in the order `bwrap`
-/// applies flags — that ordering is load-bearing (e.g. the resolver bind
-/// must land after the `/run` tmpfs it would otherwise be covered by), so
-/// keep the call order matching the section order in this function.
-pub fn build_argv(
+/// applies flags — that ordering is load-bearing (the `/var` state binds
+/// land on the `/var` tmpfs, the masks after the grants they cover), so keep
+/// the call order matching the section order in this function.
+pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> Vec<OsString> {
+    build_guest_argv(plan, seccomp_fd, None)
+}
+
+/// Build a broker-free, network-isolated check guest using the same image,
+/// namespace, seccomp and helper closure as ordinary environment guests.
+/// The trusted supervisor supplies both paths; neither comes from an effect.
+#[must_use]
+pub fn build_check_argv(
+    plan: &GuestPlan,
+    seccomp_fd: std::os::fd::RawFd,
+    checkout: &Path,
+    build: &Path,
+) -> Vec<OsString> {
+    build_guest_argv(plan, Some(seccomp_fd), Some((checkout, build)))
+}
+
+fn build_guest_argv(
     plan: &GuestPlan,
     seccomp_fd: Option<std::os::fd::RawFd>,
-    userns_fd: Option<std::os::fd::RawFd>,
+    check: Option<(&Path, &Path)>,
 ) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
-    push_namespace_flags(&mut a, plan, userns_fd);
-    push_overlay_mounts(&mut a, plan);
-    push_symlinks_and_layer_dirs(&mut a, plan);
-    push_pseudo_filesystems_and_resolver(&mut a, plan);
-    push_runtime_and_broker(&mut a, plan);
+    push_namespace_flags(&mut a, plan);
+    if check.is_some() {
+        a.push("--unshare-net".into());
+    }
+    push_image_mounts(&mut a, plan);
+    push_symlinks(&mut a);
+    push_pseudo_filesystems_and_var(&mut a, plan);
+    push_runtime_and_broker(&mut a, plan, check.is_none());
+    push_runs(&mut a, plan);
     push_home_and_grants(&mut a, plan);
-    push_capabilities(&mut a, plan);
-    push_environment(&mut a, plan);
+    if let Some((checkout, build)) = check {
+        a.extend([
+            "--ro-bind".into(),
+            checkout.as_os_str().into(),
+            "/project".into(),
+            "--bind".into(),
+            build.as_os_str().into(),
+            "/project/target".into(),
+            "--chdir".into(),
+            "/project".into(),
+        ]);
+    }
+    push_environment(&mut a, plan, check.is_none());
     push_seccomp_and_command(&mut a, plan, seccomp_fd);
     a
 }
 
-/// `--clearenv`, the namespace/identity flags, and the hostname — the part
-/// of the argv that exists before any filesystem is touched.
-fn push_namespace_flags(
-    a: &mut Vec<OsString>,
-    plan: &GuestPlan,
-    userns_fd: Option<std::os::fd::RawFd>,
-) {
+/// `--clearenv` and the namespace/identity flags — the part of the argv
+/// that exists before any filesystem is touched.
+fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
     push(a, "bwrap");
-
     // `bwrap` hands the guest the parent's whole environment unless told
     // otherwise; clearing it first is what makes the environment block below a
     // complete list rather than overrides on the supervisor's own environment.
-    // Comes first because `--clearenv` keeps only what a later `--setenv` restores.
     push(a, "--clearenv");
 
-    // A fresh user namespace makes the mounts below possible without privilege,
-    // and uid 0 inside it is what lets `rpm` chown into the layer — outside the
-    // namespace that uid confers nothing on the host. With a namespace prepared
-    // externally (see [`prepare_userns`]) `bwrap` joins it instead of creating
-    // one, which is how the guest gets more than a single mapped uid.
-    match userns_fd {
-        Some(fd) => {
-            push(a, "--userns");
-            a.push(fd.to_string().into());
-        }
-        None => push(a, "--unshare-user"),
-    }
+    // A fresh user namespace makes the mounts below possible without privilege.
+    // It maps exactly one id, the real one, so the guest is the user inside and
+    // out: a file it writes to a granted directory is the user's, and nothing
+    // in it is root.
+    push(a, "--unshare-user");
     push(a, "--uid");
-    push(a, "0");
+    a.push(plan.user.uid.to_string().into());
     push(a, "--gid");
-    push(a, "0");
+    a.push(plan.user.gid.to_string().into());
     push(a, "--unshare-pid");
     push(a, "--unshare-uts");
     push(a, "--unshare-ipc");
     push(a, "--unshare-cgroup-try");
-    push(a, "--hostname");
-    push(a, plan.profile.as_str());
+    // The guest keeps the host's name in a namespace of its own: naming it
+    // takes `sethostname`, which a container's seccomp profile refuses, and
+    // bwrap then starts no shell at all.
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
     push(a, "--die-with-parent");
@@ -191,89 +366,160 @@ fn push_namespace_flags(
     // it defends against — `TIOCSTI` injection — the kernel already refuses.
 }
 
-/// The `/usr` and `/etc` overlay stacks: layer(s) nearest the upper, base
-/// last.
-fn push_overlay_mounts(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    for subtree in BASE_SUBTREES {
-        // `--overlay-src` entries accumulate for the next `--overlay`; layers are
-        // pushed nearest-the-upper first, base last, so the base ends at the bottom.
-        for lower in &plan.lower_layers {
-            let dir = lower.join(subtree);
-            if dir.is_dir() {
-                a.push("--overlay-src".into());
-                a.push(dir.into_os_string());
+/// The read-only lowers for one subtree, topmost first.
+pub fn subtree_lowers(plan: &GuestPlan, subtree: &str) -> Vec<PathBuf> {
+    let generated = (subtree == "etc").then(|| plan.etc_overlay().join("etc"));
+    generated
+        .into_iter()
+        .chain(plan.images.iter().map(|image| image.join(subtree)))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// `/usr` and `/etc`: the images stacked read-only. Overlayfs needs two
+/// lowers to mount without an upper, so a single tree is bound read-only
+/// instead — the same view.
+fn push_image_mounts(a: &mut Vec<OsString>, plan: &GuestPlan) {
+    for subtree in IMAGE_SUBTREES {
+        let dest = PathBuf::from("/").join(subtree).into_os_string();
+        match subtree_lowers(plan, subtree).as_slice() {
+            [] => {}
+            [only] => {
+                a.push("--ro-bind".into());
+                a.push(only.clone().into_os_string());
+                a.push(dest);
+            }
+            lowers => {
+                // `--overlay-src` entries accumulate for the next overlay with
+                // the first named at the *bottom* — the reverse of the
+                // kernel's `lowerdir` — so the runtime goes first.
+                for lower in lowers.iter().rev() {
+                    a.push("--overlay-src".into());
+                    a.push(lower.clone().into_os_string());
+                }
+                a.push("--ro-overlay".into());
+                a.push(dest);
             }
         }
-        a.push("--overlay-src".into());
-        a.push(plan.base.join(subtree).into_os_string());
-
-        a.push("--overlay".into());
-        a.push(plan.upper.join(subtree).into_os_string());
-        a.push(plan.workdir_for(subtree).into_os_string());
-        a.push(PathBuf::from("/").join(subtree).into_os_string());
     }
 }
 
-/// The usrmerge/`/var` symlinks a real root carries, and the layer-owned
-/// `/var` subdirectories (see [`LAYER_VAR_DIRS`]) bound straight in.
-fn push_symlinks_and_layer_dirs(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    // The symlinks a Fedora root has and a hand-built one does not. usrmerge
-    // first: the overlay destinations are `/usr` and `/etc`, so the new root has
-    // no `/bin` until these exist, and `execvp("/bin/sh")` would fail. `/var/run`
-    // and `/var/lock` matter the same way one level down — they're symlinks into
-    // `/run` on every modern distribution, and a program that opens a path under
-    // one gets `ENOENT` rather than a clear permission error when missing.
-    for (target, link) in root_symlinks(&plan.base) {
+/// The usrmerge links every image-built root needs, and `/var/run` and
+/// `/var/lock` into `/run` (they are symlinks there on every modern
+/// distribution, and a program that opens a path under one gets `ENOENT`
+/// rather than a clear error when missing).
+pub fn root_symlinks() -> Vec<(PathBuf, PathBuf)> {
+    [
+        ("usr/bin", "/bin"),
+        ("usr/sbin", "/sbin"),
+        ("usr/lib", "/lib"),
+        ("usr/lib64", "/lib64"),
+        ("../run", "/var/run"),
+        ("../run/lock", "/var/lock"),
+    ]
+    .into_iter()
+    .map(|(target, link)| (PathBuf::from(target), PathBuf::from(link)))
+    .collect()
+}
+
+fn push_symlinks(a: &mut Vec<OsString>) {
+    // `/var` is a tmpfs mounted below; its links are created after it.
+    for (target, link) in root_symlinks()
+        .into_iter()
+        .filter(|(_, link)| !link.starts_with("/var"))
+    {
         a.push("--symlink".into());
         a.push(target.into_os_string());
         a.push(link.into_os_string());
     }
-
-    for dir in LAYER_VAR_DIRS {
-        a.push("--bind".into());
-        a.push(plan.upper.join(dir).into_os_string());
-        a.push(PathBuf::from("/").join(dir).into_os_string());
-    }
 }
 
-/// `/proc`, `/dev`, the fresh tmpfs mounts, and the resolver bind — the
-/// resolver is ordered after the `/run` tmpfs so it isn't covered over.
-fn push_pseudo_filesystems_and_resolver(a: &mut Vec<OsString>, plan: &GuestPlan) {
+/// `/proc`, `/dev`, the fresh tmpfs mounts, and the environment's own `/var`
+/// state on top of the `/var` tmpfs.
+fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
     for (flag, dest) in [
         ("--proc", "/proc"),
         ("--dev", "/dev"),
         ("--tmpfs", "/tmp"),
         ("--tmpfs", "/run"),
-        ("--tmpfs", "/var/tmp"),
+        ("--tmpfs", "/var"),
     ] {
         a.push(flag.into());
         a.push(dest.into());
     }
-
-    // `/etc/resolv.conf` is a symlink into `/run` on a systemd-resolved host, and
-    // `/run` is a fresh tmpfs here, so binding the file the link *points at*, at
-    // that path, makes the base's existing link resolve — no write into `/etc`.
-    // Ordered after the tmpfs: `bwrap` applies flags in sequence, so a bind under
-    // `/run` placed earlier would be mounted and then covered over.
-    if let Some((src, dst)) = resolv_bind(&plan.base) {
-        a.push("--ro-bind-try".into());
-        a.push(src.into_os_string());
-        a.push(dst.into_os_string());
+    for (target, link) in root_symlinks()
+        .into_iter()
+        .filter(|(_, link)| link.starts_with("/var"))
+    {
+        a.push("--symlink".into());
+        a.push(target.into_os_string());
+        a.push(link.into_os_string());
+    }
+    for dir in ENVIRONMENT_VAR_DIRS {
+        a.push("--bind".into());
+        a.push(plan.var_dir.join(dir).into_os_string());
+        a.push(PathBuf::from("/var").join(dir).into_os_string());
     }
 }
 
 /// The runtime binary (read-only, with its command shims) and the broker
-/// socket the guest sends permission requests over.
-fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
+/// socket the guest sends requests over.
+fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
+    if let Some(editor) = &plan.editor {
+        a.extend([
+            "--dir".into(),
+            crate::editor::GUEST_DIR.into(),
+            "--ro-bind".into(),
+            editor.module.clone().into_os_string(),
+            format!("{}/producer.so", crate::editor::GUEST_DIR).into(),
+            "--ro-bind".into(),
+            editor.rc.clone().into_os_string(),
+            format!("{}/rc", crate::editor::GUEST_DIR).into(),
+        ]);
+    }
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
     a.push(plan.runtime_bin.clone().into_os_string());
-    a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
+    a.push(if plan.helper_runtime.is_some() {
+        crate::helper_runtime::EXECUTABLE.into()
+    } else {
+        format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into()
+    });
+    if let Some(helper) = &plan.helper_runtime {
+        a.extend(["--dir".into(), crate::helper_runtime::LIB_DIR.into()]);
+        for (name, path) in &helper.libraries {
+            a.extend([
+                "--ro-bind".into(),
+                path.clone().into_os_string(),
+                Path::new(crate::helper_runtime::LIB_DIR)
+                    .join(name)
+                    .into_os_string(),
+            ]);
+        }
+        a.extend([
+            "--ro-bind".into(),
+            helper.loader.clone().into_os_string(),
+            crate::helper_runtime::LOADER.into(),
+        ]);
+        a.extend([
+            "--ro-bind".into(),
+            plan.session_dir.join("helper-shim").into_os_string(),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into(),
+        ]);
+    }
+    if !broker {
+        return;
+    }
     for cmd in crate::GUEST_COMMANDS {
-        if !crate::guest_command_available(&plan.base, cmd) {
+        if !crate::guest_command_available(&plan.host_root, cmd) {
             continue;
         }
+        a.push("--symlink".into());
+        a.push("tilo-ush".into());
+        a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
+    }
+    for cmd in &plan.legacy_commands {
         a.push("--symlink".into());
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
@@ -283,71 +529,88 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push(crate::GUEST_BROKER_SOCK.into());
 }
 
-/// The store's guest home bound over the real home path (plus the `/root`
-/// symlink uid 0 resolves to), and the user's trusted/readable grants.
+/// The rc file of a shell that marks its runs, read-only at
+/// [`crate::runs::GUEST_RC`].
+fn push_runs(a: &mut Vec<OsString>, plan: &GuestPlan) {
+    if plan.runs.is_none() {
+        return;
+    }
+    a.push("--ro-bind".into());
+    a.push(plan.session_dir.join("runs.bash").into_os_string());
+    a.push(crate::runs::GUEST_RC.into());
+}
+
+/// The environment's home, then the grants at their host paths, then the
+/// masks over anything a grant would otherwise reveal of the runtime.
 fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    // Bound over the real home path, so the guest sees the store's copy at `~`,
-    // never the user's files. `bwrap` won't create a mount point missing at the
-    // top of a fresh root, so `--dir` creates the mountpoint first.
+    let home = plan.user.home().into_os_string();
     a.push("--dir".into());
-    a.push(plan.home_mountpoint.clone().into_os_string());
+    a.push(home.clone());
     a.push("--bind".into());
     a.push(plan.guest_home.clone().into_os_string());
-    a.push(plan.home_mountpoint.clone().into_os_string());
-    // The guest is uid 0, so `getpwuid` says its home is `/root`. A symlink
-    // rather than a second bind: two mounts of one source is two things to keep
-    // in step, and `~` should resolve to the same inode `$HOME` does.
-    a.push("--symlink".into());
-    a.push(plan.home_mountpoint.clone().into_os_string());
-    a.push("/root".into());
+    a.push(home);
 
     for dir in &plan.readable_dirs {
         a.push("--ro-bind-try".into());
-        a.push(dir.clone().into_os_string());
+        a.push(plan.grant_source(dir).into_os_string());
         a.push(dir.clone().into_os_string());
     }
     for dir in &plan.trusted_dirs {
         a.push("--bind-try".into());
-        a.push(dir.clone().into_os_string());
+        a.push(plan.grant_source(dir).into_os_string());
         a.push(dir.clone().into_os_string());
     }
-}
-
-/// `/dev/fuse` and the capability bounding set — both profile-gated escape
-/// hatches, never granted to a sandboxed guest.
-fn push_capabilities(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    if plan.profile.grants_fuse() {
-        a.push("--dev-bind-try".into());
-        a.push("/dev/fuse".into());
-        a.push("/dev/fuse".into());
-    }
-    if !plan.profile.confines_namespaces() {
-        // `bwrap` empties the capability bounding set before it execs, so a guest
-        // can `unshare(CLONE_NEWUSER)` and then not write the new namespace's
-        // `uid_map` — where nested rootless podman stops. These capabilities exist
-        // only inside the guest's own namespace, so only the developer profile gets them.
-        a.push("--cap-add".into());
-        a.push("ALL".into());
+    // After the grants, so a grant of a directory that contains the store (the
+    // whole home, say) still cannot reach the store: other environments' homes,
+    // the audit log, and the records that decide what the next session sees.
+    for masked in &plan.masked {
+        let covered: Vec<PathBuf> = plan
+            .trusted_dirs
+            .iter()
+            .chain(&plan.readable_dirs)
+            .filter_map(|granted| {
+                let inside = masked.strip_prefix(plan.grant_source(granted)).ok()?;
+                Some(if inside.as_os_str().is_empty() {
+                    granted.clone()
+                } else {
+                    granted.join(inside)
+                })
+            })
+            .collect();
+        for guest_path in covered {
+            let already = a.windows(2).any(|w| {
+                matches!(w, [flag, covered] if flag == "--tmpfs" && covered == guest_path.as_os_str())
+            });
+            if !already {
+                a.push("--tmpfs".into());
+                a.push(guest_path.into_os_string());
+            }
+        }
     }
 }
 
 /// The guest's whole environment: fixed variables, the locale/timezone
 /// carried from the supervisor, the plan's own extras, and finally
 /// unsetting the store path so nothing inside the namespace can reach it.
-fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
+fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
         a.push("--setenv".into());
         a.push(k.into());
         a.push(v.into());
     };
     setenv("PATH", GUEST_PATH, a);
-    setenv("HOME", &plan.home_mountpoint.to_string_lossy(), a);
+    setenv("HOME", &plan.user.home().to_string_lossy(), a);
     setenv("TERM", &plan.term, a);
-    setenv("USER", "root", a);
-    setenv("LOGNAME", "root", a);
+    setenv("USER", &plan.user.name, a);
+    setenv("LOGNAME", &plan.user.name, a);
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
-    setenv("TILO_USH_PROFILE", plan.profile.as_str(), a);
-    setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
+    if let Some(key) = &plan.runs {
+        setenv(crate::runs::KEY_ENV, key, a);
+    }
+    if broker {
+        setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    }
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
@@ -362,8 +625,6 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
     for (k, v) in &plan.env {
         setenv(k, v, a);
     }
-    // The store holds the policy file and audit log; unreachable from inside the
-    // namespace anyway, but leaving the variable set would follow a program out.
     a.push("--unsetenv".into());
     a.push(crate::store::STORE_ENV.into());
 }
@@ -375,11 +636,10 @@ fn push_seccomp_and_command(
     plan: &GuestPlan,
     seccomp_fd: Option<std::os::fd::RawFd>,
 ) {
-    // Placed last of the sandbox flags and applied by `bwrap` immediately before
-    // it execs, after every mount above — this is what stops the supervisor's
-    // need for `mount`/`unshare` from reaching anything the user runs. `bwrap`
-    // takes an already-open descriptor rather than a path, so [`exec`] and
-    // [`spawn`] open the blob (see [`open_seccomp_fd`]) themselves.
+    // Applied by `bwrap` immediately before it execs, after every mount above —
+    // this is what stops the supervisor's need for `mount`/`unshare` from
+    // reaching anything the user runs. `bwrap` takes an already-open
+    // descriptor rather than a path (see [`open_seccomp_fd`]).
     if let Some(fd) = seccomp_fd {
         a.push("--seccomp".into());
         a.push(fd.to_string().into());
@@ -388,6 +648,10 @@ fn push_seccomp_and_command(
     a.push("--".into());
     if plan.command.is_empty() {
         a.push(plan.shell.clone().into_os_string());
+        if plan.runs.is_some() {
+            a.push("--rcfile".into());
+            a.push(crate::runs::GUEST_RC.into());
+        }
         a.push("-i".into());
     } else {
         for arg in &plan.command {
@@ -396,9 +660,9 @@ fn push_seccomp_and_command(
     }
 }
 
-/// `remove_dir_all`, but restoring traversal permission as it descends:
-/// overlayfs creates `<workdir>/work` with mode `000`, so an ordinary
-/// recursive delete stops there with "permission denied".
+/// `remove_dir_all`, but restoring traversal and write permission as it
+/// descends: a tool may leave read-only directories in its home or `/var`,
+/// and an ordinary recursive delete stops there with "permission denied".
 pub fn remove_dir_all_forced(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = path.symlink_metadata() else {
@@ -415,219 +679,6 @@ pub fn remove_dir_all_forced(path: &Path) {
     } else {
         let _ = std::fs::remove_file(path);
     }
-}
-
-/// The symlinks the base's root directory has, recreated in the guest's.
-///
-/// A root built from overlays and binds starts with only the directories
-/// those produced, so every symlink the real root carries is missing —
-/// `/bin`/`/sbin`/`/lib`/`/lib64` → `usr/…` (without them `execvp("/bin/sh")`
-/// fails), `/home` → `var/home` on an ostree system, and `/var/run`/
-/// `/var/lock` → `/run`. Read from the base rather than hard-coded, since a
-/// guest that disagrees with its base about where `/bin` points is a guest
-/// where paths mean two different things; the usrmerge set is only the floor
-/// for a base that lists none.
-pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
-    let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(base) {
-        let mut found: Vec<(PathBuf, PathBuf)> = entries
-            .flatten()
-            .filter_map(|e| {
-                let path = e.path();
-                if !path.symlink_metadata().ok()?.file_type().is_symlink() {
-                    return None;
-                }
-                let name = path.file_name()?;
-                // `/root` is the runtime's to place: the guest is uid 0, so `getpwuid` sends
-                // it there, and it must land on the guest's home, not the base's root account.
-                if name == "root" {
-                    return None;
-                }
-                let target = std::fs::read_link(&path).ok()?;
-                Some((target, PathBuf::from("/").join(name)))
-            })
-            .collect();
-        found.sort();
-        out.extend(found);
-    }
-    for (target, link) in [
-        ("usr/bin", "/bin"),
-        ("usr/sbin", "/sbin"),
-        ("usr/lib", "/lib"),
-        ("usr/lib64", "/lib64"),
-    ] {
-        let link = PathBuf::from(link);
-        if !out.iter().any(|(_, l)| *l == link) {
-            out.push((PathBuf::from(target), link));
-        }
-    }
-    // One level down, so not in the root listing.
-    out.push((PathBuf::from("../run"), PathBuf::from("/var/run")));
-    out.push((PathBuf::from("../run/lock"), PathBuf::from("/var/lock")));
-    out
-}
-
-/// Where to bind the host's resolver: `(source on host, destination in guest)`.
-///
-/// Destination is the *link target* when `/etc/resolv.conf` is a symlink
-/// (usually under `/run`, replaced by a tmpfs), else the path itself. `None`
-/// means the base has no resolver — a machine with no network, not an error.
-pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
-    let link = base.join("etc/resolv.conf");
-    let meta = link.symlink_metadata().ok()?;
-    let resolved = std::fs::canonicalize(&link).ok()?;
-    if !meta.file_type().is_symlink() {
-        return Some((resolved, PathBuf::from("/etc/resolv.conf")));
-    }
-    // The guest-visible path is the resolved one with the base stripped off.
-    let inside = resolved
-        .strip_prefix(base)
-        .map_or_else(|_| resolved.clone(), |p| PathBuf::from("/").join(p));
-    Some((resolved, inside))
-}
-
-/// The subordinate id range the real user owns, from `/etc/subuid`. `dsh`
-/// needs it: rootless `podman` allocates uids from this range to own an
-/// image's files. `None` is a normal state on a machine with no containers.
-pub fn subid_range(subid_file: &Path, user: &str, uid: u32) -> Option<(u32, u32)> {
-    let text = std::fs::read_to_string(subid_file).ok()?;
-    for line in text.lines() {
-        let mut parts = line.split(':');
-        let who = parts.next()?.trim();
-        let start: u32 = parts.next()?.trim().parse().ok()?;
-        let count: u32 = parts.next()?.trim().parse().ok()?;
-        if who == user || who.parse::<u32>() == Ok(uid) {
-            return Some((start, count));
-        }
-    }
-    None
-}
-
-/// Build a user namespace with the caller's whole subordinate id range
-/// mapped, and return a descriptor naming it. Only [`Profile::Dsh`] uses
-/// this: `bwrap --unshare-user` maps exactly one uid, but rootless `podman`
-/// needs a range since an image's files are owned by a spread of uids.
-/// Installing the range needs `CAP_SETUID` in the parent namespace, which
-/// `newuidmap`/`newgidmap` carry as a file capability instead.
-///
-/// Forks a child into a bare user namespace, lets the helpers write its maps
-/// from outside, then holds a descriptor to the namespace while the child
-/// exits. `None` when the user has no allocation or the helpers are absent —
-/// `dsh` then starts with a single mapped uid rather than failing.
-pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
-    // SAFETY: `geteuid`/`getegid` cannot fail.
-    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
-    let user = std::env::var("USER").unwrap_or_default();
-    let (uid_start, uid_count) = subid_range(&subid_dir.join("subuid"), &user, uid)?;
-    let (gid_start, gid_count) = subid_range(&subid_dir.join("subgid"), &user, gid)?;
-
-    // A pipe is how the child says "the namespace exists" and how the parent
-    // says "the maps are written, you may go".
-    let mut ready = [0i32; 2];
-    let mut go = [0i32; 2];
-    // SAFETY: both arrays are two-element `int` buffers, which is what `pipe`
-    // fills in.
-    if unsafe { libc::pipe(ready.as_mut_ptr()) } != 0 || unsafe { libc::pipe(go.as_mut_ptr()) } != 0
-    {
-        return None;
-    }
-
-    // SAFETY: the child performs only async-signal-safe work — `unshare`,
-    // `write`, `read`, `_exit` — and never returns into this program.
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return None;
-    }
-    if pid == 0 {
-        // SAFETY: as above; every call here is async-signal-safe.
-        unsafe {
-            libc::close(ready[0]);
-            libc::close(go[1]);
-            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
-                libc::_exit(1);
-            }
-            let byte = 1u8;
-            libc::write(ready[1], (&raw const byte).cast::<libc::c_void>(), 1);
-            let mut buf = 0u8;
-            libc::read(go[0], (&raw mut buf).cast::<libc::c_void>(), 1);
-            libc::_exit(0)
-        }
-    }
-
-    // SAFETY: descriptors this process owns.
-    unsafe {
-        libc::close(ready[1]);
-        libc::close(go[0]);
-    }
-    let mut buf = 0u8;
-    // SAFETY: `ready[0]` is a live read end owned by this process.
-    let got = unsafe { libc::read(ready[0], (&raw mut buf).cast::<libc::c_void>(), 1) };
-    if got != 1 {
-        reap(pid, go[1], ready[0]);
-        return None;
-    }
-
-    // uid 0 in the guest is the real user; 1.. is the subordinate range. The
-    // same shape rootless podman installs on the host.
-    let ok = run_idmap("newuidmap", pid, &[(0, uid, 1), (1, uid_start, uid_count)])
-        && run_idmap("newgidmap", pid, &[(0, gid, 1), (1, gid_start, gid_count)]);
-    if !ok {
-        reap(pid, go[1], ready[0]);
-        return None;
-    }
-
-    // Holding this open is what keeps the namespace alive after the child exits.
-    let ns = std::fs::File::open(format!("/proc/{pid}/ns/user")).ok();
-    reap(pid, go[1], ready[0]);
-    ns.and_then(|f| clear_cloexec(f).ok())
-}
-
-fn reap(pid: libc::pid_t, go_write: i32, ready_read: i32) {
-    let byte = 1u8;
-    // SAFETY: descriptors and a child pid this process owns.
-    unsafe {
-        libc::write(go_write, (&raw const byte).cast::<libc::c_void>(), 1);
-        libc::close(go_write);
-        libc::close(ready_read);
-        let mut status = 0i32;
-        libc::waitpid(pid, &raw mut status, 0);
-    }
-}
-
-fn run_idmap(program: &str, pid: libc::pid_t, ranges: &[(u32, u32, u32)]) -> bool {
-    let mut cmd = std::process::Command::new(program);
-    cmd.arg(pid.to_string());
-    for (inside, outside, count) in ranges {
-        cmd.arg(inside.to_string());
-        cmd.arg(outside.to_string());
-        cmd.arg(count.to_string());
-    }
-    match cmd.status() {
-        Ok(s) if s.success() => true,
-        Ok(s) => {
-            tracing::warn!("{program} exited {s}; the guest gets a single mapped uid");
-            false
-        }
-        Err(e) => {
-            tracing::warn!("{program} could not be run ({e}); the guest gets a single mapped uid");
-            false
-        }
-    }
-}
-
-fn clear_cloexec(file: std::fs::File) -> std::io::Result<std::fs::File> {
-    use std::os::fd::AsRawFd;
-    let fd = file.as_raw_fd();
-    // SAFETY: `fd` is owned by `file`, which is returned to the caller.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(file)
 }
 
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
@@ -654,87 +705,153 @@ pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::
     Ok((file, fd))
 }
 
-/// Spawn the guest, replacing the current process. Never returns on success:
-/// `bwrap` becomes the process the caller was, so a `SIGINT` reaches the
-/// guest and the exit status is the guest's own.
-pub fn exec(plan: &GuestPlan) -> std::io::Error {
-    use std::os::unix::process::CommandExt;
-    let (_blob, fd) = match open_seccomp_fd(&plan.seccomp_blob) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let (_ns, ns_fd) = userns_for(plan);
-    let argv = build_argv(plan, Some(fd), ns_fd);
-    // `build_argv` always pushes "bwrap" first, so this never actually
-    // misses, but the return type has no way to say that.
-    let Some((program, rest)) = argv.split_first() else {
-        return std::io::Error::other("build_argv produced an empty argv");
-    };
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(rest);
-    cmd.exec()
-}
-
-/// Spawn the guest as a child.
+/// Spawn the guest as a child, inside `netns` when given (`bwrap` then
+/// nests its user namespace in the one that owns it).
 ///
 /// # Errors
 ///
 /// Returns an error if the seccomp filter can't be opened, or the child
 /// process can't be spawned.
-pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
+pub fn spawn(
+    plan: &GuestPlan,
+    netns: Option<&tilo_egress::Netns>,
+) -> std::io::Result<std::process::Child> {
     let (_blob, fd) = open_seccomp_fd(&plan.seccomp_blob)?;
-    let (_ns, ns_fd) = userns_for(plan);
-    let argv = build_argv(plan, Some(fd), ns_fd);
+    let argv = build_argv(plan, Some(fd));
     // `build_argv` always pushes "bwrap" first, so this never actually
     // misses, but the return type has no way to say that.
     let Some((program, rest)) = argv.split_first() else {
         return Err(std::io::Error::other("build_argv produced an empty argv"));
     };
-    std::process::Command::new(program).args(rest).spawn()
-}
-
-/// The prepared user namespace for a plan, if its profile asks for one; the
-/// `File` is returned so the caller keeps it alive until `bwrap` joins it.
-fn userns_for(plan: &GuestPlan) -> (Option<std::fs::File>, Option<std::os::fd::RawFd>) {
-    use std::os::fd::AsRawFd;
-    if !plan.profile.grants_subid_range() {
-        return (None, None);
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(rest);
+    // Direct `ush -c` must expose its command output and startup errors;
+    // served sessions inherit the supervisor's already-attached pty here.
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+    if let Some(netns) = netns {
+        netns.enter(&mut cmd);
     }
-    if let Some(file) = prepare_userns(Path::new("/etc")) {
-        let fd = file.as_raw_fd();
-        (Some(file), Some(fd))
-    } else {
-        tracing::warn!(
-            "no subordinate id range is available; this session gets a \
-             single mapped uid and nested rootless containers will need \
-             storage.conf's ignore_chown_errors"
-        );
-        (None, None)
+    if let Some(editor) = &plan.editor {
+        use std::os::fd::{AsFd, AsRawFd};
+        use std::os::unix::process::CommandExt;
+        let fd = editor.producer.as_fd().as_raw_fd();
+        // SAFETY: only the qualified producer endpoint crosses this trusted exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
+    cmd.spawn()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn plan() -> GuestPlan {
+    #[test]
+    fn approved_check_mounts_source_read_only_target_writeable_and_no_broker() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_in(dir.path());
+        let argv = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        assert!(argv.iter().any(|s| s == "--unshare-net"));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/private/source", "/project"])
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--bind", "/private/build", "/project/target"])
+        );
+        assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
+        assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    }
+
+    #[test]
+    fn native_editor_mounts_remain_read_only_with_broker_free_check_guests() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plan = plan_in(dir.path());
+        let (_host, producer) = runtime_portal::editor::Socket::pair().unwrap();
+        let module = dir.path().join("producer.so");
+        let rc = dir.path().join("rc");
+        plan.editor = Some(crate::editor::GuestEditor {
+            producer: std::sync::Arc::new(producer),
+            module: module.clone(),
+            rc: rc.clone(),
+        });
+        let ordinary = build_argv(&plan, Some(42));
+        let check = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        for argv in [&ordinary, &check] {
+            for (source, target) in [
+                (&module, "/run/ush-editor/producer.so"),
+                (&rc, "/run/ush-editor/rc"),
+            ] {
+                assert!(argv.windows(3).any(|w| {
+                    w[0] == "--ro-bind" && w[1] == source.as_os_str() && w[2] == target
+                }));
+            }
+        }
+        assert!(ordinary.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!check.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!check.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    }
+
+    fn plan_in(dir: &Path) -> GuestPlan {
+        let tool = dir.join("pkgs/tool");
+        let runtime = dir.join("pkgs/runtime");
+        for tree in [&tool, &runtime] {
+            std::fs::create_dir_all(tree.join("usr/bin")).unwrap();
+        }
+        std::fs::create_dir_all(runtime.join("etc")).unwrap();
+        std::fs::write(
+            runtime.join("etc/passwd"),
+            "root:x:0:0:root:/root:/bin/bash\nyou:x:4242:4242::/nowhere:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(runtime.join("etc/group"), "root:x:0:\nwheel:x:10:\n").unwrap();
         GuestPlan {
-            profile: Profile::Ush,
-            base: PathBuf::from("/"),
-            upper: PathBuf::from("/store/layers/persistent"),
-            lower_layers: Vec::new(),
-            workdir_root: PathBuf::from("/store/sessions/s1"),
-            guest_home: PathBuf::from("/store/home"),
-            home_mountpoint: PathBuf::from("/var/home/you"),
+            images: vec![tool, runtime],
+            host_root: dir.join("host"),
+            session_dir: dir.join("store/sessions/s1"),
+            var_dir: dir.join("store/environments/default/var"),
+            guest_home: dir.join("store/environments/default/home"),
+            user: GuestUser {
+                name: "you".into(),
+                uid: 1000,
+                gid: 1000,
+            },
+            environment: "Default".into(),
+            masked: vec![dir.join("store")],
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
+            grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
-            broker_socket: PathBuf::from("/store/sessions/s1/broker.sock"),
-            seccomp_blob: PathBuf::from("/store/sessions/s1/ush.bpf"),
+            helper_runtime: None,
+            legacy_commands: vec!["code".into()],
+            broker_socket: dir.join("store/sessions/s1/broker.sock"),
+            seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),
             shell: PathBuf::from("/usr/bin/bash"),
+            runs: None,
             term: "xterm-256color".into(),
             env: Vec::new(),
+            resolver: None,
+            editor: None,
         }
     }
 
@@ -744,499 +861,309 @@ mod tests {
             .collect()
     }
 
-    fn window(argv: &[OsString], n: usize) -> Vec<Vec<String>> {
-        strings(argv)
-            .windows(n)
-            .map(<[std::string::String]>::to_vec)
-            .collect()
+    fn windows(argv: &[OsString], n: usize) -> Vec<Vec<String>> {
+        strings(argv).windows(n).map(<[String]>::to_vec).collect()
+    }
+
+    fn path(p: &Path) -> String {
+        p.display().to_string()
     }
 
     #[test]
-    fn the_base_is_overlaid_by_layers_and_never_bound_writable() {
-        // phase: the_base_subtrees_are_overlaid_with_the_layer_on_top
-        {
-            let p = plan();
-            let argv = build_argv(&p, Some(9), None);
-            let w4 = window(&argv, 4);
-            for subtree in ["usr", "etc"] {
-                assert!(
-                    w4.iter().any(|w| w[0] == "--overlay"
-                        && w[1] == format!("/store/layers/persistent/{subtree}")
-                        && w[2] == format!("/store/sessions/s1/work/{subtree}")
-                        && w[3] == format!("/{subtree}")),
-                    "/{subtree} is not overlaid onto the layer: {:?}",
-                    strings(&argv)
-                );
-            }
-        }
-        // phase: nothing_binds_a_base_subtree_writable
-        // The property the whole design rests on. If the host's `/usr` were ever
-        // bound read-write, a guest could rewrite the operating system.
-        {
-            let p = plan();
-            let argv = strings(&build_argv(&p, Some(9), None));
-            for (i, arg) in argv.iter().enumerate() {
-                if arg == "--bind" || arg == "--bind-try" || arg == "--dev-bind" {
-                    let src = &argv[i + 1];
-                    for subtree in BASE_SUBTREES {
-                        let owned = format!("/{subtree}");
-                        assert!(
-                            !(src == &owned || src.starts_with(&format!("{owned}/"))),
-                            "{arg} {src} would make the host's {owned} writable"
-                        );
-                    }
-                }
-            }
-        }
-        // phase: an_ephemeral_session_stacks_the_persistent_layer_below_it
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let persistent = dir.path().join("persistent");
-            std::fs::create_dir_all(persistent.join("usr")).unwrap();
-            std::fs::create_dir_all(persistent.join("etc")).unwrap();
+    fn the_guest_has_its_own_uts_namespace_without_renaming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+        assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
+        assert!(
+            !argv.iter().any(|arg| arg == "--hostname"),
+            "a container's seccomp profile refuses sethostname"
+        );
+    }
 
-            let mut p = plan();
-            p.upper = dir.path().join("ephemeral/s1");
-            p.lower_layers = vec![persistent.clone()];
-            let argv = strings(&build_argv(&p, Some(9), None));
+    #[test]
+    fn installed_legacy_apps_get_a_shim_on_the_guest_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan_in(dir.path());
+        let shims = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            shims.iter().any(|w| w[0] == "--symlink"
+                && w[1] == "tilo-ush"
+                && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
+            "an installed legacy app has no shim in the guest"
+        );
+    }
 
-            let usr_overlay = argv.iter().position(|a| a == "--overlay").unwrap();
-            let srcs: Vec<&String> = argv[..usr_overlay]
+    #[test]
+    fn the_images_stack_read_only_with_no_writable_upper() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan_in(dir.path());
+        p.prepare().unwrap();
+        let argv = strings(&build_argv(&p, Some(9)));
+
+        // `/usr`: the tool over the runtime, mounted read-only. `bwrap` takes
+        // the bottom layer first, so the runtime is named before the tool.
+        let usr = argv
+            .windows(2)
+            .position(|w| w[0] == "--ro-overlay" && w[1] == "/usr")
+            .expect("/usr is not a read-only overlay");
+        let srcs: Vec<&String> = argv[..usr]
+            .windows(2)
+            .filter(|w| w[0] == "--overlay-src")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(
+            srcs,
+            vec![
+                &path(&p.images[1].join("usr")),
+                &path(&p.images[0].join("usr"))
+            ]
+        );
+        // `/etc`: the session's generated entries over the runtime's.
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--ro-overlay" && w[1] == "/etc")
+        );
+        assert!(argv.contains(&path(&p.etc_overlay().join("etc"))));
+
+        // The property the design rests on: nothing is writable below an
+        // image, so a guest can add to its environment only through the record.
+        assert!(
+            !argv
                 .iter()
-                .enumerate()
-                .filter(|(i, a)| *a == "--overlay-src" && *i + 1 < usr_overlay)
-                .map(|(i, _)| &argv[i + 1])
-                .collect();
-            assert_eq!(
-                srcs,
-                vec![
-                    &persistent.join("usr").to_string_lossy().into_owned(),
-                    &"/usr".to_string()
-                ],
-                "the persistent layer must sit between the session layer and the base"
-            );
-        }
-        // phase: prepare_clears_a_stale_workdir
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut p = plan();
-            p.workdir_root = dir.path().join("s1");
-            p.guest_home = dir.path().join("home");
-            let stale = p.workdir_for("usr").join("work/leftover");
-            std::fs::create_dir_all(&stale).unwrap();
-            p.prepare().unwrap();
-            assert!(p.workdir_for("usr").is_dir());
-            assert!(
-                !stale.exists(),
-                "a workdir left by a crashed session makes the next mount fail"
-            );
-            assert!(p.guest_home.is_dir());
-        }
-    }
-
-    #[test]
-    fn the_root_carries_usrmerge_links_and_mirrors_the_bases_symlinks() {
-        // phase: the_root_carries_the_usrmerge_links_even_for_a_base_that_lists_none
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let links = root_symlinks(dir.path());
-            for (target, link) in [
-                ("usr/bin", "/bin"),
-                ("usr/sbin", "/sbin"),
-                ("usr/lib", "/lib"),
-                ("usr/lib64", "/lib64"),
-                // Without these, a path under /var/run reads ENOENT rather than confined.
-                ("../run", "/var/run"),
-                ("../run/lock", "/var/lock"),
-            ] {
+                .any(|a| a == "--overlay" || a == "--tmp-overlay"),
+            "a writable overlay upper crept in: {argv:?}"
+        );
+        for (i, arg) in argv.iter().enumerate() {
+            if arg == "--bind" || arg == "--bind-try" || arg == "--dev-bind" {
+                let src = Path::new(&argv[i + 1]);
                 assert!(
-                    links
-                        .iter()
-                        .any(|(t, l)| t == Path::new(target) && l == Path::new(link)),
-                    "{link} -> {target} missing; a guest without it cannot run /bin/sh \
-                 or reach /var/run: {links:?}"
-                );
-            }
-        }
-        // phase: the_root_mirrors_the_bases_own_symlinks
-        // `/home` is a symlink to `var/home` on an ostree system; without mirroring
-        // it, paths the user types under `/home` miss where the runtime bound it.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let base = dir.path();
-            std::fs::create_dir_all(base.join("var/home")).unwrap();
-            std::os::unix::fs::symlink("var/home", base.join("home")).unwrap();
-            std::os::unix::fs::symlink("usr/bin", base.join("bin")).unwrap();
-
-            // A base that keeps root's home elsewhere, as an ostree system does.
-            std::os::unix::fs::symlink("var/roothome", base.join("root")).unwrap();
-
-            let links = root_symlinks(base);
-            assert!(
-                links
-                    .iter()
-                    .any(|(t, l)| t == Path::new("var/home") && l == Path::new("/home")),
-                "the base's /home -> var/home was not mirrored: {links:?}"
-            );
-            assert!(
-                !links.iter().any(|(_, l)| l == Path::new("/root")),
-                "/root belongs to the runtime — the guest is uid 0, so getpwuid \
-             sends it there and it must reach the guest's home, not the base's \
-             root account: {links:?}"
-            );
-            assert_eq!(
-                links.iter().filter(|(_, l)| l == Path::new("/bin")).count(),
-                1,
-                "a link the base already declares must not be added twice: {links:?}"
-            );
-
-            let mut p = plan();
-            p.base = base.to_path_buf();
-            let argv = build_argv(&p, Some(9), None);
-            assert!(
-                window(&argv, 3)
-                    .iter()
-                    .any(|w| w[0] == "--symlink" && w[1] == "var/home" && w[2] == "/home"),
-                "the mirrored link never reached the argv"
-            );
-        }
-    }
-
-    #[test]
-    fn the_guest_binds_only_the_store_home_grants_and_runtime() {
-        // phase: the_guest_home_is_the_stores_copy_and_never_the_real_one
-        {
-            let argv = build_argv(&plan(), Some(9), None);
-            let w3 = window(&argv, 3);
-            assert!(
-                w3.iter()
-                    .any(|w| w[0] == "--bind" && w[1] == "/store/home" && w[2] == "/var/home/you"),
-                "the store's home must be bound over the real home path"
-            );
-            assert!(
-                w3.iter()
-                    .any(|w| w[0] == "--symlink" && w[1] == "/var/home/you" && w[2] == "/root"),
-                "the guest is uid 0, so getpwuid points at /root; it has to reach              the same directory as $HOME"
-            );
-            assert!(
-                !strings(&argv)
-                    .windows(2)
-                    .any(|w| w[0].starts_with("--bind") && w[1] == "/var/home/you"),
-                "the real home directory must not be a bind source"
-            );
-        }
-        // phase: a_trusted_directory_is_bound_read_write_and_a_readable_one_read_only
-        {
-            let mut p = plan();
-            p.trusted_dirs = vec![PathBuf::from("/var/home/you/src")];
-            p.readable_dirs = vec![PathBuf::from("/var/home/you/notes")];
-            let argv = build_argv(&p, Some(9), None);
-            let w3 = window(&argv, 3);
-            assert!(w3.iter().any(|w| w[0] == "--bind-try"
-                && w[1] == "/var/home/you/src"
-                && w[2] == "/var/home/you/src"));
-            assert!(w3.iter().any(|w| w[0] == "--ro-bind-try"
-                && w[1] == "/var/home/you/notes"
-                && w[2] == "/var/home/you/notes"));
-        }
-        // phase: a_guest_with_no_grants_binds_no_user_content
-        // A guest with no grants must see no host *content* beyond the base —
-        // asserted on the argv rather than on the prose. Three things are bound and
-        // each must justify itself: the store, the runtime binary (read-only, so
-        // the guest can't rewrite the next session's confinement), and the resolver.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("etc")).unwrap();
-            std::fs::write(dir.path().join("etc/resolv.conf"), b"nameserver 1.1.1.1\n").unwrap();
-            let mut p = plan();
-            p.base = dir.path().to_path_buf();
-
-            let argv = strings(&build_argv(&p, Some(9), None));
-            let resolver = dir
-                .path()
-                .join("etc/resolv.conf")
-                .canonicalize()
-                .unwrap()
-                .display()
-                .to_string();
-
-            for (i, arg) in argv.iter().enumerate() {
-                if !(arg.starts_with("--bind") || arg.starts_with("--ro-bind")) {
-                    continue;
-                }
-                let src = &argv[i + 1];
-                if src == &resolver {
-                    assert!(
-                        arg.starts_with("--ro-bind"),
-                        "the resolver must be read-only: {arg} {src}"
-                    );
-                    continue;
-                }
-                assert!(
-                    src.starts_with("/store/") || src.starts_with("/usr/libexec/"),
-                    "a guest with no grants binds {src}, which is neither the store, \
-                 the runtime binary, nor the resolver"
-                );
-            }
-        }
-        // phase: the_runtime_binary_is_bound_read_only
-        {
-            let argv = strings(&build_argv(&plan(), Some(9), None));
-            let i = argv
-                .iter()
-                .position(|a| a == "/usr/libexec/tilo-ush")
-                .expect("runtime binary not bound");
-            assert_eq!(
-                argv[i - 1],
-                "--ro-bind",
-                "a guest that could rewrite the runtime binary could rewrite the \
-             next session's confinement"
-            );
-        }
-        // phase: the_store_location_is_unset_in_the_guest
-        {
-            let argv = strings(&build_argv(&plan(), Some(9), None));
-            let i = argv.iter().position(|a| a == "--unsetenv").unwrap();
-            assert_eq!(argv[i + 1], crate::store::STORE_ENV);
-        }
-    }
-
-    #[test]
-    fn the_guest_command_line_applies_seccomp_and_runtime_shims() {
-        // phase: the_seccomp_blob_is_applied_and_the_guest_argv_comes_last
-        {
-            let argv = strings(&build_argv(&plan(), Some(9), None));
-            let sep = argv
-                .iter()
-                .position(|a| a == "--")
-                .expect("no -- separator");
-            let blob = argv
-                .iter()
-                .position(|a| a == "--seccomp")
-                .expect("no seccomp filter");
-            assert!(
-                blob < sep,
-                "the filter must be a sandbox flag, not part of the guest's argv"
-            );
-            assert_eq!(argv[blob + 1], "9");
-            assert_eq!(argv[sep + 1], "/usr/bin/bash");
-        }
-        // phase: a_command_replaces_the_interactive_shell
-        {
-            let mut p = plan();
-            p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
-            let argv = strings(&build_argv(&p, Some(9), None));
-            let sep = argv.iter().position(|a| a == "--").unwrap();
-            assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
-            assert!(
-                !argv[sep..].contains(&"-i".to_string()),
-                "`ush -c` must not open an interactive shell"
-            );
-        }
-        // phase: the_runtime_commands_are_on_path_ahead_of_the_layer
-        {
-            let argv = strings(&build_argv(&plan(), Some(9), None));
-            let i = argv.iter().position(|a| a == "PATH").unwrap();
-            assert!(
-                argv[i + 1].starts_with(&format!("{}:", crate::GUEST_BIN_DIR)),
-                "PATH is {}; the runtime's own commands must come first",
-                argv[i + 1]
-            );
-            let w3 = window(&build_argv(&plan(), Some(9), None), 3);
-            for cmd in crate::GUEST_COMMANDS {
-                if !crate::guest_command_available(&plan().base, cmd) {
-                    continue;
-                }
-                assert!(
-                    w3.iter().any(|w| w[0] == "--symlink"
-                        && w[1] == "tilo-ush"
-                        && w[2] == format!("{}/{cmd}", crate::GUEST_BIN_DIR)),
-                    "`{cmd}` has no shim in the guest"
-                );
-            }
-        }
-        // phase: management_shims_follow_provider_availability
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut p = plan();
-            p.base = dir.path().to_path_buf();
-            let without = strings(&build_argv(&p, Some(9), None));
-            assert!(!without.iter().any(|arg| arg.ends_with("/tilo")));
-            assert!(!without.iter().any(|arg| arg.ends_with("/app")));
-
-            let bin = dir.path().join("usr/bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            std::fs::write(bin.join("tilo"), "").unwrap();
-            std::fs::write(bin.join("app"), "").unwrap();
-            let provider = dir.path().join("usr/libexec/tilo-deployment");
-            std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
-            std::fs::write(provider, "").unwrap();
-            let with = strings(&build_argv(&p, Some(9), None));
-            for command in ["tilo", "system", "app", "store"] {
-                assert!(
-                    with.iter()
-                        .any(|arg| arg == &format!("{}/{command}", crate::GUEST_BIN_DIR)),
-                    "{command} shim missing despite provider"
+                    !p.images.iter().any(|image| src.starts_with(image)),
+                    "{arg} {} would make an image writable",
+                    src.display()
                 );
             }
         }
     }
 
     #[test]
-    fn only_the_developer_profile_gets_fuse_capabilities_and_userns_changes() {
-        // phase: only_the_developer_profile_gets_dev_fuse
-        {
-            let ush = strings(&build_argv(&plan(), Some(9), None));
-            assert!(!ush.iter().any(|a| a == "/dev/fuse"));
-
-            let mut p = plan();
-            p.profile = Profile::Dsh;
-            let dsh = strings(&build_argv(&p, Some(9), None));
-            assert!(
-                dsh.windows(3).any(|w| w[0] == "--dev-bind-try"
-                    && w[1] == "/dev/fuse"
-                    && w[2] == "/dev/fuse"),
-                "dsh must have /dev/fuse; container tooling needs it"
-            );
-        }
-        // phase: only_the_developer_profile_keeps_a_capability_bounding_set
-        // The capability bounding set is the difference between "can create a
-        // namespace" and "can populate one". Only the profile that is not a
-        // sandbox gets it.
-        {
-            let ush = strings(&build_argv(&plan(), Some(9), None));
-            assert!(
-                !ush.iter().any(|a| a == "--cap-add"),
-                "a sandboxed guest must exec with an empty bounding set: {ush:?}"
-            );
-
-            let mut p = plan();
-            p.profile = Profile::Dsh;
-            let dsh = strings(&build_argv(&p, Some(9), None));
-            assert!(
-                dsh.windows(2).any(|w| w[0] == "--cap-add" && w[1] == "ALL"),
-                "without the bounding set a dsh guest can unshare a user namespace \
-             and then not write its uid_map, which is where nested rootless \
-             podman stops: {dsh:?}"
-            );
-        }
-        // phase: a_prepared_user_namespace_replaces_unshare_user
-        // A prepared namespace replaces `--unshare-user`; the two cannot both be
-        // passed, and getting it wrong would silently drop the id mapping.
-        {
-            let without = strings(&build_argv(&plan(), Some(9), None));
-            assert!(without.iter().any(|a| a == "--unshare-user"));
-            assert!(!without.iter().any(|a| a == "--userns"));
-
-            let with = strings(&build_argv(&plan(), Some(9), Some(11)));
-            assert!(
-                !with.iter().any(|a| a == "--unshare-user"),
-                "bwrap refuses --userns together with --unshare-user"
-            );
-            let i = with.iter().position(|a| a == "--userns").unwrap();
-            assert_eq!(with[i + 1], "11");
-        }
+    fn a_single_tree_is_bound_read_only_since_overlayfs_needs_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        p.images.remove(0);
+        let argv = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            argv.iter().any(|w| w[0] == "--ro-bind"
+                && w[1] == path(&p.images[0].join("usr"))
+                && w[2] == "/usr"),
+            "{argv:?}"
+        );
     }
 
     #[test]
-    fn the_resolver_is_bound_at_its_real_path_after_the_run_tmpfs() {
-        // phase: the_resolver_is_bound_at_the_path_the_symlink_points_at
-        // A dangling `/etc/resolv.conf` is the difference between a shell that can
-        // install a package and one that reports every mirror as unreachable.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let base = dir.path();
-            std::fs::create_dir_all(base.join("etc")).unwrap();
-            std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
-            let real = base.join("run/systemd/resolve/stub-resolv.conf");
-            std::fs::write(&real, b"nameserver 127.0.0.53\n").unwrap();
-            std::os::unix::fs::symlink(
-                "../run/systemd/resolve/stub-resolv.conf",
-                base.join("etc/resolv.conf"),
-            )
+    fn the_guest_is_the_real_user_by_a_single_id_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan_in(dir.path());
+        let argv = strings(&build_argv(&p, Some(9)));
+        let uid = argv.iter().position(|a| a == "--uid").unwrap();
+        let gid = argv.iter().position(|a| a == "--gid").unwrap();
+        assert_eq!(argv[uid + 1], "1000", "the guest must not be uid 0");
+        assert_eq!(argv[gid + 1], "1000");
+        assert!(argv.contains(&"--unshare-user".to_string()));
+        assert!(
+            !argv.iter().any(|a| a == "--userns" || a == "--cap-add"),
+            "no prepared namespace and no capabilities: {argv:?}"
+        );
+        let w3 = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            w3.iter()
+                .any(|w| w[0] == "--setenv" && w[1] == "USER" && w[2] == "you")
+        );
+        assert!(
+            w3.iter()
+                .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == "/home/you")
+        );
+
+        // passwd names the user at its real uid, replacing the image's claim on
+        // the name; group gains the primary group.
+        p.prepare().unwrap();
+        let passwd = std::fs::read_to_string(p.etc_overlay().join("etc/passwd")).unwrap();
+        assert!(passwd.contains("root:x:0:0:"), "{passwd}");
+        assert!(
+            passwd.contains("you:x:1000:1000::/home/you:/usr/bin/bash"),
+            "{passwd}"
+        );
+        assert!(!passwd.contains("4242"), "{passwd}");
+        let group = std::fs::read_to_string(p.etc_overlay().join("etc/group")).unwrap();
+        assert!(
+            group.contains("wheel:x:10:") && group.contains("you:x:1000:"),
+            "{group}"
+        );
+    }
+
+    #[test]
+    fn home_var_and_grants_are_bound_and_the_store_stays_covered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        let argv = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            argv.iter()
+                .any(|w| w[0] == "--bind" && w[1] == path(&p.guest_home) && w[2] == "/home/you")
+        );
+        for sub in ENVIRONMENT_VAR_DIRS {
+            assert!(argv.iter().any(|w| w[0] == "--bind"
+                && w[1] == path(&p.var_dir.join(sub))
+                && w[2] == format!("/var/{sub}")));
+        }
+        let flat = strings(&build_argv(&p, Some(9)));
+        let var_tmpfs = flat
+            .windows(2)
+            .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
             .unwrap();
-
-            let (src, dst) = resolv_bind(base).expect("no resolver bind");
-            assert_eq!(src, real.canonicalize().unwrap());
-            assert_eq!(
-                dst,
-                PathBuf::from("/run/systemd/resolve/stub-resolv.conf"),
-                "binding it at /etc/resolv.conf would try to write through a \
-             dangling symlink; the link target is the destination"
-            );
-        }
-        // phase: the_resolver_bind_comes_after_the_run_tmpfs
-        // `bwrap` applies its arguments in order, so a bind under `/run` placed
-        // before `--tmpfs /run` gets mounted and covered over — symptom: every
-        // name lookup fails, which reads as "no network" not an ordering bug.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let base = dir.path();
-            std::fs::create_dir_all(base.join("etc")).unwrap();
-            std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
-            std::fs::write(
-                base.join("run/systemd/resolve/stub-resolv.conf"),
-                b"nameserver 1.1.1.1\n",
-            )
-            .unwrap();
-            std::os::unix::fs::symlink(
-                "../run/systemd/resolve/stub-resolv.conf",
-                base.join("etc/resolv.conf"),
-            )
-            .unwrap();
-
-            let mut p = plan();
-            p.base = base.to_path_buf();
-            let argv = strings(&build_argv(&p, Some(9), None));
-
-            let tmpfs_run = argv
+        let var_lib = flat.iter().position(|a| a == "/var/lib").unwrap();
+        assert!(
+            var_lib > var_tmpfs,
+            "the state bind would be covered by the tmpfs"
+        );
+        assert!(
+            !flat
                 .windows(2)
-                .position(|w| w[0] == "--tmpfs" && w[1] == "/run")
-                .expect("no tmpfs on /run");
-            let resolver = argv
-                .iter()
-                .position(|a| a == "/run/systemd/resolve/stub-resolv.conf")
-                .expect("the resolver is not bound");
-            assert!(
-                resolver > tmpfs_run,
-                "the resolver bind at {resolver} precedes the /run tmpfs at \
-             {tmpfs_run} and would be covered over"
-            );
-        }
-        // phase: a_plain_resolver_file_is_bound_where_it_is
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let base = dir.path();
-            std::fs::create_dir_all(base.join("etc")).unwrap();
-            std::fs::write(base.join("etc/resolv.conf"), b"nameserver 1.1.1.1\n").unwrap();
-            let (_, dst) = resolv_bind(base).expect("no resolver bind");
-            assert_eq!(dst, PathBuf::from("/etc/resolv.conf"));
-        }
-        // phase: a_base_with_no_resolver_is_not_an_error
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("etc")).unwrap();
-            assert_eq!(resolv_bind(dir.path()), None);
+                .any(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0])),
+            "with no grant there is nothing to cover"
+        );
+
+        // A grant is bound at its host path; one covering the store gets the
+        // store masked after it.
+        p.trusted_dirs = vec![dir.path().to_path_buf()];
+        p.readable_dirs = vec![PathBuf::from("/srv/notes")];
+        let flat = strings(&build_argv(&p, Some(9)));
+        let w3 = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            w3.iter().any(|w| w[0] == "--bind-try"
+                && w[1] == path(dir.path())
+                && w[2] == path(dir.path()))
+        );
+        assert!(
+            w3.iter()
+                .any(|w| w[0] == "--ro-bind-try" && w[1] == "/srv/notes" && w[2] == "/srv/notes")
+        );
+        let grant = flat.iter().position(|a| a == "--bind-try").unwrap();
+        let mask = flat
+            .windows(2)
+            .position(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0]))
+            .expect("the store must be covered under a grant that contains it");
+        assert!(mask > grant);
+    }
+
+    #[test]
+    fn with_a_grant_root_a_grant_binds_its_contents_there_at_its_own_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        let files = dir.path().join("member/files");
+        p.grant_root = Some(files.clone());
+        p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
+        // The member's store sits inside a granted source: it is covered at
+        // the path the guest sees it by.
+        p.masked = vec![files.join("home/alice/src/.store")];
+        let w3 = windows(&build_argv(&p, Some(9)), 3);
+        assert!(w3.iter().any(|w| w[0] == "--bind-try"
+            && w[1] == path(&files.join("home/alice/src"))
+            && w[2] == "/home/alice/src"));
+        let flat = strings(&build_argv(&p, Some(9)));
+        assert!(
+            flat.windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == "/home/alice/src/.store")
+        );
+    }
+
+    #[test]
+    fn the_command_line_ends_with_seccomp_and_the_guest_argv() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        let argv = strings(&build_argv(&p, Some(9)));
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        let blob = argv.iter().position(|a| a == "--seccomp").unwrap();
+        assert!(blob < sep);
+        assert_eq!(argv[blob + 1], "9");
+        assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-i"]);
+
+        p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
+        let argv = strings(&build_argv(&p, Some(9)));
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
+
+        let path_at = argv.iter().position(|a| a == "PATH").unwrap();
+        assert!(argv[path_at + 1].starts_with(&format!("{}:", crate::GUEST_BIN_DIR)));
+        let rt = argv
+            .iter()
+            .position(|a| a == "/usr/libexec/tilo-ush")
+            .unwrap();
+        assert_eq!(
+            argv[rt - 1],
+            "--ro-bind",
+            "the runtime binary must be read-only"
+        );
+        let unset = argv.iter().position(|a| a == "--unsetenv").unwrap();
+        assert_eq!(argv[unset + 1], crate::store::STORE_ENV);
+    }
+
+    #[test]
+    fn the_root_carries_usrmerge_and_var_links_after_the_var_tmpfs() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+        for (target, link) in root_symlinks() {
+            let at = argv
+                .windows(3)
+                .position(|w| w[0] == "--symlink" && w[1] == path(&target) && w[2] == path(&link))
+                .unwrap_or_else(|| panic!("{} -> {} missing", link.display(), target.display()));
+            if link.starts_with("/var") {
+                let var = argv
+                    .windows(2)
+                    .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
+                    .unwrap();
+                assert!(
+                    at > var,
+                    "{} would be covered by the /var tmpfs",
+                    link.display()
+                );
+            }
         }
     }
 
     #[test]
-    fn subid_range_reads_the_users_allocation_by_name_or_uid() {
-        // phase: subid_range_reads_the_users_allocation
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let f = dir.path().join("subuid");
-            std::fs::write(&f, "someone:100000:65536\nyou:524288:65536\n").unwrap();
-            assert_eq!(subid_range(&f, "you", 1000), Some((524_288, 65_536)));
-            assert_eq!(subid_range(&f, "nobody", 4242), None);
-            assert_eq!(subid_range(Path::new("/nonexistent"), "you", 1000), None);
-        }
-        // phase: subid_range_matches_a_numeric_uid_line
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let f = dir.path().join("subuid");
-            std::fs::write(&f, "1000:524288:65536\n").unwrap();
-            assert_eq!(subid_range(&f, "you", 1000), Some((524_288, 65_536)));
+    fn the_resolver_is_copied_from_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan_in(dir.path());
+        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+        std::fs::write(
+            p.host_root.join("etc/resolv.conf"),
+            "nameserver 127.0.0.53\n",
+        )
+        .unwrap();
+        p.prepare().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap(),
+            "nameserver 127.0.0.53\n"
+        );
+    }
+
+    #[test]
+    fn the_sessions_resolver_replaces_the_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+        std::fs::write(p.host_root.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+        p.resolver = Some(tilo_egress::RESOLV_CONF.to_owned());
+        p.prepare().unwrap();
+        let written = std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap();
+        assert!(written.contains("nameserver 127.0.0.1"), "{written}");
+        assert!(!written.contains("10.0.0.1"), "{written}");
+    }
+
+    #[test]
+    fn user_names_that_are_not_safe_fall_back() {
+        assert!(is_user_name("quinten"));
+        for bad in ["", "..", "a/b", "-x", "a b"] {
+            assert!(!is_user_name(bad), "{bad:?}");
         }
     }
 }

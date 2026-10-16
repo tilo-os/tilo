@@ -148,10 +148,25 @@ case "$command" in
                 for patch in $(ls -r "$applied"/*.patch 2>/dev/null); do
                     git apply -R "$patch"
                 done
+                # The tree is unpatched now; a failure below must not leave a
+                # record that says otherwise.
+                rm -rf "$applied"
             fi
-            git apply --check /work/kernel-patches/*.patch
-            git apply /work/kernel-patches/*.patch
-            rm -rf "$applied"
+            # One at a time, in order: a series of backports changes the same
+            # file several times, and git apply checks a multi-patch call
+            # against the unpatched tree. A patch that does not apply takes
+            # back the ones before it, so the tree is left unpatched.
+            done_patches=""
+            for patch in /work/kernel-patches/*.patch; do
+                if ! git apply "$patch"; then
+                    echo "kernel patch does not apply: ${patch##*/}" >&2
+                    for undo in $done_patches; do
+                        git apply -R "$undo"
+                    done
+                    exit 1
+                fi
+                done_patches="$patch $done_patches"
+            done
             mkdir "$applied"
             cp /work/kernel-patches/*.patch "$applied/"
         fi

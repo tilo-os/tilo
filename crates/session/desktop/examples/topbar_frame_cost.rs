@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_desktop::topbar::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceId};
 use ui::presence::PresenceCtx;
@@ -58,10 +58,7 @@ fn lay_out(bar: &mut TopBarChrome, theme: &Theme, width: f32) {
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(TOPBAR_HEIGHT_PX),
-                },
+                size: Size::from_lengths(width, TOPBAR_HEIGHT_PX),
                 ..Default::default()
             },
             &[node],
@@ -124,10 +121,10 @@ fn main() {
     draw(&mut bar, &mut text, &theme);
     let mut rest = Vec::with_capacity(iters);
     let mut updates = Vec::with_capacity(iters);
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     for _ in 0..iters {
         let start = Instant::now();
-        bar.update(&mut doc, &automerge::ROOT);
+        bar.update(&doc, &automerge::ROOT);
         updates.push(start.elapsed());
         rest.push(draw(&mut bar, &mut text, &theme));
     }

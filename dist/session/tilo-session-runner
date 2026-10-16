@@ -254,17 +254,19 @@ export TILO_SESSION_LOGOUT_REQUEST
 # diagnostics only; retain one previous session. A bounded
 # relay keeps only the latest 4 MiB while still streaming every byte to
 # journald, so a pathological app cannot fill the home filesystem.
+# Every disk write here is best effort: a full or failing disk must never keep
+# the person from logging in. The record then lives only in the recorder's
+# memory and in journald.
 flight_dir=${XDG_STATE_HOME:-$HOME/.local/state}/tilo/session-logs
-mkdir -p -- "$flight_dir"
-chmod 0700 "$flight_dir"
+{ mkdir -p -- "$flight_dir" && chmod 0700 "$flight_dir"; } 2>/dev/null || true
 if [ -f "$flight_dir/latest.log" ]; then
-    tail -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" || true
-    chmod 0600 "$flight_dir/previous.log.tmp"
-    mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
+    { tail -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" &&
+        chmod 0600 "$flight_dir/previous.log.tmp" &&
+        mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"; } 2>/dev/null ||
+        rm -f -- "$flight_dir/previous.log.tmp" 2>/dev/null || true
 fi
 flight_log=$flight_dir/latest.log
-: >"$flight_log"
-chmod 0600 "$flight_log"
+{ : >"$flight_log" && chmod 0600 "$flight_log"; } 2>/dev/null || true
 flight_started=$(date --iso-8601=seconds)
 # Keep the structured per-tick frame trace separate from the human/app stream.
 # It is buffered but flushed by the compositor once per second, so an abrupt
@@ -274,13 +276,13 @@ if [ -f "$flight_dir/frame-trace.csv" ]; then
     # The live trace is already bounded. Copy the complete CSV rather than
     # using `tail -c`, which can start in the middle of a record and turn the
     # previous login's evidence into an unparseable file.
-    cp -- "$flight_dir/frame-trace.csv" "$flight_dir/previous-frame-trace.csv.tmp"
-    chmod 0600 "$flight_dir/previous-frame-trace.csv.tmp"
-    mv -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"
+    { cp -- "$flight_dir/frame-trace.csv" "$flight_dir/previous-frame-trace.csv.tmp" &&
+        chmod 0600 "$flight_dir/previous-frame-trace.csv.tmp" &&
+        mv -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"; } 2>/dev/null ||
+        rm -f -- "$flight_dir/previous-frame-trace.csv.tmp" 2>/dev/null || true
 fi
 frame_trace=$flight_dir/frame-trace.csv
-: >"$frame_trace"
-chmod 0600 "$frame_trace"
+{ : >"$frame_trace" && chmod 0600 "$frame_trace"; } 2>/dev/null || true
 TILO_FRAME_TRACE=$frame_trace
 export TILO_FRAME_TRACE
 export TILO_PAINT_STATS=1
@@ -340,7 +342,7 @@ wait "$flight_relay_pid" 2>/dev/null || true
 flight_relay_pid=
 printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
     "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)" \
-    >>"$flight_log"
+    >>"$flight_log" 2>/dev/null || true
 if [ -e "$logout_request" ]; then
     status=0
     logout_completed=1

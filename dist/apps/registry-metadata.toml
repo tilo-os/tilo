@@ -11,6 +11,9 @@ tagline = "Explore APIs with confidence"
 [apps.backups]
 description = "Protect important work with clear, restorable backups."
 tagline = "Your work, safely recoverable"
+[apps.browser]
+description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
+tagline = "The web, without the clutter"
 [apps.calculator]
 description = "A fast calculator for everyday arithmetic, formulas, and graphs."
 tagline = "Work it out"
@@ -20,9 +23,15 @@ tagline = "Make time visible"
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
 tagline = "Ready when the moment is"
+[apps.canvas]
+description = "Draw and paint with vector marks and real wet media that stay editable as objects."
+tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
 tagline = "Talk together, naturally"
+[apps.chip-design]
+description = "Review chip verification reports, design evidence, and implementation readiness together."
+tagline = "Trace a design from evidence to readiness"
 [apps.clocks]
 description = "Keep an eye on time zones, timers, and alarms."
 tagline = "Time, at a glance"
@@ -41,6 +50,9 @@ tagline = "See the shape of your data"
 [apps.diffmerge]
 description = "Compare files and resolve changes with a side-by-side view."
 tagline = "Understand every change"
+[apps.discord]
+description = "Bridge a Discord server and a Tilo room: channels, messages, reactions and moderation, both ways."
+tagline = "One community, two homes"
 [apps.disk-usage]
 description = "Find what uses space and reclaim it with confidence."
 tagline = "Know where your storage went"
@@ -65,18 +77,15 @@ tagline = "Version control you can see"
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
 tagline = "See every byte"
-[apps.hot-reload-demo]
-description = "A small document you can keep editing while its code reloads in the same windows."
-tagline = "Change the app without closing it"
-[apps.image-editor]
-description = "Make focused edits to images without leaving your desktop."
-tagline = "Images, made yours"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
 tagline = "Prepare media with confidence"
 [apps.logs]
 description = "Search and understand system logs without a wall of noise."
 tagline = "Make sense of what happened"
+[apps.messages]
+description = "Keep direct conversations together with a clear choice of contact and messaging account."
+tagline = "Your conversations, clearly connected"
 [apps.mail]
 description = "Read, write, and organize mail in a calm native client."
 tagline = "Mail that keeps its place"
@@ -143,6 +152,9 @@ tagline = "A direct line to your system"
 [apps.themes]
 description = "Explore and shape the colors and appearance of your desktop."
 tagline = "Set the tone"
+[apps.thumbnails]
+description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
+tagline = "Thumbnails made where it is fastest"
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
 tagline = "Codes when you need them"

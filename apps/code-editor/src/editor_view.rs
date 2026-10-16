@@ -16,31 +16,39 @@
 //! characters (not bytes), matching Automerge Text's char addressing. Multiple
 //! carets are supported; the primary caret drives the status bar and scrolling.
 
-use automerge::{AutoCommit, ObjId};
+use crate::app::replace_chars;
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use ui::text_edit::{Edit, EditCore, Motion};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::text_selection::{
-    clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
-    word_boundaries_chars,
+    TextPosition, clipboard_copy, clipboard_paste, grapheme_boundary_at_or_before,
+    next_word_boundary_chars, prev_word_boundary_chars, word_boundaries_chars,
 };
 use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath};
-use ui::widget::{EmptyState, EmptyStateContent, Widget};
+use ui::tokens::TextRole;
+use ui::widget::TaffyTreeExt;
+use ui::widget::{
+    AppModel, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion, SuggestionList,
+    Widget,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
-use crate::highlight::{IncrementalHighlights, Span};
+use crate::highlight::{BackgroundHighlights, IncrementalHighlights, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
+use crate::row_viewport::RowViewportIndex;
+use std::sync::Arc;
 
 /// A pre-mutation request emitted by the editor surface.  Keeping the complete
 /// before/after snapshots here lets the app derive the compact action payload
@@ -61,18 +69,27 @@ pub enum LspAsk {
     Definition,
 }
 
-/// A compact glyph hinting at a completion item's `CompletionItemKind`
-/// (LSP-numbered). Falls back to a neutral dot for kinds we don't specialise.
-fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
-    match kind {
-        Some(2 | 3) => "\u{0192}",  // Method / Function — ƒ
-        Some(5 | 10) => "\u{25C8}", // Field / Property — ◈
-        Some(6) => "\u{25CB}",      // Variable — ○
-        Some(7 | 8) => "\u{25A0}",  // Class / Interface — ■
-        Some(9) => "\u{25A3}",      // Module — ▣
-        Some(14) => "\u{2726}",     // Keyword — ✦
-        Some(21) => "\u{25C6}",     // Constant — ◆
-        _ => "\u{2022}",            // • default
+/// The icon of a completion item's kind: what the candidate is, at a glance.
+/// A macro is a function by LSP kind, so it is told apart by its detail (or
+/// the `!` its name ends in) and given its own icon.
+fn completion_kind_icon(item: &CompletionItem) -> Icon {
+    let is_macro = item.label.ends_with('!')
+        || item
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with("macro"));
+    if is_macro {
+        return Icon::Sparkles;
+    }
+    match item.kind {
+        Some(2..=4) => Icon::Code,
+        Some(5 | 10) => Icon::List,
+        Some(6) => Icon::Square,
+        Some(7 | 8 | 13 | 22) => Icon::Layers,
+        Some(9) => Icon::Folder,
+        Some(14) => Icon::Star,
+        Some(21) => Icon::Pin,
+        _ => Icon::FileText,
     }
 }
 
@@ -102,24 +119,8 @@ struct VisibleRows {
     n_visible: usize,
 }
 
-/// Monospace cell metrics. The editor advances a fixed cell width per column;
-/// for the bundled monospace font at this size that tracks the glyph advance
-/// closely enough for crisp caret placement.
-const FONT_SIZE: f32 = 14.0;
-/// 1× row pitch; the painted pitch is `EditorView::line_h` (see `line_pitch`).
-const LINE_HEIGHT: f64 = 20.0;
-/// Leading kept above and below a code line once the measured line outgrows
-/// `LINE_HEIGHT`; also the glyph top offset inside a 1× row before the first
-/// measurement lands.
-const LINE_LEADING: f64 = 1.25;
-const FALLBACK_TEXT_DY: f64 = LINE_LEADING;
-/// Approximate monospace advance for `FONT_SIZE`. Measured lazily against the
-/// real font on first layout and cached, so it stays correct if the system
-/// monospace face changes.
-const FALLBACK_CELL_W: f64 = 8.4;
-/// Left padding inside the gutter and right padding before code starts.
-const BASE_GUTTER_PAD: f64 = 12.0;
-const BASE_CODE_PAD_LEFT: f64 = 12.0;
+/// How many completion candidates the popup lists before it scrolls.
+const COMPLETION_ROWS: usize = 8;
 
 /// A single caret + optional selection anchor, in (line, col) char coords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,21 +145,99 @@ impl Caret {
         let c = (self.line, self.col);
         if a <= c { Some((a, c)) } else { Some((c, a)) }
     }
+
+    /// This caret as a shared-core selection over the flat buffer `text`.
+    fn core(&self, text: &str) -> EditCore {
+        let cursor = byte_of(text, self.line, self.col);
+        let anchor = self.anchor.map_or(cursor, |(l, c)| byte_of(text, l, c));
+        let mut core = EditCore::new();
+        core.set_selection(anchor, cursor);
+        core
+    }
+
+    /// The caret a shared-core selection over `text` describes.
+    fn from_core(text: &str, core: &EditCore) -> Self {
+        let (line, col) = line_col_of(text, core.caret());
+        Caret {
+            line,
+            col,
+            anchor: core
+                .has_selection()
+                .then(|| line_col_of(text, core.anchor())),
+        }
+    }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (focus, dirty, popup state, zero-state click) rather than a set of options that combine — a bitflag/enum would not read better"
-)]
+/// The byte offset of `(line, col)` — `col` in characters — in `text`,
+/// clamped to the end of the line (and of the buffer).
+fn byte_of(text: &str, line: usize, col: usize) -> usize {
+    let mut start = 0;
+    for _ in 0..line {
+        match text.get(start..).and_then(|rest| rest.find('\n')) {
+            Some(nl) => start += nl + 1,
+            None => return text.len(),
+        }
+    }
+    let row = text
+        .get(start..)
+        .and_then(|rest| rest.split('\n').next())
+        .unwrap_or_default();
+    start + row.char_indices().nth(col).map_or(row.len(), |(b, _)| b)
+}
+
+/// The `(line, col)` — `col` in characters — of byte `byte` in `text`.
+fn line_col_of(text: &str, byte: usize) -> (usize, usize) {
+    let head = text.get(..byte.min(text.len())).unwrap_or(text);
+    let line_start = head.rfind('\n').map_or(0, |nl| nl + 1);
+    (
+        head.matches('\n').count(),
+        head.get(line_start..).map_or(0, |row| row.chars().count()),
+    )
+}
+
+/// `col` (characters) pulled back onto the start of the grapheme cluster it
+/// falls in, so a caret never sits between a base and its combining mark.
+fn snap_col(row: &str, col: usize) -> usize {
+    let byte = byte_of(row, 0, col);
+    let snapped = grapheme_boundary_at_or_before(row, byte);
+    row.get(..snapped).map_or(0, |head| head.chars().count())
+}
+
+/// Recently shown render projections, never the authoritative buffer storage.
+/// Three active/recent panes at most, with at most 48 MiB of cached source in
+/// the two inactive panes; each pane still follows the CRDT on admission.
+struct BufferProjection {
+    object: ObjId,
+    language: Language,
+    heads: Option<Vec<automerge::ChangeHash>>,
+    text: String,
+    lines: Arc<Vec<String>>,
+    row_windows: HashMap<usize, RowViewportIndex>,
+    spans: Vec<Vec<Span>>,
+    highlights: IncrementalHighlights,
+    background: Option<BackgroundHighlights>,
+    carets: Vec<Caret>,
+    scroll: (f64, f64),
+}
+
+const EAGER_HIGHLIGHT_BYTES: usize = 256 * 1024;
+const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
+
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').
-    lines: Vec<String>,
+    lines: Arc<Vec<String>>,
+    row_windows: HashMap<usize, RowViewportIndex>,
+    projections: std::collections::VecDeque<BufferProjection>,
+    background_highlights: Option<BackgroundHighlights>,
+    highlight_wake: ui::WakeHandle,
     /// Highlight spans per line, recomputed when the buffer changes.
     spans: Vec<Vec<Span>>,
     highlight_cache: IncrementalHighlights,
     /// The Automerge Text object this view edits. `None` until bound.
     text_obj: Option<ObjId>,
+    /// Stable committed content witness; pending edits always bypass it.
+    text_heads: Option<Vec<automerge::ChangeHash>>,
     /// Active language → grammar for highlighting.
     language: Language,
     /// Carets. Always at least one. Index 0 is primary.
@@ -167,22 +246,22 @@ pub struct EditorView {
     scroll_y: f64,
     /// Horizontal scroll offset in pixels.
     scroll_x: f64,
-    /// Measured monospace cell width, resolved on first draw.
+    /// Measured monospace cell width of the `Code` role, resolved on every
+    /// draw so it follows the theme and the text scale.
     cell_w: f64,
-    /// Line pitch: `LINE_HEIGHT` at 1×, the measured `FONT_SIZE` line plus
-    /// leading once the text scale outgrows it. Every row, hit test, caret,
+    /// Line pitch: the measured `Code` line. Every row, hit test, caret,
     /// selection, diagnostic underline and scroll step reads this one value,
-    /// so 28 px glyphs never overprint 20 px rows at 200 % text.
+    /// so large text never overprints its neighbouring row.
     line_h: f64,
-    /// Top offset that centres a measured `FONT_SIZE` line inside `line_h`
-    /// (1.25 px at 1×) — rows, gutter numbers and completion rows share it
-    /// instead of per-site `+ 2` / `+ 3` nudges.
+    /// Top offset that centres a measured `Code` line inside `line_h`: rows
+    /// and gutter numbers share it instead of per-site nudges.
     text_dy: f64,
-    /// The visual type scale most recently supplied by the host theme. This
-    /// custom document surface owns its row/gutter geometry, so it cannot rely
-    /// on the shared renderer alone: every hit target and painted baseline
-    /// must grow together.
-    text_scale: f64,
+    /// Inset of the line numbers from the gutter's edges and of the code from
+    /// the gutter (`spacing.s3` of the theme last drawn with).
+    pad: f64,
+    /// The `Code` role's resolved size last drawn with, so a change of theme
+    /// or text scale re-measures the cell and keeps the caret in view.
+    code_size: f32,
     is_focused: bool,
     dirty: bool,
     /// Snapshot of the buffer text the line cache was built from — lets `sync`
@@ -215,6 +294,9 @@ pub struct EditorView {
     /// The word start (line, col) the completion should replace when accepted —
     /// the identifier prefix under the caret at request time.
     completion_anchor: (usize, usize),
+    /// The toolkit's suggestion list, used for its dropdown only: the editor
+    /// owns the text and the keys, this paints the rows beside the caret.
+    completion_list: SuggestionList,
     /// A hover tooltip's text, drawn near the caret until dismissed.
     hover_text: Option<String>,
     /// A pending language-server request the app should perform (set by a
@@ -229,36 +311,56 @@ pub struct EditorView {
     find_current: Option<usize>,
 
     // ---- empty state ----
-    /// The "Open File" action pill's rect in the no-buffer zero-state, recorded
-    /// each draw for hit-testing. Empty when a buffer is open.
-    empty_action_rect: Rect,
-    /// Rising-edge flag set when the zero-state's action pill is clicked; the
-    /// app drains it and opens the file picker.
-    empty_action: bool,
+    /// The no-buffer zero-state and its one "Open file" action; the app
+    /// drains the action and opens the file picker.
+    empty: EmptyState,
     /// Compact recovery affordance shown only after horizontal scrolling. It
     /// makes the current offset explicit and returns to column zero on click;
     /// Home provides the matching keyboard path.
     horizontal_scroll_reset_rect: Rect,
     /// One optimistic UI edit awaiting the app's authoritative action dispatch.
     pending_text_edit: Option<PendingTextEdit>,
+    /// The input method's composition in progress. It is shown at the
+    /// primary caret (see [`Self::composition_on_line`]) and becomes text
+    /// only when committed, at every caret.
+    composition: EditCore,
 }
 
 impl EditorView {
     pub fn new() -> Self {
+        // Before the first draw measures the real face, geometry comes from
+        // the default theme's `Code` role: a monospace advance of about 0.6 em
+        // and the role's leading.
+        let nominal = {
+            let theme = Theme::dark();
+            let style = theme.text(TextRole::Code);
+            let size = f64::from(style.size);
+            (
+                (size * 0.6).ceil(),
+                (size * f64::from(style.line_height)).ceil(),
+                f64::from(theme.tokens.spacing.s3),
+            )
+        };
         EditorView {
             rect: Rect::ZERO,
-            lines: vec![String::new()],
+            lines: Arc::new(vec![String::new()]),
+            row_windows: HashMap::new(),
+            projections: std::collections::VecDeque::new(),
+            background_highlights: None,
+            highlight_wake: ui::WakeHandle::detached(),
             spans: vec![Vec::new()],
             highlight_cache: IncrementalHighlights::default(),
             text_obj: None,
+            text_heads: None,
             language: Language::PlainText,
             carets: vec![Caret::at(0, 0)],
             scroll_y: 0.0,
             scroll_x: 0.0,
-            cell_w: FALLBACK_CELL_W,
-            line_h: LINE_HEIGHT,
-            text_dy: FALLBACK_TEXT_DY,
-            text_scale: 1.0,
+            cell_w: nominal.0,
+            line_h: nominal.1,
+            text_dy: 0.0,
+            pad: nominal.2,
+            code_size: 0.0,
             is_focused: true,
             dirty: true,
             cached_text: String::new(),
@@ -271,14 +373,19 @@ impl EditorView {
             completion_index: 0,
             completion_active: false,
             completion_anchor: (0, 0),
+            completion_list: SuggestionList::new()
+                .with_text_role(TextRole::Code)
+                .with_max_visible(COMPLETION_ROWS),
             hover_text: None,
             lsp_ask: None,
             find_matches: Vec::new(),
             find_current: None,
-            empty_action_rect: Rect::ZERO,
-            empty_action: false,
+            empty: EmptyState::new("No file open")
+                .with_icon(Icon::FileCode)
+                .with_action("Open file"),
             horizontal_scroll_reset_rect: Rect::ZERO,
             pending_text_edit: None,
+            composition: EditCore::new(),
         }
     }
 
@@ -297,7 +404,71 @@ impl EditorView {
 
     /// Drain the rising-edge "Open File" click from the zero-state, if any.
     pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action)
+        self.empty.take_action()
+    }
+
+    /// Portable native view over the currently bound shared text resource.
+    pub(crate) fn continuation_position(
+        &self,
+        doc: &AutoCommit,
+        resource_id: &str,
+    ) -> Option<ui::text_position::TextPosition> {
+        let object = self.text_obj.as_ref()?;
+        if doc.text(object).ok()? != self.cached_text || self.cell_w <= 0.0 {
+            return None;
+        }
+        let top_line = self.scroll_y.max(0.0).floor() as usize;
+        let view = ui::text_position::ResolvedTextPosition {
+            carets: self
+                .carets
+                .iter()
+                .map(|caret| {
+                    (
+                        self.char_index(caret.line, caret.col),
+                        caret
+                            .anchor
+                            .map(|(line, column)| self.char_index(line, column)),
+                    )
+                })
+                .collect(),
+            top_character: self.char_index(top_line.min(self.lines.len().saturating_sub(1)), 0),
+            vertical_fraction: self.scroll_y.max(0.0).fract(),
+            horizontal_columns: self.scroll_x.max(0.0) / self.cell_w,
+        };
+        ui::text_position::TextPosition::capture(doc, object, resource_id, &view)
+    }
+
+    /// Restore presentation only: focus and canonical text are untouched.
+    pub(crate) fn restore_continuation_position(
+        &mut self,
+        doc: &AutoCommit,
+        position: &ui::text_position::TextPosition,
+    ) -> bool {
+        let Some(object) = self.text_obj.as_ref() else {
+            return false;
+        };
+        let Some(view) = position.resolve(doc, object) else {
+            return false;
+        };
+        self.sync_from_doc(doc);
+        self.carets = view
+            .carets
+            .iter()
+            .map(|(cursor, anchor)| {
+                let (line, col) = self.pos_from_flat(*cursor);
+                Caret {
+                    line,
+                    col,
+                    anchor: anchor.map(|position| self.pos_from_flat(position)),
+                }
+            })
+            .collect();
+        self.clamp_carets();
+        let (line, _) = self.pos_from_flat(view.top_character);
+        self.scroll_y = line as f64 + view.vertical_fraction;
+        self.scroll_x = view.horizontal_columns * self.cell_w;
+        self.dirty = true;
+        true
     }
 
     /// The primary caret. `carets` is always non-empty by construction (`new`
@@ -335,27 +506,100 @@ impl EditorView {
         self.selected_text()
     }
 
-    /// Bind this view to a buffer's Text object and language. Resets carets to
-    /// the top. The line/highlight caches refresh on the next `sync`.
+    /// Bind the authoritative Text while restoring this peer's recent render
+    /// projection and viewport. `sync` validates its committed witness before
+    /// reusing content; pending transactions always bypass that witness.
     pub fn bind(&mut self, text_obj: ObjId, language: Language) {
-        self.text_obj = Some(text_obj);
+        self.save_projection();
         self.language = language;
         self.indent_width = language.indent_width();
-        self.carets = vec![Caret::at(0, 0)];
-        self.scroll_y = 0.0;
-        self.scroll_x = 0.0;
-        self.cached_text.clear(); // force rebuild on next sync
+        self.composition.clear_preedit();
+        if let Some(index) = self
+            .projections
+            .iter()
+            .position(|entry| entry.object == text_obj && entry.language == language)
+            && let Some(entry) = self.projections.remove(index)
+        {
+            self.text_heads = entry.heads;
+            self.cached_text = entry.text;
+            self.lines = entry.lines;
+            self.row_windows = entry.row_windows;
+            self.spans = entry.spans;
+            self.highlight_cache = entry.highlights;
+            self.background_highlights = entry.background;
+            self.carets = entry.carets;
+            (self.scroll_x, self.scroll_y) = entry.scroll;
+        } else {
+            self.clear_projection();
+        }
+        self.text_obj = Some(text_obj);
         self.dirty = true;
     }
 
-    /// Unbind (no buffer open). Shows an empty state.
-    pub fn unbind(&mut self) {
-        self.text_obj = None;
-        self.lines = vec![String::new()];
-        self.spans = vec![Vec::new()];
+    fn save_projection(&mut self) {
+        let Some(object) = self.text_obj.take() else {
+            return;
+        };
+        self.projections.retain(|entry| entry.object != object);
+        self.projections.push_back(BufferProjection {
+            object,
+            language: self.language,
+            heads: self.text_heads.take(),
+            text: std::mem::take(&mut self.cached_text),
+            lines: std::mem::replace(&mut self.lines, Arc::new(vec![String::new()])),
+            row_windows: std::mem::take(&mut self.row_windows),
+            spans: std::mem::take(&mut self.spans),
+            highlights: std::mem::take(&mut self.highlight_cache),
+            background: self.background_highlights.take(),
+            carets: self.carets.clone(),
+            scroll: (self.scroll_x, self.scroll_y),
+        });
+        while self.projections.len() > 2
+            || self
+                .projections
+                .iter()
+                .map(|entry| entry.text.len())
+                .sum::<usize>()
+                > INACTIVE_SOURCE_BYTES
+        {
+            self.projections.pop_front();
+        }
+    }
+
+    fn clear_projection(&mut self) {
+        self.text_heads = None;
+        self.lines = Arc::new(vec![String::new()]);
+        self.row_windows.clear();
+        self.spans.clear();
         self.highlight_cache = IncrementalHighlights::default();
-        self.carets = vec![Caret::at(0, 0)];
+        self.background_highlights = None;
         self.cached_text.clear();
+        self.carets = vec![Caret::at(0, 0)];
+        self.scroll_y = 0.0;
+        self.scroll_x = 0.0;
+    }
+
+    pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
+        self.highlight_wake = wake;
+    }
+
+    fn collect_highlights(&mut self) -> bool {
+        let before = self.spans.len();
+        if let Some(job) = self.background_highlights.as_mut()
+            && !job.collect(&mut self.spans)
+        {
+            self.background_highlights = None;
+        }
+        let changed = self.spans.len() != before;
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Unbind while retaining bounded recent projections for reopening.
+    pub fn unbind(&mut self) {
+        self.save_projection();
+        self.clear_projection();
+        self.composition.clear_preedit();
         self.dirty = true;
     }
 
@@ -364,16 +608,21 @@ impl EditorView {
         (self.scroll_x, self.scroll_y)
     }
 
+    /// Opt-in native performance observation, outside normal frame work.
+    pub(crate) fn native_projection_stats(&self) -> (usize, usize, usize) {
+        (
+            self.spans.len(),
+            self.projections.len(),
+            self.projections.iter().map(|entry| entry.text.len()).sum(),
+        )
+    }
+
     pub fn is_bound(&self) -> bool {
         self.text_obj.is_some()
     }
 
     pub fn language(&self) -> Language {
         self.language
-    }
-
-    pub fn indent_width(&self) -> usize {
-        self.indent_width
     }
 
     /// Primary caret position (line, col), 0-based.
@@ -421,25 +670,41 @@ impl EditorView {
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
-        self.highlight_cache
-            .update(self.language, &self.lines, &lines, &mut self.spans);
+        let lines = Arc::new(lines);
+        if text.len() > EAGER_HIGHLIGHT_BYTES {
+            self.spans.clear();
+            self.highlight_cache = IncrementalHighlights::default();
+            self.background_highlights = BackgroundHighlights::start(
+                self.language,
+                Arc::clone(&lines),
+                self.highlight_wake.clone(),
+            );
+        } else {
+            self.background_highlights = None;
+            self.highlight_cache
+                .update(self.language, &self.lines, &lines, &mut self.spans);
+        }
+        self.row_windows = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.len() > 4096)
+            .map(|(index, line)| (index, RowViewportIndex::new(line)))
+            .collect();
         self.lines = lines;
         self.clamp_carets();
         self.dirty = true;
     }
 
+    /// Clamp every caret into the buffer and onto a grapheme boundary.
     fn clamp_carets(&mut self) {
         let last_line = self.lines.len().saturating_sub(1);
-        let line_len = |lines: &[String], l: usize| lines.get(l).map_or(0, |s| s.chars().count());
+        let clamp = |lines: &[String], (l, c): (usize, usize)| {
+            let l = l.min(last_line);
+            (l, lines.get(l).map_or(0, |row| snap_col(row, c)))
+        };
         for c in &mut self.carets {
-            c.line = c.line.min(last_line);
-            let cols = line_len(&self.lines, c.line);
-            c.col = c.col.min(cols);
-            if let Some((al, ac)) = c.anchor {
-                let al = al.min(last_line);
-                let ac = ac.min(line_len(&self.lines, al));
-                c.anchor = Some((al, ac));
-            }
+            (c.line, c.col) = clamp(&self.lines, (c.line, c.col));
+            c.anchor = c.anchor.map(|a| clamp(&self.lines, a));
         }
     }
 
@@ -580,7 +845,7 @@ impl EditorView {
     }
 
     /// Cut: copy the primary selection, then request its action-owned delete.
-    fn cut_selection(&mut self, doc: &mut AutoCommit) {
+    fn cut_selection(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = self.selected_text() {
             clipboard_copy(&t);
             // `backspace` deletes an active selection wholesale.
@@ -589,7 +854,7 @@ impl EditorView {
     }
 
     /// Paste clipboard text at the caret, replacing any selection.
-    fn paste_clipboard(&mut self, doc: &mut AutoCommit) {
+    fn paste_clipboard(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = clipboard_paste()
             && !t.is_empty()
         {
@@ -652,7 +917,7 @@ impl EditorView {
 
     /// Accept the highlighted completion: replace the identifier prefix under
     /// the caret with the item's insert text through the action path.
-    fn accept_completion(&mut self, doc: &mut AutoCommit) {
+    fn accept_completion(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.completion_active() {
             return;
         }
@@ -727,26 +992,36 @@ impl EditorView {
         self.lines.len()
     }
 
-    const fn font_size() -> f32 {
-        FONT_SIZE
-    }
-
     fn line_height(&self) -> f64 {
         self.line_h
     }
 
     fn gutter_pad(&self) -> f64 {
-        BASE_GUTTER_PAD * self.text_scale
+        self.pad
     }
 
     fn code_pad_left(&self) -> f64 {
-        BASE_CODE_PAD_LEFT * self.text_scale
+        self.pad
     }
 
     /// The width of the gutter (line-number column) for the current line count.
     fn gutter_width(&self) -> f64 {
         let digits = self.lines.len().max(1).to_string().len().max(2);
         self.gutter_pad() * 2.0 + digits as f64 * self.cell_w
+    }
+
+    /// The viewport trimmed to a whole number of lines.
+    fn whole_line_rect(&self) -> Rect {
+        let lines = (self.rect.height() / self.line_h).floor();
+        if lines < 1.0 {
+            return self.rect;
+        }
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + lines * self.line_h,
+        )
     }
 
     /// Visible-line capacity of the viewport.
@@ -779,22 +1054,6 @@ impl EditorView {
 
     // ---- editing primitives (all request an action before CRDT mutation) ----
 
-    /// Replace a character range in a local, ephemeral string.  This is only
-    /// used to prepare an action request; it never touches Automerge.
-    fn splice_local(text: &mut String, start: usize, delete: usize, insert: &str) {
-        let chars = text.chars().count();
-        let start = start.min(chars);
-        let end = start.saturating_add(delete).min(chars);
-        let byte_at = |n: usize| {
-            text.char_indices()
-                .nth(n)
-                .map_or_else(|| text.len(), |(byte, _)| byte)
-        };
-        let start_byte = byte_at(start);
-        let end_byte = byte_at(end);
-        text.replace_range(start_byte..end_byte, insert);
-    }
-
     /// Optimistically rebuild the render cache and coalesce the requested
     /// change. The caller is responsible for dispatching it; a refusal calls
     /// `reconcile_from_doc` and puts this cache back on the real document.
@@ -813,127 +1072,142 @@ impl EditorView {
         self.rebuild(next);
     }
 
-    /// Insert a string at the primary caret (replacing any selection),
-    /// requesting one compact action-owned replacement. Updates the caret. For simplicity multi-caret
-    /// inserts apply the same text at each caret, processed bottom-up so
-    /// earlier indices stay valid.
-    fn insert(&mut self, _doc: &mut AutoCommit, s: &str) {
+    /// Run one shared-core edit at every caret over a local copy of the
+    /// buffer and request the result as one action-owned replacement. Carets
+    /// are edited from the end of the buffer backwards so an edit never moves
+    /// a caret still waiting for its own; the ones already edited shift by
+    /// the edit's length change. A caret whose span an edit already consumed
+    /// merges into it.
+    fn edit_at_carets(&mut self, mut edit_one: impl FnMut(&mut EditCore, &str) -> Edit) {
         if self.text_obj.is_none() {
             return;
         }
         let mut next = self.cached_text.clone();
-        // Process carets bottom-to-top so a splice doesn't shift the indices
-        // of carets we haven't handled yet.
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, _) in order {
-            self.apply_insert_at(&mut next, i, s);
+        let mut cores: Vec<EditCore> = self.carets.iter().map(|c| c.core(&next)).collect();
+        let mut order: Vec<usize> = (0..cores.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(cores.get(i).map_or(0, |c| c.range().start)));
+        // Start of the lowest edit made so far.
+        let mut floor = next.len();
+        let mut done: Vec<usize> = Vec::with_capacity(cores.len());
+        for i in order {
+            let Some(core) = cores.get_mut(i) else {
+                continue;
+            };
+            let edit = if core.range().end > floor {
+                core.set_caret(floor);
+                Edit::default()
+            } else {
+                edit_one(core, &next)
+            };
+            if !edit.is_noop() && edit.apply(&mut next) {
+                floor = edit.at;
+                let shift = |byte: usize| {
+                    if byte >= edit.range().end {
+                        byte - edit.removed + edit.inserted.len()
+                    } else {
+                        byte.min(edit.caret_after())
+                    }
+                };
+                for &j in &done {
+                    if let Some(core) = cores.get_mut(j) {
+                        let (anchor, caret) = (shift(core.anchor()), shift(core.caret()));
+                        core.set_selection(anchor, caret);
+                    }
+                }
+            }
+            done.push(i);
         }
+        let mut carets: Vec<Caret> = Vec::with_capacity(cores.len());
+        for core in &cores {
+            let caret = Caret::from_core(&next, core);
+            if !carets.contains(&caret) {
+                carets.push(caret);
+            }
+        }
+        self.carets = carets;
         self.request_text_edit(&next);
         self.scroll_to_caret();
     }
 
-    fn apply_insert_at(&mut self, next: &mut String, i: usize, s: &str) {
-        let Some(caret) = self.carets.get(i).copied() else {
-            return;
-        };
-        // Delete selection first if present.
-        let start = if let Some((sel_s, sel_e)) = caret.selection() {
-            let s_idx = self.char_index(sel_s.0, sel_s.1);
-            let e_idx = self.char_index(sel_e.0, sel_e.1);
-            Self::splice_local(next, s_idx, e_idx - s_idx, "");
-            if let Some(c) = self.carets.get_mut(i) {
-                c.anchor = None;
+    /// Insert a string at every caret, replacing its selection.
+    fn insert(&mut self, _doc: &mut ui::widget::Edits<'_>, s: &str) {
+        self.edit_at_carets(|core, _| core.insert(s));
+    }
+
+    /// Backspace at every caret: the selection, else the character (grapheme
+    /// cluster) before the caret — joining lines at a line start.
+    fn backspace(&mut self, _doc: &mut ui::widget::Edits<'_>) {
+        self.edit_at_carets(|core, text| core.delete_backward(text, false));
+    }
+
+    /// Forward-delete at every caret: the selection, else the character
+    /// (grapheme cluster) after the caret.
+    fn delete_forward(&mut self, _doc: &mut ui::widget::Edits<'_>) {
+        self.edit_at_carets(|core, text| core.delete_forward(text, false));
+    }
+
+    /// The input method committed `text`: the composition ends and the text
+    /// is typed at every caret.
+    fn commit_composition(&mut self, text: &str) {
+        self.composition.clear_preedit();
+        self.edit_at_carets(|core, _| core.commit(text));
+    }
+
+    /// The primary line's composition as a core whose caret sits at the
+    /// primary caret within that line, so the core's display mapping places
+    /// the preedit there. `None` while nothing is being composed.
+    fn composition_on_line(&self) -> Option<(usize, EditCore)> {
+        if !self.composition.has_preedit() {
+            return None;
+        }
+        let primary = self.primary();
+        let row = self.lines.get(primary.line)?;
+        let mut core = self.composition.clone();
+        let byte = self.row_windows.get(&primary.line).map_or_else(
+            || byte_of(row, 0, primary.col),
+            |index| index.window(row, primary.col..primary.col).0.start,
+        );
+        core.set_caret(byte);
+        Some((primary.line, core))
+    }
+
+    /// The column the primary caret is drawn at: inside the composition at
+    /// the input method's cursor while composing.
+    fn primary_display_col(&self) -> usize {
+        match self.composition_on_line() {
+            Some((line, core)) => {
+                let row = self.lines.get(line).map_or("", String::as_str);
+                let start = core
+                    .preedit_display_range(row)
+                    .map_or(0, |range| range.start);
+                let column = self.row_windows.get(&line).map_or_else(
+                    || row.get(..start).map_or(0, |prefix| prefix.chars().count()),
+                    |index| index.column(row, start),
+                );
+                let within = core.display_caret(row).saturating_sub(start);
+                column.saturating_add(
+                    core.preedit()
+                        .get(..within)
+                        .map_or(0, |prefix| prefix.chars().count()),
+                )
             }
-            sel_s
-        } else {
-            (caret.line, caret.col)
-        };
-        let idx = self.char_index(start.0, start.1);
-        Self::splice_local(next, idx, 0, s);
-        // Recompute caret position after the inserted text.
-        let inserted_lines = s.split('\n').count();
-        let Some(c) = self.carets.get_mut(i) else {
-            return;
-        };
-        if inserted_lines == 1 {
-            *c = Caret::at(start.0, start.1 + s.chars().count());
-        } else {
-            let last = s.rsplit('\n').next().unwrap_or("");
-            *c = Caret::at(start.0 + inserted_lines - 1, last.chars().count());
+            None => self.primary().col,
         }
     }
 
-    /// Backspace at every caret. With a selection, deletes it; otherwise
-    /// removes the char before the caret (or joins with the previous line).
-    fn backspace(&mut self, _doc: &mut AutoCommit) {
-        if self.text_obj.is_none() {
+    fn handle_ime(&mut self, ime: &Ime, handled: &mut bool) {
+        if !self.is_focused && !matches!(ime, Ime::Disabled) {
             return;
         }
-        let mut next = self.cached_text.clone();
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, caret) in order {
-            if let Some((s, e)) = caret.selection() {
-                let s_idx = self.char_index(s.0, s.1);
-                let e_idx = self.char_index(e.0, e.1);
-                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
-                if let Some(c) = self.carets.get_mut(i) {
-                    *c = Caret::at(s.0, s.1);
-                }
-            } else {
-                let idx = self.char_index(caret.line, caret.col);
-                if idx == 0 {
-                    continue;
-                }
-                Self::splice_local(&mut next, idx - 1, 1, "");
-                // Position recomputed after sync from the new flat text; we
-                // estimate here and clamp later.
-                if caret.col > 0 {
-                    if let Some(c) = self.carets.get_mut(i) {
-                        *c = Caret::at(caret.line, caret.col - 1);
-                    }
-                } else if caret.line > 0 {
-                    let prev_len = self
-                        .lines
-                        .get(caret.line - 1)
-                        .map_or(0, |l| l.chars().count());
-                    if let Some(c) = self.carets.get_mut(i) {
-                        *c = Caret::at(caret.line - 1, prev_len);
-                    }
-                }
-            }
+        match ime {
+            Ime::Preedit(text, _) if text.is_empty() => self.composition.clear_preedit(),
+            Ime::Preedit(text, cursor) => self.composition.set_preedit(text, *cursor),
+            Ime::Commit(text) => self.commit_composition(text),
+            Ime::Disabled => self.composition.clear_preedit(),
+            Ime::Enabled => return,
         }
-        self.request_text_edit(&next);
-        self.scroll_to_caret();
-    }
-
-    /// Forward-delete at every caret.
-    fn delete_forward(&mut self, _doc: &mut AutoCommit) {
-        if self.text_obj.is_none() {
-            return;
-        }
-        let mut next = self.cached_text.clone();
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, caret) in order {
-            if let Some((s, e)) = caret.selection() {
-                let s_idx = self.char_index(s.0, s.1);
-                let e_idx = self.char_index(e.0, e.1);
-                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
-                if let Some(c) = self.carets.get_mut(i) {
-                    *c = Caret::at(s.0, s.1);
-                }
-            } else {
-                let idx = self.char_index(caret.line, caret.col);
-                let total: usize = self.cached_text.chars().count();
-                if idx >= total {
-                    continue;
-                }
-                Self::splice_local(&mut next, idx, 1, "");
-            }
-        }
-        self.request_text_edit(&next);
+        self.dirty = true;
+        *handled = true;
     }
 
     /// Re-read the buffer from the CRDT and rebuild caches. Called after every
@@ -948,57 +1222,39 @@ impl EditorView {
 
     // ---- caret movement ----
 
+    /// Arrow motion of the primary caret: `dx` characters (grapheme
+    /// clusters, crossing line ends) and `dy` lines at the same column.
+    /// `extend` grows the selection; a plain arrow collapses multi-carets to
+    /// the primary and a live selection to its near edge.
     fn move_caret(&mut self, dx: isize, dy: isize, extend: bool) {
-        // Collapse multi-carets to primary on plain arrow (matches editor UX).
         if !extend {
             self.carets.truncate(1);
         }
-        // A plain horizontal arrow with a live selection collapses to the
-        // selection edge instead of moving one character past it — every
-        // native editor does this, and so does `TextInput`.
-        if dx != 0
-            && dy == 0
-            && !extend
-            && let Some((s, e)) = self.primary().selection()
-        {
-            let target = if dx < 0 { s } else { e };
-            self.carets = vec![Caret::at(target.0, target.1)];
-            self.scroll_to_caret();
-            return;
-        }
-        if self.carets.is_empty() {
-            self.carets.push(Caret::at(0, 0));
-        }
-        let Some(c) = self.carets.first_mut() else {
-            return;
-        };
-        if extend && c.anchor.is_none() {
-            c.anchor = Some((c.line, c.col));
-        }
-        if !extend {
-            c.anchor = None;
+        let primary = self.primary();
+        let text = self.cached_text.as_str();
+        let mut core = primary.core(text);
+        let horizontal = if dx < 0 { Motion::Left } else { Motion::Right };
+        for _ in 0..dx.unsigned_abs() {
+            core.motion(text, horizontal, extend);
         }
         if dy != 0 {
-            let new_line = (c.line as isize + dy).clamp(0, self.lines.len() as isize - 1) as usize;
-            c.line = new_line;
-            let cols = self.lines.get(new_line).map_or(0, |l| l.chars().count());
-            c.col = c.col.min(cols);
+            let last = self.lines.len().saturating_sub(1) as isize;
+            let line = (primary.line as isize + dy).clamp(0, last) as usize;
+            let col = self
+                .lines
+                .get(line)
+                .map_or(0, |row| snap_col(row, primary.col));
+            let motion = if dy < 0 {
+                Motion::LineUp
+            } else {
+                Motion::LineDown
+            };
+            core.motion_to(motion, TextPosition::new(byte_of(text, line, col)), extend);
         }
-        if dx != 0 {
-            let cols = self.lines.get(c.line).map_or(0, |l| l.chars().count());
-            if dx > 0 {
-                if c.col < cols {
-                    c.col += 1;
-                } else if c.line + 1 < self.lines.len() {
-                    c.line += 1;
-                    c.col = 0;
-                }
-            } else if c.col > 0 {
-                c.col -= 1;
-            } else if c.line > 0 {
-                c.line -= 1;
-                c.col = self.lines.get(c.line).map_or(0, |l| l.chars().count());
-            }
+        let moved = Caret::from_core(text, &core);
+        match self.carets.first_mut() {
+            Some(c) => *c = moved,
+            None => self.carets.push(moved),
         }
         self.scroll_to_caret();
     }
@@ -1061,17 +1317,19 @@ impl EditorView {
     /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
-            && let Some(cols) = self.lines.get(last.line + 1).map(|l| l.chars().count())
+            && let Some(col) = self
+                .lines
+                .get(last.line + 1)
+                .map(|row| snap_col(row, last.col))
         {
-            self.carets
-                .push(Caret::at(last.line + 1, last.col.min(cols)));
+            self.carets.push(Caret::at(last.line + 1, col));
             self.dirty = true;
         }
     }
 
     /// Insert a newline plus auto-indent matching the current line's leading
     /// whitespace — the single most-felt editor nicety.
-    fn newline_with_indent(&mut self, doc: &mut AutoCommit) {
+    fn newline_with_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let (line, _) = self.primary_caret();
         let indent: String = self
             .lines
@@ -1088,7 +1346,7 @@ impl EditorView {
     }
 
     /// Indent: insert `indent_width` spaces at the caret.
-    fn insert_indent(&mut self, doc: &mut AutoCommit) {
+    fn insert_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let spaces = " ".repeat(self.indent_width);
         self.insert(doc, &spaces);
     }
@@ -1135,7 +1393,7 @@ impl EditorView {
     /// `focus_copy` the caret rides down onto the new copy (copy-down); without
     /// it the caret stays on the original (copy-up). Bound to Shift+Alt+Down /
     /// Shift+Alt+Up.
-    pub fn duplicate_lines(&mut self, _doc: &mut AutoCommit, focus_copy: bool) {
+    pub fn duplicate_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, focus_copy: bool) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1147,7 +1405,7 @@ impl EditorView {
             .unwrap_or_default();
         let end_of_b = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, end_of_b, 0, &format!("\n{block}"));
+        replace_chars(&mut next, end_of_b, 0, &format!("\n{block}"));
         self.request_text_edit(&next);
         if focus_copy {
             self.shift_primary_lines((b - a + 1) as isize);
@@ -1158,7 +1416,7 @@ impl EditorView {
 
     /// Move the caret's line(s) up or down by one, swapping with the neighbour.
     /// One action-owned replacement, so it undoes as one step. Bound to Alt+Up/Alt+Down.
-    pub fn move_lines(&mut self, _doc: &mut AutoCommit, up: bool) {
+    pub fn move_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, up: bool) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1179,7 +1437,7 @@ impl EditorView {
             let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
             // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
             let mut next = self.cached_text.clone();
-            Self::splice_local(&mut next, from, to - from, &format!("{block}\n{prev}"));
+            replace_chars(&mut next, from, to - from, &format!("{block}\n{prev}"));
             self.request_text_edit(&next);
             self.shift_primary_lines(-1);
         } else {
@@ -1196,7 +1454,7 @@ impl EditorView {
             );
             // Region is "{block}\n{next}" → swap to "{next}\n{block}".
             let mut updated = self.cached_text.clone();
-            Self::splice_local(&mut updated, from, to - from, &format!("{next}\n{block}"));
+            replace_chars(&mut updated, from, to - from, &format!("{next}\n{block}"));
             self.request_text_edit(&updated);
             self.shift_primary_lines(1);
         }
@@ -1204,7 +1462,7 @@ impl EditorView {
 
     /// Delete the caret's line(s) entirely, landing the caret at the start of
     /// what follows. Bound to Ctrl+Shift+K.
-    pub fn delete_lines(&mut self, _doc: &mut AutoCommit) {
+    pub fn delete_lines(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1229,7 +1487,7 @@ impl EditorView {
             )
         };
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, from, to - from, "");
+        replace_chars(&mut next, from, to - from, "");
         self.request_text_edit(&next);
         let target = a.min(self.lines.len().saturating_sub(1));
         self.carets = vec![Caret::at(target, 0)];
@@ -1241,7 +1499,7 @@ impl EditorView {
     /// the range is already commented, uncomment; otherwise comment them all
     /// (at the range's shallowest indent, so the comment markers line up).
     /// No-op for languages without a line comment. Bound to Ctrl+/.
-    pub fn toggle_line_comment(&mut self, _doc: &mut AutoCommit) {
+    pub fn toggle_line_comment(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1288,11 +1546,11 @@ impl EditorView {
                         remove += 1;
                     }
                     let at = self.char_index(l, lead);
-                    Self::splice_local(&mut next, at, remove, "");
+                    replace_chars(&mut next, at, remove, "");
                 }
             } else {
                 let at = self.char_index(l, indent);
-                Self::splice_local(&mut next, at, 0, &format!("{token} "));
+                replace_chars(&mut next, at, 0, &format!("{token} "));
             }
         }
         self.request_text_edit(&next);
@@ -1303,7 +1561,7 @@ impl EditorView {
     /// Indent every line the selection spans by one indent unit. Falls back to
     /// a plain tab-at-caret when the selection is empty or single-line (handled
     /// by the caller). Bound to Tab with a multi-line selection.
-    pub fn indent_selection(&mut self, _doc: &mut AutoCommit) {
+    pub fn indent_selection(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1315,7 +1573,7 @@ impl EditorView {
                 continue;
             }
             let at = self.line_start_index(l);
-            Self::splice_local(&mut next, at, 0, &pad);
+            replace_chars(&mut next, at, 0, &pad);
         }
         self.request_text_edit(&next);
         self.clamp_carets();
@@ -1323,7 +1581,7 @@ impl EditorView {
 
     /// Outdent every line the selection spans by up to one indent unit. Bound
     /// to Shift+Tab.
-    pub fn outdent_selection(&mut self, _doc: &mut AutoCommit) {
+    pub fn outdent_selection(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1344,7 +1602,7 @@ impl EditorView {
             };
             if remove > 0 {
                 let at = self.line_start_index(l);
-                Self::splice_local(&mut next, at, remove, "");
+                replace_chars(&mut next, at, remove, "");
             }
         }
         self.request_text_edit(&next);
@@ -1367,9 +1625,11 @@ impl EditorView {
         let line = ((rel_y / self.line_height()).floor() as isize)
             .clamp(0, self.lines.len() as isize - 1) as usize;
         let rel_x = p.x - self.rect.x0 - gutter - self.code_pad_left() + self.scroll_x;
-        let max_col = self.lines.get(line).map_or(0, |l| l.chars().count());
-        let col = ((rel_x / self.cell_w).round().max(0.0) as usize).min(max_col);
-        (line, col)
+        let col = (rel_x / self.cell_w).round().max(0.0) as usize;
+        (
+            line,
+            self.lines.get(line).map_or(0, |row| snap_col(row, col)),
+        )
     }
 
     // ---- draw helpers (split out of `Widget::draw`, which orchestrates them) ----
@@ -1377,9 +1637,9 @@ impl EditorView {
     /// Measure the real monospace cell width once a renderer is available,
     /// caching it on `self` (the fallback stays in place until the first
     /// successful measurement).
-    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
-        let (mw, mh) =
-            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let style = Self::code_style(theme);
+        let (mw, mh) = text_renderer.measure_style("M", None, &style);
         if mw > 0.0 {
             self.cell_w = f64::from(mw);
         }
@@ -1387,13 +1647,18 @@ impl EditorView {
             self.line_h = Self::line_pitch(f64::from(mh));
             self.text_dy = (self.line_h - f64::from(mh)) / 2.0;
         }
+        self.pad = f64::from(theme.tokens.spacing.s3);
     }
 
-    /// Row pitch for a measured `FONT_SIZE` line: the 1× constant while the
-    /// line fits (a 14 px mono line measures 17.5 px, leaving 1.25 px either
-    /// side of 20), otherwise the line plus that same leading.
+    /// The face the buffer and its line numbers are set in: the `Code` role.
+    fn code_style(theme: &Theme) -> TextStyle {
+        theme.text(TextRole::Code)
+    }
+
+    /// Row pitch for a measured `Code` line: the line itself, on a whole
+    /// pixel so rows tile without seams.
     fn line_pitch(line_h: f64) -> f64 {
-        (line_h + 2.0 * LINE_LEADING).max(LINE_HEIGHT)
+        line_h.ceil()
     }
 
     /// The geometry a draw pass threads through.
@@ -1409,27 +1674,10 @@ impl EditorView {
         }
     }
 
-    /// Fill the editor background and the (subtly raised) gutter background.
-    fn draw_backgrounds(&self, scene: &mut Scene, transform: Affine, theme: &Theme, gutter_w: f64) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-        let gutter_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + gutter_w,
-            self.rect.y1,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &gutter_rect,
-        );
-    }
-
     /// Draw the per-line background bands for every visible row: the
-    /// active-line highlight, find-bar match bands, and selection bands.
+    /// active-line highlight, find matches, and selection bands. The buffer
+    /// and its gutter stand on the content ground the framework painted, so
+    /// nothing is filled under them.
     /// Runs as its own pass over the visible rows (before [`Self::draw_line_text`]
     /// paints line numbers and code on top) — safe because rows never overlap,
     /// so the pass order only has to hold within a single row, not across rows.
@@ -1461,53 +1709,13 @@ impl EditorView {
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
                 let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + self.line_h);
-                scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &hl);
-            }
-
-            // Find-bar matches on this line, under the selection so a selected
-            // current match still reads as selected.
-            for (mi, m) in self.find_matches.iter().enumerate() {
-                if m.line != line_idx {
-                    continue;
-                }
-                let mx0 = code_x0 + m.col as f64 * self.cell_w - self.scroll_x;
-                let mx1 = code_x0 + (m.col + m.len) as f64 * self.cell_w - self.scroll_x;
-                let band = Rect::new(
-                    mx0.max(self.rect.x0 + gutter_w),
-                    y + 1.0,
-                    mx1,
-                    y + self.line_h - 1.0,
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.lift_on(c.surfaces.content, 0.5),
+                    None,
+                    &hl,
                 );
-                if band.width() <= 0.0 {
-                    continue;
-                }
-                let is_current = self.find_current == Some(mi);
-                // The current match is filled; the rest are outlined, so the
-                // one you are on is unmistakable among thirty others.
-                if is_current {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.45),
-                        None,
-                        &band,
-                    );
-                } else {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.16),
-                        None,
-                        &band,
-                    );
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.5),
-                        None,
-                        &band,
-                    );
-                }
             }
 
             // Selection rectangles for any caret touching this line.
@@ -1525,11 +1733,33 @@ impl EditorView {
                     let sx0 = code_x0 + start_col as f64 * self.cell_w - self.scroll_x;
                     let sx1 = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
                     let sel = Rect::new(sx0.max(self.rect.x0 + gutter_w), y, sx1, y + self.line_h);
-                    // Translucent accent for the selection band; alpha is read
-                    // from the theme accent so a theme swap recolours it.
-                    let sel_color = c.accent[5].multiply_alpha(0.35);
-                    scene.fill(Fill::NonZero, transform, sel_color, None, &sel);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.intent.selection_tint,
+                        None,
+                        &sel,
+                    );
                 }
+            }
+
+            // Find matches on this line, over the selection so a match stays
+            // visible while it is selected. Each is a wash over its glyphs
+            // only; the current one is outlined.
+            for (mi, m) in self.find_matches.iter().enumerate() {
+                if m.line != line_idx {
+                    continue;
+                }
+                let mx0 = code_x0 + m.col as f64 * self.cell_w - self.scroll_x;
+                let mx1 = code_x0 + (m.col + m.len) as f64 * self.cell_w - self.scroll_x;
+                let band = Rect::new(mx0.max(self.rect.x0 + gutter_w), y, mx1, y + self.line_h);
+                ui::widget::paint_find_match(
+                    scene,
+                    transform,
+                    band,
+                    self.find_current == Some(mi),
+                    theme,
+                );
             }
         }
     }
@@ -1544,6 +1774,8 @@ impl EditorView {
             theme,
         } = ctx.reborrow();
         let c = &theme.tokens.colors;
+        let code_style = Self::code_style(theme);
+        let number_style = code_style.numeric();
         // Horizontal editor scrolling moves source text, never the gutter.
         // Vello text does not implicitly inherit a clipping rect, so without
         // this explicit layer negative-x text painted back through line
@@ -1555,6 +1787,7 @@ impl EditorView {
             self.rect.x1,
             self.rect.y1,
         );
+        let composition = self.composition_on_line();
         for vi in 0..rows.n_visible {
             let line_idx = rows.first_line + vi;
             let Some(line) = self.lines.get(line_idx) else {
@@ -1580,7 +1813,7 @@ impl EditorView {
                 num_color,
                 transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
+                &number_style,
             );
 
             // The highlighted code text, span by span.
@@ -1591,58 +1824,160 @@ impl EditorView {
                 transform,
                 &code_clip,
             );
-            let empty: Vec<Span> = Vec::new();
-            let spans = self.spans.get(line_idx).unwrap_or(&empty);
-            let base_x = rows.code_x0 - self.scroll_x;
-            if spans.is_empty() && !line.is_empty() {
-                // Fallback for a line the highlighter produced no spans for —
-                // draw it plain so no characters are ever dropped.
-                text_renderer.draw_style(
-                    scene,
-                    line,
-                    c.text_primary,
-                    transform * Affine::translate((base_x, y + self.text_dy)),
-                    None,
-                    &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-                );
-            } else {
-                for span in spans {
-                    // Byte offsets → char offset for x positioning.
-                    let prefix = line
-                        .as_bytes()
-                        .get(..span.range.start.min(line.len()))
-                        .unwrap_or(&[]);
-                    let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
-                    let seg = line
-                        .get(span.range.start..span.range.end.min(line.len()))
-                        .unwrap_or("");
-                    if seg.is_empty() {
-                        continue;
-                    }
-                    let x = base_x + char_col as f64 * self.cell_w;
-                    // Skip fully off-screen-left segments.
-                    if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
-                        continue;
-                    }
-                    let color = theme.tokens.syntax.color(span.kind);
-                    let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
-                        TextWeight::Semibold
-                    } else {
-                        TextWeight::Regular
-                    };
-                    text_renderer.draw_style(
-                        scene,
-                        seg,
-                        color,
-                        transform * Affine::translate((x, y + self.text_dy)),
-                        None,
-                        &TextStyle::new(Self::font_size())
-                            .with_weight(weight)
-                            .with_family(FontChoice::Monospace),
-                    );
-                }
-            }
+            let composing = composition
+                .as_ref()
+                .filter(|(l, _)| *l == line_idx)
+                .map(|(_, core)| core);
+            self.draw_code_row(
+                &mut PaintCtx::new(&mut *scene, transform, &mut *text_renderer, theme),
+                rows,
+                (line_idx, line.as_str()),
+                y,
+                composing,
+            );
             scene.pop_layer();
+        }
+    }
+
+    /// Map the visible display columns back to committed text around IME.
+    fn visible_row_window(
+        &self,
+        index: &RowViewportIndex,
+        line: &str,
+        (base_x, gutter_w): (f64, f64),
+        (caret_column, preedit_columns): (Option<usize>, usize),
+    ) -> std::ops::Range<usize> {
+        let first_column = ((self.rect.x0 + gutter_w - base_x) / self.cell_w)
+            .floor()
+            .max(0.0) as usize;
+        let last_column = ((self.rect.x1 - base_x) / self.cell_w).ceil().max(0.0) as usize;
+        let to_source_column = |column: usize| match caret_column {
+            Some(caret) if column > caret => column.saturating_sub(preedit_columns).max(caret),
+            _ => column,
+        };
+        let (window, _) = index.window(
+            line,
+            to_source_column(first_column.saturating_sub(4))
+                ..to_source_column(last_column.saturating_add(4)),
+        );
+        window
+    }
+
+    /// Draw one row's highlighted code, span by span. On the composing row
+    /// the preedit is spliced in at the caret through the shared core's
+    /// display mapping: text after the caret is drawn shifted past it.
+    fn draw_code_row(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        rows: &VisibleRows,
+        (line_idx, line): (usize, &str),
+        y: f64,
+        composing: Option<&EditCore>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let c = &theme.tokens.colors;
+        let empty: Vec<Span> = Vec::new();
+        let spans = self.spans.get(line_idx).unwrap_or(&empty);
+        let base_x = rows.code_x0 - self.scroll_x;
+        let plain_index = RowViewportIndex::default();
+        let index = self.row_windows.get(&line_idx).unwrap_or(&plain_index);
+        let preedit = composing.and_then(|core| core.preedit_display_range(line));
+        let preedit_columns = composing.map_or(0, |core| core.preedit().chars().count());
+        let caret_column = preedit
+            .as_ref()
+            .map(|range| index.column(line, range.start));
+        let column_at = |byte| index.column(line, byte);
+        let window = self.visible_row_window(
+            index,
+            line,
+            (base_x, rows.gutter_w),
+            (caret_column, preedit_columns),
+        );
+        // The display column committed byte `byte` starts at; a run
+        // starting at the caret begins after the composition.
+        let col_at = |byte: usize| {
+            column_at(byte).saturating_add(
+                if preedit.as_ref().is_some_and(|range| byte >= range.start) {
+                    preedit_columns
+                } else {
+                    0
+                },
+            )
+        };
+        // A line the highlighter produced no spans for draws plain, so no
+        // characters are ever dropped; a span the composition falls
+        // inside is drawn as two runs.
+        let plain = [(0..line.len(), None)];
+        let highlighted = spans
+            .iter()
+            .skip(spans.partition_point(|span| span.range.end <= window.start))
+            .map(|span| (span.range.clone(), Some(span.kind)));
+        let caret = preedit.as_ref().map(|range| range.start);
+        let runs = if spans.is_empty() {
+            Box::new(plain.into_iter()) as Box<dyn Iterator<Item = _>>
+        } else {
+            Box::new(highlighted)
+        }
+        .flat_map(|(range, kind)| {
+            let end = range.end.min(line.len());
+            let start = range.start.min(end);
+            match caret {
+                Some(at) if start < at && at < end => [(start..at, kind), (at..end, kind)],
+                _ => [(start..end, kind), (end..end, kind)],
+            }
+        });
+        for (range, kind) in runs {
+            if range.end <= window.start {
+                continue;
+            }
+            if range.start >= window.end {
+                break;
+            }
+            let range = range.start.max(window.start)..range.end.min(window.end);
+            let seg = line.get(range.clone()).unwrap_or("");
+            if seg.is_empty() {
+                continue;
+            }
+            let x = base_x + col_at(range.start) as f64 * self.cell_w;
+            // Skip fully off-screen-left segments.
+            if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
+                continue;
+            }
+            let color = kind.map_or(c.text_primary, |kind| theme.tokens.syntax.color(kind));
+            let weight = if kind == Some(ui::widget::code_editor::TokenKind::Keyword) {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            text_renderer.draw_style(
+                scene,
+                seg,
+                color,
+                transform * Affine::translate((x, y + self.text_dy)),
+                None,
+                &Self::code_style(theme).with_weight(weight),
+            );
+        }
+        if let (Some(core), Some(range)) = (composing, &preedit) {
+            // The composition, underlined until the input method commits it.
+            let x0 = base_x + column_at(range.start) as f64 * self.cell_w;
+            let x1 = x0 + preedit_columns as f64 * self.cell_w;
+            text_renderer.draw_style(
+                scene,
+                core.preedit(),
+                c.text_primary,
+                transform * Affine::translate((x0, y + self.text_dy)),
+                None,
+                &Self::code_style(theme),
+            );
+            let uy = y + self.line_h - 2.0;
+            let underline = Line::new(Point::new(x0, uy), Point::new(x1, uy));
+            ui::widget::paint_preedit_underline(scene, transform, underline, theme);
         }
     }
 
@@ -1692,20 +2027,9 @@ impl EditorView {
                 Severity::Info => c.semantic.info,
                 Severity::Hint => c.text_dim,
             };
-            // Zigzag underline — a couple of px amplitude reads as a squiggle.
-            // Stepped by an integer segment count (rather than a `while x <
-            // x_right` float loop) so the number of iterations is exact.
-            let mut path = BezPath::new();
-            path.move_to((x_left, sy));
-            let span = (x_right - x_left).max(0.0);
-            let segments = (span / 3.0).ceil() as usize;
-            let mut up = true;
-            for seg in 1..=segments {
-                let nx = (x_left + seg as f64 * 3.0).min(x_right);
-                path.line_to((nx, if up { sy - 1.6 } else { sy + 1.6 }));
-                up = !up;
-            }
-            scene.stroke(&Stroke::new(1.2), transform, color, None, &path);
+            ui::widget::code_editor::paint_diagnostic_underline(
+                scene, transform, x_left, x_right, sy, color,
+            );
         }
     }
 
@@ -1724,163 +2048,78 @@ impl EditorView {
             return;
         }
         let c = &theme.tokens.colors;
-        for caret in &self.carets {
+        for (i, caret) in self.carets.iter().enumerate() {
             if caret.line < first_line || caret.line >= first_line + n_visible {
                 continue;
             }
+            let col = if i == 0 {
+                self.primary_display_col()
+            } else {
+                caret.col
+            };
             let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * self.line_h;
-            let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
+            let x = code_x0 + col as f64 * self.cell_w - self.scroll_x;
             if x < self.rect.x0 + gutter_w {
                 continue;
             }
-            let caret_line =
-                Line::new(Point::new(x, y + 2.0), Point::new(x, y + self.line_h - 2.0));
+            let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let caret_line = vello::kurbo::Line::new(
+                Point::new(x, y + inset),
+                Point::new(x, y + self.line_h - inset),
+            );
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                c.border_focus,
+                c.intent.you,
                 None,
                 &caret_line,
             );
         }
     }
 
-    /// Draw the completion popup: a floating, scrollable list anchored under
-    /// the caret, with the highlighted row filled and each item's kind glyph,
-    /// label and (space permitting) detail text. No-op when the popup isn't
-    /// showing.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a draw pass threads the same caret, viewport, and completion geometry through one visual unit; splitting it would separate sizing from its corresponding paint and clipping rules"
-    )]
+    /// Draw the completion popup: the toolkit's suggestion list, anchored
+    /// under the caret (above it when there is no room below). Each row
+    /// carries its kind icon, its label and the candidate's detail in a
+    /// trailing column. No-op when the popup isn't showing.
     fn draw_completion_popup(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        gutter_w: f64,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let row_h = self.line_h;
         if !self.completion_active() {
             return;
         }
-        let c = &theme.tokens.colors;
-        let max_rows = 8usize;
-        let total = self.completions.len();
-        let shown = total.min(max_rows);
-        // Scroll the window so the selected row stays visible.
-        let offset = if self.completion_index >= max_rows {
-            self.completion_index - max_rows + 1
-        } else {
-            0
-        };
-        let width = (340.0 * self.text_scale).min(self.rect.width() - (gutter_w + 20.0));
-        let height = shown as f64 * row_h + 8.0 * self.text_scale;
-        let px = caret_x
-            .min(self.rect.x1 - width - 8.0)
-            .max(self.rect.x0 + gutter_w + 2.0);
-        let py = (caret_top + self.line_height() + 2.0)
-            .min(self.rect.y1 - height - 4.0)
-            .max(self.rect.y0);
-        let popup = Rect::new(px, py, px + width, py + height);
-        let shape = RoundedRect::from_rect(popup, 6.0);
-        // A floating popup is a Panel: the shell's derived panel border.
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(popup, 6.0),
-        );
-
-        for row in 0..shown {
-            let idx = offset + row;
-            let Some(item) = self.completions.get(idx) else {
-                break;
-            };
-            let ry = py + 4.0 * self.text_scale + row as f64 * row_h;
-            if idx == self.completion_index {
-                let hl = Rect::new(
-                    px + 2.0 * self.text_scale,
-                    ry,
-                    px + width - 2.0 * self.text_scale,
-                    ry + row_h,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    c.accent[5].multiply_alpha(0.30),
-                    None,
-                    &hl,
-                );
-            }
-            // Kind glyph (compact hint at the identifier's type).
-            let glyph = completion_kind_glyph(item.kind);
-            text_renderer.draw_style(
-                scene,
-                glyph,
-                c.accent[6],
-                transform * Affine::translate((px + 8.0, ry + self.text_dy)),
-                None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-            );
-            text_renderer.draw_style(
-                scene,
-                &item.label,
-                c.text_primary,
-                transform * Affine::translate((px + 26.0, ry + self.text_dy)),
-                None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-            );
-            // Details are useful on a desktop but compete directly with the
-            // completion label on a narrow editor. Never let a wrapped detail
-            // spill into its neighbouring row: hide it below the readable
-            // threshold, otherwise draw one fitted line.
-            if self.rect.width() >= 640.0
-                && let Some(detail) = &item.detail
-            {
-                let (lw, _) = text_renderer.measure_styled(
-                    &item.label,
-                    Self::font_size(),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                let available = width - 40.0 - f64::from(lw);
-                let detail = fit_completion_detail(
-                    text_renderer,
-                    detail,
-                    available,
-                    Self::font_size() - 1.0,
-                );
-                // The smaller detail shares the label's centre line.
-                let (_, dh) = text_renderer.measure_styled(
-                    &detail,
-                    FONT_SIZE - 1.0,
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                let detail_dy = (row_h - f64::from(dh)) / 2.0;
-                text_renderer.draw_style(
-                    scene,
-                    &detail,
-                    c.text_dim,
-                    transform * Affine::translate((px + 34.0 + f64::from(lw), ry + detail_dy)),
-                    None,
-                    &TextStyle::new(Self::font_size() - 1.0).with_family(FontChoice::Monospace),
-                );
-            }
-        }
+        let suggestions: Vec<Suggestion> = self
+            .completions
+            .iter()
+            .map(|item| {
+                let suggestion = Suggestion::labelled(&item.insert_text, &item.label)
+                    .with_icon(completion_kind_icon(item));
+                match &item.detail {
+                    Some(detail) => suggestion.with_detail(detail),
+                    None => suggestion,
+                }
+            })
+            .collect();
+        // The shared suggestion list opens from the caret's line: below it,
+        // or above it when the editor ends first; it scrolls to keep the
+        // chosen row in view and sizes itself to its labels and details.
+        let x = caret_x.max(self.rect.x0 + self.gutter_width());
+        self.completion_list.set_suggestions(suggestions);
+        self.completion_list
+            .set_anchor(Rect::new(x, caret_top, x, caret_top + self.line_h));
+        self.completion_list.set_viewport(self.rect);
+        self.completion_list
+            .set_highlight(Some(self.completion_index));
+        self.completion_list
+            .paint(scene, transform, text_renderer, theme);
     }
 
-    /// Draw the hover tooltip: a small box near the caret with the server's
+    /// Draw the hover tooltip: a small panel near the caret with the server's
     /// text, preferring above the caret and dropping below when there's no
     /// room. No-op when there is no hover text to show.
     fn draw_hover_tooltip(
@@ -1889,88 +2128,41 @@ impl EditorView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        gutter_w: f64,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let Some(hover) = self.hover_text.clone() else {
+        let Some(hover) = self.hover_text.as_deref() else {
             return;
         };
-        let c = &theme.tokens.colors;
+        let spacing = &theme.tokens.spacing;
+        let style = theme.text(TextRole::Body);
         let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
-        let (tw, _) = text_renderer.measure(&first, Self::font_size(), None);
-        let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
-        let lines = first.lines().count().max(1);
-        // Line pitch from the measured line: 18 px at 1× (a 14 px line
-        // measures 17.5), the line plus the same leading at larger scales.
-        let (_, lh) = text_renderer.measure("Ag", FONT_SIZE, None);
-        let pitch = (f64::from(lh) + 0.5).max(f64::from(FONT_SIZE) + 4.0);
-        let height = lines as f64 * pitch + 12.0;
+        let pad = f64::from(spacing.s3);
+        let max_text = (self.rect.width() - 2.0 * (pad + f64::from(spacing.s4))).max(0.0);
+        let (tw, th) = text_renderer.measure_style(&first, Some(max_text as f32), &style);
+        let width = f64::from(tw) + 2.0 * pad;
+        let height = f64::from(th) + 2.0 * pad;
+        let gap = f64::from(spacing.s1);
         let px = caret_x
-            .min(self.rect.x1 - width - 8.0)
-            .max(self.rect.x0 + gutter_w + 2.0);
+            .min(self.rect.x1 - width - f64::from(spacing.s2))
+            .max(self.rect.x0 + self.gutter_width());
         // Prefer above the caret; drop below if there's no room.
-        let py = if caret_top - height - 4.0 >= self.rect.y0 {
-            caret_top - height - 4.0
+        let py = if caret_top - height - gap >= self.rect.y0 {
+            caret_top - height - gap
         } else {
-            caret_top + self.line_h + 2.0
+            caret_top + self.line_h + gap
         };
-        let box_rect = Rect::new(px, py, px + width, py + height);
-        let shape = RoundedRect::from_rect(box_rect, 6.0);
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(box_rect, 6.0),
+        let panel = Rect::new(px, py, px + width, py + height);
+        ui::widget::floating_surface::paint(scene, transform, panel, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        text_renderer.draw_style(
+            scene,
+            &first,
+            ink.text_primary,
+            transform * Affine::translate((px + pad, py + pad)),
+            Some(max_text as f32),
+            &style,
         );
-        for (i, line) in first.lines().enumerate() {
-            text_renderer.draw_text(
-                scene,
-                line,
-                Self::font_size(),
-                c.text_primary,
-                transform * Affine::translate((px + 10.0, py + 6.0 + i as f64 * pitch)),
-                Some((width - 20.0) as f32),
-            );
-        }
-    }
-}
-
-/// Fit completion metadata into exactly one row. Text renderer bounds may
-/// wrap a long type signature; completion rows intentionally never do.
-fn fit_completion_detail(
-    text_renderer: &mut TextRenderer,
-    detail: &str,
-    max_width: f64,
-    font_size: f32,
-) -> String {
-    let fits = |text: &str, renderer: &mut TextRenderer| {
-        renderer
-            .measure_styled(text, font_size, None, TextWeight::Regular, false, true)
-            .0
-            <= max_width as f32
-    };
-    if max_width <= 0.0 || !fits(detail, text_renderer) {
-        let mut fitted = String::new();
-        for ch in detail.chars() {
-            let mut candidate = fitted.clone();
-            candidate.push(ch);
-            candidate.push('\u{2026}');
-            if !fits(&candidate, text_renderer) {
-                break;
-            }
-            fitted.push(ch);
-        }
-        if fitted.is_empty() {
-            String::new()
-        } else {
-            fitted.push('\u{2026}');
-            fitted
-        }
-    } else {
-        detail.to_string()
     }
 }
 
@@ -2072,7 +2264,7 @@ impl EditorView {
         &mut self,
         key_event: &KeyEvent,
         mods: winit::keyboard::ModifiersState,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let logical_key = &key_event.logical_key;
@@ -2109,7 +2301,7 @@ impl EditorView {
     fn handle_completion_popup_keys(
         &mut self,
         logical_key: &Key,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if !self.completion_active() {
@@ -2147,15 +2339,76 @@ impl EditorView {
         }
     }
 
+    /// The pointer over the open completion popup: a row lifts under it, a
+    /// click accepts that row, the wheel scrolls the list. A press anywhere
+    /// else dismisses the popup and goes on to the editor. Returns `true`
+    /// when the event was the popup's.
+    fn handle_completion_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        state: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if self.completion_list.hover_at(point) {
+                    self.dirty = true;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(index) = self.completion_list.row_at(self.last_cursor) else {
+                    self.hide_completions();
+                    return false;
+                };
+                self.completion_index = index;
+                self.accept_completion(state);
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self
+                    .completion_list
+                    .rect()
+                    .is_some_and(|r| r.contains(self.last_cursor)) =>
+            {
+                let rows = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y),
+                    MouseScrollDelta::PixelDelta(p) => -p.y / self.line_h,
+                };
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a wheel step is a handful of rows"
+                )]
+                let rows = rows.round() as i32;
+                self.completion_list.scroll_by(rows);
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// F12 (go to definition) and F1 (hover — instant for an on-caret
     /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if let Key::Named(NamedKey::F12) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F12)) {
             self.lsp_ask = Some(LspAsk::Definition);
             *handled = true;
             return true;
         }
-        if let Key::Named(NamedKey::F1) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F1)) {
             // Instant, server-free hover: if the caret sits on a diagnostic,
             // show its message immediately. Also ask the LSP for a richer
             // hover (which supersedes this when it arrives).
@@ -2179,7 +2432,7 @@ impl EditorView {
         ctrl: bool,
         shift: bool,
         alt: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         match logical_key {
@@ -2243,7 +2496,7 @@ impl EditorView {
         logical_key: &Key,
         ctrl: bool,
         shift: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let Key::Character(s) = logical_key else {
@@ -2274,7 +2527,7 @@ impl EditorView {
         text: Option<&str>,
         ctrl: bool,
         shift: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         match logical_key {
@@ -2328,6 +2581,9 @@ impl EditorView {
         }
     }
 
+    /// The "Line start" button shown only after horizontal scrolling. It
+    /// makes the offset explicit and returns to column zero on click; Home
+    /// provides the matching keyboard path.
     fn draw_horizontal_scroll_recovery(
         &mut self,
         scene: &mut Scene,
@@ -2340,39 +2596,40 @@ impl EditorView {
         if self.scroll_x <= 1.0 {
             return;
         }
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let size = ControlSize::Small;
+        let face = ButtonFace::new(Rect::ZERO, "Line start")
+            .icon(Icon::ArrowLeft)
+            .control_size(size);
+        let width = face.intrinsic_width(text_renderer, theme);
+        let height = ButtonFace::height(size, theme);
         let rect = Rect::new(
-            code_x0 + 6.0,
-            self.rect.y1 - 25.0,
-            (code_x0 + 122.0).min(self.rect.x1 - 4.0),
-            self.rect.y1 - 5.0,
+            code_x0 + inset,
+            self.rect.y1 - inset - height,
+            (code_x0 + inset + width).min(self.rect.x1 - inset),
+            self.rect.y1 - inset,
         );
-        // The status chip is a raised card with its derived rest edge.
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            5.0,
-            theme.tokens.colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            "← Line start (Home)",
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 6.0, rect.y0 + 4.0)),
-            None,
-            &TextStyle::new(10.0)
-                .with_weight(TextWeight::Medium)
-                .with_family(FontChoice::Monospace),
-        );
+        let face = ButtonFace::new(rect, "Line start")
+            .icon(Icon::ArrowLeft)
+            .control_size(size)
+            .hovered(rect.contains(self.last_cursor));
+        Button::paint(scene, transform, text_renderer, theme, &face);
         self.horizontal_scroll_reset_rect = rect;
     }
 }
 
 impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        // Pull remote/undo edits: if the buffer text differs from our cache,
-        // rebuild. Cheap string compare on the hot path.
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        use automerge::transaction::Transactable;
+        self.collect_highlights();
+        let (state, _) = ui::doc::document_ref(state, path);
+        // Scroll and caret frames must not materialize the entire CRDT Text.
+        // A pending transaction has no stable content witness: always read it,
+        // including two different edits with the same pending-operation count.
+        let heads = (state.pending_ops() == 0).then(|| state.committed_heads());
+        if heads.is_some() && self.text_heads == heads {
+            return;
+        }
         if let Some(t) = self.text_obj.clone() {
             use automerge::ReadDoc;
             let text = state.text(&t).unwrap_or_default();
@@ -2380,6 +2637,11 @@ impl Widget for EditorView {
                 self.rebuild(&text);
             }
         }
+        self.text_heads = heads;
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.collect_highlights()
     }
 
     fn build_layout(
@@ -2388,37 +2650,15 @@ impl Widget for EditorView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-        )]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2426,40 +2666,39 @@ impl Widget for EditorView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        if (self.text_scale - f64::from(theme.text_scale)).abs() > f64::EPSILON {
-            self.text_scale = f64::from(theme.text_scale);
-            self.cell_w = FALLBACK_CELL_W * self.text_scale;
+        self.collect_highlights();
+        let code_size = theme.text(TextRole::Code).size;
+        if (self.code_size - code_size).abs() > f32::EPSILON {
+            self.code_size = code_size;
+            self.measure_cell_width(text_renderer, theme);
             self.scroll_to_caret();
         }
-        let c = &theme.tokens.colors;
-        self.measure_cell_width(text_renderer);
+        self.measure_cell_width(text_renderer, theme);
         let rows = self.visible_rows();
-        let VisibleRows {
-            gutter_w, code_x0, ..
-        } = rows;
-        self.draw_backgrounds(scene, transform, theme, gutter_w);
+        let VisibleRows { code_x0, .. } = rows;
 
         if self.text_obj.is_none() {
             // A composed zero-state through the shared primitive: a hero icon,
-            // a title, a one-line invitation, and an actionable "Open File"
-            // pill that summons the portal picker.
-            self.empty_action_rect = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileCode),
-                    title: "No file open",
-                    message: Some("Open a file from the tree, or pick one to start editing."),
-                    action_label: Some("Open File"),
-                },
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
+            // one sentence, and an actionable "Open file" button that summons
+            // the portal picker.
+            self.empty.apply_layout_external(self.rect);
+            self.empty
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
 
+        // The viewport shows whole lines: a line the bottom edge would cut in
+        // half is not drawn at all, so no half-glyphs sit against the panel
+        // or the status bar.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.whole_line_rect(),
+        );
         let primary_line = self.primary().line;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.draw_line_backgrounds(&mut ctx, &rows, primary_line);
@@ -2467,76 +2706,46 @@ impl Widget for EditorView {
         self.draw_diagnostics(scene, transform, theme, &rows);
         self.draw_carets(scene, transform, theme, &rows);
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
-
-        // Border separating the editor from the raised side panel: derived
-        // against that panel, which is the surface the rule sits on.
-        let border = Line::new(
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &border,
-        );
+        scene.pop_layer();
+        // Scrolled, the code continues past the top edge: it fades out
+        // there, so a line the edge cuts mid-scroll reads as going on.
+        if self.scroll_y > 0.0 {
+            ui::surface::content_edge_fade(
+                scene,
+                transform,
+                self.whole_line_rect(),
+                ui::surface::ContentEdge::Top,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
 
         // Caret pixel, reused by the completion popup + hover tooltip.
-        let (caret_line, caret_col) = self.primary_caret();
-        let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
+        let (caret_line, _) = self.primary_caret();
+        let caret_x = code_x0 + self.primary_display_col() as f64 * self.cell_w - self.scroll_x;
         let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_h;
 
-        self.draw_completion_popup(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            gutter_w,
-            caret_x,
-            caret_top,
-        );
-        self.draw_hover_tooltip(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            gutter_w,
-            caret_x,
-            caret_top,
-        );
+        self.draw_completion_popup(scene, transform, text_renderer, theme, caret_x, caret_top);
+        self.draw_hover_tooltip(scene, transform, text_renderer, theme, caret_x, caret_top);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.text_obj.is_none() {
-            // Unbound: the only interactive thing is the zero-state's "Open
-            // File" pill. Track the cursor for its hover (redrawing only when
-            // the pointer crosses the pill so an idle screen stays still), and
-            // fire the action on a click inside it.
-            match event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let next =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                    let was = self.empty_action_rect.contains(self.last_cursor);
-                    let now = self.empty_action_rect.contains(next);
-                    self.last_cursor = next;
-                    if was != now {
-                        self.dirty = true;
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if self.empty_action_rect.contains(self.last_cursor) => {
-                    self.empty_action = true;
-                    *ctx.handled = true;
-                }
-                _ => {}
+            // Unbound: the only interactive thing is the zero-state's
+            // "Open file" action.
+            self.empty
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            ) {
+                self.dirty = true;
             }
             return;
         }
         let mods = ctx.modifiers.state();
+        if self.handle_completion_pointer(event, ctx.scale_factor, &mut ctx.state, ctx.handled) {
+            return;
+        }
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2562,15 +2771,16 @@ impl Widget for EditorView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let next = ctx.logical(position);
                 self.handle_cursor_moved(next, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, ctx.handled),
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key_press(key_event, mods, ctx.state, ctx.handled);
+                self.handle_key_press(key_event, mods, &mut ctx.state, ctx.handled);
             }
+            WindowEvent::Ime(ime) => self.handle_ime(ime, ctx.handled),
             _ => {}
         }
     }
@@ -2587,21 +2797,69 @@ impl Widget for EditorView {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Document)
                 .with_name("Code editor")
-                .with_state(ui::a11y::AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    multiline: true,
-                    ..Default::default()
-                }),
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .multiline(true),
+                ),
         )
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.text_obj.is_none() {
+            vec![&self.empty]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.text_obj.is_none() {
+            vec![&mut self.empty]
+        } else {
+            Vec::new()
+        }
     }
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.is_bound()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        // This is an action-owned source buffer, not input to a live process.
+        (self.is_focused && self.is_bound()).then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        if self.composition.has_preedit() || self.pending_text_edit.is_some() {
+            return None;
+        }
+        let object = self.text_obj.as_ref()?;
+        let mut stamp = ui::ime::edit_fingerprint(&self.cached_text, 0, 0, key);
+        stamp = ui::ime::scoped_fingerprint(object.to_string().as_bytes(), stamp, key);
+        // Include every selection, even when the primary caret stays put.
+        for caret in &self.carets {
+            let scope = format!("{}:{}:{:?}", caret.line, caret.col, caret.anchor);
+            stamp = ui::ime::scoped_fingerprint(scope.as_bytes(), stamp, key);
+        }
+        Some(stamp)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.is_focused || !self.is_bound() {
+            return None;
+        }
+        let rows = self.visible_rows();
+        let (line, _) = self.primary_caret();
+        let x = rows.code_x0 + self.primary_display_col() as f64 * self.cell_w - self.scroll_x;
+        let y = self.rect.y0 + (line as f64 - self.scroll_y) * self.line_h;
+        Some(Rect::new(x, y, x + 2.0, y + self.line_h))
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -2613,25 +2871,19 @@ impl Widget for EditorView {
         self.is_focused
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 impl EditorView {
     /// Test hook: directly drive a text insertion (bypasses winit events).
     #[cfg(test)]
-    pub fn insert_for_test(&mut self, doc: &mut AutoCommit, s: &str) {
+    pub fn insert_for_test(&mut self, doc: &mut ui::widget::Edits<'_>, s: &str) {
         self.insert(doc, s);
     }
 
     /// Test hook: backspace at the primary caret.
     #[cfg(test)]
-    pub fn backspace_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn backspace_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.backspace(doc);
     }
 
@@ -2644,7 +2896,7 @@ impl EditorView {
 
     /// Test hook: newline-with-indent at the primary caret.
     #[cfg(test)]
-    pub fn newline_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn newline_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.newline_with_indent(doc);
     }
 
@@ -2699,7 +2951,7 @@ impl EditorView {
 
     /// Test hook: cut the primary selection through the action request path.
     #[cfg(test)]
-    pub fn cut_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn cut_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.cut_selection(doc);
     }
 }
@@ -2717,52 +2969,293 @@ mod tests {
         ev.bind(t, Language::Rust);
         // Mimic the App's first sync so the line cache is populated.
         let root = automerge::ROOT;
-        ev.sync(&mut doc, &root);
+        ev.sync(&doc, &root);
         (ev, doc)
+    }
+
+    #[test]
+    fn committed_text_cache_tracks_pending_remote_and_rebound_content() {
+        use automerge::transaction::Transactable;
+        let (mut view, mut doc) = bound_editor("base");
+        doc.commit();
+        view.sync(&doc, &automerge::ROOT);
+        let mut left = doc.clone();
+        let mut right = doc.clone();
+        let text = view.text_obj.clone().unwrap();
+        left.splice_text(&text, 0, 4, "left").unwrap();
+        right.splice_text(&text, 0, 4, "else").unwrap();
+        assert_eq!(left.pending_ops(), right.pending_ops());
+        view.sync(&left, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "left");
+        view.sync(&right, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "else");
+        right.commit();
+        view.sync(&right, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "else");
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.text_for_test(),
+            "base",
+            "restoring earlier heads refreshes text"
+        );
+        let other = doc
+            .put_object(automerge::ROOT, "other", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&other, 0, 0, "another buffer").unwrap();
+        doc.commit();
+        view.bind(other, Language::PlainText);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "another buffer");
+    }
+
+    #[test]
+    fn exceptionally_long_rows_shape_only_the_visible_source_and_preserve_ime() {
+        use automerge::ReadDoc;
+        let source = "a".repeat(300_000);
+        let (mut view, mut doc) = bound_editor(&source);
+        view.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::dark();
+        view.measure_cell_width(&mut renderer, &theme);
+        for column in [0, 200_000] {
+            view.scroll_x = f64::from(column) * view.cell_w;
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                scene.encoding().resources.glyphs.len() < 100,
+                "offscreen characters must not be shaped"
+            );
+            assert!(!scene.encoding().resources.glyphs.is_empty());
+        }
+        view.carets = vec![Caret::at(0, 200_000)];
+        ime(&mut view, &mut doc, Ime::Preedit("e\u{301}👩‍👩‍👧‍👦".into(), None));
+        assert_eq!(
+            view.primary_display_col(),
+            200_009,
+            "composition uses scalar columns without copying the full row"
+        );
+        let mut scene = Scene::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(scene.encoding().resources.glyphs.len() < 100);
+        assert_eq!(
+            doc.text(view.text_obj.as_ref().unwrap()).unwrap(),
+            source,
+            "viewport and preedit never truncate authoritative text"
+        );
+    }
+
+    #[test]
+    fn native_text_continuation_scales_horizontal_columns_for_the_receiving_view() {
+        let (mut source, doc) = bound_editor(&"x".repeat(1000));
+        source.force_geometry(Rect::new(0.0, 0.0, 320.0, 240.0), 8.0);
+        source.set_selection_lc((0, 450), (0, 500));
+        let position = source
+            .continuation_position(&doc, "11111111-2222-4333-8444-555555555555")
+            .unwrap();
+        let (source_x, source_y) = source.native_scroll_offsets();
+        assert!(source_x > 0.0);
+        let mut target = EditorView::new();
+        target.bind(source.text_obj.clone().unwrap(), Language::Rust);
+        target.force_geometry(Rect::new(0.0, 0.0, 320.0, 240.0), 16.0);
+        target.sync(&doc, &automerge::ROOT);
+        assert!(target.restore_continuation_position(&doc, &position));
+        assert_eq!(target.native_scroll_offsets(), (source_x * 2.0, source_y));
+        assert_eq!(target.selected_text(), source.selected_text());
+        assert_eq!(
+            target.continuation_position(&doc, &position.resource_id),
+            Some(position),
+            "portable view coordinates survive different measured cell widths"
+        );
+    }
+
+    #[test]
+    fn recent_buffer_projections_restore_viewports_and_follow_changed_source_heads() {
+        use automerge::ReadDoc;
+        use automerge::transaction::Transactable;
+        use std::fmt::Write as _;
+        let mut source = String::new();
+        for line in 0..120 {
+            writeln!(source, "let value_{line} = {line};").unwrap();
+        }
+        let (mut view, mut doc) = bound_editor(&source);
+        let first = view.text_obj.clone().unwrap();
+        let second = doc
+            .put_object(automerge::ROOT, "second", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&second, 0, 0, &source).unwrap();
+        doc.commit();
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = vec![Caret::at(80, 3)];
+        view.scroll_y = 60.0;
+        view.scroll_x = 10.0;
+        let cached_lines = Arc::clone(&view.lines);
+        let cached_spans = view.spans.as_ptr();
+        view.bind(second.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = vec![Caret::at(90, 4)];
+        view.scroll_y = 70.0;
+        view.bind(first.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert!(
+            Arc::ptr_eq(&view.lines, &cached_lines),
+            "returning retains the line projection"
+        );
+        assert_eq!(
+            view.spans.as_ptr(),
+            cached_spans,
+            "returning does not rerun tokenization"
+        );
+        assert_eq!(view.primary_caret(), (80, 3));
+        assert_eq!(view.native_scroll_offsets(), (10.0, 60.0));
+        view.bind(second, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.primary_caret(), (90, 4));
+        assert_eq!(view.native_scroll_offsets().1.to_bits(), 70.0_f64.to_bits());
+        doc.splice_text(&first, 0, 0, "remote\n").unwrap();
+        doc.commit();
+        view.bind(first.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.cached_text,
+            doc.text(&first).unwrap(),
+            "cached inactive buffers follow remote edits"
+        );
+        assert!(!Arc::ptr_eq(&view.lines, &cached_lines));
+        for number in 0..3 {
+            let object = doc
+                .put_object(
+                    automerge::ROOT,
+                    format!("other{number}"),
+                    automerge::ObjType::Text,
+                )
+                .unwrap();
+            doc.splice_text(&object, 0, 0, "new buffer").unwrap();
+            doc.commit();
+            view.bind(object, Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+        }
+        view.bind(first, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.primary_caret(),
+            (0, 0),
+            "oldest projection was evicted"
+        );
+        assert_eq!(view.native_scroll_offsets(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_completion_row_is_chosen_with_the_pointer() {
+        let (mut ev, mut doc) = bound_editor("pri");
+        ev.set_caret_for_test(0, 3);
+        let item = |label: &str| CompletionItem {
+            label: label.into(),
+            kind: Some(3),
+            detail: None,
+            insert_text: label.into(),
+        };
+        ev.show_completions(vec![item("primes_below"), item("println")]);
+        ev.completion_list.set_suggestions(
+            ev.completions
+                .iter()
+                .map(|item| Suggestion::new(&item.insert_text))
+                .collect(),
+        );
+        ev.completion_list
+            .set_anchor(Rect::new(10.0, 10.0, 210.0, 30.0));
+        let row = ev.completion_list.row_rect(1).expect("second row in view");
+        ev.last_cursor = row.center();
+        let mut handled = false;
+        let press = ui::synthetic_input::mouse_press();
+        assert!(ev.handle_completion_pointer(
+            &press,
+            1.0,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &mut handled
+        ));
+        assert!(handled);
+        assert!(!ev.completion_active(), "accepting closes the popup");
+        assert_eq!(ev.text_for_test(), "println");
+
+        // A press outside the popup dismisses it and reaches the editor.
+        ev.show_completions(vec![item("primes_below")]);
+        ev.last_cursor = Point::new(500.0, 500.0);
+        let mut handled = false;
+        assert!(!ev.handle_completion_pointer(
+            &press,
+            1.0,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &mut handled
+        ));
+        assert!(!ev.completion_active());
+    }
+
+    #[test]
+    fn the_viewport_is_clipped_to_whole_lines() {
+        let (mut ev, _doc) = bound_editor("a\nb\nc\n");
+        ev.line_h = 20.0;
+        ev.rect = Rect::new(0.0, 10.0, 400.0, 10.0 + 5.0 * 20.0 + 13.0);
+        let view = ev.whole_line_rect();
+        assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
+        assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
+        // A viewport shorter than one line is left as it is.
+        ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
+        assert_eq!(ev.whole_line_rect(), ev.rect);
     }
 
     #[test]
     fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
         // Each phase builds a fresh bound editor so click counts and selections cannot leak.
-        line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale();
+        line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale();
         double_click_selects_word();
         triple_click_selects_line();
         drag_selects_char_range();
         drag_across_lines_selects_multiline();
     }
 
-    /// The row pitch is the historical 20 px at 1× and grows with the glyphs
-    /// at 2×; pointer hit-testing maps a click on the third row back to line
-    /// 2 at both scales, so paint and hits share one pitch.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
-    fn line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale() {
+    /// The row pitch is the `Code` role's measured line at 1× and grows with
+    /// the glyphs at 2×; pointer hit-testing maps a click on the third row
+    /// back to line 2 at both scales, so paint and hits share one pitch.
+    fn line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale() {
         let (mut ev, _doc) = bound_editor("a\nb\nc\nd");
         ev.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
         let mut tr = TextRenderer::new();
-        ev.measure_cell_width(&mut tr);
-        assert_eq!(ev.line_h, LINE_HEIGHT);
-        let (_, mh) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        let theme = Theme::dark();
+        ev.measure_cell_width(&mut tr, &theme);
+        let (mw, mh) = tr.measure_style("M", None, &theme.text(TextRole::Code));
         assert!(
-            (ev.text_dy - (LINE_HEIGHT - f64::from(mh)) / 2.0).abs() < 1e-9,
+            (ev.line_h - f64::from(mh).ceil()).abs() < 1e-9,
+            "a row is the measured line, on a whole pixel"
+        );
+        assert!(
+            (ev.text_dy - (ev.line_h - f64::from(mh)) / 2.0).abs() < 1e-9,
             "glyphs centre on the measured line inside the row"
         );
+        assert!((ev.cell_w - f64::from(mw)).abs() < 1e-9);
         let third_row_1x = Point::new(
             ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
             2.5 * ev.line_h,
         );
         assert_eq!(ev.point_to_caret(third_row_1x).0, 2);
+        let (cell_1x, pitch_1x) = (ev.cell_w, ev.line_h);
 
+        let large = Theme::dark().with_text_scale(2.0);
         tr.set_text_scale(2.0);
-        ev.measure_cell_width(&mut tr);
-        let (_, mh2) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
-        assert!(ev.line_h >= f64::from(mh2) + 2.0 * LINE_LEADING && ev.line_h > LINE_HEIGHT);
-        assert!(
-            ev.cell_w > FALLBACK_CELL_W,
-            "the cell width scaled with the glyphs"
-        );
+        ev.measure_cell_width(&mut tr, &large);
+        assert!(ev.line_h > pitch_1x, "rows grew with the glyphs");
+        assert!(ev.cell_w > cell_1x, "the cell width scaled with the glyphs");
         let third_row_2x = Point::new(
             ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
             2.5 * ev.line_h,
@@ -2770,6 +3263,73 @@ mod tests {
         assert_eq!(ev.point_to_caret(third_row_2x).0, 2);
         // The 1× third-row point now lands on the taller second row.
         assert_eq!(ev.point_to_caret(third_row_1x).0, 1);
+    }
+
+    #[test]
+    fn completion_candidates_show_their_kind_and_macros_have_their_own_icon() {
+        let item = |label: &str, kind: Option<u8>, detail: Option<&str>| CompletionItem {
+            label: label.to_string(),
+            kind,
+            detail: detail.map(str::to_string),
+            insert_text: label.to_string(),
+        };
+        assert_eq!(
+            completion_kind_icon(&item("primes_below", Some(3), Some("fn(u64) -> Vec<u64>"))),
+            Icon::Code
+        );
+        // A macro is a function by LSP kind; its detail (or the `!` of its
+        // name) says what it is.
+        assert_eq!(
+            completion_kind_icon(&item("println", Some(3), Some("macro"))),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("vec!", Some(3), None)),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("primary", Some(6), Some("let binding"))),
+            Icon::Square
+        );
+        assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);
+    }
+
+    #[test]
+    fn dictation_target_tracks_code_selection_content_and_pending_edits() {
+        let (mut view, mut doc) = bound_editor("same source");
+        view.set_focus(true);
+        assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        let key = [17; 32];
+        let stamp = view.ime_edit_fingerprint(&key).expect("editable code");
+        let caret = view.ime_cursor_rect();
+        view.carets[0].anchor = Some((0, 4));
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(stamp));
+        let selected = view.ime_edit_fingerprint(&key).unwrap();
+        let object = view.text_obj.clone().unwrap();
+        EditorDoc::splice(&mut doc, &object, 0, 11, "same change");
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(selected));
+        let original = view.ime_edit_fingerprint(&key).unwrap();
+        let carets = view.carets.clone();
+        let other = EditorDoc::ensure_buffer(&mut doc, 1, "same change");
+        view.bind(other, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = carets;
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(original));
+        ime(&mut view, &mut doc, Ime::Preedit("draft".into(), None));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        ime(&mut view, &mut doc, Ime::Disabled);
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        ime(&mut view, &mut doc, Ime::Commit("日本語 café".into()));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        assert!(view.take_text_edit().is_some());
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        view.set_focus(false);
+        assert!(view.ime_purpose().is_none());
+        assert!(view.ime_edit_fingerprint(&key).is_none());
     }
 
     #[test]
@@ -2785,7 +3345,7 @@ mod tests {
     fn insert_text_requests_an_action_owned_edit() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
-        ev.insert_for_test(&mut doc, "X");
+        ev.insert_for_test(&mut ui::widget::Edits::lend(&mut doc), "X");
         assert_eq!(ev.text_for_test(), "aXb");
         assert_eq!(ev.primary_caret(), (0, 2));
     }
@@ -2793,7 +3353,7 @@ mod tests {
     fn newline_preserves_leading_indent() {
         let (mut ev, mut doc) = bound_editor("    foo");
         ev.set_caret_for_test(0, 7); // end of "    foo"
-        ev.newline_for_test(&mut doc);
+        ev.newline_for_test(&mut ui::widget::Edits::lend(&mut doc));
         // New line carries the 4-space indent.
         assert_eq!(ev.text_for_test(), "    foo\n    ");
         assert_eq!(ev.primary_caret(), (1, 4));
@@ -2802,7 +3362,7 @@ mod tests {
     fn backspace_at_line_start_joins_previous_line() {
         let (mut ev, mut doc) = bound_editor("ab\ncd");
         ev.set_caret_for_test(1, 0); // start of "cd"
-        ev.backspace_for_test(&mut doc);
+        ev.backspace_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "abcd");
         assert_eq!(ev.primary_caret(), (0, 2));
     }
@@ -2810,7 +3370,7 @@ mod tests {
     fn backspace_removes_char_before_caret() {
         let (mut ev, mut doc) = bound_editor("abc");
         ev.set_caret_for_test(0, 2);
-        ev.backspace_for_test(&mut doc);
+        ev.backspace_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "ac");
         assert_eq!(ev.primary_caret(), (0, 1));
     }
@@ -2818,7 +3378,7 @@ mod tests {
     fn multi_char_unicode_inserts_keep_caret_in_chars() {
         let (mut ev, mut doc) = bound_editor("");
         ev.set_caret_for_test(0, 0);
-        ev.insert_for_test(&mut doc, "héllo");
+        ev.insert_for_test(&mut ui::widget::Edits::lend(&mut doc), "héllo");
         // Caret column counts characters, not bytes (é is 2 bytes).
         assert_eq!(ev.primary_caret(), (0, 5));
         assert_eq!(ev.text_for_test(), "héllo");
@@ -2831,12 +3391,8 @@ mod tests {
     // `ui::gesture::DragSelect` ladder + `ui::text_selection` boundary walkers),
     // not a test-only shortcut.
 
-    use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
-
-    fn fake_device_id() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn geom_editor(seed: &str) -> (EditorView, AutoCommit) {
         let (mut ev, doc) = bound_editor(seed);
@@ -2858,91 +3414,131 @@ mod tests {
     }
 
     fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
-        let m = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
-        let win_ev = WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let win_ev = ui::synthetic_input::cursor_moved(p.x, p.y);
+        ui::testing::Dispatch::new().doc(doc).send(ev, &win_ev);
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
-        let m = mods(false, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
-        let win_ev = WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: if pressed {
+        let win_ev = ui::synthetic_input::mouse_input(
+            if pressed {
                 ElementState::Pressed
             } else {
                 ElementState::Released
             },
-            button: MouseButton::Left,
-        };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+            MouseButton::Left,
         );
+        ui::testing::Dispatch::new()
+            .modifiers(mods(false, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
     }
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
-        let m = mods(ctrl, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
-        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
-        ke.logical_key = k;
-        ke.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ke.location = winit::keyboard::KeyLocation::Standard;
-        ke.state = ElementState::Pressed;
-        ke.repeat = false;
-        ke.text = None;
-        let win_ev = WindowEvent::KeyboardInput {
-            device_id: fake_device_id(),
-            event: ke,
-            is_synthetic: false,
-        };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
+        let win_ev = ui::synthetic_input::keyboard_input(ke);
+        ui::testing::Dispatch::new()
+            .modifiers(mods(ctrl, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
+    }
+
+    fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
+        // Positive composition cases model delivery to the active field.
+        // The app-level journey separately verifies refusal after focus loss.
+        ev.set_focus(true);
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .send(ev, &WindowEvent::Ime(ime))
+            .handled;
+        assert!(handled, "the editor consumes input-method events");
+    }
+
+    fn named(ev: &mut EditorView, doc: &mut AutoCommit, k: NamedKey, shift: bool) {
+        key(ev, doc, Key::Named(k), false, shift);
+    }
+
+    #[test]
+    fn arrows_and_deletes_step_over_whole_grapheme_clusters() {
+        let line = "ae\u{301}👍🏽🇩🇪z";
+        let (mut ev, mut doc) = bound_editor(line);
+        ev.set_caret_for_test(0, 1);
+        // Right steps over "e\u{301}" (2 chars), then the thumb (2), the flag (2).
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
+        assert_eq!(ev.primary_caret(), (0, 3));
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
+        assert_eq!(ev.primary_caret(), (0, 5));
+        named(&mut ev, &mut doc, NamedKey::ArrowLeft, false);
+        assert_eq!(ev.primary_caret(), (0, 3));
+        // A caret placed inside a cluster is pulled back onto its start.
+        ev.set_caret_for_test(0, 2);
+        assert_eq!(ev.primary_caret(), (0, 1));
+
+        // Shift+Right selects the whole thumb; typing replaces it.
+        ev.set_caret_for_test(0, 3);
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, true);
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("👍🏽"));
+        ime(&mut ev, &mut doc, Ime::Commit("ok".into()));
+        assert_eq!(ev.text_for_test(), "ae\u{301}ok🇩🇪z");
+        assert_eq!(ev.primary_caret(), (0, 5));
+
+        // Delete removes the flag whole; Backspace takes "k", "o", then the
+        // whole combined "e\u{301}".
+        named(&mut ev, &mut doc, NamedKey::Delete, false);
+        assert_eq!(ev.text_for_test(), "ae\u{301}okz");
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "az");
+        assert_eq!(ev.primary_caret(), (0, 1));
+
+        // Up/Down keep the column but never land inside a cluster.
+        let (mut ev, mut doc) = bound_editor("abcd\ne\u{301}e\u{301}");
+        ev.set_caret_for_test(0, 3);
+        named(&mut ev, &mut doc, NamedKey::ArrowDown, false);
+        assert_eq!(ev.primary_caret(), (1, 2));
+        named(&mut ev, &mut doc, NamedKey::ArrowUp, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 2), (1, 2))));
+    }
+
+    #[test]
+    fn every_caret_edits_whole_clusters_and_takes_the_ime_commit() {
+        let (mut ev, mut doc) = bound_editor("x👍🏽\ny🇩🇪\nz");
+        ev.set_caret_for_test(0, 3);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        assert_eq!(ev.caret_count(), 3);
+        // The third caret is clamped to the end of "z".
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        assert_eq!(ev.caret_count(), 3);
+
+        // The composition shows at the primary caret only; nothing is typed
+        // until the input method commits, then it lands at every caret.
+        ime(&mut ev, &mut doc, Ime::Preedit("漢字".into(), Some((3, 3))));
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        assert_eq!(ev.primary_display_col(), 2, "caret inside the preedit");
+        ime(&mut ev, &mut doc, Ime::Preedit("e\u{301}".into(), None));
+        ime(&mut ev, &mut doc, Ime::Commit("e\u{301}".into()));
+        assert_eq!(ev.text_for_test(), "xe\u{301}\nye\u{301}\ne\u{301}");
+        assert_eq!(ev.primary_display_col(), 3);
+        assert!(!ev.composition.has_preedit());
+
+        // One Backspace removes the whole combined letter at each caret.
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        // Delete at the end of each line joins it with the next.
+        named(&mut ev, &mut doc, NamedKey::Delete, false);
+        assert_eq!(ev.text_for_test(), "xy");
+        assert_eq!(ev.caret_count(), 2, "carets that meet merge");
+
+        // A multi-line commit at two carets keeps both carets after it.
+        let (mut ev, mut doc) = bound_editor("a\nb");
+        ev.set_caret_for_test(0, 1);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        ime(&mut ev, &mut doc, Ime::Commit("1\n2".into()));
+        assert_eq!(ev.text_for_test(), "a1\n2\nb1\n2");
+        assert_eq!(ev.carets[0], Caret::at(1, 1));
+        assert_eq!(ev.carets[1], Caret::at(3, 1));
     }
 
     fn double_click_selects_word() {
@@ -3142,7 +3738,7 @@ mod tests {
             );
         }
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello "));
-        ev.cut_for_test(&mut doc);
+        ev.cut_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "world");
         assert_eq!(ev.selection_for_test(), None);
     }

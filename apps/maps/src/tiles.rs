@@ -26,16 +26,13 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
-};
+use vello::peniko::{Color, Fill, ImageBrush, ImageData as PenikoImage};
 
 use ui::theme::Theme;
 
@@ -135,10 +132,10 @@ impl TileStyle {
     }
 
     /// Resolve the basemap style from the active theme by the lightness of its
-    /// base surface — robust across every named/custom theme (and the two
+    /// window ground — robust across every named/custom theme (and the two
     /// high-contrast tracks), not just the two built-ins.
     pub fn from_theme(theme: &Theme) -> Self {
-        let c = theme.tokens.colors.surfaces.base.to_rgba8();
+        let c = theme.tokens.colors.surfaces.content.to_rgba8();
         let lum = 0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b);
         if lum < 128.0 {
             TileStyle::Dark
@@ -378,11 +375,6 @@ impl TileLayer {
         }
     }
 
-    /// The active basemap style.
-    pub fn style(&self) -> TileStyle {
-        self.style
-    }
-
     /// Construct an inert layer with no worker thread and no network — used by
     /// `--shots` and tests so nothing ever blocks or hits the wire.
     pub fn offline() -> Self {
@@ -606,31 +598,6 @@ impl TileLayer {
                 self.failed.clear();
             }
         }
-    }
-
-    /// Whether any already-cached tile lies within `max_depth` zoom levels
-    /// *below* `parent` (i.e. a descendant/child tile). Read-only — used to
-    /// decide whether a zoom-out hole can be filled from sharper child tiles
-    /// that were resident at the previous, deeper zoom.
-    pub fn has_descendants(&self, parent: TileId, max_depth: u8) -> bool {
-        for depth in 1..=max_depth {
-            let cz = u32::from(parent.z) + u32::from(depth);
-            if cz > 19 {
-                break;
-            }
-            let cz = cz as u8;
-            let span = 1u32 << depth;
-            let base_x = parent.x << depth;
-            let base_y = parent.y << depth;
-            for j in 0..span {
-                for i in 0..span {
-                    if self.mem.contains(&TileId::new(cz, base_x + i, base_y + j)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
     }
 
     /// Find the nearest already-cached ancestor tile that covers `id`, for use
@@ -991,13 +958,7 @@ fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
     if rgba.len() != (w as usize) * (h as usize) * 4 {
         return None;
     }
-    Some(PenikoImage {
-        data: Blob::new(Arc::new(rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: w,
-        height: h,
-    })
+    Some(ui::raster::rgba8(rgba, w, h))
 }
 
 /// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares
@@ -1361,14 +1322,16 @@ mod tests {
     ];
 
     fn temp_cache() -> PathBuf {
+        // The wall clock alone does not keep parallel tests apart: a capture
+        // test freezes it process-wide, and macOS reads it in whole
+        // microseconds. A per-process sequence number does.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut dir = std::env::temp_dir();
         let uniq = format!(
-            "tilo-maps-test-{}-{}",
+            "tilo-maps-test-{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            ui::time::try_unix_now_ns().unwrap(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         dir.push(uniq);
         dir
@@ -1377,10 +1340,6 @@ mod tests {
     /// Non-blocking guarantees: requests return at once and arrive via drain,
     /// duplicates are no-ops, the offline layer never requests, and LRU bounds memory.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn tile_requests_never_block_and_the_resident_set_is_bounded() {
         // Phase `request_returns_immediately_results_arrive_via_channel`.
         // `request()` must return *immediately* (no blocking on I/O or decode) and
@@ -1669,10 +1628,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn failed_tiles_are_negative_cached_with_capped_exponential_backoff() {
         // Phase `failed_fetch_is_negative_cached_and_suppresses_refetch`.
         // The core of the fix: a tile whose *real* fetch fails must be

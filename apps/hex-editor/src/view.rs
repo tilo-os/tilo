@@ -1,96 +1,81 @@
-//! The hex view widget — the whole editor surface in one custom-drawn
-//! `Widget`. A hex editor is fundamentally a dense, fixed-pitch grid with
-//! a cursor synced across two parallel columns; that is a canvas, not a
-//! composition of stock form widgets, so the view paints everything
-//! itself into the Vello scene and reads all of its colours and metrics
-//! from the `Theme`.
+//! The hex view widget — the whole editor surface in one `Widget`.
 //!
-//! Regions, top to bottom:
-//!   * header — file name, byte count, edit-mode / endianness pills
-//!   * body   — offset gutter | hex byte columns | ASCII column   (left)
-//!     data inspector panel (right)
-//!     (the grid + inspector span to the window bottom)
-//!   * status — a transient floating bubble (cursor offset, selection
-//!     length, dirty count, save/error flash) that surfaces on a
-//!     change or a bottom-corner hover, then fades; no permanent strip
-//!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
+//! A hex editor is fundamentally a dense, fixed-pitch grid with a cursor
+//! synced across two parallel columns; that is a canvas, not a composition of
+//! stock form widgets, so the view paints the grid itself ([`paint`]) and
+//! reads every colour and metric from the `Theme`. Everything around the
+//! grid is the toolkit's:
 //!
-//! File paths and byte contents stay in this device-local view model. The
-//! canonical resource operations remain palette/agent-driveable, but never
-//! become collaborative document changes.
+//!   * header    — the file name and an edit-mode strip, on the content with
+//!     one hairline under them
+//!   * find      — the framework [`FindBar`](ui::widget::FindBar), a band
+//!     under the header; the view is its `Findable`
+//!   * body      — offset gutter | hex byte columns | ASCII column
+//!   * inspector — a [`SidebarDrawer`] at the trailing edge: docked beside
+//!     the content when there is room, a floating drawer when there is not,
+//!     holding the endianness strip and a property list of interpretations
+//!   * status    — the persistent status bar (cursor offset, selection,
+//!     edited bytes, size); "Saved" and failures are transient notices
+//!   * go to     — a popover with one field, anchored at the status bar
+//!
+//! The bytes are the [`HexEditor`] resource's: the view shows the state it
+//! is presented, edits its own copy as a key is pressed so typing stays
+//! immediate, and submits each edit as the resource's action through the
+//! framework's dispatcher. Opening and saving a file are the
+//! [`HexEffect`]s it answers. The path a save writes back to stays on this
+//! device, in the view.
 
+mod find;
+mod layout;
+mod paint;
+
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::format::bytes as format_bytes;
+use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
     SaveChannel, SaveOutcome,
 };
 use ui::presence::PresenceCtx;
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind};
+use ui::widget::{
+    ControlSize, EmptyState, FindBar, FindMatch, Popover, PopoverPrompt, PopoverSide,
+    SegmentedStyle, SidebarDrawer, ToggleGroup,
+};
 
-use crate::actions::HexOperation;
-use crate::inspector::{self, Interpretation};
-use crate::model::{Column, EditMode, HexModel, LocalEdit};
-use crate::search::{self, SearchKind};
-use ui::paint::with_alpha;
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, ResourceSurface,
+    SurfaceCx,
+};
+use ui::tilo_resource::ActionDecl;
 
-/// How long a transient status message (Saved / open error) stays up.
+use crate::actions::{HexEffect, HexPanel};
+use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
+use crate::resource::HexEditor;
+use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
+use ui::widget::toggle_group::Segment;
+
+/// How long a failure toast stays up.
 const FLASH_MS: u128 = 3500;
-const LOCAL_HISTORY_LIMIT: usize = 256;
 
-/// Theme type sizes already carry the accessibility text scale, and the
-/// size-based renderer APIs (`measure*`, `draw_text*`, `pill_size`) apply
-/// that scale once more. Every token the chrome paints goes through here so
-/// the multiplier lands exactly once — 2× glyphs at 200 %, not 4×. The byte
-/// grid is unaffected: its `CELL_FONT` is a literal base size by design.
-fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
-    tr.renderer_input_style(&TextStyle::new(resolved)).size
-}
-
-/// Measured line box of a renderer-relative `size` — what stacked chrome
-/// lines step by and what a band centres, never the bare font size.
-fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
-    let (_, h) = tr.measure("0", size, None);
-    f64::from(h)
-}
-
-/// How much one line of `size` has grown over its 1× box at the current
-/// accessibility scale — what a 1×-designed band adds to keep seating it.
-fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
-    let line = line_box(tr, size);
-    let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
-    (line - line / scale).max(0.0)
-}
-
-/// A side panel's base surface with its separating left edge.
-fn paint_side_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
-    let base = theme.tokens.colors.surfaces.base;
-    scene.fill(Fill::NonZero, t, base, None, &panel);
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        ui::surface::edge_on(base),
-        None,
-        &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
-    );
-}
+/// What a cancelled chooser answers.
+const CANCELLED: &str = "cancelled";
 
 fn file_open_request() -> PickRequest {
     PickRequest::open("Open file", "Open")
@@ -104,164 +89,185 @@ fn file_save_request(suggested_name: &str) -> PickRequest {
         .filter(FileFilter::all_files())
 }
 
-/// Which transient prompt, if any, is capturing keystrokes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Overlay {
-    None,
-    Search,
-    Goto,
+/// A file chooser in flight, and the effect waiting for it.
+enum FileIo {
+    Open(PortalChannel),
+    /// A chooser delivering contents, where files have no path (the web).
+    OpenContents(ContentsChannel),
+    Save(PortalChannel),
+    SaveContents(SaveChannel),
 }
 
-/// The taffy/focus triple [`HexView::handle_overlay_event`] forwards on to
-/// the active field's own `Widget::handle_event` — bundled so the helper
-/// itself stays under the argument-count limit without reshaping the
-/// `Widget` trait signature it forwards into.
-struct OverlayLayoutCtx<'a> {
-    focus_target: &'a mut Option<NodeId>,
-    node_id: NodeId,
-    taffy: &'a TaffyTree<()>,
+/// The no-file zero-state: one sentence and the one action.
+fn empty_state() -> EmptyState {
+    EmptyState::new("No file open")
+        .with_icon(Icon::File)
+        .with_message("Open a file to inspect and edit its bytes.")
+        .with_action("Open file")
+        .with_action_id("hex.open")
+}
+
+/// A segmented strip over `labels` whose picks land in `pick`.
+fn strip(id: &str, labels: &[&str], pick: &Rc<Cell<Option<usize>>>) -> ToggleGroup {
+    let pick = Rc::clone(pick);
+    ToggleGroup::new(labels.iter().map(|l| Segment::new(*l)).collect(), 0)
+        .with_id(id)
+        .control_size(ControlSize::Small)
+        .with_style(SegmentedStyle::Segmented)
+        .on_change(move |index| pick.set(Some(index)))
 }
 
 // The three bools below are independent view flags (redraw-pending,
-// buffer-present, shots-forced-visible), not a combinatorial option set, so
+// buffer-present, find band shown), not a combinatorial option set, so
 // folding them into an enum would only add indirection.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "three unrelated view flags (dirty/has_file/shots_status), not a combinatorial option set"
+    reason = "unrelated view flags (dirty/has_file/find_open/toggle_hovered), not a combinatorial option set"
 )]
 pub struct HexView {
-    /// Decoded local buffer and editor state. Refreshed from local I/O only.
+    /// The view's copy of the buffer and its editor state.
     model: HexModel,
-    /// File name shown in the header (cosmetic; the buffer is local).
+    /// File name shown in the header.
     file_name: String,
     rect: Rect,
     dirty: bool,
 
-    // --- search state (per-peer; not in the shared doc) ---
-    overlay: Overlay,
-    /// Shared local text field: owns caret, selection, clipboard, IME and
-    /// accessibility while the byte-search policy remains app-owned.
-    search_input: TextInput,
-    search_kind: SearchKind,
-    /// Cached match offsets for the current query, recomputed on demand.
-    matches: Vec<usize>,
-    /// Parsed search bytes paired with `matches`; keeping this cache avoids
-    /// reparsing the query for every painted cell.
-    search_needle: Option<Vec<u8>>,
-    /// True when matching continued past the retained offset budget.
-    matches_truncated: bool,
-    /// Index into `matches` of the currently-focused hit.
+    // --- find (per-peer; not in the shared doc) ---
+    /// The framework's find bar, hosted under the header while open.
+    find_bar: FindBar,
+    find_open: bool,
+    /// Every match of the bar's query, as byte ranges, in order.
+    matches: Vec<FindMatch>,
+    /// The match the bar is on.
     match_idx: Option<usize>,
 
-    // --- goto state ---
-    /// Shared local text field for decimal / hexadecimal offsets.
-    goto_input: TextInput,
+    // --- go to ---
+    /// The go-to-offset prompt, in a popover at the status bar's offset.
+    goto: Popover<PopoverPrompt>,
+    /// The offset readout in the status bar, which opens the prompt.
+    offset_readout: Rect,
 
-    /// Rows currently fitting in the grid viewport — updated each draw,
-    /// read by keyboard paging so PageUp/Down move a screenful.
+    // --- chrome ---
+    /// The inspector: docked when wide, a floating drawer when narrow.
+    drawer: SidebarDrawer,
+    /// The window's History control, which the header row holds.
+    history: ui::widget::HistoryOpener,
+    /// The edit-mode strip in the header, and the pick the person made.
+    mode_group: ToggleGroup,
+    mode_pick: Rc<Cell<Option<usize>>>,
+    /// The endianness strip in the inspector, and the pick.
+    endian_group: ToggleGroup,
+    endian_pick: Rc<Cell<Option<usize>>>,
+    /// The zero-state, shown while no file is open.
+    empty: EmptyState,
+    /// How far the inspector's properties are scrolled.
+    inspector_scroll: f64,
+    /// The grid's scroll bar.
+    scrollbar: ui::widget::scrollbar::Scrollbar,
+    toggle_hovered: bool,
+    /// A capture asks for the inspector open once the window size is known.
+    reveal_inspector: bool,
+    /// Where everything is; refreshed by [`HexView::relayout`].
+    geo: Geo,
+    /// The monospace advance and line height measured from the renderer that
+    /// paints the grid. Layout, paint and hit-testing all derive their
+    /// pitches from this one measurement, so a byte's painted cell is its
+    /// click target.
+    cell: CellMetrics,
+    /// The theme the last layout pass saw, so the event path resolves the
+    /// same geometry as the last paint.
+    layout_theme: Theme,
+    /// Rows currently fitting in the grid viewport — read by keyboard paging
+    /// so PageUp/Down move a screenful.
     visible_rows: usize,
-    /// The monospace advance + line height measured from the renderer that
-    /// paints the grid, refreshed every draw. Layout, paint and hit-testing
-    /// all derive their pitches from this one measurement (see
-    /// [`CellMetrics`]), so a byte's painted cell is its click target.
-    cell_metrics: CellMetrics,
     /// Last pointer position in logical coords, tracked from `CursorMoved`
     /// so a left-click can hit-test the cell under the cursor.
     last_mouse: Point,
 
-    // --- file / portal state ---
-    /// False until a real buffer is loaded — drives the composed empty
+    // --- file state ---
+    /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
-    /// The on-disk path this buffer came from / was last saved to, if any.
-    /// `Ctrl+S` writes straight back here; absent, it opens a Save chooser.
+    /// The bytes as last opened or saved, which the changed-byte marks
+    /// compare against.
+    saved: Vec<u8>,
+    /// How many files the resource had opened when last presented.
+    opened: u64,
+    /// This view submitted the open the resource will present next.
+    expect_open: bool,
+    /// The file on this device the buffer was opened from or last saved
+    /// to, if any. `Ctrl+S` writes straight back here; absent, it opens a
+    /// Save chooser.
     path: Option<PathBuf>,
-    /// An in-flight XDG-portal open request, drained once per frame in `sync`.
-    open_rx: Option<PortalChannel>,
-    /// A chooser delivering contents, where files have no path (the web).
-    open_contents_rx: Option<ContentsChannel>,
-    save_contents_rx: Option<SaveChannel>,
-    /// An in-flight XDG-portal save-destination request.
-    save_rx: Option<PortalChannel>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_io: Option<(tilo_actions::InvocationId, crate::actions::HexOperation)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
-    /// A transient status message (e.g. "Saved 4.2 kB") with its birth time.
-    flash: Option<(String, bool, Instant)>,
-    /// Hit rect of the empty-state "Open file…" button, recorded during draw.
-    open_button: Rect,
+    /// A chooser in flight, drained once per frame in `sync`, and the open
+    /// or save effect it answers.
+    io: Option<(FileIo, EffectReply)>,
+    /// A failed open or save: its title, the reason and its birth time. Shown
+    /// as a toast until it expires.
+    problem: Option<(String, String, Instant)>,
 
-    /// Bounded, device-local undo/redo journal. Resource operations and
-    /// keyboard shortcuts use the same inverse edit representation.
-    undo: Vec<LocalEdit>,
-    redo: Vec<LocalEdit>,
-
-    /// The cursor read-out / edit status, surfaced as a transient floating
-    /// bubble (see `draw_status_bubble`) instead of a permanent bottom strip,
-    /// so the byte grid + inspector span to the window bottom. Poked on a real
-    /// status change (cursor move, selection, dirty count, a fresh save/error
-    /// flash) and shown while the pointer hovers the bottom-right corner, then
-    /// it fades.
+    /// "Saved" and "Opened": a change worth noticing once, floating at the
+    /// content's bottom-trailing corner and fading by itself.
     status_bubble: ui::StatusBubble,
-    /// The composed bubble label from the previous frame, so a poke fires only
-    /// when the status genuinely changes rather than every frame.
-    last_status_label: Option<String>,
-    /// `--shots` forces the bubble fully visible so a single headless frame
-    /// captures the floating chip.
-    shots_status: bool,
-    /// Headless shots render one base layer only; this explicitly includes a
-    /// focused overlay in that base layer for visual review.
-    shots_overlay: bool,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
+    /// Where edits and effects go, once the framework attached the view.
+    dispatch: Option<Dispatcher<HexEditor>>,
+    /// The resource's state, to show again when an edit is refused.
+    live: Option<Live<HexEditor>>,
 }
 
 impl HexView {
     pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
+        let mode_pick = Rc::new(Cell::new(None));
+        let endian_pick = Rc::new(Cell::new(None));
         Self {
             model: HexModel::new(bytes),
             file_name: file_name.into(),
             rect: Rect::ZERO,
             dirty: true,
-            overlay: Overlay::None,
-            search_input: TextInput::local()
-                .with_kind(TextInputKind::Code)
-                .with_id("hex.search")
-                .with_placeholder("search…")
-                .with_plain_chrome()
-                .with_mono(),
-            search_kind: SearchKind::Hex,
+            find_bar: find::new_find_bar(),
+            find_open: false,
             matches: Vec::new(),
-            search_needle: None,
-            matches_truncated: false,
             match_idx: None,
-            goto_input: TextInput::local()
-                .with_kind(TextInputKind::Number)
-                .with_id("hex.goto")
-                .with_placeholder("0x… or decimal")
-                .with_plain_chrome()
-                .with_mono(),
+            goto: Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
+                .with_field_chars(16)
+                .with_field(|input| {
+                    input
+                        .with_kind(ui::widget::TextInputKind::Code)
+                        .with_id("hex.goto")
+                })
+                .side(PopoverSide::Above),
+            offset_readout: Rect::ZERO,
+            drawer: SidebarDrawer::new()
+                .right()
+                .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
+            history: ui::widget::HistoryOpener::new(),
+            mode_group: strip("hex.mode", &MODE_LABELS, &mode_pick),
+            mode_pick,
+            endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
+            endian_pick,
+            empty: empty_state(),
+            inspector_scroll: 0.0,
+            scrollbar: ui::widget::scrollbar::Scrollbar::vertical(),
+            toggle_hovered: false,
+            reveal_inspector: false,
+            geo: Geo::default(),
+            cell: CellMetrics::FALLBACK,
+            layout_theme: Theme::dark(),
             visible_rows: 1,
-            cell_metrics: CellMetrics::FALLBACK,
             last_mouse: Point::ZERO,
             has_file: true,
+            saved: Vec::new(),
+            opened: 0,
+            expect_open: false,
             path: None,
-            open_rx: None,
-            open_contents_rx: None,
-            save_contents_rx: None,
-            save_rx: None,
-            resource_invocation: None,
-            pending_resource_io: None,
-            resource_result: None,
-            flash: None,
-            open_button: Rect::ZERO,
-            undo: Vec::new(),
-            redo: Vec::new(),
+            io: None,
+            problem: None,
             status_bubble: ui::StatusBubble::new(),
-            last_status_label: None,
-            shots_status: false,
-            shots_overlay: false,
             focused: false,
+            dispatch: None,
+            live: None,
         }
     }
 
@@ -271,20 +277,13 @@ impl HexView {
     pub fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
-        // Where files have no path, the file last opened by contents.
-        if !crate::web_file::native_paths()
-            && let Some(file) = crate::web_file::recall()
-        {
-            v.load_bytes(file.name, file.bytes, None);
-        }
         v
     }
 
-    /// Record the on-disk path this buffer came from, so `Ctrl+S` writes back
-    /// to it without a chooser.
+    /// The file on this device a save writes back to without a chooser.
     #[must_use]
-    pub fn with_path(mut self, path: PathBuf) -> Self {
-        self.path = Some(path);
+    pub fn with_path(mut self, path: Option<PathBuf>) -> Self {
+        self.path = path;
         self
     }
 
@@ -294,29 +293,10 @@ impl HexView {
     }
 
     /// Mutable accessor for the decoded model — used by tests to position the
-    /// cursor / selection that drive the resource tree and the edit journal.
+    /// cursor / selection that drive the bound actions.
     #[cfg(test)]
     pub fn model_mut(&mut self) -> &mut HexModel {
         &mut self.model
-    }
-
-    /// The presentation context Ctrl+K needs to target its byte-edit actions at
-    /// the live cursor / selection. Everything here is view state the document
-    /// doesn't own.
-    pub(crate) fn hex_resource_ctx(&self) -> crate::actions::HexResourceCtx {
-        crate::actions::HexResourceCtx {
-            label: if self.file_name.is_empty() {
-                "Buffer".to_string()
-            } else {
-                self.file_name.clone()
-            },
-            cursor: self.model.cursor(),
-            len: self.model.len(),
-            selection: self.model.selection(),
-            has_file: self.has_file,
-            can_undo: !self.undo.is_empty(),
-            can_redo: !self.redo.is_empty(),
-        }
     }
 
     /// Whether a real buffer is loaded (false in the empty state).
@@ -329,97 +309,104 @@ impl HexView {
         self.path.as_deref()
     }
 
-    /// Place the initial cursor at `offset`. Useful for opening a file
-    /// "at" a field of interest. Clamped to the buffer.
-    #[must_use]
-    pub fn with_cursor(mut self, offset: usize) -> Self {
-        self.model.move_to(offset, false);
-        self
-    }
-
-    /// Choose the initial inspector endianness. Big-endian suits opening
-    /// network / image formats whose multi-byte fields are big-endian.
-    #[must_use]
-    pub fn with_big_endian(mut self) -> Self {
-        if self.model.endian() != crate::model::Endian::Big {
+    /// Show the bundled sample as a capture does: the cursor on the IHDR
+    /// width field (offset `0x10`) with the inspector in big-endian — PNG's
+    /// native byte order — so the data inspector reads the image's
+    /// dimensions as clean `u32` values.
+    fn stage_sample(&mut self) {
+        if self.model.endian() != Endian::Big {
             self.model.toggle_endian();
         }
-        self
-    }
-
-    /// `--shots`: force the floating status bubble fully visible so a single
-    /// headless frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
-    }
-
-    /// Deterministic `--shots` hook for the real search overlay. It is not
-    /// reachable in a normal launch and exists only so visual review can cover
-    /// focused text input and match highlighting without a live compositor.
-    pub fn arm_search_for_shots(&mut self) {
-        self.overlay = Overlay::Search;
-        self.search_kind = SearchKind::Text;
-        self.search_input.set_mono(false);
-        self.search_input.set_text("IHDR");
-        self.search_input.set_focus(true);
-        self.recompute_matches();
-        self.shots_overlay = true;
+        self.model.move_to(0x10, false);
         self.dirty = true;
     }
 
-    /// Deterministic `--shots` hook for a failed local-file operation. Uses
-    /// the same transient error presentation as `open_path`/`write_to`.
-    pub fn arm_error_for_shots(&mut self) {
-        self.flash("Open failed: permission denied", true);
-        self.arm_status_bubble_for_shots();
+    /// Submit the edits the last input made as the resource's actions, one
+    /// undo step per run of typing; an input that edited nothing ends the
+    /// run, so the next one is a step of its own. A refused edit shows the
+    /// resource's bytes again.
+    fn commit_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let edits = self.model.take_edits();
+        self.dirty = true;
+        if !edits.is_empty() {
+            self.refind();
+        }
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        if edits.is_empty() {
+            dispatch.settle();
+            return;
+        }
+        for edit in edits {
+            let submitted = byte_edit(&edit)
+                .ok_or(())
+                .and_then(|edit| dispatch.submit_now(doc, edit).map_err(drop));
+            if submitted.is_err() {
+                if let Some(live) = &self.live {
+                    let state = live.get();
+                    self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
+                }
+                return;
+            }
+        }
     }
 
-    /// Record bounded inverse edits for a completed local input. Neither bytes
-    /// nor paths enter the collaboration document.
-    fn record_local_history(&mut self) {
-        let edits = self.model.take_local_history();
-        if !edits.is_empty() {
-            self.undo.extend(edits);
-            let excess = self.undo.len().saturating_sub(LOCAL_HISTORY_LIMIT);
-            if excess > 0 {
-                self.undo.drain(..excess);
-            }
-            self.redo.clear();
+    /// The cursor moved or the view changed without an edit: the next edit
+    /// starts an undo step of its own.
+    fn moved(&mut self) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.settle();
         }
+        self.dirty = true;
+    }
+
+    /// Invoke `effect` through the framework's door, as the palette does.
+    fn invoke(&self, effect: &HexEffect) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.effect(effect);
+        }
+    }
+
+    /// A change worth noticing once ("Saved", "Opened"): the bubble.
+    fn notice(&mut self, message: &str) {
+        let now = ui::time::now();
+        self.status_bubble.show(message, now);
+        self.status_bubble.poke(now);
+        self.dirty = true;
+    }
+
+    /// A failed open or save: a toast with the reason.
+    fn problem(&mut self, title: &str, reason: impl Into<String>) {
+        self.problem = Some((title.to_owned(), reason.into(), ui::time::now()));
         self.dirty = true;
     }
 
     // --- file open / save (through the host portal) --------------------
 
-    /// Start the host file chooser to open a file. No-op if one is already in
-    /// flight. The pick arrives over `open_rx`, drained in `sync`.
-    fn begin_open(&mut self) {
-        if self.open_rx.is_some() || self.open_contents_rx.is_some() {
-            return;
-        }
-        if crate::web_file::native_paths() {
-            self.open_rx = Some(file_open_request().send());
+    /// Start the host file chooser to open a file, answering `reply` when
+    /// it closes.
+    fn begin_open(&mut self, reply: EffectReply) {
+        let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
+            FileIo::Open(file_open_request().send())
         } else {
-            self.open_contents_rx = Some(file_open_request().send_contents());
-        }
+            FileIo::OpenContents(file_open_request().send_contents())
+        };
+        self.io = Some((io, reply));
     }
 
-    /// Save the buffer. With a known path this writes straight back; without
-    /// one (a never-saved buffer) it opens the host Save chooser.
-    fn begin_save(&mut self) {
-        if let Some(path) = self.path.clone() {
-            let _ = self.write_to(&path);
-        } else if !crate::web_file::native_paths() {
-            if self.save_contents_rx.is_none() {
-                let name = self.suggested_name();
-                crate::web_file::remember(&name, self.model.bytes());
-                self.save_contents_rx =
-                    Some(file_save_request(&name).send_save_contents(self.model.bytes().to_vec()));
-            }
-        } else if self.save_rx.is_none() {
-            self.save_rx = Some(file_save_request(&self.suggested_name()).send());
-        }
+    /// Start the host Save chooser for a buffer with no file on this
+    /// device, answering `reply` when it closes.
+    fn begin_save_as(&mut self, reply: EffectReply) {
+        let name = self.suggested_name();
+        let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
+            FileIo::Save(file_save_request(&name).send())
+        } else {
+            FileIo::SaveContents(
+                file_save_request(&name).send_save_contents(self.model.bytes().to_vec()),
+            )
+        };
+        self.io = Some((io, reply));
     }
 
     /// The filename the Save dialog seeds with — the current name, or a
@@ -432,314 +419,156 @@ impl HexView {
         }
     }
 
-    /// Write the current bytes to `path`, clearing the dirty markers on
-    /// success and flashing the outcome either way.
+    /// Write the current bytes to `path`, clearing the changed-byte marks on
+    /// success and noticing the outcome either way.
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let saved = tilo_files::file_at(path).and_then(|(dir, name)| {
-            tilo_files::blocking::save_document(&dir, &name, self.model.bytes())
-        });
-        match saved {
+        match crate::file::write(path, self.model.bytes()) {
             Ok(()) => {
-                self.model.clear_dirty();
+                self.saved_now();
                 self.path = Some(path.to_path_buf());
-                self.flash(
-                    format!(
-                        "Saved {}",
-                        format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX))
-                    ),
-                    false,
-                );
-                self.dirty = true;
+                self.notice(&format!(
+                    "Saved {}",
+                    format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX))
+                ));
                 Ok(())
             }
             Err(e) => {
-                self.flash(format!("Save failed: {e}"), true);
-                Err(e.to_string())
+                self.problem("Couldn't save the file", e.clone());
+                Err(e)
             }
         }
     }
 
-    /// Load a local path into this editor. The path and bytes stay local.
+    /// The buffer now matches the file it was saved to.
+    fn saved_now(&mut self) {
+        self.saved = self.model.bytes().to_vec();
+        self.model.clear_dirty();
+        self.dirty = true;
+    }
+
+    /// Open the file at `path` into the resource. The path stays here.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
-        match crate::app::read_file(&path) {
+        match crate::file::read(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
                     || "untitled".to_string(),
                     |s| s.to_string_lossy().into_owned(),
                 );
-                let n = self.load_bytes(name, bytes, Some(path));
-                self.flash(
-                    format!(
-                        "Opened {}",
-                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
-                    ),
-                    false,
-                );
+                self.open_bytes(name, bytes);
+                self.path = Some(path);
                 Ok(())
             }
             Err(e) => {
-                self.flash(format!("Open failed: {e}"), true);
-                Err(e.to_string())
+                self.problem("Couldn't open the file", e.clone());
+                Err(e)
             }
         }
     }
 
-    /// Show `bytes` as the open file; its length.
-    fn load_bytes(&mut self, name: String, bytes: Vec<u8>, path: Option<PathBuf>) -> usize {
+    /// Submit `bytes`, read from the file `name`, as the resource's buffer.
+    fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
-        self.model = HexModel::new(bytes);
-        self.file_name = name;
-        self.path = path;
-        self.has_file = true;
-        self.overlay = Overlay::None;
-        self.matches.clear();
-        self.search_needle = None;
-        self.matches_truncated = false;
-        self.match_idx = None;
-        self.dirty = true;
-        n
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit(HexEditor::loading(name, bytes));
+            self.expect_open = true;
+        }
+        self.path = None;
+        self.notice(&format!(
+            "Opened {}",
+            format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+        ));
     }
 
-    /// A file chosen by contents: shown, and remembered so it outlives a
-    /// reload.
+    /// A file chosen by contents.
     fn open_contents(&mut self, outcome: ContentsOutcome) -> Result<(), String> {
         match outcome {
             ContentsOutcome::Picked(files) => {
                 let Some(file) = files.into_iter().next() else {
                     return Err("no file was chosen".into());
                 };
-                crate::web_file::remember(&file.name, &file.bytes);
-                let n = self.load_bytes(file.name, file.bytes, None);
-                self.flash(
-                    format!(
-                        "Opened {}",
-                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
-                    ),
-                    false,
-                );
+                self.open_bytes(file.name, file.bytes);
                 Ok(())
             }
-            ContentsOutcome::Cancelled => Err("cancelled".into()),
+            ContentsOutcome::Cancelled => Err(CANCELLED.into()),
             ContentsOutcome::Failed(reason) => {
-                self.flash(&reason, true);
+                self.problem("Couldn't open the file", reason.clone());
                 Err(reason)
             }
         }
     }
 
-    /// Drain completed portal open/save requests into this device-local view.
-    fn drain_portal(&mut self) {
-        if let Some(rx) = self.open_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.open_contents_rx = None;
-                    let result = self.open_contents(outcome);
-                    self.finish_resource_io(result);
+    /// What a closed chooser means for the buffer; `None` while it is open.
+    fn take_chooser(&mut self, io: &FileIo) -> Option<Result<(), String>> {
+        let disconnected = || Some(Err("file picker disconnected".to_owned()));
+        match io {
+            FileIo::OpenContents(rx) => match rx.try_recv() {
+                Ok(outcome) => Some(self.open_contents(outcome)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
+            FileIo::SaveContents(rx) => match rx.try_recv() {
+                Ok(SaveOutcome::Saved) => {
+                    self.saved_now();
+                    self.notice("Saved");
+                    Some(Ok(()))
                 }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.open_contents_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
+                Ok(SaveOutcome::Cancelled) => Some(Err(CANCELLED.into())),
+                Ok(SaveOutcome::Failed(reason)) => {
+                    self.problem("Couldn't save the file", reason.clone());
+                    Some(Err(reason))
                 }
-            }
-        }
-        if let Some(rx) = self.save_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.save_contents_rx = None;
-                    let result = match outcome {
-                        SaveOutcome::Saved => {
-                            self.model.clear_dirty();
-                            self.flash("Saved", false);
-                            self.dirty = true;
-                            Ok(())
-                        }
-                        SaveOutcome::Cancelled => Err("cancelled".into()),
-                        SaveOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
+            FileIo::Open(rx) | FileIo::Save(rx) => match rx.try_recv() {
+                Ok(PortalOutcome::Opened(path)) => Some(match io {
+                    FileIo::Open(_) => self.open_path(path),
+                    _ => self.write_to(&path),
+                }),
+                Ok(PortalOutcome::Cancelled) => Some(Err(CANCELLED.into())),
+                Ok(PortalOutcome::Failed(reason)) => {
+                    let title = if matches!(io, FileIo::Open(_)) {
+                        "Couldn't open the file"
+                    } else {
+                        "Couldn't save the file"
                     };
-                    self.finish_resource_io(result);
+                    self.problem(title, reason.clone());
+                    Some(Err(reason))
                 }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.save_contents_rx = None,
-            }
-        }
-        if let Some(rx) = self.open_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.open_rx = None;
-                    let result = match outcome {
-                        PortalOutcome::Opened(path) => self.open_path(path),
-                        PortalOutcome::Cancelled => Err("cancelled".into()),
-                        PortalOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
-                    };
-                    self.finish_resource_io(result);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.open_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
-                }
-            }
-        }
-        if let Some(rx) = self.save_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.save_rx = None;
-                    let result = match outcome {
-                        PortalOutcome::Opened(dest) => self.write_to(&dest),
-                        PortalOutcome::Cancelled => Err("cancelled".into()),
-                        PortalOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
-                    };
-                    self.finish_resource_io(result);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.save_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
-                }
-            }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
         }
     }
 
-    fn finish_resource_io(&mut self, result: Result<(), String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
+    /// Answer the open or save effect whose chooser closed.
+    fn drain_chooser(&mut self) {
+        let Some((io, reply)) = self.io.take() else {
             return;
         };
-        self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) if message == "cancelled" => tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(message),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "hex.io_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+        if reply.is_cancelled() {
+            return;
+        }
+        match self.take_chooser(&io) {
+            None => self.io = Some((io, reply)),
+            Some(result) => {
+                reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
+            }
+        }
     }
 
-    /// Post a transient status message.
-    fn flash(&mut self, msg: impl Into<String>, error: bool) {
-        self.flash = Some((msg.into(), error, ui::time::now()));
-        self.dirty = true;
-    }
-
-    /// True while any portal request is in flight or a status flash is live —
-    /// the app keeps pumping frames so the pick drains and the flash expires.
+    /// True while a chooser is open or a failure toast is counting down —
+    /// the app keeps pumping frames so the pick drains and the toast
+    /// expires.
     fn is_busy(&self) -> bool {
-        self.open_rx.is_some() || self.save_rx.is_some() || self.flash.is_some()
+        self.io.is_some() || self.problem.is_some()
     }
 
-    /// The number of byte columns that fills the current width, leaving room
-    /// for the offset gutter, the ASCII column, and a right-hand inspector.
-    /// Recomputed each draw so the grid reflows on resize (best-in-class hex
-    /// editors fill the window rather than stranding a fixed 16 columns in a
-    /// sea of empty space). Snapped to a multiple of 8 and clamped to a sane
-    /// range.
-    fn fit_bytes_per_row(&self) -> usize {
-        let cell = self.cell_metrics;
-        let inspector_reserve = if self.show_inspector() {
-            GridMetrics::INSPECTOR_GAP + GridMetrics::INSPECTOR_MIN
-        } else {
-            0.0
-        };
-        let avail = self.rect.width()
-            - GridMetrics::LEFT_PAD
-            - cell.gutter_w()
-            - GridMetrics::GUTTER_GAP
-            - GridMetrics::HEX_ASCII_GAP
-            - inspector_reserve;
-        let per_byte = cell.hex_col_w() + cell.char_w();
-        if per_byte <= 0.0 {
-            return 16;
-        }
-        let raw = (avail / per_byte).floor() as i64;
-        let snapped = (raw / 8) * 8;
-        snapped.clamp(8, 32) as usize
-    }
-
-    /// Recompute match offsets from the current query + kind.
-    fn recompute_matches(&mut self) {
-        self.search_needle = search::needle(self.search_input.value(), self.search_kind);
-        let (matches, truncated) = self.search_needle.as_ref().map_or_else(
-            || (Vec::new(), false),
-            |needle| {
-                search::find_all_bounded(self.model.bytes(), needle, search::MAX_RETAINED_MATCHES)
-            },
-        );
-        self.matches = matches;
-        self.matches_truncated = truncated;
-        // Keep match_idx pointing at the nearest hit to the cursor.
-        self.match_idx = if self.matches.is_empty() {
-            None
-        } else {
-            let cur = self.model.cursor();
-            Some(self.matches.iter().position(|&m| m >= cur).unwrap_or(0))
-        };
-    }
-
-    /// Whether `offset` sits inside a match. This tests the local byte slice,
-    /// not the retained result index: painting remains correct after the
-    /// capped index has dropped older/farther matches.
-    fn is_match_offset(&self, offset: usize) -> bool {
-        let Some(needle) = self.search_needle.as_ref() else {
-            return false;
-        };
-        let first = offset.saturating_sub(needle.len().saturating_sub(1));
-        (first..=offset).any(|start| {
-            self.model
-                .bytes()
-                .get(start..start.saturating_add(needle.len()))
-                == Some(needle)
-        })
-    }
-
-    fn show_inspector(&self) -> bool {
-        self.rect.width() >= 860.0
-    }
-
-    fn jump_to_match(&mut self, forward: bool) {
-        let Some(n) = search::needle(self.search_input.value(), self.search_kind) else {
-            return;
-        };
-        let cur = self.model.cursor();
-        let target = if forward {
-            search::find_next(self.model.bytes(), &n, cur + 1)
-        } else {
-            search::find_prev(self.model.bytes(), &n, cur)
-        };
-        if let Some(off) = target {
-            self.model.move_to(off, false);
-            // Select the whole match so it reads as a found span.
-            self.model.move_to(off + n.len().saturating_sub(1), true);
-            self.model.move_to(off, false);
-            self.model
-                .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
-            self.recompute_matches();
-        }
-    }
-
-    fn commit_goto(&mut self) {
-        let q = self.goto_input.value().trim();
-        // Accept "0x.." hex or plain decimal.
-        let parsed = if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
+    /// Parse a go-to offset: `0x1F` hex, bare hex digits that include a
+    /// letter, or plain decimal.
+    fn parse_offset(query: &str) -> Option<usize> {
+        let q = query.trim();
+        if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
             usize::from_str_radix(hex, 16).ok()
         } else if q.chars().all(|c| c.is_ascii_hexdigit())
             && q.chars().any(|c| c.is_ascii_alphabetic())
@@ -747,1243 +576,270 @@ impl HexView {
             usize::from_str_radix(q, 16).ok()
         } else {
             q.parse::<usize>().ok()
-        };
-        if let Some(off) = parsed {
+        }
+    }
+
+    /// Move the cursor to the offset the person typed and bring it into view.
+    fn commit_goto(&mut self, query: &str) {
+        if let Some(off) = Self::parse_offset(query) {
             self.model.move_to(off, false);
-            self.model
-                .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
+            let (row, _) = self.model.cursor_cell();
+            self.model.scroll_into_view(row, self.visible_rows);
+            self.moved();
         }
-        self.overlay = Overlay::None;
-        self.goto_input.set_text("");
-        self.goto_input.set_focus(false);
+        self.dirty = true;
     }
 
-    // --- geometry helpers ----------------------------------------------
-
-    /// Metrics for the grid layout at the current width.
-    fn metrics(&self) -> GridMetrics {
-        GridMetrics::new(self.rect, self.model.bytes_per_row(), self.cell_metrics)
-    }
-
-    /// Map a mouse point to a byte offset + column, if it lands on a cell.
-    fn hit_test(&self, p: Point) -> Option<(usize, Column)> {
-        let m = self.metrics();
-        let bpr = self.model.bytes_per_row();
-        // Determine the row under the cursor.
-        if p.y < m.grid_top || p.y >= m.grid_bottom {
-            return None;
-        }
-        let row_rel = ((p.y - m.grid_top) / m.row_h) as usize;
-        let row = self.model.top_row() + row_rel;
-
-        // Hex columns region.
-        if p.x >= m.hex_x0 && p.x < m.hex_x1 {
-            let rel = p.x - m.hex_x0;
-            let col = (rel / m.hex_col_w) as usize;
-            if col < bpr {
-                let off = row * bpr + col;
-                if off < self.model.len() {
-                    return Some((off, Column::Hex));
-                }
-            }
-        }
-        // ASCII column region.
-        if p.x >= m.ascii_x0 && p.x < m.ascii_x1 {
-            let rel = p.x - m.ascii_x0;
-            let col = (rel / m.char_w) as usize;
-            if col < bpr {
-                let off = row * bpr + col;
-                if off < self.model.len() {
-                    return Some((off, Column::Ascii));
-                }
-            }
-        }
-        None
-    }
-
-    // --- drawing --------------------------------------------------------
-
-    fn draw_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: &GridMetrics,
-    ) {
-        let tokens = &theme.tokens;
-        let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, m.header_bottom);
-        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &bar);
-        // Bar role: one derived hairline under the title bar (HIG §9.5).
-        scene.fill(
-            Fill::NonZero,
-            t,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-
-        let pad = f64::from(tokens.spacing.s4);
-
-        // File name (semibold) + byte count (dim), each centred on its own
-        // measured line box so the two sizes share the bar's centre line.
-        let (name_w, name_h) = tr.measure_weighted(
-            &self.file_name,
-            ts(tr, tokens.typography.scale.lg),
-            None,
-            TextWeight::Semibold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &self.file_name,
-            ts(tr, tokens.typography.scale.lg),
-            tokens.colors.text_primary,
-            t * Affine::translate((
-                bar.x0 + pad,
-                bar.y0 + (bar.height() - f64::from(name_h)) / 2.0,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-        let meta = format!("{} bytes", self.model.len());
-        let (_, meta_h) = tr.measure(&meta, ts(tr, tokens.typography.scale.sm), None);
-        tr.draw_text(
-            scene,
-            &meta,
-            ts(tr, tokens.typography.scale.sm),
-            tokens.colors.text_dim,
-            t * Affine::translate((
-                bar.x0 + pad + f64::from(name_w) + 12.0,
-                bar.y0 + (bar.height() - f64::from(meta_h)) / 2.0,
-            )),
-            None,
-        );
-
-        // Right-aligned pills: mode + endianness + width. Narrow windows keep
-        // the interactive state pills and drop the informational width chip.
-        let mut x = bar.x1 - pad;
-        if self.rect.width() >= 620.0 {
-            let width_label = format!("{}/row", self.model.bytes_per_row());
-            x = Self::draw_pill(
-                scene,
-                t,
-                tr,
-                theme,
-                x,
-                bar,
-                &width_label,
-                tokens.colors.neutral[3],
-            );
-            x -= 8.0;
-        }
-        let endian_color = tokens.colors.accent[4];
-        x = Self::draw_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            x,
-            bar,
-            self.model.endian().label(),
-            endian_color,
-        );
-        x -= 8.0;
-        let mode_color = match self.model.mode() {
-            EditMode::Overwrite => tokens.colors.neutral[3],
-            EditMode::Insert => tokens.colors.semantic.warning,
-        };
-        let _ = Self::draw_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            x,
-            bar,
-            self.model.mode().label(),
-            mode_color,
-        );
-    }
-
-    /// Draw a small rounded pill ending at `right_x`; returns its left x.
-    fn draw_pill(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        right_x: f64,
-        bar: Rect,
-        label: &str,
-        fill: Color,
-    ) -> f64 {
-        let size = ts(tr, theme.tokens.typography.scale.xs);
-        let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Bold);
-        let pad_x = 8.0;
-        let w = f64::from(tw) + pad_x * 2.0;
-        // The capsule wraps the measured line box (18 px at 1×) so it keeps
-        // seating its label at every text scale.
-        let h = f64::from(th) + 5.5;
-        let x0 = right_x - w;
-        let y0 = bar.y0 + (bar.height() - h) / 2.0;
-        // A pill with its derived rest edge: the mode / endianness chips sit
-        // on the raised bar and otherwise read as bare washes.
-        ui::surface::pill(
-            scene,
-            t,
-            Rect::new(x0, y0, right_x, y0 + h),
-            fill,
-            Some(ui::surface::edge_on(fill)),
-            Some(6.0),
-        );
-        // Centre the measured line box in the pill (no nudge on the font size).
-        tr.draw_text_weighted(
-            scene,
-            label,
-            size,
-            theme.tokens.colors.on_surface(fill).ink,
-            t * Affine::translate((x0 + pad_x, y0 + (h - f64::from(th)) / 2.0)),
-            None,
-            TextWeight::Bold,
-        );
-        x0
-    }
-
-    fn draw_grid(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: &GridMetrics,
-    ) {
-        let bpr = self.model.bytes_per_row();
-        self.draw_grid_headers(scene, t, tr, theme, m, bpr);
-
-        let selection = self.model.selection();
-        let inspector_span = self.inspector_span();
+    /// Open the go-to prompt (Ctrl+G, or a click on the offset readout) at
+    /// the status bar's offset readout.
+    fn open_goto(&mut self) {
+        let anchor = self.goto_anchor();
+        // The current offset, selected: typing replaces it, Enter keeps it.
         let cursor = self.model.cursor();
+        self.goto.open_prompt(anchor, &format!("0x{cursor:X}"));
+        self.dirty = true;
+    }
 
-        let visible = m.visible_rows.max(1);
-        self.visible_rows = visible;
+    /// Where the go-to prompt hangs from: the offset readout, or the status
+    /// bar's content edge before it has been painted.
+    fn goto_anchor(&self) -> Rect {
+        if self.offset_readout.area() > 0.0 {
+            return self.offset_readout;
+        }
+        let status = self.geo.status;
+        let inset = f64::from(self.layout_theme.tokens.spacing.s4);
+        Rect::new(status.x0 + inset, status.y0, status.x0 + inset, status.y1)
+    }
 
-        for vr in 0..visible {
-            let row = self.model.top_row() + vr;
-            let row_off = row * bpr;
-            if row_off > self.model.len() && !self.model.is_empty() {
-                break;
-            }
-            let y = m.grid_top + vr as f64 * m.row_h;
-            // Centre the measured line box in the row, not the nominal font size.
-            let text_y = y + (m.row_h - m.line_h) / 2.0;
-
-            // Offset gutter.
-            let gutter = format!("{row_off:08X}");
-            tr.draw_style(
-                scene,
-                &gutter,
-                theme.tokens.colors.accent[6],
-                t * Affine::translate((m.gutter_x0, text_y)),
-                None,
-                &TextStyle::new(m.cell_font).with_family(FontChoice::Monospace),
-            );
-
-            let ctx = GridCellCtx {
-                theme,
-                m,
-                selection,
-                inspector_span,
-                cursor,
-                y,
-                text_y,
+    /// Apply what the header and inspector strips picked since the last
+    /// event.
+    fn apply_strip_picks(&mut self) {
+        if let Some(index) = self.mode_pick.take() {
+            let want = if index == 0 {
+                EditMode::Overwrite
+            } else {
+                EditMode::Insert
             };
-            for c in 0..bpr {
-                self.draw_grid_cell(scene, t, tr, &ctx, row_off + c, c);
-            }
-        }
-    }
-
-    /// The offset/hex-index/ASCII column headers, plus the hairline and
-    /// vertical separators framing the grid. Drawn once per frame, ahead of
-    /// the per-row cell loop.
-    fn draw_grid_headers(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: &GridMetrics,
-        bpr: usize,
-    ) {
-        let tokens = &theme.tokens;
-        let head_y = m.col_header_y;
-        tr.draw_style(
-            scene,
-            "Offset",
-            tokens.colors.text_dim,
-            t * Affine::translate((m.gutter_x0, head_y)),
-            None,
-            &TextStyle::new(m.header_font)
-                .with_weight(TextWeight::Medium)
-                .with_family(FontChoice::Monospace),
-        );
-        for c in 0..bpr {
-            let label = format!("{c:02X}");
-            let x = m.hex_x0 + c as f64 * m.hex_col_w;
-            tr.draw_style(
-                scene,
-                &label,
-                tokens.colors.text_dim,
-                t * Affine::translate((x, head_y)),
-                None,
-                &TextStyle::new(m.header_font)
-                    .with_weight(TextWeight::Medium)
-                    .with_family(FontChoice::Monospace),
-            );
-        }
-        tr.draw_style(
-            scene,
-            "ASCII",
-            tokens.colors.text_dim,
-            t * Affine::translate((m.ascii_x0, head_y)),
-            None,
-            &TextStyle::new(m.header_font)
-                .with_weight(TextWeight::Medium)
-                .with_family(FontChoice::Monospace),
-        );
-        // Rules on the grid derive from the surface they cross (HIG §9.5):
-        // the declared border is three shades from the dark base and vanishes.
-        let rule = ui::surface::edge_on(tokens.colors.surfaces.base);
-        // Hairline under the column header.
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            rule,
-            None,
-            &Line::new(
-                (self.rect.x0 + 8.0, m.grid_top - 2.0),
-                (m.ascii_x1 + 8.0, m.grid_top - 2.0),
-            ),
-        );
-        // Vertical separators framing the hex region.
-        for sep_x in [m.hex_x0 - 8.0, m.ascii_x0 - 8.0] {
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                rule,
-                None,
-                &Line::new((sep_x, m.grid_top - 2.0), (sep_x, m.grid_bottom)),
-            );
-        }
-    }
-
-    /// Draw one byte's hex + ASCII cells: background tint layers (inspected /
-    /// match / selection), the cursor outline, then the two glyphs. `ctx`
-    /// bundles the per-row state (theme, metrics, selection, cursor) shared
-    /// across a row's cells.
-    fn draw_grid_cell(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        ctx: &GridCellCtx<'_>,
-        off: usize,
-        c: usize,
-    ) {
-        let Some(&byte) = self.model.bytes().get(off) else {
-            return;
-        };
-        let m = ctx.m;
-        let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
-        let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
-        let cells = (
-            Rect::new(hex_x - 3.0, ctx.y, hex_x + m.byte_w + 3.0, ctx.y + m.row_h),
-            Rect::new(
-                ascii_x - 1.0,
-                ctx.y,
-                ascii_x + m.char_w + 1.0,
-                ctx.y + m.row_h,
-            ),
-        );
-
-        self.paint_cell_background(scene, t, ctx, off, cells);
-        if off == ctx.cursor {
-            self.paint_cursor_outline(scene, t, ctx, cells);
-        }
-        self.draw_cell_glyphs(
-            scene,
-            t,
-            tr,
-            ctx,
-            &CellGeom {
-                off,
-                byte,
-                hex_x,
-                ascii_x,
-            },
-        );
-    }
-
-    /// The inspected / search-match / selection tint layers under one cell,
-    /// lowest to highest. Split out of [`Self::draw_grid_cell`] to keep that
-    /// dispatch under the line-count limit.
-    fn paint_cell_background(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        ctx: &GridCellCtx<'_>,
-        off: usize,
-        cells: (Rect, Rect),
-    ) {
-        let (cell_hex, cell_ascii) = cells;
-        let tokens = &ctx.theme.tokens;
-        let is_cursor = off == ctx.cursor;
-        let selected = ctx.selection.is_some_and(|(lo, hi)| off >= lo && off <= hi);
-        let inspected = ctx
-            .inspector_span
-            .is_some_and(|(lo, hi)| off >= lo && off <= hi);
-        let is_match = self.is_match_offset(off);
-
-        if inspected && !is_cursor {
-            let tint = with_alpha(tokens.colors.accent[5], 40);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-        }
-        if is_match {
-            let tint = with_alpha(tokens.colors.semantic.warning, 70);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-        }
-        if selected {
-            let tint = with_alpha(tokens.colors.accent[5], 90);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-        }
-    }
-
-    /// The cursor cell's fill on its active column, plus a faint outline on
-    /// the mirror column so the synced position is visible in both panes.
-    fn paint_cursor_outline(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        ctx: &GridCellCtx<'_>,
-        cells: (Rect, Rect),
-    ) {
-        let (cell_hex, cell_ascii) = cells;
-        let active_hex = self.model.column() == Column::Hex;
-        let (cell, other) = if active_hex {
-            (cell_hex, cell_ascii)
-        } else {
-            (cell_ascii, cell_hex)
-        };
-        let tokens = &ctx.theme.tokens;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            tokens.colors.accent[ui_accent_idx()],
-            None,
-            &cell,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            tokens.colors.accent[ui_accent_idx()],
-            None,
-            &RoundedRect::from_rect(other, 2.0),
-        );
-    }
-
-    /// The hex and ASCII glyphs for one cell, coloured for cursor / dirty /
-    /// selection / zero-byte state.
-    fn draw_cell_glyphs(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        ctx: &GridCellCtx<'_>,
-        geom: &CellGeom,
-    ) {
-        let tokens = &ctx.theme.tokens;
-        let size = ctx.m.cell_font;
-        let is_cursor = geom.off == ctx.cursor;
-        let is_dirty = self.model.is_dirty(geom.off);
-        let selected = ctx
-            .selection
-            .is_some_and(|(lo, hi)| geom.off >= lo && geom.off <= hi);
-
-        let hex_color = if is_cursor {
-            tokens
-                .colors
-                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
-        } else if is_dirty {
-            tokens.colors.semantic.warning
-        } else if selected {
-            tokens.colors.text_primary
-        } else if geom.byte == 0 {
-            // Zero bytes read as background noise — dim them.
-            tokens.colors.neutral[5]
-        } else {
-            tokens.colors.text_primary
-        };
-        tr.draw_style(
-            scene,
-            &format!("{:02X}", geom.byte),
-            hex_color,
-            t * Affine::translate((geom.hex_x, ctx.text_y)),
-            None,
-            &TextStyle::new(size)
-                .with_weight(if is_dirty {
-                    TextWeight::Bold
-                } else {
-                    TextWeight::Regular
-                })
-                .with_family(FontChoice::Monospace),
-        );
-
-        // ASCII glyph.
-        let ch = ascii_glyph(geom.byte);
-        let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
-            tokens
-                .colors
-                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
-        } else if is_dirty {
-            tokens.colors.semantic.warning
-        } else if (0x20..=0x7E).contains(&geom.byte) {
-            tokens.colors.text_primary
-        } else {
-            tokens.colors.neutral[5]
-        };
-        tr.draw_style(
-            scene,
-            &ch,
-            ascii_color,
-            t * Affine::translate((geom.ascii_x, ctx.text_y)),
-            None,
-            &TextStyle::new(size).with_family(FontChoice::Monospace),
-        );
-    }
-
-    /// Byte range the current inspector interpretation highlights — the
-    /// widest non-trivial interpretation (u64 when 8 bytes remain, else
-    /// whatever fits). Drives the inspected-range tint on the grid.
-    fn inspector_span(&self) -> Option<(usize, usize)> {
-        let cur = self.model.cursor();
-        if self.model.is_empty() {
-            return None;
-        }
-        let remaining = self.model.len() - cur;
-        let width = remaining.clamp(1, 8);
-        Some((cur, cur + width - 1))
-    }
-
-    fn draw_inspector(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: &GridMetrics,
-    ) {
-        if !self.show_inspector() {
-            return;
-        }
-        let tokens = &theme.tokens;
-        let panel = Rect::new(
-            m.inspector_x0,
-            m.grid_top - 2.0,
-            self.rect.x1,
-            m.grid_bottom,
-        );
-        paint_side_panel(scene, t, theme, panel);
-
-        let pad = f64::from(tokens.spacing.s4);
-        let x = panel.x0 + pad;
-        let mut y = panel.y0 + pad;
-
-        let title_size = ts(tr, tokens.typography.scale.xs);
-        tr.draw_text_weighted(
-            scene,
-            "DATA INSPECTOR",
-            title_size,
-            tokens.colors.text_dim,
-            t * Affine::translate((x, y)),
-            None,
-            TextWeight::Bold,
-        );
-        // Stacked lines step by their measured boxes (22 / 24 px at 1×).
-        y += line_box(tr, title_size) + 9.5;
-
-        // Cursor + endianness sub-header.
-        let sub = format!(
-            "@ 0x{:X}  ·  {}",
-            self.model.cursor(),
-            self.model.endian().label()
-        );
-        let value_size = ts(tr, tokens.typography.scale.sm);
-        tr.draw_style(
-            scene,
-            &sub,
-            tokens.colors.accent[6],
-            t * Affine::translate((x, y)),
-            None,
-            &TextStyle::new(value_size).with_family(FontChoice::Monospace),
-        );
-        let value_line = line_box(tr, value_size);
-        y += value_line + 9.0;
-
-        let rows: Vec<Interpretation> =
-            inspector::inspect(self.model.bytes(), self.model.cursor(), self.model.endian());
-        // One measured pitch for every row (22 px at 1×); the label column is
-        // as wide as the widest label it holds plus a gutter, so values never
-        // start under a label at any text scale.
-        // Row pitch: the line box plus one `s1` (the inter-band gap) and a
-        // 3 px seat, all from the same scaled token so the band below can
-        // never turn negative when spacing scales.
-        let band_gap = f64::from(tokens.spacing.s1);
-        let row_h = value_line + band_gap + 3.0;
-        let label_w = rows
-            .iter()
-            .map(|r| {
-                f64::from(
-                    tr.measure_styled(r.label, value_size, None, TextWeight::Medium, false, true)
-                        .0,
-                )
-            })
-            .fold(0.0_f64, f64::max)
-            + 12.0;
-        // The zebra band is the row minus half an `s1` above and below (so
-        // consecutive bands keep a token-step gap, HIG §7), centred on the
-        // text's measured line box rather than nudged around an assumed height.
-        let band_pad = (row_h - value_line) / 2.0 - band_gap / 2.0;
-
-        for r in &rows {
-            if y + row_h > panel.y1 {
-                break;
-            }
-            // Zebra striping for legibility.
-            let band = Rect::new(panel.x0, y - band_pad, panel.x1, y + value_line + band_pad);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                with_alpha(tokens.colors.surfaces.raised, 60),
-                None,
-                &band,
-            );
-            tr.draw_style(
-                scene,
-                r.label,
-                tokens.colors.text_dim,
-                t * Affine::translate((x, y)),
-                None,
-                &TextStyle::new(value_size)
-                    .with_weight(TextWeight::Medium)
-                    .with_family(FontChoice::Monospace),
-            );
-            let val_color = if r.value == "—" {
-                tokens.colors.neutral[4]
-            } else {
-                tokens.colors.text_primary
-            };
-            tr.draw_style(
-                scene,
-                &r.value,
-                val_color,
-                t * Affine::translate((x + label_w, y)),
-                Some((panel.width() - pad * 2.0 - label_w) as f32),
-                &TextStyle::new(value_size).with_family(FontChoice::Monospace),
-            );
-            y += row_h;
-        }
-    }
-
-    /// The composed status label for the floating bubble: the cursor offset
-    /// (hex + decimal), plus the selection length and dirty count when present,
-    /// plus a transient save/open flash folded in when one is active. The
-    /// decorative keyboard-hint line the old strip carried is gone — it was
-    /// always identical and never told the user anything about their document.
-    fn status_bubble_label(&self) -> String {
-        let mut s = format!("0x{:08X}  ({})", self.model.cursor(), self.model.cursor());
-        let sel = self.model.selection_len();
-        if sel > 0 {
-            // Writing to a `String` via `fmt::Write` never fails.
-            let _ = write!(s, "   sel {sel} B");
-        }
-        if self.model.dirty_count() > 0 {
-            let _ = write!(s, "   ●{} edited", self.model.dirty_count());
-        }
-        if let Some((msg, _error, _)) = &self.flash {
-            let _ = write!(s, "   {msg}");
-        }
-        s
-    }
-
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old bottom status strip. It surfaces
-    /// on a real status change (the cursor offset, selection, dirty count, or a
-    /// fresh save/error flash) or while the pointer hovers the bottom-right
-    /// band, then fades. All colours come from the theme (via `draw_pill`).
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        let label = self.status_bubble_label();
-        // Poke only on a genuine change — `draw` runs every frame, so poking
-        // unconditionally would pin the bubble open forever.
-        if self.last_status_label.as_deref() != Some(label.as_str()) {
-            self.status_bubble.poke(now);
-            self.last_status_label = Some(label.clone());
-        }
-        let text_size = ts(tr, theme.tokens.typography.scale.sm);
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
-        let rect = Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
-        );
-        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
-        // the pointer there re-surfaces the status on demand.
-        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over = self.shots_status || zone.contains(self.last_mouse);
-        self.status_bubble.set_hover(over, now);
-        let alpha = self.status_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            t,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
-    }
-
-    /// The no-file zero-state: a title, a one-line explanation, and a single
-    /// primary action (Open), centred. Records the button's hit rect.
-    fn draw_empty_state(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let c = &tokens.colors;
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-
-        // The stack is anchored on the button (`by0`) and each line above it
-        // sits on its measured line box, so the title, subtitle and button
-        // keep their 1× gaps (8 / 17 px) without overlapping at 200 %.
-        let by0 = cy - 8.0;
-
-        // Title.
-        let title = "No file open";
-        let tsz = ts(tr, tokens.typography.scale.x2l);
-        let (tw, th) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
-        // Subtitle.
-        let sub = "Open a file to inspect and edit its bytes.";
-        let ssz = ts(tr, tokens.typography.scale.sm);
-        let (sw, sh) = tr.measure(sub, ssz, None);
-        let sub_top = by0 - 17.0 - f64::from(sh);
-        let title_top = sub_top - 8.0 - f64::from(th);
-        tr.draw_text_weighted(
-            scene,
-            title,
-            tsz,
-            c.text_primary,
-            t * Affine::translate((cx - f64::from(tw) / 2.0, title_top)),
-            None,
-            TextWeight::Semibold,
-        );
-        tr.draw_text(
-            scene,
-            sub,
-            ssz,
-            c.text_dim,
-            t * Affine::translate((cx - f64::from(sw) / 2.0, sub_top)),
-            None,
-        );
-
-        // Primary action: Open file…
-        let label = "Open file…";
-        let bsz = ts(tr, tokens.typography.scale.base);
-        let (lw, lh) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-        let bw = f64::from(lw) + 44.0;
-        // 40 px at 1×; grows with the label's measured line box.
-        let bh = (f64::from(lh) + 22.5).max(40.0);
-        let bx0 = cx - bw / 2.0;
-        let btn = Rect::new(bx0, by0, bx0 + bw, by0 + bh);
-        let accent = c.accent[ui_accent_idx()];
-        scene.fill(
-            Fill::NonZero,
-            t,
-            accent,
-            None,
-            &RoundedRect::from_rect(btn, 10.0),
-        );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            bsz,
-            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-            t * Affine::translate((
-                bx0 + (bw - f64::from(lw)) / 2.0,
-                by0 + (bh - f64::from(lh)) / 2.0,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-        self.open_button = btn;
-
-        // Keyboard hint under the button.
-        let hint = "Ctrl+O";
-        let hsz = ts(tr, tokens.typography.scale.xs);
-        let (hw, _) = tr.measure(hint, hsz, None);
-        tr.draw_text(
-            scene,
-            hint,
-            hsz,
-            c.text_dim,
-            t * Affine::translate((cx - f64::from(hw) / 2.0, by0 + bh + 16.0)),
-            None,
-        );
-
-        // A pending open error (e.g. unreadable path) surfaces here.
-        if let Some((msg, error, _)) = &self.flash
-            && *error
-        {
-            let (mw, _) = tr.measure(msg, ssz, None);
-            tr.draw_text(
-                scene,
-                msg,
-                ssz,
-                c.semantic.danger,
-                t * Affine::translate((cx - f64::from(mw) / 2.0, by0 + bh + 44.0)),
-                None,
-            );
-        }
-    }
-
-    /// The search sheet's match counter: empty with no query, otherwise the
-    /// match count (and current position when the list is complete).
-    fn search_count_label(&self) -> String {
-        let query_empty = self.search_input.value().is_empty();
-        if self.matches.is_empty() {
-            if query_empty {
-                String::new()
-            } else {
-                "no matches".to_string()
-            }
-        } else {
-            if self.matches_truncated {
-                format!("{}+ matches", self.matches.len())
-            } else {
-                let pos = self.match_idx.map_or(0, |i| i + 1);
-                format!("{pos}/{}", self.matches.len())
-            }
-        }
-    }
-
-    fn draw_search_overlay(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let w = 460.0;
-        // 56 px at 1×; the sheet grows with its `sm` field/count line so the
-        // shared input and the counter keep seating at every text scale.
-        let count_size = ts(tr, tokens.typography.scale.sm);
-        let h = 56.0 + line_growth(tr, count_size);
-        let x0 = self.rect.x1 - w - 24.0;
-        let y0 = self.rect.y0 + 56.0;
-        let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            tokens.colors.border_focus,
-            None,
-            &panel,
-        );
-
-        let pad = 14.0;
-        // Kind toggle chip: sized from its measured label (48 × 22 px at 1×)
-        // and the label centred on its measured line box.
-        let kind = self.search_kind.label();
-        let kind_size = ts(tr, tokens.typography.scale.xs);
-        let (kind_w, kind_h) = tr.measure_weighted(kind, kind_size, None, TextWeight::Bold);
-        let chip_w = (f64::from(kind_w) + 16.0).max(48.0);
-        let chip_h = f64::from(kind_h) + 9.5;
-        let chip = RoundedRect::new(
-            x0 + pad,
-            y0 + 12.0,
-            x0 + pad + chip_w,
-            y0 + 12.0 + chip_h,
-            6.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            tokens.colors.accent[ui_accent_idx()],
-            None,
-            &chip,
-        );
-        tr.draw_text_weighted(
-            scene,
-            kind,
-            kind_size,
-            tokens
-                .colors
-                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-            t * Affine::translate((
-                x0 + pad + (chip_w - f64::from(kind_w)) / 2.0,
-                y0 + 12.0 + (chip_h - f64::from(kind_h)) / 2.0,
-            )),
-            None,
-            TextWeight::Bold,
-        );
-
-        // Match counter. It stays app-owned because it describes byte-search
-        // policy, while the shared field owns all text-editing behaviour.
-        let count = self.search_count_label();
-        let count_w = if count.is_empty() {
-            0.0
-        } else {
-            f64::from(
-                tr.measure(&count, ts(tr, tokens.typography.scale.sm), None)
-                    .0,
-            )
-        };
-
-        // The shared field supplies selection, word/caret navigation,
-        // clipboard, context-menu and IME support inside the existing overlay.
-        let qx = x0 + pad + chip_w + 12.0;
-        let qright = x0 + w
-            - pad
-            - if count.is_empty() {
-                0.0
-            } else {
-                count_w + 16.0
-            };
-        self.search_input
-            .apply_layout_external(Rect::new(qx, y0 + 8.0, qright, y0 + h - 8.0));
-        let presence = PresenceCtx::empty();
-        self.search_input.draw(scene, t, tr, theme, &presence);
-
-        if !count.is_empty() {
-            let ccolor = if self.matches.is_empty() {
-                tokens.colors.semantic.danger
-            } else {
-                tokens.colors.text_dim
-            };
-            let count_top = y0 + (h - line_box(tr, count_size)) / 2.0;
-            tr.draw_text(
-                scene,
-                &count,
-                count_size,
-                ccolor,
-                t * Affine::translate((x0 + w - pad - count_w, count_top)),
-                None,
-            );
-        }
-    }
-
-    fn draw_goto_overlay(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let w = 340.0;
-        // The caption sits on its measured line and the shared input starts
-        // just beneath it (19 px at 1×); the sheet grows with both lines.
-        let caption_size = ts(tr, tokens.typography.scale.xs);
-        let caption_line = line_box(tr, caption_size);
-        let input_top = 8.0 + caption_line - 1.5;
-        let input_h = 34.0 + line_growth(tr, ts(tr, tokens.typography.scale.sm));
-        let h = input_top + input_h + 3.0;
-        let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
-        let y0 = self.rect.y0 + 80.0;
-        let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            tokens.colors.border_focus,
-            None,
-            &panel,
-        );
-
-        let pad = 14.0;
-        tr.draw_text_weighted(
-            scene,
-            "Go to offset",
-            caption_size,
-            tokens.colors.text_dim,
-            t * Affine::translate((x0 + pad, y0 + 8.0)),
-            None,
-            TextWeight::Bold,
-        );
-        self.goto_input.apply_layout_external(Rect::new(
-            x0 + pad,
-            y0 + input_top,
-            x0 + w - pad,
-            y0 + h - 3.0,
-        ));
-        let presence = PresenceCtx::empty();
-        self.goto_input.draw(scene, t, tr, theme, &presence);
-    }
-
-    // --- keyboard ------------------------------------------------------
-
-    /// Route an event into the active shared field, keeping only byte-search
-    /// policy (kind cycling / match navigation / offset commit) in this app.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "OverlayLayoutCtx bundles a `&mut Option<NodeId>` and is built fresh at the \
-                  single call site purely to move its fields on into the active field's \
-                  Widget::handle_event; it isn't Copy and taking it by reference would still \
-                  need to move the mutable reference back out, so by-value is the real shape"
-    )]
-    fn handle_overlay_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        layout: OverlayLayoutCtx<'_>,
-    ) -> bool {
-        let shift = modifiers.state().shift_key();
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event
-            && ke.state == ElementState::Pressed
-        {
-            match (self.overlay, &ke.logical_key) {
-                (Overlay::Search, Key::Named(NamedKey::Escape)) => {
-                    self.search_input.set_focus(false);
-                    self.overlay = Overlay::None;
-                    self.dirty = true;
-                    return true;
-                }
-                (Overlay::Search, Key::Named(NamedKey::Enter)) => {
-                    self.jump_to_match(!shift);
-                    self.record_local_history();
-                    return true;
-                }
-                (Overlay::Search, Key::Named(NamedKey::Tab)) => {
-                    self.search_kind = self.search_kind.toggle();
-                    self.search_input
-                        .set_mono(self.search_kind == SearchKind::Hex);
-                    self.recompute_matches();
-                    self.dirty = true;
-                    return true;
-                }
-                (Overlay::Goto, Key::Named(NamedKey::Escape)) => {
-                    self.goto_input.set_text("");
-                    self.goto_input.set_focus(false);
-                    self.overlay = Overlay::None;
-                    self.dirty = true;
-                    return true;
-                }
-                (Overlay::Goto, Key::Named(NamedKey::Enter)) => {
-                    self.commit_goto();
-                    self.record_local_history();
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        let mut field_handled = false;
-        let changed = match self.overlay {
-            Overlay::Search => {
-                self.search_input.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor,
-                        modifiers: &modifiers,
-                        state: doc,
-                        path,
-                        handled: &mut field_handled,
-                        focus_target: layout.focus_target,
-                        node_id: layout.node_id,
-                        taffy: layout.taffy,
-                    },
-                );
-                self.search_input.take_dirty().is_some()
-            }
-            Overlay::Goto => {
-                self.goto_input.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor,
-                        modifiers: &modifiers,
-                        state: doc,
-                        path,
-                        handled: &mut field_handled,
-                        focus_target: layout.focus_target,
-                        node_id: layout.node_id,
-                        taffy: layout.taffy,
-                    },
-                );
-                self.goto_input.take_dirty().is_some()
-            }
-            Overlay::None => false,
-        };
-        if changed {
-            if self.overlay == Overlay::Search {
-                self.recompute_matches();
+            if self.model.mode() != want {
+                self.model.toggle_mode();
             }
             self.dirty = true;
         }
-        field_handled || changed
+        if let Some(index) = self.endian_pick.take() {
+            let want = if index == 0 {
+                Endian::Little
+            } else {
+                Endian::Big
+            };
+            if self.model.endian() != want {
+                self.model.toggle_endian();
+            }
+            self.dirty = true;
+        }
     }
-}
 
-/// Index into the accent ramp used for the active cursor fill. Bound to a
-/// helper so the choice stays consistent across the grid and overlays.
-fn ui_accent_idx() -> usize {
-    5
+    /// Hand a pointer event to the two strips; true when one took it.
+    fn route_to_strips(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        self.mode_group.handle_event(event, ctx);
+        if self.geo.inspector_visible {
+            self.endian_group.handle_event(event, ctx);
+        }
+        let took = *ctx.handled;
+        self.apply_strip_picks();
+        // The strips repaint themselves under the pointer; the view paints
+        // them, so it has to know when they changed.
+        if Widget::needs_redraw(&self.mode_group) || Widget::needs_redraw(&self.endian_group) {
+            self.dirty = true;
+        }
+        took
+    }
+
+    /// The pointer moved: the thumb under it lights up, and a thumb being
+    /// dragged scrolls the grid.
+    fn follow_scrollbar(&mut self) {
+        let (track, metrics) = (self.geo.scroll_track, self.scroll_metrics());
+        if !metrics.overflows() {
+            return;
+        }
+        if let Some(offset) = self.scrollbar.drag_to(track, metrics, self.last_mouse) {
+            self.model.set_top_row(offset.round() as usize);
+            self.dirty = true;
+        }
+        if self.scrollbar.update_hover(track, metrics, self.last_mouse) {
+            self.dirty = true;
+        }
+    }
+
+    /// A press on the scroll bar: grab the thumb or page toward the press.
+    fn press_scrollbar(&mut self, p: Point) -> bool {
+        use ui::widget::scrollbar::PressOutcome;
+        let (track, metrics) = (self.geo.scroll_track, self.scroll_metrics());
+        if !metrics.overflows() || !track.contains(p) {
+            return false;
+        }
+        match self.scrollbar.press(track, metrics, p) {
+            PressOutcome::Miss => return false,
+            PressOutcome::Thumb => {}
+            PressOutcome::Page(offset) => self.model.set_top_row(offset.round() as usize),
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Show or hide the inspector, remembering the choice for this size.
+    fn toggle_inspector(&mut self) {
+        self.drawer.toggle();
+        self.relayout_now();
+        self.dirty = true;
+    }
+
+    /// Whether `point` is over the inspector drawer.
+    fn over_inspector(&self, point: Point) -> bool {
+        self.geo.inspector_visible && self.geo.inspector.contains(point)
+    }
+
+    /// Scroll the inspector's properties, or the grid.
+    fn scroll_wheel(&mut self, delta: &winit::event::MouseScrollDelta) {
+        let lines = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+            winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
+        };
+        if self.over_inspector(self.last_mouse) {
+            self.inspector_scroll -= lines * self.geo.row_h;
+        } else {
+            self.model.scroll_by(-(lines.round() as isize) * 3);
+        }
+        self.dirty = true;
+    }
+
+    /// The pointer moved or a button changed: the strips, the inspector
+    /// toggle and the drawer's scrim. True when the event was consumed.
+    fn handle_chrome_pointer(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = ctx.logical(position);
+                let hovered = self.geo.toggle.contains(self.last_mouse);
+                if hovered != self.toggle_hovered {
+                    self.toggle_hovered = hovered;
+                    self.dirty = true;
+                }
+                self.follow_scrollbar();
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.scrollbar.release() {
+                    self.dirty = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let p = self.last_mouse;
+                if self.geo.toggle.contains(p) {
+                    self.toggle_inspector();
+                    return true;
+                }
+                if self.drawer.press_dismisses(p) {
+                    self.relayout_now();
+                    self.dirty = true;
+                    return true;
+                }
+                if self.offset_readout.contains(p) {
+                    self.open_goto();
+                    return true;
+                }
+                if self.over_inspector(p) {
+                    // A press on the panel never reaches the grid behind it.
+                    self.route_to_strips(event, ctx);
+                    return true;
+                }
+                if self.press_scrollbar(p) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) {
+            self.route_to_strips(event, ctx);
+        }
+        false
+    }
+
+    /// An open find bar owns the keyboard while it has focus, and the
+    /// pointer inside its band. True when it took the event.
+    fn route_find(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        let in_band = self.geo.find.contains(self.last_mouse);
+        if matches!(event, WindowEvent::MouseInput { .. }) && in_band {
+            Widget::set_focus(&mut self.find_bar, true);
+        }
+        let took = self.find_bar.route(event, ctx);
+        self.drive_find();
+        self.dirty = true;
+        let typing = Widget::is_focused(&self.find_bar)
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            );
+        took || typing || (in_band && matches!(event, WindowEvent::MouseInput { .. }))
+    }
+
+    /// Events while the go-to popover is open: it captures input.
+    fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.goto, event, ctx);
+        if let Some(query) = self.goto.take_submitted() {
+            self.commit_goto(&query);
+        }
+        self.dirty = true;
+    }
+
+    /// Events while no file is open: the empty state's action and Ctrl+O.
+    fn handle_empty_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.empty.handle_event(event, ctx);
+        self.dirty = true;
+        if self.empty.take_action() {
+            self.invoke(&HexEffect::OpenFile { path: None });
+            *ctx.handled = true;
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+        {
+            let ctrl = ctx.modifiers.state().control_key();
+            self.handle_empty_state_key(&key.logical_key, ctrl, ctx.handled);
+        }
+    }
 }
 
 impl Widget for HexView {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::widget::Findable,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
+    );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
-    }
+    /// The editor's views — the find bar, the go-to form — opened by the
+    /// palette, an agent or a script.
+    fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
+        // Drain a closed file chooser first, so a freshly opened buffer is
+        // submitted before this frame lays out.
+        self.drain_chooser();
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_resource_io
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-        {
-            self.pending_resource_io = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before file I/O".into()),
-            });
-        }
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.open_rx = None;
-            self.save_rx = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            });
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
-    }
-
-    fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
-        if let Some((invocation, operation)) = self.pending_resource_io.take() {
-            let result = match operation {
-                crate::actions::HexOperation::Open { path: Some(path) } => {
-                    self.open_path(path.into())
-                }
-                crate::actions::HexOperation::Save { path: Some(path) } => {
-                    self.write_to(std::path::Path::new(&path))
-                }
-                _ => Err("missing direct path".into()),
-            };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "hex.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-        // Drain any completed file open/save picks first, so a freshly opened
-        // buffer is in place before this frame lays out.
-        self.drain_portal();
-
-        // Paths, bytes, selection and cursor are local device state. Never
-        // seed or adopt them through Automerge: a collaborator cannot open
-        // this machine's path or receive its raw file contents.
-
-        // Expire a status flash so an idle window settles back to no message.
-        if let Some((_, _, born)) = &self.flash
+        // Expire a failure toast so an idle window settles back to no message.
+        if let Some((_, _, born)) = &self.problem
             && born.elapsed().as_millis() > FLASH_MS
         {
-            self.flash = None;
+            self.problem = None;
             self.dirty = true;
         }
     }
@@ -1994,43 +850,28 @@ impl Widget for HexView {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while a portal pick is in flight (so it drains
-        // once the host dialog closes), while a flash is counting down, and
-        // while the floating status bubble is lingering / fading so it hides
-        // itself without needing a stray pointer event.
-        self.is_busy() || self.status_bubble.needs_frame(ui::time::now())
+        // once the host dialog closes), while a failure toast is counting
+        // down, while the bubble is lingering / fading so it hides itself
+        // without needing a stray pointer event, and while the inspector
+        // slides.
+        self.is_busy()
+            || self.status_bubble.needs_frame(ui::time::now())
+            || (self.has_file && self.drawer.is_animating())
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.layout_theme = theme.clone();
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.relayout_now();
     }
 
     fn draw(
@@ -2039,85 +880,49 @@ impl Widget for HexView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        // App background.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
-        // No file loaded: a composed zero-state, not a fabricated buffer.
-        if !self.has_file {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
-            return;
+        // The framework painted the window ground; the geometry is resolved
+        // with the renderer that paints it, then the frame follows it.
+        self.layout_theme = theme.clone();
+        self.relayout(text_renderer, theme, true);
+        if self.goto.is_open() {
+            let anchor = self.goto_anchor();
+            self.goto.set_anchor(anchor);
         }
-
-        // Measure the cell font (and the title bar's line growth) with the
-        // renderer that paints it, then reflow the byte grid to fill the
-        // current width before laying out. One `GridMetrics` owns every
-        // vertical edge on both the paint and the event path.
-        self.cell_metrics = CellMetrics::measure(text_renderer);
-        let fit = self.fit_bytes_per_row();
-        if fit != self.model.bytes_per_row() {
-            self.model.set_bytes_per_row(fit);
-        }
-
-        let m = self.metrics();
-        self.draw_header(scene, transform, text_renderer, theme, &m);
-        self.draw_grid(scene, transform, text_renderer, theme, &m);
-        self.draw_inspector(scene, transform, text_renderer, theme, &m);
-        // The permanent status strip is gone; a transient floating bubble
-        // surfaces the cursor read-out over the reclaimed space at the bottom.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-        if self.shots_overlay && self.overlay == Overlay::Search {
-            self.draw_search_overlay(scene, transform, text_renderer, theme);
-        }
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        match self.overlay {
-            Overlay::Search => self.draw_search_overlay(scene, transform, text_renderer, theme),
-            Overlay::Goto => self.draw_goto_overlay(scene, transform, text_renderer, theme),
-            Overlay::None => {}
-        }
+        self.paint(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let ctrl = ctx.modifiers.state().control_key();
         let shift = ctx.modifiers.state().shift_key();
 
-        if self.overlay != Overlay::None {
-            if self.handle_overlay_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                OverlayLayoutCtx {
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            ) {
-                *ctx.handled = true;
-                return;
-            }
-            // An open prompt captures keys even when the field deliberately
-            // ignores the chord, so grid editing never fires behind it.
-            if matches!(event, WindowEvent::KeyboardInput { .. }) {
-                return;
-            }
+        let hovered = self.history.is_hovered();
+        if self
+            .history
+            .handle_event(event, self.geo.history, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= hovered != self.history.is_hovered();
+
+        if !self.has_file {
+            self.handle_empty_event(event, ctx);
+            return;
+        }
+        if self.goto.is_open() {
+            self.handle_goto_event(event, ctx);
+            return;
+        }
+        if self.handle_chrome_pointer(event, ctx) {
+            *ctx.handled = true;
+            return;
+        }
+        if self.find_open && self.route_find(event, ctx) {
+            *ctx.handled = true;
+            return;
         }
 
         match event {
@@ -2126,17 +931,8 @@ impl Widget for HexView {
                 button: MouseButton::Left,
                 ..
             } => self.handle_mouse_press(shift, ctx.handled),
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
-                };
-                self.model.scroll_by(-(lines.round() as isize) * 3);
-                self.dirty = true;
+                self.scroll_wheel(delta);
                 *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
@@ -2147,7 +943,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, ctx.handled);
+                self.handle_key_event(ke, ctrl, shift, &mut ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2165,101 +961,123 @@ impl Widget for HexView {
         self.rect
     }
 
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        match self.overlay {
-            Overlay::Search => self.search_input.ime_cursor_rect(),
-            Overlay::Goto => self.goto_input.ime_cursor_rect(),
-            Overlay::None => None,
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if self.goto.is_open() {
+            children.push(&self.goto);
         }
+        children
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.goto.is_open() {
+            visitor(&self.goto);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if self.goto.is_open() {
+            children.push(&mut self.goto);
+        }
+        children
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.goto.is_open() {
+            return Widget::ime_cursor_rect(self.goto.content());
+        }
+        if self.find_open && Widget::is_focused(&self.find_bar) {
+            return self.find_bar.ime_cursor_rect();
+        }
+        None
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        match self.overlay {
-            Overlay::Search => self.search_input.ime_purpose(),
-            Overlay::Goto => self.goto_input.ime_purpose(),
-            Overlay::None => None,
+        if self.goto.is_open() {
+            return Widget::ime_purpose(self.goto.content());
         }
+        if self.find_open && Widget::is_focused(&self.find_bar) {
+            return self.find_bar.ime_purpose();
+        }
+        None
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        match self.overlay {
-            Overlay::Search => self.search_input.cursor_shape(point),
-            Overlay::Goto => self.goto_input.cursor_shape(point),
-            Overlay::None => None,
+        if self.goto.is_open() {
+            return Widget::cursor_shape(self.goto.content(), point);
         }
+        if self.find_open && self.geo.find.contains(point) {
+            return self.find_bar.cursor_shape(point);
+        }
+        None
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        match self.overlay {
-            Overlay::Search => self.search_input.accessibility(),
-            Overlay::Goto => self.goto_input.accessibility(),
-            Overlay::None => {
-                use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-                let mut children = vec![
-                    AccessNode::new(Role::StaticText)
-                        .with_name(if self.has_file {
-                            format!(
-                                "{}; {} bytes; cursor at hexadecimal 0x{:X}; {} mode; {} endian",
-                                self.file_name,
-                                self.model.len(),
-                                self.model.cursor(),
-                                self.model.mode().label(),
-                                self.model.endian().label(),
-                            )
-                        } else {
-                            "No file open. Open a local file to inspect its bytes.".to_string()
-                        })
-                        .with_live(Politeness::Polite)
-                        .with_hashed_key("hex.status"),
-                ];
-                if self.has_file {
-                    children.push(
-                        AccessNode::new(Role::StaticText).with_name(
-                            "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F search, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
-                        ).with_hashed_key("hex.keyboard-help"),
-                    );
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Undo local edit")
-                            .with_description("Revert the most recent local byte edit")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(self.undo.is_empty()),
-                            )
-                            .with_action_target("hex.undo"),
-                    );
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Redo local edit")
-                            .with_description("Reapply the most recently undone local byte edit")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(self.redo.is_empty()),
-                            )
-                            .with_action_target("hex.redo"),
-                    );
+        let mut children = vec![
+            AccessNode::new(Role::StaticText)
+                .with_name(if self.has_file {
+                    format!(
+                        "{}; {} bytes; cursor at hexadecimal 0x{:X}; {} mode; {}",
+                        self.file_name,
+                        self.model.len(),
+                        self.model.cursor(),
+                        self.model.mode().label(),
+                        self.model.endian().label(),
+                    )
                 } else {
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Open file")
-                            .with_description("Choose a local file to inspect")
-                            .with_state(AccessState::default().focusable(true))
-                            .with_bounds(self.open_button)
-                            .with_action_target("hex.open"),
-                    );
-                }
-                Some(
-                    AccessNode::new(Role::Document)
-                        .with_name("Hex editor")
-                        .with_description("Local file bytes are not shared with collaborators.")
-                        .with_state(AccessState::default().focusable(true).focused(self.focused))
-                        .with_children(children),
-                )
+                    "No file open. Open a local file to inspect its bytes.".to_string()
+                })
+                .with_live(Politeness::Polite)
+                .with_hashed_key("hex.status"),
+        ];
+        if self.has_file {
+            children.push(
+                AccessNode::new(Role::StaticText).with_name(
+                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                ).with_hashed_key("hex.keyboard-help"),
+            );
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(if self.drawer.is_open() {
+                        "Hide inspector"
+                    } else {
+                        "Show inspector"
+                    })
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.geo.toggle)
+                    .with_action_target("hex.inspector"),
+            );
+            children.extend(self.mode_group.accessibility());
+            if self.geo.inspector_visible {
+                children.extend(self.endian_group.accessibility());
             }
+            if self.find_open {
+                children.extend(self.find_bar.accessibility());
+            }
+            if self.goto.is_open() {
+                children.extend(self.goto.content().accessibility());
+            }
+        } else {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Open file")
+                    .with_description("Choose a local file to inspect")
+                    .with_state(AccessState::default().focusable(true))
+                    .with_bounds(self.empty.action_rect())
+                    .with_action_target("hex.open"),
+            );
         }
+        children.extend(self.history.accessibility(self.geo.history));
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name("Hex editor")
+                .with_description("The bytes of one file, edited byte by byte.")
+                .with_state(AccessState::default().focusable(true).focused(self.focused))
+                .with_children(children),
+        )
     }
 
     fn is_focusable(&self) -> bool {
@@ -2279,18 +1097,16 @@ impl Widget for HexView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
-                "hex.open" => self.begin_open(),
-                "hex.undo" if self.has_file && !self.undo.is_empty() => {
-                    let _ = self.undo_local();
-                }
-                "hex.redo" if self.has_file && !self.redo.is_empty() => {
-                    let _ = self.redo_local();
-                }
+                "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
+                "hex.inspector" if self.has_file => self.toggle_inspector(),
                 _ => return false,
             }
             self.dirty = true;
@@ -2300,136 +1116,139 @@ impl Widget for HexView {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || (self.has_file && self.drawer.is_animating())
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        Widget::mark_drawn(&mut self.mode_group);
+        Widget::mark_drawn(&mut self.endian_group);
     }
 }
 
-impl ui::resources::PublishesResources for HexView {
-    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-}
-
-impl HexView {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+impl ResourceSurface<HexEditor, HexEffect> for HexView {
+    /// Show the buffer the resource holds now. A newly opened file loads
+    /// fresh; any other change (an undo, a collaborator, the palette) is
+    /// shown in place, keeping the cursor and the view settings.
+    fn present(&mut self, state: &Rc<HexEditor>) {
+        let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
+        let name = state.name().unwrap_or("No file").to_owned();
+        if fresh {
+            // A file a collaborator opened is not the one at our path.
+            if self.has_file && name != self.file_name && !self.expect_open {
+                self.path = None;
+            }
+            self.expect_open = false;
+            self.opened = state.opened;
+            self.saved = state.bytes.to_vec();
+            self.model.load(self.saved.clone());
+            self.find_open = false;
+            self.matches.clear();
+            self.match_idx = None;
+            self.inspector_scroll = 0.0;
+        } else {
+            self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
+            self.refind();
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            HexOperation::Open { .. } => self.begin_open(),
-            HexOperation::Save { .. } if self.has_file => self.begin_save(),
-            HexOperation::Search if self.has_file => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
-                self.recompute_matches();
-                self.dirty = true;
-            }
-            HexOperation::GotoOffset if self.has_file => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.dirty = true;
-            }
-            HexOperation::Edit { edit } if self.has_file => {
-                self.model.apply_local_edit(&edit.into());
-                self.record_local_history();
-                self.dirty = true;
-            }
-            HexOperation::Undo if !self.undo.is_empty() => {
-                let _ = self.undo_local();
-            }
-            HexOperation::Redo if !self.redo.is_empty() => {
-                let _ = self.redo_local();
-            }
-            HexOperation::Undo => return Err("no local edit to undo".into()),
-            HexOperation::Redo => return Err("no local edit to redo".into()),
-            _ => return Err("open a file first".into()),
-        }
-        Ok(true)
+        self.has_file = state.has_file();
+        self.file_name = name;
+        self.dirty = true;
     }
 
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+    fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
+        self.dispatch = Some(cx.dispatcher());
+        self.live = Some(cx.live());
+    }
+
+    /// A capture shows the bundled sample the scenario opened; the scenario
+    /// then stages its view state.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, effect: HexEffect, cx: &mut EffectCx<HexEditor, Self>) -> EffectAnswer {
+        let panel = match effect {
+            HexEffect::Search => Some(HexPanel::Search),
+            HexEffect::GotoOffset => Some(HexPanel::GotoOffset),
+            _ => None,
         };
-        match &operation {
-            crate::actions::HexOperation::Open { .. }
-            | crate::actions::HexOperation::Save { .. } => {}
-            _ => {
-                return self
-                    .answer_resource_operation(kind, type_id, payload, doc, path)
-                    .map(|handled| {
-                        handled.then(|| {
-                            ui::widget::ResourceOperationStart::Completed(
-                                ui::tilo_actions::ActionOutput::default(),
-                            )
-                        })
-                    });
+        if let Some(panel) = panel {
+            if !self.has_file {
+                return Err("open a file first".into());
             }
+            self.open_panel(panel);
+            return Ok(Effected::done());
         }
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+        if self.io.is_some() {
             return Err("another file operation is already running".into());
         }
-        match &operation {
-            crate::actions::HexOperation::Open { path: None } => {
-                self.begin_open();
-                self.resource_invocation = Some(invocation);
+        match effect {
+            HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
+            HexEffect::OpenFile { path: Some(path) } => {
+                self.open_path(PathBuf::from(path))?;
+                Ok(Effected::done())
             }
-            crate::actions::HexOperation::Save { path: None } => {
-                self.begin_save();
-                self.resource_invocation = Some(invocation);
+            HexEffect::OpenFile { path: None } => {
+                self.begin_open(cx.reply());
+                Ok(Effected::Pending)
             }
-            _ => self.pending_resource_io = Some((invocation, operation)),
+            HexEffect::Save | HexEffect::SaveAs { .. } if !self.has_file => {
+                Err("open a file first".into())
+            }
+            HexEffect::SaveAs { path } => {
+                self.write_to(std::path::Path::new(&path))?;
+                Ok(Effected::done())
+            }
+            HexEffect::Save => {
+                if let Some(path) = self.path.clone() {
+                    self.write_to(&path)?;
+                    Ok(Effected::done())
+                } else {
+                    self.begin_save_as(cx.reply());
+                    Ok(Effected::Pending)
+                }
+            }
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.has_file {
+            Vec::new()
+        } else {
+            vec![
+                EffectStatus::unavailable(HexEffect::SAVE, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::SAVE_AS, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::SEARCH, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::GOTO_OFFSET, "no_file", "Open a file first"),
+            ]
+        }
+    }
+
+    fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
+        if !self.has_file {
+            return Vec::new();
+        }
+        HexEditor::at_cursor(
+            self.model.cursor(),
+            self.model.len(),
+            self.model.selection(),
+        )
     }
 }
 
 impl HexView {
-    /// Left-click handling for the byte grid: the empty-state Open button, or
-    /// a grid hit-test that moves the cursor (optionally extending the
-    /// selection). Split out of `Widget::handle_event` to keep that dispatch
+    /// Left-click handling for the byte grid: a hit-test that moves the
+    /// cursor (optionally extending the selection). Split out of `Widget::handle_event` to keep that dispatch
     /// under the line-count limit.
     fn handle_mouse_press(&mut self, shift: bool, handled: &mut bool) {
-        // Empty state: the only affordance is the centred Open button.
-        if !self.has_file {
-            if self.open_button.contains(self.last_mouse) {
-                self.begin_open();
-                *handled = true;
-            }
-            return;
-        }
         // Click position is tracked via CursorMoved; recompute on press from
         // the last known position.
         if let Some((off, col)) = self.hit_test(self.last_mouse) {
+            // The grid takes the keyboard back from the find bar.
+            Widget::set_focus(&mut self.find_bar, false);
             self.model.set_column(col);
             self.model.move_to(off, shift);
-            self.record_local_history();
+            self.moved();
             *handled = true;
         }
     }
@@ -2443,6 +1262,7 @@ impl HexView {
         ke: &winit::event::KeyEvent,
         ctrl: bool,
         shift: bool,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let key = &ke.logical_key;
@@ -2461,42 +1281,28 @@ impl HexView {
         if moved {
             let (row, _) = self.model.cursor_cell();
             self.model.scroll_into_view(row, self.visible_rows);
-            self.record_local_history();
+            self.commit_edits(doc);
             *handled = true;
         }
     }
 
     /// The only meaningful key action while no file is open. Part of
     /// [`Self::handle_key_event`].
-    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+    fn handle_empty_state_key(&self, key: &Key, ctrl: bool, handled: &mut bool) {
         if ctrl
             && let Key::Character(c) = key
             && c.eq_ignore_ascii_case("o")
         {
-            self.begin_open();
+            self.invoke(&HexEffect::OpenFile { path: None });
             *handled = true;
         }
     }
 
-    fn undo_local(&mut self) -> bool {
-        if let Some(edit) = self.undo.pop() {
-            self.model.apply_history_edit(&edit.undo);
-            self.redo.push(edit);
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn redo_local(&mut self) -> bool {
-        if let Some(edit) = self.redo.pop() {
-            self.model.apply_history_edit(&edit.redo);
-            self.undo.push(edit);
-            self.dirty = true;
-            true
-        } else {
-            false
+    /// Open the find bar or the go-to form.
+    fn open_panel(&mut self, panel: HexPanel) {
+        match panel {
+            HexPanel::Search => self.open_find(),
+            HexPanel::GotoOffset => self.open_goto(),
         }
     }
 
@@ -2511,53 +1317,19 @@ impl HexView {
             return false;
         }
         match c.as_str() {
-            "z" | "Z" => {
-                self.undo_local();
-                *handled = true;
-                true
-            }
-            "y" | "Y" => {
-                self.redo_local();
-                *handled = true;
-                true
-            }
-            "o" | "O" => {
-                self.begin_open();
-                *handled = true;
-                true
-            }
-            "s" | "S" => {
-                self.begin_save();
-                *handled = true;
-                true
-            }
-            "f" | "F" => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
-                self.search_input
-                    .set_cursor_pos(self.search_input.value().len());
-                self.recompute_matches();
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            "g" | "G" => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.goto_input
-                    .set_cursor_pos(self.goto_input.value().len());
-                self.dirty = true;
-                *handled = true;
-                true
-            }
+            "o" | "O" => self.invoke(&HexEffect::OpenFile { path: None }),
+            "s" | "S" => self.invoke(&HexEffect::Save),
+            "f" | "F" => self.open_panel(HexPanel::Search),
+            "g" | "G" => self.open_panel(HexPanel::GotoOffset),
+            "i" | "I" => self.toggle_inspector(),
             "a" | "A" => {
                 self.model.select_all();
-                self.record_local_history();
-                *handled = true;
-                true
+                self.moved();
             }
-            _ => false,
+            _ => return false,
         }
+        *handled = true;
+        true
     }
 
     /// Cursor movement / mode keys. Returns whether the cursor moved (or a
@@ -2596,7 +1368,14 @@ impl HexView {
                 self.model.toggle_mode();
             }
             Key::Named(NamedKey::Escape) => {
-                self.model.clear_selection();
+                if self.drawer.is_overlay() && self.drawer.is_open() {
+                    self.drawer.close();
+                    self.relayout_now();
+                } else if self.find_open {
+                    self.close_find();
+                } else {
+                    self.model.clear_selection();
+                }
             }
             Key::Named(NamedKey::Backspace) => {
                 self.model.backspace();
@@ -2640,512 +1419,311 @@ impl HexView {
     }
 }
 
-/// Per-row state shared across a row's cells, bundled so
-/// [`HexView::draw_grid_cell`] stays under the argument-count limit.
-struct GridCellCtx<'a> {
-    theme: &'a Theme,
-    m: &'a GridMetrics,
-    selection: Option<(usize, usize)>,
-    inspector_span: Option<(usize, usize)>,
-    cursor: usize,
-    y: f64,
-    text_y: f64,
-}
-
-/// Byte position + value for one grid cell, bundled so
-/// [`HexView::draw_cell_glyphs`] stays under the argument-count limit.
-struct CellGeom {
-    off: usize,
-    byte: u8,
-    hex_x: f64,
-    ascii_x: f64,
-}
-
-/// The monospace metrics every grid pitch derives from — one glyph advance
-/// and one line height, measured with the exact style the cells are painted
-/// in. Layout (`fit_bytes_per_row`), paint (`draw_grid`) and hit-testing
-/// (`hit_test`) all build their [`GridMetrics`] from this, so a byte's
-/// painted cell is its click target at every text scale.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CellMetrics {
-    /// Advance of one monospace glyph at [`GridMetrics::CELL_FONT`].
-    glyph_w: f64,
-    /// Line height of one row of cell text.
-    line_h: f64,
-    /// How much the title bar's `lg` line has grown over its 1× box at the
-    /// current accessibility scale — the bar adds exactly this to its 44 px
-    /// design height so the file name and the pills keep seating.
-    title_growth: f64,
-}
-
-impl CellMetrics {
-    /// Breathing room above and below a row's line box.
-    const ROW_PAD_Y: f64 = 1.0;
-    /// Metrics before the first draw has measured anything: the 0.6 em
-    /// advance and 1.25 line height the monospace face resolves to at 1×.
-    const FALLBACK: Self = Self {
-        glyph_w: GridMetrics::CELL_FONT as f64 * 0.6,
-        line_h: GridMetrics::CELL_FONT as f64 * 1.25,
-        title_growth: 0.0,
-    };
-
-    /// Measure the cell font with the renderer that will paint it. Eight
-    /// glyphs — the offset gutter's width — so a fractional advance is read
-    /// at the precision the gutter needs. The title bar's line growth is
-    /// measured here too, from the same renderer, so the event path's
-    /// `metrics()` and the painted frame place the grid at the same y.
-    fn measure(tr: &mut TextRenderer) -> Self {
-        let (w, h) = tr.measure_styled(
-            "00000000",
-            GridMetrics::CELL_FONT,
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
-        if w <= 0.0 || h <= 0.0 {
-            return Self::FALLBACK;
+impl HexView {
+    /// Stage a screenshot scenario (`None` for a plain `--shots`) over the
+    /// bundled sample the scenario opened: the view state the scenario
+    /// shows. Never runs in a live window.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if scenario == Some("empty") {
+            return;
         }
-        // The title's `lg` token in the renderer's input space is the 1× type
-        // ramp's `lg` (the renderer applies the accessibility scale on top),
-        // so no theme is needed to measure how much the title line grows.
-        let title_growth = line_growth(tr, ui::tokens::TypeScale::default().lg);
-        Self {
-            glyph_w: f64::from(w) / 8.0,
-            line_h: f64::from(h),
-            title_growth,
+        self.stage_sample();
+        match scenario {
+            Some("find") => {
+                self.find_bar.set_query("e");
+                self.open_find();
+            }
+            Some("goto") => self.open_goto(),
+            Some("edited") => {
+                for (off, value) in [(0x1D_usize, 0x01_u8), (0x1E, 0x00), (0x25, 0xFF)] {
+                    self.model.set_byte(off, value);
+                }
+                // The edits are the resource's, as typing them would be.
+                for edit in self.model.take_edits() {
+                    if let (Some(dispatch), Some(edit)) = (&self.dispatch, byte_edit(&edit)) {
+                        dispatch.submit(edit);
+                    }
+                }
+                self.model.move_to(0x10, false);
+                self.model.move_to(0x13, true);
+            }
+            Some("saved") => {
+                let size = format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX));
+                self.notice(&format!("Saved {size}"));
+                self.status_bubble.set_hover(true, ui::time::now());
+            }
+            Some("error") => self.problem("Couldn't save the file", "Permission denied"),
+            Some("narrow-inspector") => self.reveal_inspector = true,
+            _ => {}
         }
-    }
-
-    /// One ASCII glyph.
-    fn char_w(self) -> f64 {
-        self.glyph_w
-    }
-
-    /// Two hex digits plus the inter-byte gap — one byte column's pitch.
-    fn hex_col_w(self) -> f64 {
-        self.glyph_w * 2.55
-    }
-
-    /// Eight hex digits of offset.
-    fn gutter_w(self) -> f64 {
-        self.glyph_w * 8.0
-    }
-
-    /// Row pitch: the measured line box plus symmetric padding, rounded up so
-    /// rows land on whole pixels (20px at 1× for the 14px cell font).
-    fn row_h(self) -> f64 {
-        (self.line_h + 2.0 * Self::ROW_PAD_Y).ceil()
+        self.dirty = true;
     }
 }
 
-/// Computed layout metrics for one frame. All in logical px.
-#[derive(Clone, Copy, Debug)]
-struct GridMetrics {
-    header_bottom: f64,
-    col_header_y: f64,
-    grid_top: f64,
-    grid_bottom: f64,
-    row_h: f64,
-    /// Measured line height of the cell text, centred inside `row_h`.
-    line_h: f64,
-    cell_font: f32,
-    /// Caption-size cell font for the Offset / column-index / ASCII header
-    /// labels, so they scale with the byte pitch they annotate.
-    header_font: f32,
-    byte_w: f64,
-    char_w: f64,
-    hex_col_w: f64,
-    gutter_x0: f64,
-    hex_x0: f64,
-    hex_x1: f64,
-    ascii_x0: f64,
-    ascii_x1: f64,
-    inspector_x0: f64,
-    visible_rows: usize,
+/// `edit` as the field edit of the record's bytes it is.
+fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
+    HexEditor::paths().bytes.perform(edit).ok()
 }
 
-impl GridMetrics {
-    /// Base size of the cell font. A literal base size, not a theme token, so
-    /// the renderer's accessibility scale applies to it exactly once — and
-    /// [`CellMetrics::measure`] reads the scaled advance back from the same
-    /// renderer.
-    const CELL_FONT: f32 = 14.0;
-    /// The column header's caption size relative to the cell font (10px at
-    /// 1×, the `xs` step of the type scale) — a ratio rather than the token so
-    /// the header labels and the cells they annotate share one scale path.
-    const COL_HEADER_FONT_RATIO: f32 = 10.0 / 14.0;
-    const LEFT_PAD: f64 = 16.0;
-    /// Gap between the offset gutter and the hex columns.
-    const GUTTER_GAP: f64 = 22.0;
-    /// Gap between the hex columns and the ASCII column.
-    const HEX_ASCII_GAP: f64 = 22.0;
-    /// Gap between the ASCII column and the inspector panel.
-    const INSPECTOR_GAP: f64 = 24.0;
-    /// Smallest inspector width the fit calculation keeps room for.
-    const INSPECTOR_MIN: f64 = 300.0;
-
-    fn new(rect: Rect, bpr: usize, cell: CellMetrics) -> Self {
-        // The title bar is 44 px at 1× and grows by exactly its `lg` line's
-        // measured growth, so the file name and pills stay seated at 200 %.
-        let header_bottom = rect.y0 + 44.0 + cell.title_growth;
-        // The column header is the cell font at caption size, so its offset
-        // labels stay on the byte pitch at every scale; its band grows with
-        // the measured line height (20px at 1×, as before).
-        let header_font = Self::CELL_FONT * Self::COL_HEADER_FONT_RATIO;
-        let col_header_h = (cell.line_h * f64::from(Self::COL_HEADER_FONT_RATIO)
-            + 2.0 * CellMetrics::ROW_PAD_Y)
-            .ceil()
-            .max(20.0);
-        let col_header_y = header_bottom + 10.0;
-        let grid_top = col_header_y + col_header_h;
-        // No permanent status strip any more — the cursor read-out floats in a
-        // transient bubble — so the byte grid + inspector reclaim that space and
-        // span to the window bottom, keeping only a small margin off the edge.
-        let grid_bottom = rect.y1 - 8.0;
-
-        let cell_font = Self::CELL_FONT;
-        let row_h = cell.row_h();
-        let line_h = cell.line_h;
-        let byte_w = cell.glyph_w * 2.0;
-        let char_w = cell.char_w();
-        let hex_col_w = cell.hex_col_w();
-
-        let gutter_x0 = rect.x0 + Self::LEFT_PAD;
-        let hex_x0 = gutter_x0 + cell.gutter_w() + Self::GUTTER_GAP;
-        let hex_x1 = hex_x0 + bpr as f64 * hex_col_w;
-        let ascii_x0 = hex_x1 + Self::HEX_ASCII_GAP;
-        let ascii_x1 = ascii_x0 + bpr as f64 * char_w;
-
-        // The inspector is a desktop side panel. On a narrow surface the grid
-        // gets the full width; reserving a permanent 300px inspector would
-        // make byte cells too narrow to read or target.
-        let inspector_x0 = if rect.width() >= 860.0 {
-            (ascii_x1 + Self::INSPECTOR_GAP).min(rect.x1 - Self::INSPECTOR_MIN)
-        } else {
-            rect.x1
-        };
-
-        let visible_rows = ((grid_bottom - grid_top) / row_h).floor().max(1.0) as usize;
-
-        Self {
-            header_bottom,
-            col_header_y,
-            grid_top,
-            grid_bottom,
-            row_h,
-            line_h,
-            cell_font,
-            header_font,
-            byte_w,
-            char_w,
-            hex_col_w,
-            gutter_x0,
-            hex_x0,
-            hex_x1,
-            ascii_x0,
-            ascii_x1,
-            inspector_x0,
-            visible_rows,
+/// The view's header row is the window's: it holds the History control the
+/// host offers, so the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for HexView {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
         }
     }
 }
 
-// --- small drawing utilities ------------------------------------------
-
-/// ASCII glyph for the ASCII column: the printable char, or a centred dot
-/// for control / high bytes (the universal hex-editor convention).
-fn ascii_glyph(b: u8) -> String {
-    if (0x20..=0x7E).contains(&b) {
-        (b as char).to_string()
-    } else {
-        "·".to_string()
+impl ui::widget::controls::ActionControls for HexView {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search;
 
-    /// Resource operations drive the local buffer: a direct open is accepted
-    /// then succeeds, and canonical edit/undo/redo stay local while updating
-    /// the published availability.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the open and edit/undo/redo phases share one resource-operation surface"
-    )]
-    fn resource_operations_open_edit_undo_and_redo_the_local_buffer() {
-        use automerge::ReadDoc as _;
-
-        // Direct open is accepted, then succeeds.
-        let dir = std::env::temp_dir().join(format!(
-            "hex-direct-{}-{}",
-            std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("bytes.bin");
-        std::fs::write(&source, [1_u8, 2, 3]).unwrap();
+    /// Present the bundled sample as the scenario's open does, then stage
+    /// `scenario` on it.
+    fn staged(scenario: Option<&str>) -> HexView {
         let mut view = HexView::empty();
-        let mut doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::HexOperation::Open {
-            path: Some(source.display().to_string()),
-        })
-        .unwrap();
-        let started = Widget::start_operation(
-            &mut view,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(matches!(
-            view.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-        assert_eq!(view.model.bytes(), &[1, 2, 3]);
-        std::fs::remove_dir_all(dir).ok();
-
-        // Canonical edit, undo and redo stay local and update availability.
-        let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
-        let mut doc = AutoCommit::new();
-        let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &undo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        let edit = serde_json::to_vec(&crate::actions::HexOperation::Edit {
-            edit: crate::actions::BufferEditWire::Overwrite {
-                offset: 1,
-                bytes: vec![0xAB],
-            },
-        })
-        .unwrap();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &edit
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
-        assert!(
-            ui::resources::resources(&view, &doc)[0]
-                .actions
-                .iter()
-                .find(|action| action.id == "undo")
-                .is_some_and(|action| action.contract.availability.is_available())
-        );
-
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &undo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0x20]);
-
-        let redo = serde_json::to_vec(&crate::actions::HexOperation::Redo).unwrap();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &redo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
-        assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
+        if scenario != Some("empty") {
+            view.present(&Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("sample.png".into())),
+                bytes: crate::buffer::ByteBuffer::of(&crate::sample::png_image()),
+                opened: 1,
+            }));
+        }
+        view.stage_scenario(scenario);
+        view
     }
 
-    /// The shared text fields keep the hex editor's own parsing policies.
+    /// The resource's state is what the view shows: an open loads fresh,
+    /// any later change keeps the cursor and marks what differs from the
+    /// opened bytes.
     #[test]
-    fn shared_search_and_goto_fields_keep_byte_policies() {
-        // The shared search field still drives the byte-match policy.
+    fn presented_state_loads_an_open_and_shows_later_changes_in_place() {
+        let mut view = HexView::empty();
+        assert!(!view.has_file());
+        let state = |bytes: &[u8], opened| {
+            Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                bytes: crate::buffer::ByteBuffer::of(bytes),
+                opened,
+            })
+        };
+        view.present(&state(&[1, 2, 3, 4], 1));
+        assert!(view.has_file());
+        assert_eq!(view.model.bytes(), &[1, 2, 3, 4]);
+        view.model.move_to(3, false);
+        view.present(&state(&[1, 9, 3, 4], 1));
+        assert_eq!(view.model.cursor(), 3, "a change keeps the cursor");
+        assert_eq!(view.model.dirty_count(), 1);
+        view.present(&state(&[5, 6], 2));
+        assert_eq!(view.model.cursor(), 0, "a new open starts at the top");
+        assert_eq!(view.model.dirty_count(), 0);
+    }
+
+    /// Find runs through the framework's `Findable` contract: hex and text
+    /// modes, the bar's case and word rules, a bounded index.
+    #[test]
+    fn find_matches_bytes_in_hex_and_text_modes() {
+        use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
+
         let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
-        view.search_input.set_text("de ad");
-        view.recompute_matches();
+        let hex = FindOptions {
+            mode: FindMode::Hex,
+            ..FindOptions::default()
+        };
+        let found = Findable::find(&mut view, "de ad", hex);
+        assert_eq!(found, vec![FindMatch::new(0, 2), FindMatch::new(3, 5)]);
+        Findable::reveal(&mut view, 1);
+        assert_eq!(view.model.cursor(), 3);
+        assert_eq!(view.match_idx, Some(1));
 
-        assert_eq!(view.search_input.value(), "de ad");
-        assert_eq!(view.matches, vec![0, 3]);
-        assert_eq!(view.match_idx, Some(0));
+        // A text query that is not in the buffer finds nothing.
+        assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-        view.search_kind = SearchKind::Text;
-        view.search_input.set_text("Þ");
-        view.recompute_matches();
-        assert!(view.matches.is_empty());
-
-        // The shared goto field keeps hex and decimal offset parsing.
-        let mut view = HexView::new(vec![0; 64], "bytes.bin");
-
-        view.overlay = Overlay::Goto;
-        view.goto_input.set_text("0x1f");
-        view.commit_goto();
-        assert_eq!(view.model.cursor(), 31);
-        assert!(view.goto_input.value().is_empty());
-
-        view.overlay = Overlay::Goto;
-        view.goto_input.set_text("12");
-        view.commit_goto();
-        assert_eq!(view.model.cursor(), 12);
+        // Case and whole-word rules apply to text.
+        let mut view = HexView::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
+        let any = FindOptions::default();
+        assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
+        let exact = FindOptions {
+            match_case: true,
+            ..any
+        };
+        assert_eq!(Findable::find(&mut view, "ihdr", exact).len(), 1);
+        let word = FindOptions {
+            whole_word: true,
+            ..any
+        };
+        assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
 
         // A large search retains a bounded result index.
         let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
-        view.search_input.set_text("00");
-        view.recompute_matches();
+        let found = Findable::find(&mut view, "00", hex);
+        assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
 
-        assert_eq!(view.matches.len(), search::MAX_RETAINED_MATCHES);
-        assert!(view.matches_truncated);
-        assert!(view.is_match_offset(0));
-        assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES - 1));
-        assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES));
+        Findable::clear_find(&mut view);
+        assert!(view.matches.is_empty() && view.match_idx.is_none());
+    }
+
+    /// The go-to form keeps the editor's own offset policies.
+    #[test]
+    fn goto_accepts_hex_and_decimal_offsets() {
+        let mut view = HexView::new(vec![0; 64], "bytes.bin");
+        view.commit_goto("0x1f");
+        assert_eq!(view.model.cursor(), 31);
+        view.commit_goto(" 12 ");
+        assert_eq!(view.model.cursor(), 12);
+        view.commit_goto("ff");
+        assert_eq!(
+            view.model.cursor(),
+            63,
+            "bare hex with a letter is hex, clamped"
+        );
+        view.commit_goto("not an offset");
+        assert_eq!(
+            view.model.cursor(),
+            63,
+            "an unparsable query leaves the cursor"
+        );
+    }
+
+    /// Paint a frame of `view` at `theme` into a fresh scene.
+    fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
+        let mut scene = Scene::new();
+        Widget::draw(
+            view,
+            &mut scene,
+            Affine::IDENTITY,
+            tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        Widget::draw_overlay(
+            view,
+            &mut scene,
+            Affine::IDENTITY,
+            tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
     }
 
     /// Surface geometry and semantics.
     ///
     /// The grid's pitches come from the renderer's measured monospace advance
     /// and line height, so paint and hit-testing share one geometry at every
-    /// text scale: a painted cell's centre maps back to its own byte.
+    /// text scale: a painted cell's centre maps back to its own byte. The
+    /// grid fills the content width and the inspector docks beside it.
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
     fn surface_geometry_follows_measured_metrics_width_and_state() {
         use ui::a11y::Role;
 
         let mut tr = TextRenderer::new();
-        let base = CellMetrics::measure(&mut tr);
-        assert!(
-            base.glyph_w > 0.0 && base.line_h > 0.0,
-            "measured: {base:?}"
-        );
-        assert_eq!(base.row_h(), 20.0, "1× keeps the 20px row density");
-        tr.set_text_scale(2.0);
-        let large = CellMetrics::measure(&mut tr);
-        assert!(
-            (large.glyph_w - base.glyph_w * 2.0).abs() < 0.05
-                && (large.line_h - base.line_h * 2.0).abs() < 0.05,
-            "pitches follow the renderer scale: {base:?} → {large:?}"
-        );
-
-        // The title bar grows with its `lg` line at 2×, and that growth is
-        // part of the same measurement the event path reads, so `metrics()`
-        // before and after a painted frame agree on where the grid starts.
-        assert!(
-            base.title_growth.abs() < 1e-6,
-            "no title growth at 1×: {base:?}"
-        );
-        assert!(
-            large.title_growth > 4.0,
-            "the title line grows at 2×: {large:?}"
-        );
-
-        let mut view = HexView::new(vec![0xAB; 96], "scale.bin");
-        view.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        for cell in [base, large] {
-            view.cell_metrics = cell;
-            let before_paint = view.metrics();
-            // Paint a real frame at this cell's scale and read the metrics the
-            // frame was laid out with; the pre-paint event-path metrics must
-            // already match them (same `CellMetrics::measure`).
-            let scale = if cell == large { 2.0 } else { 1.0 };
+        for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             tr.set_text_scale(scale);
-            let mut scene = Scene::new();
-            Widget::draw(
-                &mut view,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert_eq!(
-                view.cell_metrics, cell,
-                "draw measures the same cell metrics"
-            );
-            let m = view.metrics();
+            let mut view = HexView::new(vec![0xAB; 960], "scale.bin");
+            // Wide at every text scale: the inspector docks beside a grid
+            // that keeps a full row.
+            view.rect = Rect::new(0.0, 0.0, 1600.0 * f64::from(scale), 1000.0);
+            let before = CellMetrics::measure(&mut tr, &theme);
+            paint_frame(&mut view, &mut tr, &theme);
+            assert_eq!(view.cell, before, "draw measures the same cell metrics");
+            let g = view.geo.clone();
+            assert!(g.inspector_visible, "a wide window docks the inspector");
             assert!(
-                (m.header_bottom - before_paint.header_bottom).abs() < 1e-6
-                    && (m.grid_top - before_paint.grid_top).abs() < 1e-6,
-                "event-path metrics match the painted frame: {before_paint:?} vs {m:?}"
+                (g.content.x1 - g.inspector.x0).abs() < 1e-6
+                    && (g.inspector.x1 - view.rect.x1).abs() < 1e-6,
+                "the inspector is the trailing region: {g:?}"
             );
-            assert!((m.row_h - cell.row_h()).abs() < f64::EPSILON);
-            assert!((m.hex_col_w - cell.hex_col_w()).abs() < f64::EPSILON);
+            assert!(
+                (g.status.y1 - view.rect.y1).abs() < 1e-6,
+                "status foots the window"
+            );
+            assert!(g.grid.y0 > g.header.y1, "the grid sits under the header");
             let bpr = view.model.bytes_per_row();
+            assert!(
+                bpr >= 8 && bpr.is_multiple_of(4),
+                "rows hold whole groups: {bpr}"
+            );
+            assert!(
+                g.ascii_x1 <= g.content.x1,
+                "the grid fits the content width: {g:?}"
+            );
+            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+            assert!(
+                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                "the ASCII column ends at the scroll bar's lane, no empty band: {g:?}"
+            );
             for off in [0usize, 1, bpr - 1, bpr, 2 * bpr + 3] {
                 let (row, col) = (off / bpr, off % bpr);
-                let y = m.grid_top + row as f64 * m.row_h + m.row_h / 2.0;
-                let hx = m.hex_x0 + col as f64 * m.hex_col_w + m.byte_w / 2.0;
+                let y = g.grid.y0 + row as f64 * g.row_h + g.row_h / 2.0;
+                let hx = g.hex_x(col) + g.byte_w / 2.0;
                 assert_eq!(
                     view.hit_test(Point::new(hx, y)),
                     Some((off, Column::Hex)),
-                    "hex cell {off} hit-tests to itself ({cell:?})"
+                    "hex cell {off} hit-tests to itself (scale {scale})"
                 );
-                let ax = m.ascii_x0 + col as f64 * m.char_w + m.char_w / 2.0;
+                let ax = g.ascii_x(col) + g.glyph_w / 2.0;
                 assert_eq!(
                     view.hit_test(Point::new(ax, y)),
                     Some((off, Column::Ascii)),
-                    "ascii cell {off} hit-tests to itself ({cell:?})"
+                    "ascii cell {off} hit-tests to itself (scale {scale})"
                 );
             }
         }
 
-        // A narrow layout hides the inspector without shrinking the grid.
+        // A narrow window floats the inspector instead of squeezing the grid,
+        // and its toggle summons it.
+        let theme = Theme::dark();
+        tr.set_text_scale(1.0);
         let mut view = HexView::new(vec![0; 128], "narrow.bin");
         view.rect = Rect::new(0.0, 0.0, 540.0, 500.0);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(!view.geo.inspector_visible, "closed by default when narrow");
+        assert!((view.geo.content.x1 - view.rect.x1).abs() < 1e-6);
+        assert!(view.model.bytes_per_row() >= 8);
 
-        assert!(!view.show_inspector());
-        assert!(view.fit_bytes_per_row() >= 8);
-        assert!((view.metrics().inspector_x0 - view.rect.x1).abs() < f64::EPSILON);
+        // The grid fills every width: whatever the window, the gaps absorb
+        // what a whole number of bytes leaves over.
+        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+        for width in (640..=1600).step_by(37) {
+            let mut view = HexView::new(vec![0; 4096], "fill.bin");
+            view.rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
+            paint_frame(&mut view, &mut tr, &theme);
+            let g = &view.geo;
+            assert!(
+                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                "width {width}: dead space right of the ASCII column: {g:?}"
+            );
+        }
+
+        // An 800 px window keeps 16 bytes a row by floating the inspector.
+        let mut view = HexView::new(vec![0; 4096], "compact.bin");
+        view.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(!view.geo.docked, "too narrow for a docked inspector");
+        assert!(view.model.bytes_per_row() >= 16);
+
+        view.toggle_inspector();
+        view.drawer.snap(true);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(view.geo.inspector_visible, "the toggle opens the drawer");
+        assert!(
+            (view.geo.content.x1 - view.rect.x1).abs() < 1e-6,
+            "a floating drawer leaves the grid its full width"
+        );
 
         // A closed editor exposes a local-document a11y summary.
         let view = HexView::empty();
@@ -3154,8 +1732,152 @@ mod tests {
         assert!(
             tree.description
                 .as_deref()
-                .is_some_and(|text| text.contains("not shared"))
+                .is_some_and(|text| text.contains("bytes"))
         );
         assert!(tree.children.iter().any(|node| node.role == Role::Button));
+    }
+
+    /// Send `event` to `view` the way the host does.
+    fn send(view: &mut HexView, event: &WindowEvent) -> bool {
+        ui::testing::dispatch(view, event)
+    }
+
+    /// Move the pointer to the middle of `rect` and click.
+    fn click(view: &mut HexView, rect: Rect) -> bool {
+        let p = rect.center();
+        let device_id = winit::event::DeviceId::dummy();
+        send(
+            view,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+        );
+        let button = |state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        };
+        let down = send(view, &button(ElementState::Pressed));
+        send(view, &button(ElementState::Released));
+        down
+    }
+
+    /// The pointer drives every control: the grid moves the cursor, the
+    /// header's strip switches the edit mode, the inspector's strip the
+    /// endianness, and the toggle hides and shows the inspector.
+    #[test]
+    fn pointer_drives_the_grid_the_strips_and_the_inspector_toggle() {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let mut view = staged(None);
+        view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert_eq!(view.model.endian(), Endian::Big);
+
+        // A click on a hex cell puts the cursor there, in the hex column.
+        let g = view.geo.clone();
+        let cell = Rect::new(
+            g.hex_x(3),
+            g.grid.y0 + g.row_h,
+            g.hex_x(3) + g.byte_w,
+            g.grid.y0 + 2.0 * g.row_h,
+        );
+        assert!(click(&mut view, cell));
+        assert_eq!(view.model.cursor(), view.model.bytes_per_row() + 3);
+        assert_eq!(view.model.column(), Column::Hex);
+
+        // The strips: the second segment of each.
+        let half = |strip: Rect| Rect::new(strip.center().x, strip.y0, strip.x1, strip.y1);
+        assert!(click(&mut view, half(g.mode)));
+        assert_eq!(view.model.mode(), EditMode::Insert);
+        let left = |strip: Rect| Rect::new(strip.x0, strip.y0, strip.center().x, strip.y1);
+        assert!(click(&mut view, left(g.endian)));
+        assert_eq!(view.model.endian(), Endian::Little);
+        paint_frame(&mut view, &mut tr, &theme);
+
+        // The toggle hides the docked inspector and the grid takes the room.
+        let before = view.geo.content.width();
+        assert!(click(&mut view, g.toggle));
+        view.drawer.snap(false);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(!view.geo.inspector_visible);
+        assert!(view.geo.content.width() > before, "the content widens");
+        let toggle = view.geo.toggle;
+        assert!(click(&mut view, toggle));
+        view.drawer.snap(true);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(view.geo.inspector_visible, "the toggle brings it back");
+
+        // The sample overflows the grid, so a bar shows its position and a
+        // dragged thumb scrolls it.
+        let metrics = view.scroll_metrics();
+        assert!(metrics.overflows());
+        let thumb = view
+            .scrollbar
+            .thumb_rect(view.geo.scroll_track, metrics)
+            .expect("a thumb");
+        let device_id = winit::event::DeviceId::dummy();
+        let at = |p: Point| WindowEvent::CursorMoved {
+            device_id,
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        let button = |state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        };
+        send(&mut view, &at(thumb.center()));
+        assert!(send(&mut view, &button(ElementState::Pressed)));
+        send(
+            &mut view,
+            &at(Point::new(thumb.center().x, thumb.center().y + 40.0)),
+        );
+        assert!(view.model.top_row() > 0, "dragging the thumb scrolls");
+        send(&mut view, &button(ElementState::Released));
+        assert!(!view.scrollbar.is_dragging());
+        let max = view.model.row_count() - view.visible_rows;
+        view.model.scroll_by(1000);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert_eq!(view.model.top_row(), max, "never past the last full page");
+    }
+
+    /// Every scenario paints in both polarities at a wide and a narrow size
+    /// without panicking, and stages the state it names.
+    #[test]
+    fn scenarios_stage_their_state_and_paint_everywhere() {
+        let mut tr = TextRenderer::new();
+        for (name, find, goto) in [
+            (None, false, false),
+            (Some("find"), true, false),
+            (Some("goto"), false, true),
+            (Some("edited"), false, false),
+            (Some("saved"), false, false),
+            (Some("error"), false, false),
+            (Some("narrow-inspector"), false, false),
+            (Some("empty"), false, false),
+        ] {
+            for theme in [Theme::dark(), Theme::light()] {
+                for (w, h) in [(1280.0, 800.0), (640.0, 720.0)] {
+                    let mut view = staged(name);
+                    view.rect = Rect::new(0.0, 0.0, w, h);
+                    assert_eq!(view.has_file(), name != Some("empty"));
+                    assert_eq!(view.find_open, find, "{name:?}");
+                    assert_eq!(view.goto.is_open(), goto, "{name:?}");
+                    paint_frame(&mut view, &mut tr, &theme);
+                    paint_frame(&mut view, &mut tr, &theme);
+                }
+            }
+        }
+        let mut view = staged(Some("narrow-inspector"));
+        view.rect = Rect::new(0.0, 0.0, 640.0, 720.0);
+        paint_frame(&mut view, &mut tr, &Theme::dark());
+        assert!(
+            view.geo.inspector_visible,
+            "the narrow scenario opens the drawer"
+        );
+        let view = staged(Some("edited"));
+        assert_eq!(view.model.dirty_count(), 3);
+        assert_eq!(view.model.selection_len(), 4);
     }
 }

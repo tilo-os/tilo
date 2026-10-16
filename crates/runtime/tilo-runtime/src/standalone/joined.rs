@@ -4,6 +4,7 @@
 //! its enrollment pins, which also carries the room's channel governance
 //! between this device and the room's steward. The room's governor applies a
 //! foreign device's limits to this device there, as it does to every member.
+use neighbour_wire::NeighbourMsg;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -12,7 +13,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tilo_action_broker::{
-    channel_encryption::{GovernanceTransport, InboundChannelGovernance},
+    channel_encryption::{ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance},
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
@@ -23,12 +24,14 @@ use tilo_joined_room::{
     NativeWorkspaceOwner,
     session::{self, Connect, Input, Scope},
 };
-use tilo_peer_state::{
-    InputDisposition, NeighbourMsg,
-    owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService},
-};
-use tilo_relay::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::InputDisposition;
+use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tokio::sync::Notify;
+
+#[path = "joined_content.rs"]
+mod content;
+pub(super) use content::record_content;
 
 /// The record of every joined room, in the profile.
 pub(super) const JOINED_ROOMS: &str = "joined-rooms.json";
@@ -36,7 +39,12 @@ pub(super) const JOINED_ROOMS: &str = "joined-rooms.json";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REDIAL_LONGEST: Duration = Duration::from_secs(60);
 
+#[path = "mcp_admission.rs"]
+mod mcp_admission;
+pub(super) use mcp_admission::SessionAdmission;
+
 pub(super) struct Joined {
+    executions: Arc<super::execution::ExecutionPins>,
     owner: NativeWorkspaceOwner,
     custody: HostIdentity,
     endpoint: iroh::Endpoint,
@@ -46,8 +54,16 @@ pub(super) struct Joined {
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
     sessions: Mutex<BTreeMap<RoomId, RoomSession>>,
+    /// The profile's record-content service, once the broker runs.
+    content: std::sync::OnceLock<Arc<tilo_action_broker::record_content::RouteContent>>,
+    requesters: content::Requesters,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
+    /// Wakes the channel service's pump when governance arrives.
+    governance_wake: Arc<super::channels::PumpWake>,
+    /// This device's channel keys, once the channel service runs: the only
+    /// renewer of its sealed writes that expire in custody.
+    keys: ChannelKeyProvider,
 }
 
 struct RoomSession {
@@ -69,7 +85,9 @@ impl Joined {
     ) -> io::Result<Arc<Self>> {
         let owner =
             tilo_joined_room::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
+        let executions = super::execution::ExecutionPins::new(&owner);
         let joined = Arc::new(Self {
+            executions,
             owner,
             custody,
             endpoint,
@@ -77,7 +95,11 @@ impl Joined {
             channels: broker.0,
             fanout: broker.1,
             sessions: Mutex::new(BTreeMap::new()),
+            content: std::sync::OnceLock::new(),
+            requesters: content::Requesters::default(),
             governance: Mutex::new(Vec::new()),
+            governance_wake: Arc::default(),
+            keys: ChannelKeyProvider::default(),
         });
         for room in joined.owner.rooms() {
             joined.hold_session(room);
@@ -122,22 +144,68 @@ impl Joined {
         self.owner
             .rooms()
             .into_iter()
-            .filter_map(|room| {
-                self.owner
-                    .with_current(room, |view| {
-                        let document = view.peer().admitted_room().ok_or("no admitted room")?;
-                        let (name, owner, capabilities) =
-                            tilo_peer_state::room::extract_governed_fields(document);
-                        let mut workspace =
-                            Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
-                        workspace.room = room;
-                        workspace.owner = owner;
-                        workspace.capabilities = capabilities;
-                        Ok(workspace)
-                    })
-                    .ok()
-            })
+            .filter_map(|room| self.current_room(room).ok().map(|(workspace, _)| workspace))
             .collect()
+    }
+
+    /// One joined room as [`Self::workspaces`] describes it, built alone:
+    /// asking about one room never rebuilds every other joined room.
+    pub(super) fn workspace(&self, room: RoomId) -> Option<Workspace> {
+        if !self.owner.rooms().contains(&room) {
+            return None;
+        }
+        self.current_room(room).ok().map(|(workspace, _)| workspace)
+    }
+
+    /// Whether this profile has joined any room.
+    pub(super) fn is_empty(&self) -> bool {
+        self.owner.rooms().is_empty()
+    }
+
+    // Use the same current custody check as an enrolled relay session. Merely
+    // retaining a peer or its device key cannot authenticate a selected root.
+    fn current_room(&self, room: RoomId) -> Result<(Workspace, String), String> {
+        let (_, cert, _, continuity) =
+            Connect::new(self.owner.clone(), room)?.material(&self.custody)?;
+        self.owner.with_current(room, |view| {
+            if view.continuity() != continuity || view.device() != &cert {
+                return Err("room identity changed while selecting the audience".into());
+            }
+            let principal = view
+                .peer()
+                .permissions(cert.device_public_key, SystemTime::now())?
+                .person;
+            let document = view.peer().admitted_room().ok_or("no admitted room")?;
+            let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
+            let mut workspace =
+                Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
+            workspace.set_room(room);
+            workspace.policy = policy;
+            workspace.sandbox = view.peer().governance().governed_sandbox()?;
+            Ok((workspace, principal))
+        })
+    }
+
+    /// Select only a room this exact profile principal and certified device
+    /// currently take part in. Reading authority never joins or requests keys.
+    pub(super) fn action_room(&self, actor: &str, room: &str) -> Result<String, String> {
+        let room = RoomId::parse(room).ok_or("invalid MCP room")?;
+        let (_, principal) = self.current_room(room)?;
+        if actor != principal {
+            return Err("the selected profile actor is not this room's admitted identity".into());
+        }
+        Ok(room.to_string())
+    }
+
+    /// The slot the channel service fills with this device's channel keys.
+    pub(super) fn channel_keys(&self) -> ChannelKeyProvider {
+        self.keys.clone()
+    }
+
+    /// What the sessions poke when governance arrives for the channel
+    /// service, whose pump otherwise sleeps while no channel is live.
+    pub(super) fn governance_wake(&self) -> Arc<super::channels::PumpWake> {
+        Arc::clone(&self.governance_wake)
     }
 
     /// The device key of `room`'s governor, which stewards its channels.
@@ -152,15 +220,12 @@ impl Joined {
     }
 
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos();
+        let now = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
             Some(self.custody.device_cert.user_public_key),
             &tilo_user_identity::RevocationList::new(),
-            u64::try_from(now).map_err(|e| e.to_string())?,
+            now,
         )?;
         RoomId::parse(&join.grant().room).ok_or_else(|| "invitation names no valid room".into())
     }
@@ -229,8 +294,17 @@ impl Joined {
                         }
                         self.publish(&scope, &session);
                     }
-                    Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
-                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {}
+                    Some(Inbound::Presence { author, payload }) => {
+                        if let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&payload)
+                            && !self.content_wanted(room, author, &message)
+                        {
+                            self.receive_governance(message);
+                        }
+                    }
+                    Some(Inbound::RecordContent { from, frame }) => {
+                        self.content_arrived(room, from, &frame);
+                    }
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. } | Inbound::Voice(_)) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {
@@ -256,20 +330,24 @@ impl Joined {
 
     /// Room members' presence carries channel governance; nothing else of it
     /// concerns this host.
-    fn receive_governance(&self, payload: &[u8]) {
-        let Some(inbound) = postcard::from_bytes(payload)
-            .ok()
-            .and_then(InboundChannelGovernance::from_message)
-        else {
+    fn receive_governance(&self, message: NeighbourMsg) {
+        let Some(inbound) = InboundChannelGovernance::from_message(message) else {
             return;
         };
         if let Ok(mut governance) = self.governance.lock() {
             governance.push(inbound);
         }
+        self.governance_wake.poke();
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
-        if let Err(error) = scope.publish(session, &self.custody) {
+        let result = match self.keys.get() {
+            Some(keys) => scope.publish_renewing(session, &self.custody, &mut |sealed| {
+                keys.renew_sealed(scope.room(), sealed)
+            }),
+            None => scope.publish(session, &self.custody),
+        };
+        if let Err(error) = result {
             tracing::debug!(%error, "joined room publication remains in durable custody");
         }
     }
@@ -301,7 +379,9 @@ impl Joined {
         else {
             return;
         };
-        let Ok(role) = input.role() else { return };
+        let Ok(author_standing) = input.standing() else {
+            return;
+        };
         if cluster_id != &input.room().to_string() {
             return;
         }
@@ -313,12 +393,20 @@ impl Joined {
                 app_id: app_id.clone(),
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
-                role,
+                author: author_standing,
                 replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
+    }
+
+    /// `room`'s connected session, while there is one.
+    fn live(&self, room: RoomId) -> Option<Arc<RelayCoeditSession>> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(&room).and_then(|s| s.live.clone()))
     }
 
     fn wake(&self, room: RoomId) {
@@ -361,15 +449,11 @@ impl GovernanceTransport for Joined {
         let room = match &message {
             NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => RoomId::parse(room),
             _ => None,
         };
-        let live = room.and_then(|room| {
-            self.sessions
-                .lock()
-                .ok()
-                .and_then(|sessions| sessions.get(&room).and_then(|s| s.live.clone()))
-        });
+        let live = room.and_then(|room| self.live(room));
         let (Some(live), Ok(bytes)) = (live, postcard::to_allocvec(&message)) else {
             return false;
         };
@@ -410,3 +494,7 @@ fn room_topic(room: RoomId) -> Result<u64, String> {
 #[cfg(test)]
 #[path = "joined_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod admission_tests;

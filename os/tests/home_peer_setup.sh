@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-helper="$root/crates/hosting/tilo-relay/src/home_peer_control.rs"
+helper="$root/crates/hosting/tilo-relay/src/home_peer_control/broker.rs"
 enroll="$root/crates/hosting/tilo-relay/src/enroll.rs"
 firstboot="$root/os/usr/libexec/tilo-relay-firstboot"
 policy="$root/os/usr/share/polkit-1/actions/org.tilo.home-peer.policy"
@@ -36,7 +36,7 @@ grep -q 'refusing unsafe home-peer configuration inode' "$firstboot"
 cert_check_line="$(grep -n 'valid_device_certificate && \[\[ -s "\$home_peer" \]\]' "$firstboot" | cut -d: -f1)"
 pair_line="$(grep -n 'tilo-enroll pair' "$firstboot" | cut -d: -f1)"
 (( cert_check_line < pair_line ))
-grep -q 'atomic_file::write_with_mode' "$enroll"
+grep -q 'tilo_files::native::atomic::write_with_mode' "$enroll"
 grep -q '0o644' "$enroll"
 grep -q 'relay_service_node_id' "$enroll"
 grep -q '/usr/libexec/tilo-home-peer-control' "$policy"
@@ -67,6 +67,7 @@ for daemon in "$relay_unit" "$replica_unit"; do
   grep -Fqx 'After=tilo-relay-state-migrate.service' "$daemon"
 done
 grep -q 'BindsTo=tilo-relay.service' "$replica_unit"
+grep -Fqx 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' "$relay_unit"
 for sandboxed_daemon in "$relay_unit" "$replica_unit"; do
  for identity in 'User=tilo-relay' 'Group=tilo-relay' 'SupplementaryGroups=tilo-identity'; do
    grep -Fqx "$identity" "$sandboxed_daemon"
@@ -111,10 +112,18 @@ containerfile_has_copy "$root/os/Containerfile" \
   /usr/lib/systemd/system/tilo-relay-firstboot.service
 grep -q 'bounded_command::spawn_prepared' "$settings"
 grep -q 'const APPLY_TIMEOUT' "$settings"
-grep -q 'const DISCOVERY_TIMEOUT' "$settings"
-grep -q 'const ENROLLMENT_TIMEOUT' "$settings"
 grep -q 'const MANAGEMENT_TIMEOUT' "$settings"
 ! grep -q '\.spawn()' "$settings"
+# Nearby pairing runs on the host behind actions: Settings starts neither
+# discovery nor the privileged approval itself.
+! grep -q 'tilo-enroll' "$settings"
+! grep -Eq 'approve-enrollment|approve-device' "$settings"
+pairing="$root/crates/session/shell/src/shell/device_pairing.rs"
+grep -q 'bounded_command::spawn_prepared' "$pairing"
+grep -q 'const DISCOVERY_TIMEOUT' "$pairing"
+grep -q 'const APPROVAL_TIMEOUT' "$pairing"
+grep -q '/usr/libexec/tilo-home-peer-control' "$pairing"
+! grep -q '\.spawn()' "$pairing"
 grep -q 'impl Drop for AsyncCommand' "$runner"
 grep -q 'self.cancel.store(true' "$runner"
 echo "home-peer setup boundary: ok"

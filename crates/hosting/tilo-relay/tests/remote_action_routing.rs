@@ -15,8 +15,10 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_delivery_protocol::peer_actions::UnavailableReason;
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
@@ -28,6 +30,15 @@ async fn subscribed(
     user: &TestUser,
     device: &TestDevice,
 ) -> RelayClient {
+    subscribed_in(addr, user, device, WS).await
+}
+
+async fn subscribed_in(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    device: &TestDevice,
+    workspace_id: u64,
+) -> RelayClient {
     let client = RelayClient::connect(
         client_endpoint().await,
         addr,
@@ -38,9 +49,7 @@ async fn subscribed(
     )
     .await
     .expect("connect");
-    client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
+    client.send(Envelope::Subscribe { workspace_id }).unwrap();
     let ready = tilo_test_env::within("ready timeout", client.recv()).await;
     assert!(
         matches!(ready, Some(Envelope::Ready { .. })),
@@ -74,6 +83,7 @@ async fn next(client: &RelayClient, who: &str) -> Envelope {
 
 fn invoke(invocation: InvocationId) -> RemoteActionMessage {
     RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: "app".into(),
@@ -83,6 +93,8 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
+        appearance: None,
     })
 }
 
@@ -246,6 +258,205 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
     }
 }
 
+/// How the relay answered a frame it must refuse: the typed reason it led
+/// with, or `None` when the access audit closed the session first —
+/// either way nothing was served. A served frame fails the test.
+async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
+    loop {
+        match tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{who} timed out"))
+        {
+            None => return None,
+            Some(Envelope::RemoteActionUndeliverable { reason, .. }) => {
+                let typed = UnavailableReason::from_wire_reason(&reason);
+                assert!(typed.is_some(), "{reason} leads with a wire token");
+                return typed;
+            }
+            Some(Envelope::NotAuthorised { .. }) => {}
+            Some(other) => panic!("{who} expected a refusal, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn removed_member_remote_action_is_refused_before_audit() {
+    let user = TestUser::fresh("Alice");
+    let host = user.enrol("home", DeviceCapabilities::host());
+    let host_key = host.device_pubkey();
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("desktop", DeviceCapabilities::member());
+    let actions = Arc::new(RecordingHost::default());
+    let relay = Box::pin(spawn_relay_serving_apps(
+        &user,
+        host,
+        &[WS],
+        &[a.device_pubkey(), b.device_pubkey()],
+        Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
+    ))
+    .await;
+    let addr = relay.relay.node_addr();
+    let _a_client = subscribed(addr.clone(), &user, &a).await;
+    let b_client = subscribed(addr, &user, &b).await;
+
+    // B leaves the room; its connection, and the room in its session's
+    // subscribed list, are still there until the next access audit.
+    relay
+        .relay
+        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
+        .await
+        .unwrap();
+    b_client
+        .send(directed(host_key, frame(invoke(InvocationId::new()))))
+        .unwrap();
+    let refused = refusal(&b_client, "B").await;
+    assert!(
+        refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
+        "got {refused:?}"
+    );
+    assert!(
+        actions.callers.lock().unwrap().is_empty(),
+        "a removed member never reaches the app-serving plane"
+    );
+}
+
+#[tokio::test]
+async fn remote_action_to_removed_target_is_refused() {
+    let user = TestUser::fresh("Alice");
+    let host = user.enrol("home", DeviceCapabilities::host());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let c = user.enrol("phone", DeviceCapabilities::member());
+    let relay = Box::pin(spawn_relay(
+        &user,
+        host,
+        &[WS],
+        &[a.device_pubkey(), c.device_pubkey()],
+    ))
+    .await;
+    let addr = relay.relay.node_addr();
+    let a_client = subscribed(addr.clone(), &user, &a).await;
+    let c_client = subscribed(addr, &user, &c).await;
+
+    relay
+        .relay
+        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
+        .await
+        .unwrap();
+    a_client
+        .send(directed(
+            c.device_pubkey(),
+            frame(invoke(InvocationId::new())),
+        ))
+        .unwrap();
+    match next(&a_client, "A").await {
+        Envelope::RemoteActionUndeliverable {
+            to_device_public_key,
+            reason,
+            ..
+        } => {
+            assert_eq!(to_device_public_key, c.device_pubkey());
+            assert_eq!(
+                UnavailableReason::from_wire_reason(&reason),
+                Some(UnavailableReason::NotAuthorised),
+                "{reason}"
+            );
+        }
+        other => panic!("A expected a refusal, got {other:?}"),
+    }
+    let deadline = tokio::time::Instant::now()
+        .checked_add(Duration::from_millis(300))
+        .unwrap();
+    while let Ok(Some(envelope)) = tokio::time::timeout_at(deadline, c_client.recv()).await {
+        assert!(
+            !matches!(envelope, Envelope::RemoteAction { .. }),
+            "a removed device receives no remote action"
+        );
+    }
+}
+
+#[tokio::test]
+async fn expired_agent_delegation_cannot_invoke_host() {
+    let user = TestUser::fresh("Alice");
+    let host = user.enrol("home", DeviceCapabilities::host());
+    let host_key = host.device_pubkey();
+    let agent = user.enrol("agent", DeviceCapabilities::member());
+    let room = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
+    let ws = tilo_relay::room_workspace_id(room).unwrap();
+    let actions = Arc::new(RecordingHost::default());
+    let relay = Box::pin(spawn_relay_serving_apps(
+        &user,
+        host,
+        &[ws],
+        &[agent.device_pubkey()],
+        Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
+    ))
+    .await;
+    let client = subscribed_in(relay.relay.node_addr(), &user, &agent, ws).await;
+    let to_host = |frame| Envelope::RemoteAction {
+        workspace_id: ws,
+        version: REMOTE_ACTION_ENVELOPE_VERSION,
+        to_device_public_key: host_key,
+        from_device_public_key: [0xEE; 32],
+        from_user_public_key: [0xEE; 32],
+        frame,
+    };
+
+    // Delegate the subscribed device briefly; until expiry it acts as the agent.
+    let lifetime = Duration::from_millis(500);
+    let issued = tilo_clock::try_unix_now_ns().unwrap();
+    let expires = issued
+        .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
+        .unwrap();
+    let delegation = Delegation::sign(
+        &user.user_sk,
+        agent.device_pubkey(),
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "helper".into(),
+        },
+        "Helper",
+        [0x7c, 0x3a, 0xed],
+        DelegateScope {
+            rooms: vec![room.into()],
+            apps: Vec::new(),
+        },
+        issued,
+        expires,
+    )
+    .unwrap();
+    relay.relay.register_agent(delegation).unwrap();
+    client
+        .send(to_host(frame(invoke(InvocationId::new()))))
+        .unwrap();
+    assert!(
+        matches!(next(&client, "agent").await, Envelope::RemoteAction { .. }),
+        "a live delegation reaches the host"
+    );
+    let delegated = [Caller::delegated_agent(
+        "helper",
+        user.user_pk,
+        agent.device_pubkey(),
+    )];
+    assert_eq!(*actions.callers.lock().unwrap(), delegated);
+
+    // Just past expiry, without waiting for the access audit.
+    let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
+    tokio::time::sleep(Duration::from_nanos(remaining).saturating_add(Duration::from_millis(20)))
+        .await;
+    client
+        .send(to_host(frame(invoke(InvocationId::new()))))
+        .unwrap();
+    let refused = refusal(&client, "agent").await;
+    assert!(
+        refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
+        "got {refused:?}"
+    );
+    assert_eq!(
+        *actions.callers.lock().unwrap(),
+        delegated,
+        "an expired delegation never reaches the app-serving plane"
+    );
+}
+
 /// Records which callers reached it; runs every admitted invocation to
 /// completion immediately.
 #[derive(Default)]
@@ -255,6 +466,7 @@ struct RecordingHost {
 }
 
 /// Lets the test keep a handle on the host the relay owns.
+#[derive(Clone)]
 struct SharedHost(Arc<RecordingHost>);
 
 impl ActionHost for SharedHost {

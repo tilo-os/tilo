@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 pub const ALPN: &[u8] = b"tilo-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
+
+/// ALPN of the compute session: personal-mesh compute jobs on its control
+/// stream, members' environment sessions and legacy windows on further
+/// streams ([`crate::environment`]).
+pub const COMPUTE_ALPN: &[u8] = b"tilo-personal-compute/1";
 /// Authenticated owner-only health and lifecycle management protocol.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 
@@ -87,6 +92,8 @@ pub struct HomePeerManagementResponse {
     pub files_ready: bool,
     /// Active service advertisement after capability clamping.
     pub services: crate::mesh::ServiceCapabilities,
+    /// What its workers run for environments right now.
+    pub environments: crate::home_peer::RelayEnvironments,
     /// Whether this response completed permanent decommissioning.
     pub decommissioned: bool,
 }
@@ -149,7 +156,7 @@ pub enum Envelope {
         /// Author's signature over the delta — the same
         /// `DirectoryUpdate.signature` shape the identity crate
         /// produces.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },
 
@@ -417,7 +424,7 @@ pub enum Envelope {
         statement: Vec<u8>,
         /// The member's device signature over
         /// [`crate::compaction::signing_bytes`] of `statement`.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },
 
@@ -486,7 +493,88 @@ pub enum Envelope {
         /// The participation that ends.
         participation: [u8; 32],
     },
+
+    /// Ask for the calls of a room the host governs. Requires an accepted
+    /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
+    VoiceCalls {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// A room's calls as its governance records them, with who is in each.
+    VoiceCallList {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The calls, or why the room has none to list.
+        result: Result<Vec<crate::voice::CallSummary>, String>,
+    },
+
+    /// One piece of a record's content for exactly one device of the
+    /// workspace, which asked the room for it. Routed like
+    /// [`Envelope::RemoteAction`] — to the addressed device's live
+    /// connection, never stored, never fanned out — but never answered:
+    /// content that does not arrive is asked for again.
+    RecordContent {
+        /// Workspace id both devices are subscribed to.
+        workspace_id: u64,
+        /// The addressed device.
+        to_device_public_key: [u8; 32],
+        /// The sending device, stamped by the relay from the authenticated
+        /// connection. Whatever a sender puts here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Opaque piece, at most [`MAX_RECORD_CONTENT_FRAME_BYTES`].
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
+
+impl Envelope {
+    /// The workspace (relay room) this envelope belongs to, or `None` for
+    /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
+    ///
+    /// The match is exhaustive on purpose: a new variant has to say which
+    /// room it is charged to.
+    #[must_use]
+    pub const fn workspace_id(&self) -> Option<u64> {
+        match self {
+            Self::Subscribe { workspace_id }
+            | Self::Unsubscribe { workspace_id }
+            | Self::Delta { workspace_id, .. }
+            | Self::Presence { workspace_id, .. }
+            | Self::Ready { workspace_id, .. }
+            | Self::NotAuthorised { workspace_id, .. }
+            | Self::SyncRequest { workspace_id, .. }
+            | Self::SyncResponse { workspace_id, .. }
+            | Self::RemoteAction { workspace_id, .. }
+            | Self::RemoteActionUndeliverable { workspace_id, .. }
+            | Self::RecordContent { workspace_id, .. }
+            | Self::Commit { workspace_id, .. }
+            | Self::Committed { workspace_id, .. }
+            | Self::CommitRefused { workspace_id, .. }
+            | Self::LiveJoin { workspace_id }
+            | Self::LiveLeave { workspace_id }
+            | Self::Live { workspace_id, .. }
+            | Self::LiveMember { workspace_id, .. }
+            | Self::SubscribeFrom { workspace_id, .. }
+            | Self::Position { workspace_id, .. }
+            | Self::CompactVolunteer { workspace_id }
+            | Self::CompactRequest { workspace_id, .. }
+            | Self::Compacted { workspace_id, .. }
+            | Self::VoiceCall { workspace_id, .. }
+            | Self::VoiceCallResult { workspace_id, .. }
+            | Self::VoiceJoin { workspace_id, .. }
+            | Self::VoiceGranted { workspace_id, .. }
+            | Self::VoiceRefused { workspace_id, .. }
+            | Self::VoiceLeave { workspace_id, .. }
+            | Self::VoiceCalls { workspace_id }
+            | Self::VoiceCallList { workspace_id, .. } => Some(*workspace_id),
+            Self::Ping | Self::Pong | Self::PeerRelayHello { .. } => None,
+        }
+    }
+}
+
+/// Largest [`Envelope::RecordContent`] frame a relay routes.
+pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
 /// relay refuses other versions as undeliverable instead of forwarding
@@ -567,6 +655,72 @@ mod tests {
                 envelope
             );
         }
+    }
+
+    #[test]
+    fn frozen_voice_envelope_bytes() {
+        // These exact discriminants and fields predate browser call listings.
+        let cases = [
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: None,
+                },
+                [vec![27, 7], vec![1; 32], vec![0]].concat(),
+            ),
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: Some([2; 32]),
+                },
+                [vec![27, 7], vec![1; 32], vec![1], vec![2; 32]].concat(),
+            ),
+            (
+                Envelope::VoiceLeave {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: [2; 32],
+                },
+                [vec![30, 7], vec![1; 32], vec![2; 32]].concat(),
+            ),
+        ];
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
+    fn room_frames_name_their_workspace_and_connection_frames_none() {
+        let delta = Envelope::Delta {
+            workspace_id: 9,
+            author_device_public_key: [1; 32],
+            authored_at_ns: 2,
+            delta: vec![3],
+            signature: [0; 64],
+        };
+        assert_eq!(delta.workspace_id(), Some(9));
+        assert_eq!(
+            Envelope::Presence {
+                workspace_id: 4,
+                payload: Vec::new(),
+            }
+            .workspace_id(),
+            Some(4)
+        );
+        assert_eq!(Envelope::Ping.workspace_id(), None);
+        assert_eq!(
+            Envelope::PeerRelayHello {
+                hosted_workspaces: vec![1]
+            }
+            .workspace_id(),
+            None
+        );
     }
 
     #[test]

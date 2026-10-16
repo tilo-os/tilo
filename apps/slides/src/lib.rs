@@ -1,7 +1,6 @@
 #![allow(
     clippy::many_single_char_names,
     clippy::redundant_clone,
-    clippy::similar_names,
     clippy::single_match_else,
     clippy::too_many_lines,
     reason = "migration stack lint debt is scoped to this target"
@@ -13,8 +12,8 @@
 //! Architecture mirrors the other native apps: a pure data [`model`], an
 //! Automerge-backed [`doc`] layer, a shared slide [`render`]er, and a root
 //! [`app::SlidesApp`] widget that owns the editor, inspector, thumbnail
-//! rail and a full-screen present mode. `app_root()` is the single
-//! integration point used by both the live event loop and `--shots`.
+//! rail and a full-screen present mode. [`SlidesShell`] is the app every
+//! host launches, and its screenshot scenarios.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -31,25 +30,11 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod actions;
 pub mod app;
 pub mod assets;
-pub mod chrome;
-pub mod doc;
-pub mod framework_history;
+pub mod deck;
+pub mod effects;
 mod help_overlay;
 pub mod model;
 pub mod odp;
@@ -58,38 +43,20 @@ mod overview_grid;
 pub mod pptx;
 mod presentation;
 pub mod render;
-pub mod search_provider;
+pub mod resource;
+pub mod sample;
+pub mod search;
 pub mod strings;
-mod toolbar_tools;
 
-pub use app::{PresentSurface, SlidesApp};
+pub use app::SlidesApp;
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree for a live launch — opens on a
-/// blank starter slide; the deck's real state comes from the shared CRDT
-/// document.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SlidesApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.slides", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .as_definition("Slides")
+    ui::built_in_definition!(SlidesShell)
 }
 
-/// Root pre-loaded with the hermetic sample deck, optionally jumped to a named
-/// screen (`overview` / `present` / `presenter` / `help` / `narrow` / …). Used
-/// only by the `--shots` capture path so a live launch never shows fabricated
-/// content.
-pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
-    Box::new(SlidesApp::demo(scenario))
-}
+pub use deck::Deck;
+pub use resource::SlidesShell;
 
 #[cfg(test)]
 mod deck_operations_tests;
-#[cfg(test)]
-mod framework_history_tests;

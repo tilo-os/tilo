@@ -20,7 +20,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 def matrix_script() -> str:
     workflow = WORKFLOW.read_text()
     marker = "      - name: Select validation or native publication lanes\n"
-    block = workflow.split(marker, 1)[1].split("\n\n  signing-preflight:", 1)[0]
+    block = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0].split("\n\n  signing-preflight:", 1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
@@ -44,7 +44,7 @@ def plan(
                 "GITHUB_REF": ref,
                 "GITHUB_EVENT_NAME": event,
                 "GITHUB_OUTPUT": str(output),
-                "GITHUB_SHA": SHA,
+                "TILO_IMAGE_SOURCE": SHA,
                 "REQUESTED_RELEASE": requested,
                 "PUBLISHED_REVISION": published,
                 "PUBLICATION_CONFIGURED": configured,
@@ -78,8 +78,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "imager-linux-x86_64"},
                     {"arch": "aarch64", "runner": "imager-linux-aarch64"},
-                    {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='protected manual main publish uses the release class'):
@@ -90,8 +88,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -110,8 +106,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
 
@@ -177,20 +171,32 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     if publish:
                         self.assertEqual(group, "tilo-os-image-series-2")
                     else:
-                        self.assertEqual(group, f"tilo-os-image-validate-{ref}")
-        with self.subTest(phase='Lenovo publication has a source-specific lock'):
+                        self.assertEqual(group, "tilo-os-image-validate-2")
+        with self.subTest(phase='full branch proofs share a queue without cancelling another owner'):
+            branches = ("refs/heads/feature-a", "refs/heads/feature-b")
+            groups = [concurrency_group(ref, "workflow_dispatch", "false") for ref in branches]
+            self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
+            self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
+        with self.subTest(phase='Lenovo publications serialize the board generation series'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
-                f"tilo-os-image-lenovo-{SHA}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed", "f" * 40),
-                f"tilo-os-image-lenovo-{'f' * 40}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertNotEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true"),
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
             )
+
+        with self.subTest(phase='Orange Pi publication has a separate source-specific lock'):
+            orange = concurrency_group("refs/heads/main", "workflow_dispatch", "true", "orangepi-3b-v2-1")
+            self.assertEqual(orange, f"tilo-os-image-orangepi-{SHA}")
+            self.assertNotEqual(orange, concurrency_group("refs/heads/main", "workflow_dispatch", "true"))
+            self.assertNotEqual(orange, concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"))
 
 
 class OsDevLaneTests(unittest.TestCase):
@@ -215,13 +221,23 @@ class OsDevLaneTests(unittest.TestCase):
                 "tilo-os-dev-refs/pull/12/head",
             )
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
-        with self.subTest(phase='main pushes and image pull requests call it'):
+        with self.subTest(phase='each main commit builds on its own'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_call", ""),
+                "tilo-os-dev-" + SHA,
+            )
+        with self.subTest(phase='historical main dev publication locks the pinned source'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_call", "", source_revision="a" * 40),
+                "tilo-os-dev-" + "a" * 40,
+            )
+        with self.subTest(phase='explicit image requests queue without cancelling useful progress'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
             self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
             self.assertIn("branches: [main]", caller)
             self.assertIn('- "os/**"', caller)
-            self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", caller)
+            self.assertIn("group: os-dev-x86-native\n  cancel-in-progress: false", caller)
             self.assertIn("  workflow_call:", WORKFLOW.read_text())
         with self.subTest(phase='the dev build publishes images and skips the disk install'):
             workflow = WORKFLOW.read_text()
@@ -244,22 +260,62 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertNotIn("        if:", step)
         # A dev build takes the published collection only when its source has
         # this commit's app inputs, as Release / apps defines them.
-        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$TILO_IMAGE_SOURCE" -- "${inputs[@]}"', step)
         self.assertIn(".forgejo/workflows/release-apps.yml", step)
         self.assertIn("index.json | jq -r '.source // empty'", step)
-        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+        self.assertLess(step.index("[[ $source != \"$COLLECTION_SOURCE\" ]]"),
                         step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
 
-    def test_dev_builds_keep_a_cacheable_epoch(self):
+    def test_every_lane_builds_with_the_image_epoch(self):
         workflow = WORKFLOW.read_text()
-        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (base and package images)\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
-        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
-        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
-        # image.created keeps the commit time either way.
-        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
+        # One epoch for dev, validation and publication: the commit time put
+        # itself into the UKI's initramfs, the rpmdb and the fontconfig caches
+        # and renewed those layers in every release.
+        self.assertNotIn("        if:", step)
+        self.assertNotIn("DEV_BUILD", step)
+        self.assertIn('epoch="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"', step)
+        self.assertIn('echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"', step)
+        # The kernel snapshot changes several times a day; in the epoch it
+        # invalidated every rootfs layer.
+        self.assertNotIn("KERNEL_RPMS_REF", step)
+        # image.created keeps the commit time.
+        self.assertIn('committed="$(git log -1 --format=%ct)"', step)
+        self.assertIn('echo "SOURCE_DATE_ISO=$(date -u -d "@$committed"', step)
+        self.assertNotIn("SOURCE_DATE_EPOCH=$committed", step)
+        # chunkah's clamp and the index provenance take the same value.
+        rechunk = workflow.split("      - name: Rechunk the image\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn('epoch="$SOURCE_DATE_EPOCH"', rechunk)
+        self.assertIn('[[ $epoch == "$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")" ]]', rechunk)
+        provenance = workflow.split("./os/dev/release-provenance.sh index-provenance.json", 1)[0]
+        provenance = provenance.rsplit("cosign sign --yes", 1)[1]
+        self.assertIn('SOURCE_DATE_EPOCH="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"', provenance)
+        self.assertNotIn("--format=%ct", provenance)
+
+    def test_the_image_epoch_is_the_newest_input_creation_time(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary)
+            (fake / "skopeo").write_text(
+                "#!/bin/sh\n"
+                'case "$2" in\n'
+                '  docker://base) echo \'{"Created": "2026-10-01T00:00:00Z"}\' ;;\n'
+                '  docker://rpms) echo \'{"Created": "2026-10-09T12:00:00.5Z"}\' ;;\n'
+                "  *) exit 1 ;;\n"
+                "esac\n")
+            (fake / "skopeo").chmod(0o755)
+            env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+            script = str(ROOT / "os/dev/image-epoch.sh")
+            for order in (["base", "rpms"], ["rpms", "base"]):
+                epoch = subprocess.run(["bash", script, *order], env=env, check=True,
+                                       capture_output=True, text=True).stdout
+                # 2026-10-09T12:00:00Z, the newer of the two, in whole seconds.
+                self.assertEqual(epoch, "1791547200\n", order)
+            for missing in (["base", "nothing"], [""], []):
+                failed = subprocess.run(["bash", script, *missing], env=env, capture_output=True, text=True)
+                self.assertNotEqual(failed.returncode, 0, missing)
 
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()
@@ -275,7 +331,7 @@ class OsDevLaneTests(unittest.TestCase):
                 env = os.environ.copy()
                 env.update({
                     "GITHUB_REF": ref, "GITHUB_REF_NAME": ref.split("/", 2)[2],
-                    "GITHUB_EVENT_NAME": event, "GITHUB_SHA": SHA,
+                    "GITHUB_EVENT_NAME": event, "TILO_IMAGE_SOURCE": SHA,
                     "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(Path(temporary) / "env"),
                     "REQUESTED_RELEASE": "", "PLANNED_PUBLISH": "false",
                 })
@@ -309,7 +365,7 @@ def empty_series_allowed(publish: str, genesis: str, sha: str = SHA) -> bool:
         environment.update(
             {
                 "GITHUB_ENV": str(root / "env"),
-                "GITHUB_SHA": sha,
+                "TILO_IMAGE_SOURCE": sha,
                 "PUBLISH": publish,
                 "SERIES_GENESIS_REVISION": genesis,
                 "TILO_REGISTRY_CREDS": "user:token",
@@ -356,14 +412,17 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 6)
+            self.assertEqual(len(uses), 7)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],
                     r"^:\$(?:source_ref|first_ref|repro_ref)\b",
                 )
-            self.assertIn("'${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'", workflow)
-            self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
+            # The archives are rechunked in place; a descriptor is
+            # selected by the rechunked digest, or the build's when it is off.
+            self.assertIn("'${{ steps.rechunk.outputs.digest || steps.build.outputs.digest "
+                          "|| steps.build-uncached.outputs.digest }}'", workflow)
+            self.assertIn("'${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}'", workflow)
             self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("skopeo"), "skopeo on POSIX required")
@@ -468,7 +527,7 @@ class ReleaseGateTests(unittest.TestCase):
 
 
 def concurrency_group(
-    ref: str, event: str, requested: str, profile: str = "generic", sha: str = SHA,
+    ref: str, event: str, requested: str, profile: str = "generic", sha: str = SHA, source_revision: str = "",
 ) -> str:
     """Evaluate the workflow's concurrency expression for one event."""
     line = next(
@@ -478,8 +537,10 @@ def concurrency_group(
     for source, target in [
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
+        ("format('tilo-os-image-orangepi-{0}', github.sha)", "('tilo-os-image-orangepi-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
-        ("format('tilo-os-dev-{0}', github.ref)", "('tilo-os-dev-' + ref)"),
+        ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && (inputs.source_revision || github.sha) || github.ref)",
+         "('tilo-os-dev-' + ((source_revision or sha) if ref == 'refs/heads/main' else ref))"),
         ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),
@@ -489,7 +550,7 @@ def concurrency_group(
     ]:
         expression = expression.replace(source, target)
     return eval(expression, {}, {
-        "ref": ref, "event": event, "requested": requested, "profile": profile, "sha": sha,
+        "ref": ref, "event": event, "requested": requested, "profile": profile, "sha": sha, "source_revision": source_revision,
     })
 
 

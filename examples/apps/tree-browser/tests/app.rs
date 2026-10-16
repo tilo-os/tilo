@@ -1,7 +1,7 @@
-use example_tree_browser::{App, Notebook};
+use example_tree_browser::{App, Notebook, SECTIONS};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{Invoke, Replica, TestApp};
 
 #[test]
 fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
@@ -90,13 +90,13 @@ fn compact_windows_navigate_between_full_width_panes() {
     harness.resize((460, 820)).expect("compact layout");
     harness
         .expect(
-            &SemanticExpectation::named("notebook-shell-back")
+            &SemanticExpectation::named("nav-shell-back")
                 .role(Role::Button)
                 .name("Back"),
         )
         .expect("the compact detail exposes an accessible Back");
     harness
-        .perform_named("notebook-shell-back", &Action::Activate)
+        .perform_named("nav-shell-back", &Action::Activate)
         .expect("return to compact navigation");
     harness
         .expect(&SemanticExpectation::named("section-tree").role(Role::Tree))
@@ -119,16 +119,27 @@ fn compact_windows_navigate_between_full_width_panes() {
 #[test]
 fn only_sections_take_notes() {
     let mut notebook = Replica::<Notebook>::new();
+    let notes = Notebook::section_paths(6).notes.replace("Walked the dog.");
     notebook
-        .apply(Notebook::SET_NOTES.with((6, "Walked the dog.".into())))
+        .apply(Invoke::edit(&notes).expect("an edit"))
         .expect("the journal is a section");
+    let grouping = Notebook::section_paths(2).notes.replace("Not a section.");
+    assert!(
+        notebook
+            .apply(Invoke::edit(&grouping).expect("an edit"))
+            .is_err()
+    );
     assert!(notebook.apply(Notebook::SHARE.with(2)).is_err());
     let state = notebook.state().expect("notebook");
     assert_eq!(
         state.section(6).map(|section| section.notes.as_str()),
         Some("Walked the dog.")
     );
-    assert_eq!(state.sections.len(), 1, "untouched sections stay absent");
+    assert_eq!(
+        state.sections.len(),
+        SECTIONS.len(),
+        "every section exists from the start"
+    );
 }
 
 #[test]

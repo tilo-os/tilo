@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -146,6 +146,26 @@ impl SearchProvider for RecordsProvider {
         }
     }
 
+    /// A record's address is its id: it resolves from the retained record
+    /// list directly, with no search beforehand.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Record) {
+            return None;
+        }
+        let wanted = ui::record::RecordId::parse(id)?;
+        let (here, rooms) = {
+            let tree = ctx.chrome.tree();
+            (
+                tree.desktop.active_workspace().map(|w| w.room),
+                room_names(&tree),
+            )
+        };
+        let records = self.index.borrow().known();
+        let record = records.iter().find(|record| record.id == wanted)?;
+        let subtitle = provenance(record, here, &rooms);
+        Some(self.row(record, record.title(), subtitle, MAX_SCORE))
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         // Legacy direct callers get one retained, bounded page too. They no
         // longer accidentally turn an integration test or an old surface into
@@ -194,19 +214,6 @@ impl SearchProvider for RecordsProvider {
         };
         let needle = ctx.needle.trim().to_lowercase();
         let revision = self.index.borrow().search_generation();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor
-                .token
-                .split_once('\u{1f}')
-                .filter(|(cursor_needle, _)| *cursor_needle == needle)
-                .and_then(|(_, offset)| offset.parse::<usize>().ok())
-            {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let mut slot = self.snapshot.borrow_mut();
         if slot
             .as_ref()
@@ -218,66 +225,49 @@ impl SearchProvider for RecordsProvider {
         let Some(snapshot) = slot.as_ref() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let found = snapshot.index.search(
+        crate::shell::search::index_page(
+            revision,
+            cursor,
             &needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
+            budget,
+            |page| snapshot.index.search(&needle, page),
+            |hit| {
+                let record = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.records.get(at))?;
+                let title = record.title();
+                let subtitle = provenance(record, here, &rooms);
+                Some(self.row(
+                    record,
+                    title,
+                    subtitle,
+                    crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
+                ))
             },
-        );
-        let mut used = 0usize;
-        let mut results = Vec::new();
-        let mut shown = 0usize;
-        for hit in &found.hits {
-            let Some(record) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.records.get(at))
-            else {
-                shown = shown.saturating_add(1);
-                continue;
-            };
-            let title = record.title();
-            let subtitle = provenance(record, here, &rooms);
-            let bytes = record
-                .id
-                .as_str()
-                .len()
-                .saturating_add(title.len())
-                .saturating_add(subtitle.len())
-                .saturating_add(96);
-            if used.saturating_add(bytes) > budget.max_bytes {
-                break;
-            }
-            used = used.saturating_add(bytes);
-            shown = shown.saturating_add(1);
-            let index = Rc::clone(&self.index);
-            let id = record.id.clone();
-            let kind = record.kind.clone();
-            results.push(SearchResult::nullary(
-                ResourceKind::Record,
-                "records",
-                record.id.as_str().to_string(),
-                title,
-                Some(subtitle),
-                crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
-                move |_doc, _root, chrome: &Chrome| {
-                    bring_into_this_room(&index, &id, &kind, chrome);
-                },
-            ));
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage {
-            revision: revision.clone(),
-            results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{needle}\u{1f}{next}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+        )
+    }
+}
+
+impl RecordsProvider {
+    fn row(
+        &self,
+        record: &KnownRecord,
+        title: String,
+        subtitle: String,
+        score: i32,
+    ) -> SearchResult {
+        let index = Rc::clone(&self.index);
+        let id = record.id.clone();
+        let kind = record.kind.clone();
+        SearchResult::view_with_output(
+            ResourceKind::Record,
+            "records",
+            record.id.as_str().to_string(),
+            title,
+            Some(subtitle),
+            score,
+            move |chrome: &Chrome| bring_into_this_room(&index, &id, &kind, chrome),
+        )
     }
 }
 
@@ -290,7 +280,8 @@ fn bring_into_this_room(
     id: &ui::record::RecordId,
     kind: &ui::record::RecordKind,
     chrome: &Chrome,
-) {
+) -> Result<serde_json::Value, crate::shell::search::action_api::ActionError> {
+    use crate::shell::search::action_api::ActionError;
     let here = {
         let chrome_state = chrome.borrow();
         let tree = chrome_state.tree();
@@ -303,25 +294,20 @@ fn bring_into_this_room(
     // A path-identified record is also opened; anything else is brought
     // here and waits for its app.
     let Some(path) = id.file_path() else {
-        return;
+        return Ok(serde_json::json!({ "brought": id.as_str() }));
     };
     if !path.exists() {
-        crate::shell::doc_open::report_open_failure(
-            chrome,
-            &path,
-            &t("search-record-file-missing"),
-            Some("Records"),
-        );
-        return;
+        let message = t("search-record-file-missing");
+        crate::shell::doc_open::report_open_failure(chrome, &path, &message, Some("Records"));
+        return Err(ActionError::Refused(message));
     }
-    if let Err(e) = crate::shell::doc_open::open_in_workspace(&path, chrome) {
-        crate::shell::doc_open::report_open_failure(
-            chrome,
-            &path,
-            &e.user_message(),
-            Some("Records"),
-        );
-    }
+    crate::shell::doc_open::open_in_workspace(&path, chrome)
+        .map(|opened| opened.to_value(&path))
+        .map_err(|e| {
+            let message = e.user_message();
+            crate::shell::doc_open::report_open_failure(chrome, &path, &message, Some("Records"));
+            ActionError::Refused(message)
+        })
 }
 
 /// Room uuid → the name the user gave that workspace.
@@ -368,7 +354,7 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 
 /// `~`-shortened path for the subtitle.
 fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = xdg_paths::home()
+    if let Some(home) = tilo_paths::home()
         && let Ok(rest) = path.strip_prefix(&home)
     {
         return format!("~/{}", rest.display());
@@ -394,7 +380,7 @@ mod tests {
         let mut rooms = Vec::new();
         for name in names {
             let mut ws = Workspace::new(WorkspaceId::new(), *name);
-            ws.room = RoomId::new();
+            ws.set_room(RoomId::new());
             rooms.push(ws.room);
             tree.desktop.workspaces.push(ws);
         }
@@ -410,6 +396,8 @@ mod tests {
         let state = chrome.borrow();
         let doc = automerge::AutoCommit::new();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Record],
             chrome: &state,
@@ -429,6 +417,8 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Record],
                 chrome: &state,
@@ -607,6 +597,8 @@ mod tests {
             let chrome_state = chrome.borrow();
             let doc = automerge::AutoCommit::new();
             let context = || SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "note",
                 wanted: &[ResourceKind::Record],
                 chrome: &chrome_state,
@@ -697,7 +689,7 @@ mod tests {
             let row = out.first().expect("the record is findable");
             let mut doc = automerge::AutoCommit::new();
             (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -737,7 +729,7 @@ mod tests {
             let out = query(&provider, "book", &chrome);
             let mut doc = automerge::AutoCommit::new();
             (out[0].on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -907,6 +899,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = automerge::AutoCommit::new();
             let out = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "a.odt",
                 wanted: &[ResourceKind::File],
                 chrome: &state,

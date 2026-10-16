@@ -17,7 +17,11 @@ SOURCES = (
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-relay/Containerfile",
+    "os/Containerfile.env-runtime",
+    # The sealing tool stage's list, installed by name from this file (see its header).
+    "os/dev/uki-tools.packages",
 )
+PACKAGE_SPEC = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+()=*-]*")
 
 
 def logical_lines(text: str):
@@ -33,7 +37,25 @@ def logical_lines(text: str):
         yield pending
 
 
+def list_packages(path: pathlib.Path):
+    """A `.packages` file: one spec per line, for every architecture.
+
+    Lines starting with `#` are comments; the stages that install the list strip
+    them with `grep -v '^#'`, so a trailing comment would reach dnf and is refused.
+    """
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        spec = line.strip()
+        if not spec or line.startswith("#"):
+            continue
+        if not PACKAGE_SPEC.fullmatch(spec):
+            raise SystemExit(f"{path}:{number}: invalid package {spec!r}")
+        yield spec
+
+
 def packages(path: pathlib.Path, arch: str | None = None):
+    if path.suffix == ".packages":
+        yield from list_packages(path)
+        return
     text = path.read_text()
     for marker in re.finditer(
         r"^\s*#\s*tilo-rpm-snapshot-package(?:\[([^\]]+)\])?:\s*(\S+)\s*$", text, re.MULTILINE

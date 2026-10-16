@@ -172,6 +172,17 @@ impl Resolver {
             .set_max_size(i32::try_from(max_size).unwrap_or(i32::MAX));
     }
 
+    /// Images went for good: let a sparse atlas shrink within the next few
+    /// resolves instead of after many.
+    pub fn shrink_image_atlas_soon(&mut self) {
+        self.image_cache.shrink_soon();
+    }
+
+    /// What the image atlas cache holds now.
+    pub fn image_cache_stats(&self) -> crate::ImageCacheStats {
+        self.image_cache.stats()
+    }
+
     /// Creates a new resource cache.
     pub fn new() -> Self {
         Self::default()
@@ -527,6 +538,11 @@ impl Resolver {
                     if self.image_cache.bump_size() {
                         // We were able to increase the atlas size. Restart the outer loop.
                         continue 'outer;
+                    } else if self.image_cache.can_fit_image(&pending_image.image)
+                        && self.image_cache.evict_superseded() != 0
+                    {
+                        // The atlas is at its maximum: what no pass drew this time makes room.
+                        continue;
                     } else {
                         // If the atlas is already maximum size, there's nothing we can do. Set
                         // the xy field to None so this image isn't rendered and then carry on--

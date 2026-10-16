@@ -24,14 +24,11 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       RUST_BACKTRACE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
       # cargo-fuzz needs nightly sanitizer instrumentation. Tool and compiler
@@ -46,6 +43,28 @@ jobs:
             cargo +nightly-2026-08-25 fuzz run "$target" -- -max_total_time=900 -timeout=10
           done
 
+  # Vendored crates that carry Tilo patches are path dependencies outside the
+  # workspace, so `complete` builds them but never runs their own tests.
+  # Pull requests run them when their files change; this run catches what a
+  # workspace lock or toolchain change does to them.
+  vendored:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 45
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Test every vendored crate with its own suite
+        run: bash tools/ci/test-vendored-crates.sh
+
   # Formatting has its own job. As a step ahead of the tests, one unformatted
   # file stopped every test, check and certification from running, so a
   # formatting slip hid all real results for as long as it stayed on main.
@@ -53,35 +72,38 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Check complete workspace formatting
-        run: cargo fmt --all --check
+        # Workspace members only: --all also formats path dependencies, and
+        # the vendor/ forks must stay byte-identical to their upstream trees.
+        run: cargo fmt --check
 
   complete:
+    needs: builder
     strategy:
       fail-fast: false
       matrix:
+        # The whole-workspace target tree does not fit beside a generic
+        # slot's caches; the disk classes have room for it.
         include:
           - arch: x86_64
-            runner: runner
+            runner: runner-disk-100g
           - arch: aarch64
-            runner: runner-arm64
+            runner: runner-disk-100g-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
-      # Visual goldens are meaningful only when fonts, Mesa and the software
-      # renderer are byte-for-byte identical to the reviewed refresh job.
-      # Advance this digest together with dev-visual-baselines.yml.
-      image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+      # The goldens' step checks this is the image they were rendered on
+      # (.config/visual-goldens-image).
+      image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+      # Both disk-class slots have the memory for four compiler processes;
+      # one left the aarch64 workspace build alone at 130 minutes.
+      CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       # Keep dev and test fingerprints compatible. The all-target check and
       # example links can then reuse dependencies emitted by nextest instead
@@ -106,8 +128,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Read the shared test filters
         run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
@@ -123,11 +143,20 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
-      # This golden-pinned image predates the audio fixture. Install only new
+      # A builder that predates the audio fixture gets it here. Install only new
       # packages or replace the audio daemon: never update fonts, Mesa or libraries.
       # A dependency requiring an existing package upgrade must fail the job.
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
+
+      # Likewise for the private session bus tests (tilo-os-search)
+      # and the launcher's bus-filter tests (xdg-dbus-proxy).
+      - name: Ensure session-bus test tools
+        run: bash tools/ci/ensure-session-bus-tools.sh
+
+      # And for the X11 bridge the shell's X11 clipboard and focus tests drive.
+      - name: Ensure X11 bridge test tools
+        run: bash tools/ci/ensure-x11-bridge-tools.sh
 
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
@@ -140,6 +169,16 @@ jobs:
           library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
           bash tools/ci/require-pdf-sandbox.sh
+
+      # The governed browser voice test drives two real Chromium profiles, as
+      # in check.yml. Installing it adds packages and upgrades none in the
+      # pinned image, so the renderer behind the visual goldens is unchanged.
+      - name: Prepare governed browser voice fixture
+        run: |
+          dnf install -y --setopt=install_weak_deps=False chromium
+          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
+          npm ci --prefix scripts/moq-browser
+          node scripts/moq-browser/build.mjs
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
@@ -178,7 +217,10 @@ jobs:
       # so every nightly reports each suite's own result.
       - name: Verify visual goldens on an idle renderer
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: >-
+          bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" &&
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
@@ -238,7 +280,7 @@ jobs:
 
       # Ignored tests whose requirement this runner meets: the shell ones
       # spawn a real headless compositor (llvmpipe), format-host needs the
-      # Markdown codec built as a wasm32-wasip2 component. FUSE-only ignored
+      # Markdown codec built as a wasm32-unknown-unknown provider. FUSE-only ignored
       # tests run in ci-filesystem.yml. Newly enabled: a failure is listed in the
       # job summary but does not fail the run until the lane has passed here.
       - name: Run ignored tests this runner supports
@@ -246,17 +288,38 @@ jobs:
         continue-on-error: true
         env:
           IGNORED_FILTER: >-
-            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(session_lock_e2e::))) or
+            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or
             (package(format-host) and binary(integration))
         run: |
-          rustup target add wasm32-wasip2
-          cargo build --locked --release --target wasm32-wasip2 \
-            --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
+          rustup target add wasm32-unknown-unknown
+          crates/doc/tilo-doc-codec-markdown-wasm/build.sh
           bash tools/ci/measure.sh "nightly ignored tests" -- \
             bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
             bash tools/with-test-environment.sh \
             cargo nextest run --workspace --locked --profile ci --run-ignored only \
             --test-threads 1 -E "$IGNORED_FILTER"
+
+      # agent-seats-proof.py drives two concurrent MCP sessions through the compositor's
+      # `agent-control` feature, which the workspace build leaves off: rebuild the shell with it
+      # and the terminal the proof opens in each agent's strip, then run just that proof.
+      - name: Run the agent seats proof
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          # Keep the ignored-tests report: this run writes the same junit.xml.
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
+          fi
+          cargo build --locked -p terminal --bin terminal
+          TILO_TERMINAL_BINARY="$PWD/target/debug/terminal" \
+          bash tools/ci/measure.sh "nightly agent seats proof" -- \
+            bash scripts/ci-run.sh "cargo nextest agent seats" -- \
+            bash tools/with-test-environment.sh \
+            cargo nextest run -p shell --features agent-control --locked --profile ci \
+            --run-ignored only --test-threads 1 \
+            -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
+          mv target/nextest/ci/junit.xml target/ci/junit/agent-seats.xml
 
       - name: Report ignored tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
@@ -271,7 +334,7 @@ jobs:
       - name: Save test results
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-nightly-${{ matrix.arch }}
           path: target/ci/junit
@@ -283,8 +346,5 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
+          key: ${{ steps.rust-build.outputs.cargo-cache-key }}

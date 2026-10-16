@@ -23,8 +23,8 @@
 //! ## Resources
 //!
 //! An app publishes the tree of [`Resource`]s it currently has open (a
-//! video → its comments; a book → its annotations) via
-//! [`ResourceProvider`]. Each resource exports [`ActionSpec`]s; the
+//! video → its comments; a book → its annotations) through the toolkit's
+//! `PublishesResources`. Each resource exports [`ActionSpec`]s; the
 //! palette lists them, and choosing one
 //! [`dispatch`]es the underlying action.
 //!
@@ -76,23 +76,66 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
+/// Serde for a JSON-only type whose reading goes through one
+/// `serde_json::Value`.
+///
+/// The type derives with `#[serde(remote = "Self")]`, which makes its
+/// derived code inherent functions. Writing runs them as derived, so the
+/// bytes stay what the derive writes. Reading runs them once, against a
+/// `Value`, in this crate: every format and every crate that reads the type
+/// then shares that one copy instead of compiling the type's whole
+/// deserializer (and, for an internally tagged enum, its buffered copy)
+/// again for each deserializer it meets. Only for types every encoding of
+/// which is JSON: a `Value` needs a self-describing format. `custom` leaves
+/// `from_json_value` to the type.
+macro_rules! read_through_json_value {
+    ($ty:ty) => {
+        read_through_json_value!($ty, custom);
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+    ($ty:ty, custom) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Self::serialize(self, serializer)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_json_value(value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
 pub mod action;
+pub mod appearance;
+pub mod compact;
+pub mod content;
 pub mod context;
 pub mod contract;
 pub mod door;
+pub mod entry;
 pub mod envelope;
 pub mod executor;
+pub mod framework;
+pub mod group_form;
 pub mod interaction;
+pub mod key;
+pub mod offload;
 pub mod optimistic;
 pub mod outcome;
 pub mod params;
@@ -101,54 +144,80 @@ pub mod registry;
 pub mod remote;
 pub mod resource;
 pub mod schema;
+pub mod surface;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
+pub use appearance::{Appearance, AppearanceError, Persona};
+pub use content::{
+    CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
+};
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
+    MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
-    DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec,
-    RetryPolicy, RiskLevel,
+    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
+    DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
+    LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
+    MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, Offload,
+    PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
+pub use entry::{
+    ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,
+    Scalar, VerbCall,
+};
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
-    apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, replay,
+    ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
+    UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
+    await_compensation, await_settlement, current_step, dispatch, dispatch_by,
+    dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
+    open_step, replay, settle_compensation, verify_change,
 };
+pub use framework::FrameworkChange;
 pub use interaction::{
-    INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
-    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionTextRange,
-    InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES,
-    MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
+    ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionAnchor,
+    InteractionGridRange, InteractionPhase, InteractionTextRange, InteractionUpdate,
+    InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
+    MAX_LABEL_BYTES, SemanticInteraction,
 };
+pub use key::ActionKey;
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
     InvocationUpdate, content_hash, content_resource,
 };
 pub use params::{
-    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType,
-    validate_json_schema,
+    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
+    CONTENT_ANNOTATION, PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
-pub use registry::ActionRegistry;
+pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
+#[allow(
+    deprecated,
+    reason = "existing app impls still name this trait until they publish through tilo_resource"
+)]
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
+    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
+    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
+/// Grants and the decisions over them, as apps read and show them.
+pub use tilo_action_policy as policy;
+/// The field a resource's comments live in: an action that only comments
+/// is placed below it ([`ActionContract::field`]), where someone who may only
+/// comment is granted changes.
+pub use tilo_action_policy::roles::{COMMENTS_FIELD, MODERATION_FIELD};
 
 #[cfg(test)]
 mod tests {
@@ -219,6 +288,38 @@ mod tests {
         r
     }
 
+    fn decode_seen(payload: &[u8]) -> Result<Box<dyn Action>, serde_json::Error> {
+        serde_json::from_slice::<Seen>(payload).map(|seen| Box::new(seen) as Box<dyn Action>)
+    }
+
+    /// A type registered with a decoder of its own decodes, and applies, as
+    /// one registered by type; a payload it cannot decode is a decode error
+    /// naming the type.
+    #[test]
+    fn a_registered_decoder_decodes_its_type_and_names_it_when_it_cannot() {
+        let mut registry = ActionRegistry::new();
+        registry.register_decoder(SEEN_TYPE, decode_seen);
+        let action = registry
+            .decode(&EncodedAction::encode(SEEN_TYPE, &Seen(7)).unwrap())
+            .unwrap();
+        let mut doc = AutoCommit::new();
+        action.apply(&mut doc).unwrap();
+        assert_eq!(
+            doc.get(&ROOT, "seen")
+                .unwrap()
+                .map(|(value, _)| value.as_i64()),
+            Some(Some(7))
+        );
+        let refused = registry.decode(&EncodedAction {
+            type_id: SEEN_TYPE.to_owned(),
+            payload: b"not a number".to_vec(),
+        });
+        assert!(
+            matches!(&refused, Err(ActionError::Decode { type_id, .. }) if type_id == SEEN_TYPE),
+            "{refused:?}"
+        );
+    }
+
     fn last_message(doc: &mut AutoCommit) -> Option<String> {
         let heads = doc.get_heads();
         doc.get_change_by_hash(heads.first()?)?
@@ -233,7 +334,7 @@ mod tests {
     /// The executor writes an action's declared kind into its change, with or
     /// without a caller's context, and replay reproduces the same change.
     #[test]
-    fn declared_housekeeping_travels_in_the_change_and_content_writes_nothing_new() {
+    fn declared_kinds_travel_in_the_change_and_every_change_names_what_it_did() {
         let (mut a, mut b) = two_replicas();
         let env = apply_local(
             &mut a,
@@ -250,8 +351,7 @@ mod tests {
         replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
 
-        let labelled =
-            ActionContext::for_resource("Mark as read", "c:1", "chat.channel", "general");
+        let labelled = ActionContext::for_resource("c:1", "chat.channel", "general");
         apply_local_with_context(
             &mut a,
             &Seen(4),
@@ -263,7 +363,8 @@ mod tests {
         let context = last_context(&mut a).unwrap();
         assert!(context.is_housekeeping());
         assert_eq!(
-            context.action_label, "Mark as read",
+            context.resource.as_ref().map(|r| r.label.as_str()),
+            Some("general"),
             "the caller's context is kept"
         );
 
@@ -277,8 +378,48 @@ mod tests {
             EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
         )
         .unwrap();
-        assert_eq!(env.context, None, "content without context stays as it was");
-        assert_eq!(last_message(&mut a), None);
+        let entry = env
+            .context
+            .expect("every committed action records an entry");
+        assert!(entry.change.is_step());
+        assert_eq!(
+            entry.what,
+            Some(Did::verb(
+                ActionKey::new("test", COUNTER_TYPE, "put"),
+                [
+                    ("key".to_string(), Scalar::from("score")),
+                    ("value".to_string(), Scalar::from(1)),
+                ],
+            )),
+            "an action that describes nothing is named by its encoded verb"
+        );
+        assert_eq!(last_context(&mut a), Some(entry));
+
+        // A context may say a content action is nobody's step this time; an
+        // action's own declaration is never overridden by a context.
+        let seeded = Counter::Put {
+            key: "score".into(),
+            value: 2,
+        };
+        let env = apply_local_with_context(
+            &mut a,
+            &seeded,
+            EncodedAction::encode(COUNTER_TYPE, &seeded).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert_eq!(last_context(&mut a).unwrap().change, ChangeKind::External);
+        assert!(!env.context.unwrap().change.is_step());
+        apply_local_with_context(
+            &mut a,
+            &Seen(5),
+            EncodedAction::encode(SEEN_TYPE, &Seen(5)).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert!(last_context(&mut a).unwrap().is_housekeeping());
     }
 
     /// Seed two independent replicas that share history (so a replayed
@@ -290,6 +431,74 @@ mod tests {
         let bytes = a.save();
         let b = AutoCommit::load(&bytes).unwrap();
         (a, b)
+    }
+
+    #[test]
+    fn the_executor_keeps_the_admitted_invocation_and_replays_the_identical_change() {
+        let (mut origin, mut peer) = two_replicas();
+        let action = Counter::Put {
+            key: "score".into(),
+            value: 42,
+        };
+        let invocation = InvocationId::new();
+        let context = ActionContext {
+            source_invocation: Some(invocation),
+            ..Default::default()
+        };
+        let envelope = apply_local_with_context(
+            &mut origin,
+            &action,
+            EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
+            Some(b"actual-person-device-writer"),
+            context,
+        )
+        .unwrap();
+        let committed = last_context(&mut origin).unwrap();
+        assert_eq!(committed.source_invocation, Some(invocation));
+        assert_eq!(envelope.context, Some(committed));
+        replay(&mut peer, &envelope, &registry()).unwrap();
+        assert_eq!(origin.get_heads(), peer.get_heads());
+        assert_eq!(
+            origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+            peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+        );
+    }
+
+    #[test]
+    fn a_callers_entry_replays_to_the_identical_change() {
+        let (mut origin, mut peer) = two_replicas();
+        let action = Counter::Put {
+            key: "score".into(),
+            value: 42,
+        };
+        let context = ActionContext::for_resource("score", "counter", "Score");
+        let envelope = ActionEnvelope {
+            id: ActionId::new(),
+            action: EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
+            base_heads: origin.get_heads().iter().map(|hash| hash.0).collect(),
+            timestamp: 17,
+            locus: ExecutionLocus::ClientLocal,
+            actor: Some(b"legacy-person-device-writer".to_vec()),
+            context: Some(context.clone()),
+        };
+        let old_message = context.change_message().unwrap();
+        let wire = serde_json::to_vec(&envelope).unwrap();
+        let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
+        origin.set_actor(envelope.actor());
+        action.apply(&mut origin).unwrap();
+        origin.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_time(envelope.timestamp)
+                .with_message(old_message.clone()),
+        );
+        replay(&mut peer, &decoded, &registry()).unwrap();
+        assert_eq!(last_message(&mut peer), Some(old_message));
+        assert_eq!(origin.get_heads(), peer.get_heads());
+        assert_eq!(
+            origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+            peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+        );
     }
 
     /// An action replays to an identical doc on a peer, concurrent envelopes replay from their

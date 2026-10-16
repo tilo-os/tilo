@@ -12,11 +12,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -24,7 +20,7 @@ use std::time::SystemTime;
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, EncryptionMetadata, OpClass, SignedOp, generate_keypair,
+    ArtifactId, AttestationId, ChannelId, EncryptionMetadata, OpKind, SignedOp, generate_keypair,
     sign_op, verify_op,
 };
 
@@ -73,7 +69,7 @@ fn encrypted_signed_op_round_trips_outer_signature() {
         ArtifactId::new(),
         pk,
         AttestationId::new(),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
         EncryptionMetadata::mls_application(epoch, cid),
@@ -94,7 +90,7 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
         ArtifactId::new(),
         pk,
         AttestationId::new(),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
         EncryptionMetadata::mls_application(epoch, cid),
@@ -129,7 +125,7 @@ fn tampering_with_payload_breaks_outer_signature() {
         ArtifactId::new(),
         pk,
         AttestationId::new(),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
         EncryptionMetadata::mls_application(alice_g.epoch(), cid),
@@ -153,7 +149,7 @@ fn tampering_with_encryption_metadata_breaks_outer_signature() {
         ArtifactId::new(),
         pk,
         AttestationId::new(),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
         EncryptionMetadata::mls_application(alice_g.epoch(), cid),
@@ -175,7 +171,7 @@ fn unencrypted_op_still_works_alongside_encrypted_ones() {
         ArtifactId::new(),
         pk,
         AttestationId::new(),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
     );

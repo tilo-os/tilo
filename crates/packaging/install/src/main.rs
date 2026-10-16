@@ -6,19 +6,6 @@
 //! launcher, the shell and the app host read — with their payload bytes in
 //! the content store and each tree materialised once from it.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fs;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -27,9 +14,9 @@ use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
 use install::shim;
-use package_store::{Admission, InstalledPackage, PackageStore, Registry, StoreError};
+use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
 };
 use tilo_app_package::{
@@ -78,6 +65,9 @@ enum Cmd {
         /// Overwrite an existing installation with the same package id.
         #[arg(long)]
         force: bool,
+        /// Preserve an explicitly held user version during a development cohort update.
+        #[arg(long, requires = "force")]
+        preserve_held: bool,
         #[command(flatten)]
         trust: TrustFlags,
         #[command(flatten)]
@@ -119,8 +109,15 @@ enum Cmd {
         #[arg(long, requires = "from")]
         payload_from: Option<String>,
     },
-    /// List installed packages.
-    List,
+    /// List the authoritative installed selections.
+    List {
+        /// Emit selected rows for maintained automation.
+        #[arg(long)]
+        json: bool,
+        /// Include resolved per-user runtime locations for coherent updates.
+        #[arg(long, requires = "json")]
+        runtime_paths: bool,
+    },
     /// Uninstall a package: payload, registry entry, PATH shims, and
     /// (opt-in) its saved state.
     #[command(alias = "remove")]
@@ -170,9 +167,6 @@ enum Cmd {
         /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
-        /// Turn off the Landlock enforcement. Debug only.
-        #[arg(long, hide = true)]
-        no_landlock: bool,
         #[command(flatten)]
         trust: TrustFlags,
     },
@@ -202,10 +196,67 @@ enum Cmd {
     },
     /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
     Path,
+    /// Reclaim disk nothing needs: apps past the store's size cap, payload
+    /// trees no package names and runtime builds no installed package runs
+    /// on. Pinned packages and runtimes, and whatever a running app has
+    /// mounted, stay. Also runs after every install, update and uninstall.
+    Gc {
+        /// List the runtime builds that would be removed, removing nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// How long a runtime installed without an app naming it is kept,
+        /// in seconds (an app's first open installs its runtime first).
+        #[arg(long, default_value_t = runtime_bundle::gc::DEFAULT_GRACE_SECS)]
+        grace_secs: u64,
+        /// The store's size cap in bytes; `0` evicts no app for size.
+        #[arg(long, default_value_t = package_store::DEFAULT_MAX_STORE_BYTES)]
+        max_store_bytes: u64,
+    },
     /// Manage installed Tilo runtime bundles.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
+    },
+    /// Manage environment images: `env-runtime` and `tool` packages, the
+    /// read-only trees an environment's `/usr` and `/etc` are stacked from.
+    /// Images are never launched and have no row in `list`.
+    Image {
+        #[command(subcommand)]
+        cmd: ImageCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImageCmd {
+    /// Add an image .tapp to the store. Its publisher must be a trusted
+    /// image publisher, an attested one, or the one --publisher names.
+    Add {
+        /// Path to the .tapp file.
+        tapp: PathBuf,
+        /// Also trust this publisher (64 hex characters) for this image.
+        #[arg(long)]
+        publisher: Option<String>,
+        /// Registry server to fetch payload blobs the .tapp does not carry
+        /// from (`<url>/blobs/<hash>`).
+        #[arg(long)]
+        payload_from: Option<String>,
+    },
+    /// List the images this device holds, system stores first.
+    List,
+    /// Print the read-only tree of an image (`tapp:<hex>`), fetching it from
+    /// the registry when no store holds it.
+    Path {
+        /// Package id, `tapp:<hex>`.
+        id: String,
+        /// Registry to fetch a missing image from; defaults to
+        /// `$TILO_REGISTRY`, else `https://apps.tilo.so`.
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Remove an image from the user's store.
+    Remove {
+        /// Package id, `tapp:<hex>`.
+        id: String,
     },
 }
 
@@ -214,14 +265,6 @@ enum Cmd {
 /// is caught while the user is still looking, rather than as a mystery later.
 #[derive(Debug, Args, Clone, Default)]
 struct RuntimeFlags {
-    /// Build and install the manifest's declared runtime bundle from the
-    /// current host root, if missing.
-    #[arg(long)]
-    with_runtime: bool,
-    /// Sign the bundle built by --with-runtime; unsigned bundles are
-    /// refused by the launcher unless told otherwise.
-    #[arg(long, requires = "with_runtime")]
-    runtime_identity: Option<PathBuf>,
     /// Install even though the runtime bundle is missing; the package won't launch until it is.
     #[arg(long)]
     ignore_missing_runtime: bool,
@@ -286,8 +329,14 @@ enum RuntimeCmd {
     },
     /// List installed runtime bundle versions.
     List,
-    /// Remove an installed runtime bundle by version tag.
+    /// Remove an installed runtime bundle by version tag. A bundle a
+    /// running app has mounted is taken out of use now and deleted by the
+    /// first collection after the app closes.
     Remove { version: String },
+    /// Keep a runtime bundle even when no installed package runs on it.
+    Pin { version: String },
+    /// Let collection remove a runtime bundle again once nothing needs it.
+    Unpin { version: String },
     /// Print the resolved path for a version (same lookup order as the launcher).
     Path {
         #[arg(long)]
@@ -333,6 +382,11 @@ enum Error {
     AlreadyInstalled(String),
     #[error("no such package installed: {0}")]
     NotInstalled(String),
+    #[error(
+        "{0} ships with the system image and cannot be removed; \
+         `app rollback {0}` goes back to an older version"
+    )]
+    ImageApp(String),
     #[error("registry read: {0}")]
     RegistryRead(String),
     #[error("trust registry: {0}")]
@@ -341,6 +395,8 @@ enum Error {
     Io(#[from] std::io::Error),
     #[error("shim install/remove: {0}")]
     Shim(String),
+    #[error("collecting garbage: {0}")]
+    Gc(String),
     #[error("runtime-bundle: {0}")]
     RuntimeBundle(String),
     #[error("runtime bundle tilo-runtime/{0} is already installed (use --force to overwrite)")]
@@ -348,17 +404,30 @@ enum Error {
     #[error("runtime bundle tilo-runtime/{0} is not installed")]
     RuntimeBundleNotInstalled(String),
     #[error(
-        "{package} declares runtime `{runtime}`, and no bundle for it is installed. \
-         That package will not launch: the launcher refuses to start an app whose \
-         declared runtime is absent.\n  \
-         Install it and retry:  tilo-install runtime install --version {version} --from-host --identity <key.json>\n  \
-         Or build it as part of this install:  add --with-runtime\n  \
+        "{package} needs runtime `{runtime}`, the exact runtime build it was linked against, \
+         and this device does not have it. It would not start: its libraries would not load.\n  \
+         Install the runtime first: `app install {package}` fetches it from the registry that \
+         offers the app, or install its runtime package with `tilo-install install <runtime.tapp>`.\n  \
          Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
     )]
-    RuntimeDependencyMissing {
+    RuntimeDependencyMissing { package: String, runtime: String },
+    #[error(
+        "{package} pins runtime `{runtime}` and this device does not have it, so the \
+         installed copy would stop working with it. Install them together: `app install \
+         {package}` (or `app update`) fetches the runtime first, or install the runtime \
+         package with `tilo-install install <runtime.tapp>`.\n  Or install anyway: add \
+         --ignore-missing-runtime"
+    )]
+    OptionalRuntimeMissing { package: String, runtime: String },
+    #[error(
+        "{package} {version} needs system interfaces this Tilo does not provide: {unmet}.\n  \
+         It was built for another version of Tilo. Update the system first, or keep the \
+         version you have."
+    )]
+    InterfacesUnmet {
         package: String,
-        runtime: String,
         version: String,
+        unmet: String,
     },
     #[error("manifest declares runtime `{0}`, which is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
@@ -409,8 +478,8 @@ fn store() -> Result<PackageStore, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    xdg_paths::env_dir("XDG_DATA_HOME")
-        .or_else(xdg_paths::data_dir)
+    tilo_paths::env_dir("XDG_DATA_HOME")
+        .or_else(tilo_paths::data_dir)
         .ok_or(Error::NoDataDir)
 }
 
@@ -436,17 +505,42 @@ fn bin_root() -> Result<PathBuf, Error> {
     Ok(store()?.layout().bin())
 }
 
-fn load_registry() -> Result<Registry, Error> {
-    store()?
-        .registry()
+/// The installed packages: the system image's apps and the user's store,
+/// one row per app for the copy that runs.
+fn catalog() -> Result<package_store::Catalog, Error> {
+    Ok(package_store::Catalog::at(
+        data_root()?,
+        package_store::SystemStore::from_env(),
+    ))
+}
+
+fn list_catalog() -> Result<Vec<InstalledPackage>, Error> {
+    catalog()?
+        .list()
         .map_err(|e| Error::RegistryRead(e.to_string()))
 }
 
+fn layers(pkg_id: &str) -> Result<package_store::Layers, Error> {
+    catalog()?
+        .layers(pkg_id)
+        .map_err(|e| Error::RegistryRead(e.to_string()))
+}
+
+/// The copy of `pkg_id` that runs, whichever store holds it.
 fn find_installed(pkg_id: &str) -> Result<InstalledPackage, Error> {
-    load_registry()?
-        .find(pkg_id)
+    layers(pkg_id)?
+        .running()
         .cloned()
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))
+}
+
+/// Whether a user copy of `version` must be held in front of the image's
+/// copy of the same app: it is older, so only an explicit choice (a
+/// rollback, a forced install) put it there.
+fn held_below_image(layers: &package_store::Layers, version: &str) -> bool {
+    layers.image.as_ref().is_some_and(|image| {
+        tilo_app_package::version::compare(version, &image.version) == std::cmp::Ordering::Less
+    })
 }
 
 fn store_error(error: StoreError) -> Error {
@@ -611,7 +705,7 @@ impl Checked {
     }
     /// `tilo-runtime/<v>`, when the manifest pins one.
     fn runtime_ref(&self) -> Option<&str> {
-        self.manifest.package.runtime.as_deref()
+        tilo_app_package::desktop::runtime_dependency(&self.manifest)
     }
     fn cli_commands(&self) -> Vec<String> {
         self.manifest
@@ -641,17 +735,15 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(&meta, trust)?;
 
     let len = candidate.len()?;
-    if !tilo_app_package::tapp_size_allowed(manifest.package.kind, len) {
+    tilo_app_package::desktop::validate_native_host(&manifest)
+        .map_err(|e| Error::Policy(e.to_string()))?;
+    if let Some(limit) = tilo_app_package::app_size_limit(&manifest)
+        && len > limit
+    {
         return Err(Error::Policy(format!(
-            "application .tapp is {len} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
-            tilo_app_package::MAX_APP_TAPP_BYTES
+            "application .tapp is {len} bytes; this target's signed package contract permits at most {limit} bytes"
         )));
     }
-
-    // A signature says who wrote the manifest, not that its contents are
-    // reasonable — a package naming its own filesystem paths is refused
-    // here regardless of signature.
-    tilo_app_package::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
     Ok(Checked {
         meta,
@@ -668,36 +760,26 @@ fn install_checked(
     candidate: &Candidate,
     checked: &Checked,
     pinned: bool,
+    held: bool,
     source: String,
     payload: Option<&dyn BlobFetcher>,
 ) -> Result<package_store::Installed, Error> {
-    let expected = checked.meta.id;
-    let attested_by = checked.attested_by.clone();
     store
         .install(
             candidate.reader()?,
-            move |meta| {
-                if meta.id != expected {
-                    return Err(format!(
-                        "the package changed while it was installed: {} instead of {expected}",
-                        meta.id
-                    ));
-                }
-                Ok(Admission {
-                    pinned,
-                    attested_by,
-                    source,
-                })
-            },
+            checked_admission(checked, pinned, held, source),
             payload,
         )
         .map_err(store_error)
 }
 
 fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
-    let Some(raw) = checked.runtime_ref() else {
-        return Ok(None);
-    };
+    checked.runtime_ref().map(bundle_status).transpose()
+}
+
+/// The version `raw` (`<name>/<version>`) names, and whether its bundle is
+/// installed for this user or in the image.
+fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
     let (_, version) = raw
         .split_once('/')
         .ok_or_else(|| Error::RuntimeReferenceMalformed(raw.to_string()))?;
@@ -708,7 +790,67 @@ fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
         .cloned()
         .chain([system])
         .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists());
-    Ok(Some((version.to_string(), present)))
+    Ok((version.to_string(), present))
+}
+
+/// The optional runtimes `checked` pins that are not installed.
+fn missing_optional_runtimes(checked: &Checked) -> Result<Vec<String>, Error> {
+    let mut missing = Vec::new();
+    for raw in tilo_app_package::desktop::optional_runtime_dependencies(&checked.manifest) {
+        if !bundle_status(raw)?.1 {
+            missing.push(raw.clone());
+        }
+    }
+    Ok(missing)
+}
+
+fn checked_admission(
+    checked: &Checked,
+    pinned: bool,
+    held: bool,
+    source: String,
+) -> impl FnOnce(&tilo_app_package::PackageMeta) -> Result<Admission, String> + Send {
+    let expected = checked.meta.id;
+    let attested_by = checked.attested_by.clone();
+    move |meta| {
+        if meta.id != expected {
+            return Err(format!(
+                "the package changed while it was installed: {} instead of {expected}",
+                meta.id
+            ));
+        }
+        Ok(Admission {
+            pinned,
+            attested_by,
+            source,
+            held,
+        })
+    }
+}
+
+fn print_cohort_selection(row: &InstalledPackage, preserved: bool) {
+    let receipt = serde_json::json!({
+        "id": row.id, "version": row.version, "root": row.package_id_hex,
+        "runtime": row.runtime, "pinned": row.pinned, "held": row.held,
+        "preserved": preserved,
+    });
+    println!("cohort-selection: {receipt}");
+}
+
+/// Refuse a package that requires a system interface version this OS does
+/// not serve: installed, it could not work, and it would sit in front of the
+/// image's copy that does.
+fn fits_os(checked: &Checked) -> Result<(), Error> {
+    let provided = package_store::interfaces::system_interfaces();
+    let unmet = package_store::interfaces::unmet(provided.as_ref(), &checked.manifest);
+    if unmet.is_empty() {
+        return Ok(());
+    }
+    Err(Error::InterfacesUnmet {
+        package: checked.id().to_string(),
+        version: checked.version().to_string(),
+        unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
+    })
 }
 
 /// Make the declared runtime available, or refuse the install.
@@ -717,22 +859,22 @@ fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
 /// bundle here (with a fix command) beats discovering
 /// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error> {
+    // The runtimes an app pins by exact version travel with it, whichever
+    // path installs it: an app replaced while its engine is absent would
+    // open to "not installed" until someone fetched the engine by hand.
+    if !flags.ignore_missing_runtime
+        && let Some(runtime) = missing_optional_runtimes(checked)?.into_iter().next()
+    {
+        return Err(Error::OptionalRuntimeMissing {
+            package: checked.id().to_string(),
+            runtime,
+        });
+    }
     let Some((version, present)) = runtime_status(checked)? else {
         return Ok(());
     };
     if present {
         return Ok(());
-    }
-    if flags.with_runtime {
-        println!("  runtime  : tilo-runtime/{version} is missing; building it from the host root");
-        return runtime_install(
-            &version,
-            true,
-            None,
-            None,
-            flags.runtime_identity.as_deref(),
-            false,
-        );
     }
     if flags.ignore_missing_runtime {
         eprintln!(
@@ -745,7 +887,6 @@ fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error>
     Err(Error::RuntimeDependencyMissing {
         package: checked.id().to_string(),
         runtime: checked.runtime_ref().unwrap_or("tilo-runtime").to_string(),
-        version,
     })
 }
 
@@ -810,9 +951,16 @@ fn replace_cli_shims(
 }
 
 /// How `install` treats a package beyond trust and runtime policy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Replacement {
+    Refuse,
+    Replace,
+    PreserveHeld,
+}
+
 struct InstallOptions {
     pinned: bool,
-    force: bool,
+    replacement: Replacement,
     dry_run: bool,
     /// Where payload blobs the archive does not carry come from.
     payload_from: Option<app_registry::HttpBlobs>,
@@ -826,22 +974,35 @@ fn install(
 ) -> Result<(), Error> {
     let InstallOptions {
         pinned,
-        force,
+        replacement,
         dry_run,
         payload_from,
     } = options;
+    let force = replacement != Replacement::Refuse;
+    let preserve_held = replacement == Replacement::PreserveHeld;
     // 1. Read + verify, before the registry check, so a --dry-run plan
     //    describes a package we've actually seen and checked.
     let candidate = Candidate::File(tapp.to_path_buf());
     let checked = check(&candidate, trust)?;
+    if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+        return install_runtime_package(
+            &candidate,
+            &checked,
+            RuntimeInstallOptions {
+                replacement,
+                pinned,
+                dry_run,
+            },
+            payload_from
+                .as_ref()
+                .map(|source| source as &dyn BlobFetcher),
+        );
+    }
 
-    // 2. Registry check.
+    // 2. Registry check: an app the system image ships is installed too.
     let store = store()?;
-    let existing = store
-        .registry()
-        .map_err(store_error)?
-        .find(checked.id())
-        .cloned();
+    let layers = layers(checked.id())?;
+    let existing = layers.running().cloned();
     if existing.is_some() && !force {
         return Err(Error::AlreadyInstalled(checked.id().to_string()));
     }
@@ -853,21 +1014,45 @@ fn install(
 
     // 3. Dependencies, before anything is stored: a half-succeeded install
     //    that then refuses is worse than one that refuses upfront.
+    fits_os(&checked)?;
     satisfy_runtime(&checked, runtime)?;
 
     // 4. Into the content store, materialised once; the registry row is the
     //    commit point.
-    let installed = install_checked(
-        &store,
-        &candidate,
-        &checked,
-        pinned,
-        tapp.display().to_string(),
-        payload_from
-            .as_ref()
-            .map(|source| source as &dyn BlobFetcher),
-    )?;
+    let payload = payload_from
+        .as_ref()
+        .map(|source| source as &dyn BlobFetcher);
+    let held = held_below_image(&layers, checked.version());
+    let installed = if preserve_held {
+        let selected = store
+            .install_preserving_hold(
+                candidate.reader()?,
+                checked_admission(&checked, pinned, held, tapp.display().to_string()),
+                payload,
+            )
+            .map_err(store_error)?;
+        match selected {
+            package_store::InstallSelection::Installed(installed) => *installed,
+            package_store::InstallSelection::Preserved(row) => {
+                print_cohort_selection(&row, true);
+                return Ok(());
+            }
+        }
+    } else {
+        install_checked(
+            &store,
+            &candidate,
+            &checked,
+            pinned,
+            held,
+            tapp.display().to_string(),
+            payload,
+        )?
+    };
     replace_cli_shims(existing.as_ref(), &checked.manifest, checked.id())?;
+    if preserve_held {
+        print_cohort_selection(&installed.package, false);
+    }
 
     println!("installed: {} {}", checked.id(), checked.version());
     println!("  payload  : {}", installed.package.payload_root.display());
@@ -888,6 +1073,318 @@ fn install(
     Ok(())
 }
 
+/// Where the launcher reads the runtime publishers it accepts; the
+/// launcher's developer override names another list, and the installer
+/// follows it so both judge a bundle alike.
+fn trusted_runtime_publishers(
+    bundle: &Path,
+) -> Result<runtime_bundle::component_pins::BundleTrust, Error> {
+    let path = std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || PathBuf::from(runtime_bundle::TRUSTED_PUBLISHERS_FILE),
+            PathBuf::from,
+        );
+    runtime_bundle::component_pins::load_for_bundle(&path, bundle)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))
+}
+
+/// Stores the blobs a runtime package carries, or a registry delivers, as
+/// files named by hash, streaming: a runtime's libraries are hundreds of
+/// megabytes.
+struct BlobDir(PathBuf);
+
+impl tilo_app_package::BlobSink for BlobDir {
+    fn accept(
+        &mut self,
+        hash: &tilo_app_package::BlobHash,
+        len: u64,
+        bytes: &mut dyn Read,
+    ) -> std::io::Result<()> {
+        let path = self.0.join(hash.to_hex());
+        let mut file = fs::File::create(&path)?;
+        std::io::copy(&mut bytes.take(len), &mut file)?;
+        Ok(())
+    }
+}
+
+impl tilo_app_package::BlobSource for BlobDir {
+    fn open_blob(
+        &self,
+        hash: &tilo_app_package::BlobHash,
+    ) -> std::io::Result<Option<tilo_app_package::blobs::OpenBlob<'_>>> {
+        let path = self.0.join(hash.to_hex());
+        match fs::File::open(&path) {
+            Ok(file) => Ok(Some(tilo_app_package::blobs::OpenBlob {
+                len: file.metadata()?.len(),
+                reader: Box::new(std::io::BufReader::new(file)),
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl BlobFetcher for BlobDir {
+    fn fetch(
+        &self,
+        hashes: &[tilo_app_package::BlobHash],
+        sink: &mut dyn tilo_app_package::BlobSink,
+    ) -> std::io::Result<()> {
+        for hash in hashes {
+            let mut file = fs::File::open(self.0.join(hash.to_hex()))?;
+            sink.accept(hash, file.metadata()?.len(), &mut file)?;
+        }
+        Ok(())
+    }
+}
+
+/// Install a native runtime package: its payload is a signed runtime
+/// bundle, which lands where the launcher looks for the runtime it
+/// provides (`$XDG_DATA_HOME/tilo-runtime/<version>`). The bundle must
+/// verify as the build the package names, for this machine, signed by a
+/// publisher this device trusts — the same checks the launcher makes before
+/// mounting it — so an install never leaves a runtime the launcher refuses.
+///
+/// Each install (or finding it installed) leases the bundle, so collection
+/// keeps it through the app install that follows; `pinned` keeps it for
+/// good. A replaced bundle leaves the version's directory in one rename
+/// before it is deleted, and stays while a running app has it mounted.
+#[derive(Clone, Copy)]
+struct RuntimeInstallOptions {
+    replacement: Replacement,
+    pinned: bool,
+    dry_run: bool,
+}
+
+fn install_runtime_package(
+    candidate: &Candidate,
+    checked: &Checked,
+    options: RuntimeInstallOptions,
+    payload: Option<&dyn BlobFetcher>,
+) -> Result<(), Error> {
+    let provides = checked
+        .manifest
+        .package
+        .provides
+        .as_deref()
+        .ok_or_else(|| {
+            Error::Policy(format!(
+                "{} is a runtime package that names no `package.provides`",
+                checked.id()
+            ))
+        })?;
+    let (_, version) = provides
+        .split_once('/')
+        .ok_or_else(|| Error::RuntimeReferenceMalformed(provides.to_string()))?;
+    let dest = runtime_bundle::default_bundle_path(version)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    if options.dry_run {
+        println!("plan: install runtime {provides}");
+        println!("  package   : {} {}", checked.id(), checked.version());
+        println!("  bundle    : {}", dest.display());
+        println!("(nothing was written)");
+        return Ok(());
+    }
+    let store = store()?;
+    let layers = layers(checked.id())?;
+    let existing = layers.running();
+    let already_installed =
+        existing.is_some_and(|row| row.package_id_hex == checked.meta.id.to_hex());
+    fits_os(checked)?;
+    let root = dest
+        .parent()
+        .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
+    fs::create_dir_all(root)?;
+    let bundles = runtime_bundle::gc::BundleRoot::new(root);
+    let _collection_held_off = bundles.install_lock()?;
+    let keep = |bundles: &runtime_bundle::gc::BundleRoot| -> Result<(), Error> {
+        bundles.lease(version, tilo_clock::unix_now())?;
+        if options.pinned {
+            bundles.pin(version)?;
+        }
+        Ok(())
+    };
+    let staging = root.join(format!(
+        "{}{}",
+        runtime_bundle::gc::STAGING_PREFIX,
+        std::process::id()
+    ));
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    let result = stage_runtime_bundle(candidate, &staging, payload).and_then(|tree| {
+        let manifest = check_runtime_bundle(&tree, version)?;
+        seal_runtime_bundle(&tree, &manifest);
+        if dest.exists()
+            && existing.is_some()
+            && !already_installed
+            && options.replacement == Replacement::Refuse
+        {
+            return Err(Error::AlreadyInstalled(checked.id().to_string()));
+        }
+        // Publish the verified signed package through the same catalogue and
+        // integrity records AppHost reads. Reuse the already fetched blobs;
+        // a thin engine must not download its entire payload a second time.
+        let blobs = BlobDir(staging.join("blobs"));
+        if !record_runtime_package(&store, candidate, checked, options, &blobs)? {
+            return Ok(false);
+        }
+        let replaced = bundles.retire(version)?;
+        fs::rename(&tree, &dest)?;
+        if let Some(replaced) = replaced {
+            bundles.purge(&replaced, &install::gc::in_use_now())?;
+        }
+        Ok(true)
+    });
+    let _ = fs::remove_dir_all(&staging);
+    if !result? {
+        return Ok(());
+    }
+    keep(&bundles)?;
+    if already_installed {
+        println!("runtime {provides} is already installed; its verified package record is current");
+    } else {
+        println!("installed: runtime {provides}");
+    }
+    println!("  package  : {} {}", checked.id(), checked.version());
+    println!("  bundle   : {}", dest.display());
+    Ok(())
+}
+
+/// The normal package-store commit retains pins and can preserve an explicit
+/// version hold. No runtime directory is promoted if that hold wins.
+fn record_runtime_package(
+    store: &PackageStore,
+    candidate: &Candidate,
+    checked: &Checked,
+    options: RuntimeInstallOptions,
+    blobs: &BlobDir,
+) -> Result<bool, Error> {
+    let admission = checked_admission(
+        checked,
+        options.pinned,
+        held_below_image(&layers(checked.id())?, checked.version()),
+        candidate_source(candidate),
+    );
+    if options.replacement == Replacement::PreserveHeld {
+        match store
+            .install_preserving_hold(candidate.reader()?, admission, Some(blobs))
+            .map_err(store_error)?
+        {
+            package_store::InstallSelection::Installed(_) => {}
+            package_store::InstallSelection::Preserved(row) => {
+                print_cohort_selection(&row, true);
+                return Ok(false);
+            }
+        }
+    } else {
+        store
+            .install(candidate.reader()?, admission, Some(blobs))
+            .map_err(store_error)?;
+    }
+    Ok(true)
+}
+
+fn candidate_source(candidate: &Candidate) -> String {
+    match candidate {
+        Candidate::File(path) => path.display().to_string(),
+        Candidate::Fetched(_) => "registry".to_string(),
+    }
+}
+
+/// Materialise the package's payload tree under `staging`; returns the tree.
+fn stage_runtime_bundle(
+    candidate: &Candidate,
+    staging: &Path,
+    payload: Option<&dyn BlobFetcher>,
+) -> Result<PathBuf, Error> {
+    let blobs = staging.join("blobs");
+    fs::create_dir_all(&blobs)?;
+    let mut sink = BlobDir(blobs);
+    let tapp = tilo_app_package::tapp::read(candidate.reader()?, &mut sink)
+        .map_err(|error| Error::Parse(error.to_string()))?;
+    // Most of a runtime build's files are in the runtime already installed:
+    // copy those, each verified against the hash the signed package names,
+    // and fetch only the rest.
+    let (missing, reused) = install::runtime_blobs::LocalRuntimeBlobs::installed()
+        .copy_into(&tapp.missing(), &sink.0)?;
+    if reused > 0 {
+        println!("  reused   : {reused} bytes already on this device");
+    }
+    if !missing.is_empty() {
+        let fetcher = payload.ok_or_else(|| {
+            Error::Policy(format!(
+                "the runtime package does not carry {} payload blob(s); name the registry that \
+                 offers it with --payload-from",
+                missing.len()
+            ))
+        })?;
+        fetcher
+            .fetch(&missing, &mut sink)
+            .map_err(|error| Error::Store(format!("fetching the runtime's payload: {error}")))?;
+    }
+    let tree = staging.join("tree");
+    tilo_app_package::unpack(&tapp.meta, &sink, &tree)
+        .map_err(|error| Error::Store(format!("unpacking the runtime: {error}")))?;
+    Ok(tree)
+}
+
+/// Enable fs-verity on a fully verified bundle's files, so each launch
+/// trusts them by their kernel-measured, publisher-signed digests instead of
+/// hashing the whole runtime again. Best effort: where the filesystem has no
+/// fs-verity, or the bundle predates its digests, launches hash the payload
+/// as before, which is as safe and only slower.
+fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
+    match runtime_bundle::enable_bundle_verity(tree, manifest) {
+        Ok(0) => {}
+        Ok(sealed) => {
+            println!("  sealed   : {sealed} file(s) with fs-verity");
+            // What a launch will do: a file the kernel measures differently
+            // from its signed digest is hashed at every launch, so say so.
+            let options = runtime_bundle::VerifyOptions::default();
+            if let Ok((_, check)) = runtime_bundle::verify_bundle_verity_with(tree, &options)
+                && check.hashed > 0
+            {
+                println!(
+                    "  warning  : {} file(s) do not measure their signed fs-verity digest; each \
+                     launch hashes them",
+                    check.hashed
+                );
+            }
+        }
+        Err(error) => {
+            println!("  sealed   : no ({error}); each launch hashes the runtime instead");
+        }
+    }
+}
+
+/// The checks the launcher makes before it mounts a per-user bundle.
+fn check_runtime_bundle(
+    tree: &Path,
+    version: &str,
+) -> Result<runtime_bundle::BundleManifest, Error> {
+    let manifest = runtime_bundle::verify_bundle_with(
+        tree,
+        &runtime_bundle::VerifyOptions {
+            require_publisher: None,
+            require_signature: true,
+            require_arch: Some(runtime_bundle::host_arch().to_string()),
+        },
+    )
+    .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    if manifest.version != version {
+        return Err(Error::RuntimeBundle(format!(
+            "the package says it provides {version}, but its bundle is {}",
+            manifest.version
+        )));
+    }
+    trusted_runtime_publishers(tree)?
+        .check(&manifest)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
+    Ok(manifest)
+}
+
 /// Let GNOME Shell and `KRunner` search the resources the runtime beside this
 /// binary admits. Best effort: an app installs and runs without it.
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -902,7 +1399,7 @@ fn register_search_providers() {
     let written = data_home_root()
         .map_err(|error| error.to_string())
         .and_then(|data| {
-            let config = xdg_paths::config_dir().ok_or("no configuration directory")?;
+            let config = tilo_paths::config_dir().ok_or("no configuration directory")?;
             tilo_os_search::linux_files::write(&data, &config, &runtime)
                 .map_err(|error| error.to_string())
         });
@@ -944,7 +1441,7 @@ fn print_install_plan(
         Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
         Some((v, false)) => println!(
             "  runtime   : tilo-runtime/{v} MISSING — install would refuse without \
-             --with-runtime or --ignore-missing-runtime"
+             --ignore-missing-runtime"
         ),
     }
     let commands = checked.cli_commands();
@@ -980,7 +1477,10 @@ fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error
                 "--from names one .tapp, so it needs one package id".into(),
             ));
         }
-        load_registry()?.into_entries()
+        if !request.dry_run {
+            drop_superseded()?;
+        }
+        list_catalog()?
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -998,6 +1498,29 @@ fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error
     }
     if targets.len() > 1 {
         println!("{updated} updated, {current} already current");
+    }
+    Ok(())
+}
+
+/// Remove the user's copies of apps the system image now ships a newer
+/// version of: nothing runs them any more.
+fn drop_superseded() -> Result<(), Error> {
+    let superseded = catalog()?
+        .superseded()
+        .map_err(|e| Error::RegistryRead(e.to_string()))?;
+    if superseded.is_empty() {
+        return Ok(());
+    }
+    let store = store()?;
+    for entry in superseded {
+        store.remove(&entry.id, true).map_err(store_error)?;
+        if !entry.cli_commands.is_empty() {
+            let _ = shim::remove_shims(&bin_root()?, &entry.cli_commands);
+        }
+        println!(
+            "{} {}: the system image ships a newer version; removed this copy",
+            entry.id, entry.version
+        );
     }
     Ok(())
 }
@@ -1059,6 +1582,9 @@ fn update_allowed(
     // for equality only — not evidence of an upgrade.
     match compare_versions(&entry.version, checked.version()) {
         Some(std::cmp::Ordering::Equal) | None if entry.version == checked.version() => {
+            if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+                verify_current_runtime(entry, checked)?;
+            }
             println!("{} {} is already current", entry.id, entry.version);
             Ok(Some(UpdateOutcome::AlreadyCurrent))
         }
@@ -1069,6 +1595,43 @@ fn update_allowed(
         }),
         _ => Ok(None),
     }
+}
+
+/// A version string and a retained directory cannot establish that an exact
+/// runtime package remains installed. Replay its signed package record and
+/// compare the mounted bundle's signed manifest with that package's payload.
+fn verify_current_runtime(entry: &InstalledPackage, checked: &Checked) -> Result<(), Error> {
+    if entry.package_id_hex != checked.meta.id.to_hex() {
+        return Err(Error::Policy(
+            "the offered runtime changes the installed version's signed root".into(),
+        ));
+    }
+    let report = package_store::integrity::verify(entry, &entry.payload_root)
+        .map_err(|error| Error::Store(error.to_string()))?;
+    if !report.is_intact() {
+        return Err(Error::RuntimeBundle(
+            "the installed runtime package payload is damaged".into(),
+        ));
+    }
+    let version = checked
+        .manifest
+        .package
+        .provides
+        .as_deref()
+        .and_then(|runtime| runtime.split_once('/').map(|(_, version)| version))
+        .ok_or_else(|| {
+            Error::RuntimeBundle("the runtime package names no valid provided runtime".into())
+        })?;
+    let bundle = runtime_bundle::default_bundle_path(version)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
+    check_runtime_bundle(&bundle, version)?;
+    let manifest = runtime_bundle::BUNDLE_MANIFEST_FILENAME;
+    if fs::read(bundle.join(manifest))? != fs::read(entry.payload_root.join(manifest))? {
+        return Err(Error::RuntimeBundle(
+            "the installed bundle differs from its signed package".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn update_one(
@@ -1099,6 +1662,24 @@ fn update_one(
         return Ok(outcome);
     }
 
+    if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
+        install_runtime_package(
+            &candidate,
+            &checked,
+            RuntimeInstallOptions {
+                replacement: Replacement::Replace,
+                pinned: entry.pinned,
+                dry_run: request.dry_run,
+            },
+            payload,
+        )?;
+        return Ok(if request.dry_run {
+            UpdateOutcome::Planned
+        } else {
+            UpdateOutcome::Swapped
+        });
+    }
+
     let data_home = data_home_root()?;
     let rooms = install::state::find(&data_home, &entry.id);
     if request.dry_run {
@@ -1110,7 +1691,14 @@ fn update_one(
         );
         println!("  from      : {source}");
         println!("  signature : verified ({})", describe_trust(&checked));
-        println!("  payload   : replace {}", entry.payload_root.display());
+        if entry.system {
+            println!(
+                "  payload   : install beside the system image's {}",
+                entry.payload_root.display()
+            );
+        } else {
+            println!("  payload   : replace {}", entry.payload_root.display());
+        }
         match runtime_status(&checked)? {
             None => println!("  runtime   : none declared"),
             Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
@@ -1125,17 +1713,20 @@ fn update_one(
         return Ok(UpdateOutcome::Planned);
     }
 
+    fits_os(&checked)?;
     satisfy_runtime(&checked, request.runtime)?;
 
     // 2. The new version is materialised beside the old one and the registry
     //    row replaced atomically: a failure before that point leaves the old
     //    version installed and working, and the old tree goes only after.
     let store = store()?;
+    let held = held_below_image(&layers(&entry.id)?, checked.version());
     let installed = install_checked(
         &store,
         &candidate,
         &checked,
         entry.pinned,
+        held,
         source.clone(),
         payload,
     )?;
@@ -1161,17 +1752,53 @@ fn update_one(
     Ok(UpdateOutcome::Swapped)
 }
 
+fn list_json(include_runtime_paths: bool) -> Result<(), Error> {
+    let rows = list_catalog()?;
+    if rows.len() > 512 {
+        return Err(Error::RegistryRead(
+            "selected package count exceeds automation bound".into(),
+        ));
+    }
+    let value = if include_runtime_paths {
+        let mut paths = std::collections::BTreeMap::new();
+        for row in &rows {
+            if let Some(version) = row.runtime.strip_prefix("tilo-runtime/") {
+                let path = runtime_bundle::default_bundle_path(version)
+                    .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
+                if path
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+                    .is_file()
+                {
+                    paths.insert(version, path);
+                }
+            }
+        }
+        serde_json::json!({"apps": rows, "runtime_paths": paths})
+    } else {
+        serde_json::json!(rows)
+    };
+    let json =
+        serde_json::to_string(&value).map_err(|error| Error::RegistryRead(error.to_string()))?;
+    if json.len() > 8 * 1024 * 1024 {
+        return Err(Error::RegistryRead(
+            "selected package metadata exceeds automation bound".into(),
+        ));
+    }
+    println!("{json}");
+    Ok(())
+}
+
 fn list() -> Result<(), Error> {
-    let reg = load_registry()?;
-    if reg.is_empty() {
+    let entries = list_catalog()?;
+    if entries.is_empty() {
         println!("(no packages installed)");
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  installed",
-        "id", "version", "pinned", "attested-by", "runtime"
+        "{:<32}  {:<8}  {:<6}  {:<6}  {:<18}  {:<18}  installed",
+        "id", "version", "from", "pinned", "attested-by", "runtime"
     );
-    for e in reg.entries() {
+    for e in &entries {
         let ago = age(e.installed_at);
         let attested = if e.attested_by.is_empty() {
             "-"
@@ -1192,9 +1819,10 @@ fn list() -> Result<(), Error> {
             }
         };
         println!(
-            "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
+            "{:<32}  {:<8}  {:<6}  {:<6}  {:<18}  {:<18}  {}",
             e.id,
             e.version,
+            installed_from(e),
             if e.pinned { "yes" } else { "no" },
             attested,
             runtime,
@@ -1204,18 +1832,40 @@ fn list() -> Result<(), Error> {
     Ok(())
 }
 
+/// Which store a listed package runs from: the system image's, or the
+/// user's (`held` when rolled back below the image's version).
+fn installed_from(entry: &InstalledPackage) -> &'static str {
+    if entry.system {
+        "image"
+    } else if entry.held {
+        "held"
+    } else {
+        "user"
+    }
+}
+
 /// Uninstall a package, deciding about its user data separately.
 ///
 /// The payload is the publisher's (reproducible by reinstalling); the
 /// per-room state is the user's and does not come back — so the two
 /// are separate decisions, and deleting state is never done silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
-    let entry = find_installed(pkg_id)?;
+    // Only the user's copy can go; removing it puts the image's back.
+    let layers = layers(pkg_id)?;
+    let Some(entry) = layers.user.clone() else {
+        return Err(match layers.image {
+            Some(_) => Error::ImageApp(pkg_id.into()),
+            None => Error::NotInstalled(pkg_id.into()),
+        });
+    };
     let data_home = data_home_root()?;
     let rooms = install::state::find(&data_home, pkg_id);
 
     if dry_run {
         println!("plan: uninstall {} {}", entry.id, entry.version);
+        if let Some(image) = &layers.image {
+            println!("  then runs : {} from the system image", image.version);
+        }
         println!("  payload   : remove {}", entry.payload_root.display());
         println!("  registry  : drop the entry");
         if entry.cli_commands.is_empty() {
@@ -1262,6 +1912,12 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         );
     }
     println!("uninstalled: {pkg_id} {}", entry.version);
+    if let Some(image) = &layers.image {
+        println!(
+            "  now runs : {} {} from the system image",
+            image.id, image.version
+        );
+    }
     println!(
         "  content  : evicted {} blob(s) no other package uses",
         removed.evicted_blobs
@@ -1289,7 +1945,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
 fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     let targets: Vec<InstalledPackage> = match pkg_id {
         Some(id) => vec![find_installed(id)?],
-        None => load_registry()?.into_entries(),
+        None => list_catalog()?,
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -1354,19 +2010,11 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     Ok(())
 }
 
-// One CLI flag per bool, mirroring `Cmd::Run`'s own fields one-for-one;
-// grouping them into a struct would only move the list, not shorten it.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "each bool is an independent `tilo-install run` flag forwarded to the launcher; \
-              see the comment above"
-)]
 fn run(
     pkg_id: &str,
     no_services: bool,
     minimal_libs: bool,
     allow_missing_runtime: bool,
-    no_landlock: bool,
     trust: &TrustFlags,
 ) -> Result<(), Error> {
     let entry = find_installed(pkg_id)?;
@@ -1447,12 +2095,6 @@ fn run(
     if allow_missing_runtime {
         cmd.arg("--allow-missing-runtime");
     }
-    if no_landlock {
-        eprintln!(
-            "tilo-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
-        );
-        // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
-    }
     // exec()-replace so this process's exit code IS the launcher's.
     let err = cmd.exec();
     Err(Error::Io(err))
@@ -1477,7 +2119,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     );
     println!(
         "installed     : {} seconds ago",
-        now().saturating_sub(entry.installed_at)
+        tilo_clock::unix_now().saturating_sub(entry.installed_at)
     );
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
@@ -1743,9 +2385,13 @@ fn runtime_install(
     if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
         return Err(Error::RuntimeBundleExists(version.to_string()));
     }
-    if dest.exists() {
-        fs::remove_dir_all(&dest)?;
+    let bundles = runtime_bundles()?;
+    let _collection_held_off = bundles.install_lock()?;
+    if let Some(replaced) = bundles.retire(version)? {
+        bundles.purge(&replaced, &install::gc::in_use_now())?;
     }
+    // Built on this device on purpose, from no package: kept until removed.
+    bundles.pin(version)?;
     fs::create_dir_all(&dest)?;
     let host_root: Option<&Path> = if let Some(p) = from {
         Some(p)
@@ -1773,11 +2419,12 @@ fn runtime_install(
     if let Some(pk) = &manifest.publisher_hex {
         println!("  publisher: ed25519:{pk}");
     }
+    seal_runtime_bundle(&dest, &manifest);
     Ok(())
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = xdg_paths::data_dir()
+    let base = tilo_paths::data_dir()
         .ok_or(Error::NoDataDir)?
         .join("tilo-runtime");
     if !base.exists() {
@@ -1811,15 +2458,126 @@ fn runtime_list() -> Result<(), Error> {
     Ok(())
 }
 
+/// The per-user runtime bundles, where `runtime_bundle::default_bundle_path`
+/// puts them.
+fn runtime_bundles() -> Result<runtime_bundle::gc::BundleRoot, Error> {
+    runtime_bundle::gc::BundleRoot::from_env().map_err(|e| Error::RuntimeBundle(e.to_string()))
+}
+
 fn runtime_remove(version: &str) -> Result<(), Error> {
-    let path = runtime_bundle::default_bundle_path(version)
-        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    if !path.exists() {
+    let bundles = runtime_bundles()?;
+    let _collection_held_off = bundles.install_lock()?;
+    bundles.unpin(version)?;
+    // Out of the version's directory in one rename first: a removal stopped
+    // halfway never leaves a bundle a launch would pick.
+    let trashed = bundles
+        .retire(version)?
+        .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
+    if bundles.purge(&trashed, &install::gc::in_use_now())? {
+        println!("removed runtime bundle: tilo-runtime/{version}");
+    } else {
+        println!(
+            "removed runtime bundle: tilo-runtime/{version}; a running app still has it \
+             mounted, so its files go once that app closes (`tilo-install gc`)"
+        );
+    }
+    Ok(())
+}
+
+fn runtime_pin(version: &str, pinned: bool) -> Result<(), Error> {
+    let bundles = runtime_bundles()?;
+    if !bundles
+        .bundle(version)
+        .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+        .exists()
+    {
         return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
     }
-    fs::remove_dir_all(&path)?;
-    println!("removed runtime bundle: tilo-runtime/{version}");
+    if pinned {
+        bundles.pin(version)?;
+        println!("pinned runtime bundle: tilo-runtime/{version}");
+    } else {
+        bundles.unpin(version)?;
+        println!("unpinned runtime bundle: tilo-runtime/{version}");
+    }
     Ok(())
+}
+
+/// What `gc` and every change run.
+fn gc_request(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> install::gc::Request {
+    install::gc::Request {
+        max_store_bytes,
+        grace_secs,
+        now: tilo_clock::unix_now(),
+        dry_run,
+    }
+}
+
+fn collect_garbage(request: install::gc::Request) -> Result<install::gc::Report, Error> {
+    let store = store()?;
+    let catalog = package_store::Catalog::at(
+        store.layout().root(),
+        package_store::SystemStore::from_env(),
+    );
+    install::gc::collect(&store, &catalog, &runtime_bundles()?, request).map_err(Error::Gc)
+}
+
+fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error> {
+    let report = collect_garbage(gc_request(dry_run, grace_secs, max_store_bytes))?;
+    let runtimes = &report.runtimes;
+    if runtimes.busy {
+        println!("runtimes: an install is running; collected by the next change");
+    }
+    for id in &report.evicted {
+        println!("evicted  : {id} (store over {max_store_bytes} bytes)");
+    }
+    for path in &report.orphans.removed {
+        println!("removed  : {} (named by no package)", path.display());
+    }
+    if report.orphans.staging_bytes > 0 {
+        println!(
+            "removed  : {} of staging crashed installs left",
+            human_bytes(report.orphans.staging_bytes)
+        );
+    }
+    for (version, bytes) in &runtimes.removed {
+        let verb = if dry_run { "would go" } else { "removed " };
+        println!("{verb} : runtime {version} ({})", human_bytes(*bytes));
+    }
+    for (version, why) in &runtimes.kept {
+        let why = match why {
+            runtime_bundle::gc::Kept::Referenced => "an installed package runs on it",
+            runtime_bundle::gc::Kept::Pinned => "pinned",
+            runtime_bundle::gc::Kept::Leased => "installed within the grace period",
+            runtime_bundle::gc::Kept::InUse => "a running app has it mounted",
+            runtime_bundle::gc::Kept::Launching => "an app launched on it holds it",
+        };
+        println!("kept     : runtime {version} ({why})");
+    }
+    let verb = if dry_run { "would free" } else { "freed" };
+    println!("{verb}: {}", human_bytes(report.freed_bytes()));
+    Ok(())
+}
+
+/// After an install, update or uninstall: reclaim what it left unneeded.
+/// Never fails the change it follows; says what it freed on stderr, so the
+/// change's own output stays as scripts read it.
+fn collect_after_change() {
+    let request = install::gc::Request::after_change(package_store::DEFAULT_MAX_STORE_BYTES);
+    match collect_garbage(request) {
+        Ok(report) if report.freed_bytes() > 0 || !report.evicted.is_empty() => eprintln!(
+            "tilo-install: reclaimed {} ({} runtime build(s), {} app(s) evicted)",
+            human_bytes(report.freed_bytes()),
+            report.runtimes.removed.len(),
+            report.evicted.len()
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("tilo-install: warning: nothing reclaimed: {error}"),
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    install::state::human_bytes(bytes)
 }
 
 fn runtime_path(version: &str) -> Result<(), Error> {
@@ -1864,6 +2622,8 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
         ),
         RuntimeCmd::List => runtime_list(),
         RuntimeCmd::Remove { version } => runtime_remove(&version),
+        RuntimeCmd::Pin { version } => runtime_pin(&version, true),
+        RuntimeCmd::Unpin { version } => runtime_pin(&version, false),
         RuntimeCmd::Path { version } => runtime_path(&version),
         RuntimeCmd::Verify { version } => runtime_verify(&version),
     }
@@ -1871,11 +2631,44 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.cmd {
+    // What changes the installed set: collection runs after it succeeds.
+    let changes = matches!(
+        cli.cmd,
+        Cmd::Install { dry_run: false, .. }
+            | Cmd::Update { dry_run: false, .. }
+            | Cmd::Uninstall { dry_run: false, .. }
+    );
+    // An install holds collection off while it runs, so the runtime it
+    // checked for cannot be collected under it. Without a bundle root there
+    // is nothing to collect, and an app with no runtime creates none; a
+    // runtime install takes the lock itself.
+    let collection_held_off = matches!(cli.cmd, Cmd::Install { .. } | Cmd::Update { .. })
+        .then(|| {
+            let bundles = runtime_bundles().ok()?;
+            bundles
+                .path()
+                .is_dir()
+                .then(|| bundles.install_lock().ok())?
+        })
+        .flatten();
+    let result = dispatch(cli.cmd);
+    drop(collection_held_off);
+    if let Err(e) = result {
+        eprintln!("tilo-install: {e}");
+        std::process::exit(1);
+    }
+    if changes {
+        collect_after_change();
+    }
+}
+
+fn dispatch(cmd: Cmd) -> Result<(), Error> {
+    match cmd {
         Cmd::Install {
             tapp,
             pinned,
             force,
+            preserve_held,
             trust,
             runtime,
             dry_run,
@@ -1884,7 +2677,11 @@ fn main() {
             &tapp,
             InstallOptions {
                 pinned,
-                force,
+                replacement: match (force, preserve_held) {
+                    (false, _) => Replacement::Refuse,
+                    (true, false) => Replacement::Replace,
+                    (true, true) => Replacement::PreserveHeld,
+                },
                 dry_run,
                 payload_from: payload_from.map(app_registry::HttpBlobs::new),
             },
@@ -1912,7 +2709,11 @@ fn main() {
                 payload_from: payload_from.map(app_registry::HttpBlobs::new),
             },
         ),
-        Cmd::List => list(),
+        Cmd::List {
+            json: true,
+            runtime_paths,
+        } => list_json(runtime_paths),
+        Cmd::List { json: false, .. } => list(),
         Cmd::Uninstall {
             pkg_id,
             purge,
@@ -1927,14 +2728,12 @@ fn main() {
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             trust,
         } => run(
             &pkg_id,
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             &trust,
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
@@ -1948,11 +2747,122 @@ fn main() {
             RevokedCmd::List => revoked_list(),
         },
         Cmd::Path => print_path(),
+        Cmd::Gc {
+            dry_run,
+            grace_secs,
+            max_store_bytes,
+        } => gc(dry_run, grace_secs, max_store_bytes),
         Cmd::Runtime { cmd } => runtime(cmd),
+        Cmd::Image { cmd } => image(cmd),
+    }
+}
+
+fn parse_image_id(raw: &str) -> Result<PackageId, Error> {
+    let text = if raw.starts_with("tapp:") {
+        raw.to_owned()
+    } else {
+        format!("tapp:{raw}")
     };
-    if let Err(e) = result {
-        eprintln!("tilo-install: {e}");
-        std::process::exit(1);
+    text.parse()
+        .map_err(|error| Error::Parse(format!("image id {raw:?}: {error}")))
+}
+
+fn image_store() -> Result<package_store::Store, Error> {
+    let mut store = package_store::Store::new(store()?);
+    let system = package_store::SystemStore::from_env();
+    if let Some(system) = &system {
+        store = store
+            .with_system(package_store::Layout::new(&system.data_dir))
+            .with_system(package_store::Layout::new(&system.payload_dir));
+    }
+    let trust = package_store::ImageTrust::from_env(system.as_ref()).map_err(store_error)?;
+    Ok(store.with_trust(trust))
+}
+
+fn image(cmd: ImageCmd) -> Result<(), Error> {
+    match cmd {
+        ImageCmd::Add {
+            tapp,
+            publisher,
+            payload_from,
+        } => {
+            let store = image_store()?;
+            let mut trust = store.trust().clone();
+            if let Some(publisher) = publisher {
+                trust = trust.with_publisher(
+                    decode_hex_32(&publisher).map_err(Error::InvalidRequiredPublisher)?,
+                );
+            }
+            let payload = payload_from.map(app_registry::HttpBlobs::new);
+            let file = std::io::BufReader::new(fs::File::open(&tapp)?);
+            let meta = store
+                .user()
+                .install_image(
+                    file,
+                    |meta| {
+                        let attested_by = trust.check(meta).map_err(|error| error.to_string())?;
+                        Ok(Admission {
+                            pinned: false,
+                            attested_by,
+                            source: tapp.display().to_string(),
+                            held: false,
+                        })
+                    },
+                    payload.as_ref().map(|fetcher| fetcher as &dyn BlobFetcher),
+                )
+                .map_err(store_error)?;
+            println!(
+                "{} {} {} {}",
+                meta.id,
+                meta.manifest.package.kind,
+                meta.manifest.package.id,
+                meta.manifest.package.version
+            );
+            Ok(())
+        }
+        ImageCmd::List => {
+            for meta in image_store()?.images().map_err(store_error)? {
+                let runtime = meta
+                    .manifest
+                    .image
+                    .as_ref()
+                    .and_then(|image| image.runtime)
+                    .map(|runtime| format!(" on {runtime}"))
+                    .unwrap_or_default();
+                println!(
+                    "{} {} {} {}{runtime}",
+                    meta.id,
+                    meta.manifest.package.kind,
+                    meta.manifest.package.id,
+                    meta.manifest.package.version
+                );
+            }
+            Ok(())
+        }
+        ImageCmd::Path { id, registry } => {
+            let id = parse_image_id(&id)?;
+            let registry = registry
+                .or_else(|| {
+                    std::env::var("TILO_REGISTRY")
+                        .ok()
+                        .filter(|url| !url.is_empty())
+                })
+                .unwrap_or_else(|| "https://apps.tilo.so".to_owned());
+            let store = image_store()?.with_fetcher(app_registry::HttpBlobs::new(registry));
+            let tree = package_store::materialized_tree(&store, &id)
+                .map_err(|error| Error::Store(error.to_string()))?;
+            println!("{}", tree.display());
+            Ok(())
+        }
+        ImageCmd::Remove { id } => {
+            let id = parse_image_id(&id)?;
+            let removed = store()?.remove_image(id).map_err(store_error)?;
+            eprintln!(
+                "tilo-install: removed {id}; evicted {} blob(s)",
+                removed.evicted_blobs
+            );
+            Ok(())
+        }
     }
 }
 
@@ -1966,12 +2876,8 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn now() -> u64 {
-    tilo_clock::unix_now()
-}
-
 fn age(installed_at: u64) -> String {
-    let n = now();
+    let n = tilo_clock::unix_now();
     let elapsed = n.saturating_sub(installed_at);
     match elapsed {
         0..=59 => format!("{elapsed}s ago"),

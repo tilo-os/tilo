@@ -1,0 +1,19 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.shelf"
+label = "Shelf"
+version = 1
+fields = [
+  { path = "reader", type = "String" },
+  { path = "books", type = "u32" },
+]
+
+[[resources.verbs]]
+id = "add-book"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "remove-book"
+kind = "undoable"
+

@@ -1,0 +1,22 @@
+# The typography ratchet for ui-core: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+crates/sdk/ui-core/src/widget/app_widget.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/block_editor.rs legacy_size_api 20
+crates/sdk/ui-core/src/widget/block_editor.rs literal_font_size 4
+crates/sdk/ui-core/src/widget/block_editor_table.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/checkbox.rs font_size_const 1
+crates/sdk/ui-core/src/widget/code_editor.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/data_table.rs legacy_size_api 4
+crates/sdk/ui-core/src/widget/document_viewport.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/empty_state.rs legacy_size_api 4
+crates/sdk/ui-core/src/widget/floating_window.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/form_composition.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/layout.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/rich_text_line.rs legacy_size_api 3
+crates/sdk/ui-core/src/widget/spinner.rs font_size_const 1
+crates/sdk/ui-core/src/widget/text.rs literal_font_size 1
+crates/sdk/ui-core/src/widget/text_input.rs legacy_size_api 2
+crates/sdk/ui-core/src/widget/tree_view.rs legacy_size_api 2
+crates/sdk/ui-core/src/widget/video_player.rs legacy_size_api 6
+crates/sdk/ui-core/src/widget/virtual_list.rs legacy_size_api 2

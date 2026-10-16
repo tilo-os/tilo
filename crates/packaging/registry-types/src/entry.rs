@@ -9,6 +9,13 @@
 //! the received entry, re-encoding, and re-hashing; since every other
 //! field is included, any tamper (a swapped `tapp_url`, a changed root
 //! hash, an added category) flips the digest and fails verification.
+//!
+//! App entries keep the shape and signing bytes every released client
+//! reads: the entry's `kind` and a version's bot artifact are serialized only
+//! when present, so an app entry encodes exactly as it did before bots
+//! existed. A bot entry signs under its own domain ([`BOT_ENTRY_DOMAIN`]),
+//! so an app package and a bot program can never be passed off as each
+//! other.
 
 use std::collections::BTreeMap;
 
@@ -22,9 +29,18 @@ pub use crate::target::TILO_OS_PLATFORM;
 /// Domain-separation prefix for a registry-entry publisher signature.
 pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 
+/// Domain-separation prefix for a bot entry's publisher signature. Clients
+/// that predate bots never verify one: snapshots carry bot entries apart
+/// from app entries (see [`crate::snapshot`]).
+pub const BOT_ENTRY_DOMAIN: &[u8] = b"tilo-registry-bot-entry-v1\0";
+
 /// Domain-separation prefix for a registry-owner index signature; not
 /// used in this crate but exposed for federation clients snapshotting registry state.
 pub const INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v1\0";
+
+/// Most versions one entry lists. Publishers keep the newest; an older
+/// version leaves the entry once a newer one for its target supersedes it.
+pub const MAX_ENTRY_VERSIONS: usize = 128;
 
 /// Localized text whose signed representation is a canonical, ordered map.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,18 +140,183 @@ pub enum EntryValidationError {
     #[error("images contain invalid metadata")]
     InvalidImages,
     #[error(
-        "versions must contain complete artifact bindings for a Tilo OS x86_64/aarch64 or \
-         web wasm32 target"
+        "versions must contain complete artifact bindings for an x86_64/aarch64 target of a \
+         known platform"
     )]
     InvalidVersionTarget,
+    #[error("every version's artifact must match the entry's kind")]
+    ArtifactKindMismatch,
+    #[error("bot program artifact is invalid: {reason}")]
+    InvalidBotArtifact { reason: &'static str },
 }
 
-/// One version of a .tapp, with the download URL and the BLAKE3 root the client verifies after fetching.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One listed version of a registry entry, named by the registry whose owner
+/// key signs the catalogue. A bot installed from a directory keeps this so
+/// its room can tell which listing it runs and offer that listing's updates.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DirectoryRef {
+    /// Lowercase hex of the registry owner's public key.
+    pub registry_owner: String,
+    /// The entry's package id.
+    pub entry: String,
+    pub version: String,
+}
+
+/// Most bytes a bot program file may have.
+pub const MAX_BOT_PROGRAM_BYTES: u64 = 262_144;
+
+/// What a registry entry publishes: an app package or a bot program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntryKind {
+    #[default]
+    App,
+    Bot,
+}
+
+impl EntryKind {
+    /// Whether this is an app entry, whose `kind` is left out of its
+    /// encoding so the entry reads as every older client expects.
+    #[must_use]
+    pub fn is_app(&self) -> bool {
+        *self == Self::App
+    }
+
+    /// The domain the publisher's signature over an entry of this kind uses.
+    #[must_use]
+    pub fn signing_domain(self) -> &'static [u8] {
+        match self {
+            Self::App => ENTRY_DOMAIN,
+            Self::Bot => BOT_ENTRY_DOMAIN,
+        }
+    }
+}
+
+/// One released version: its number, its date and the artifact it binds.
+///
+/// A version binding a `.tapp` encodes with the fields every released client
+/// reads (`version`, `tapp_url`, `tapp_root_hash_hex`, `tapp_size_bytes`,
+/// `released_at_unix`, `tapp_blake3_hex`, `target`, in that order, which the
+/// signing form depends on); a bot version encodes as `version`,
+/// `released_at_unix` and `bot`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegistryVersion {
     /// Semver string, or `CalVer` YYYY.MM as some publishers use; treated
     /// as opaque text — client picks a "latest".
     pub version: String,
+    /// Unix seconds when the publisher released this version.
+    pub released_at_unix: u64,
+    pub artifact: VersionArtifact,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "RegistryVersion")]
+struct TappVersionOut<'a> {
+    version: &'a str,
+    tapp_url: &'a str,
+    tapp_root_hash_hex: &'a str,
+    tapp_size_bytes: u64,
+    released_at_unix: u64,
+    tapp_blake3_hex: &'a str,
+    target: &'a RegistryTarget,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "RegistryVersion")]
+struct BotVersionOut<'a> {
+    version: &'a str,
+    released_at_unix: u64,
+    bot: &'a BotArtifact,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum VersionIn {
+    Bot {
+        version: String,
+        released_at_unix: u64,
+        bot: BotArtifact,
+    },
+    Tapp {
+        version: String,
+        tapp_url: String,
+        tapp_root_hash_hex: String,
+        tapp_size_bytes: u64,
+        released_at_unix: u64,
+        tapp_blake3_hex: String,
+        target: RegistryTarget,
+    },
+}
+
+impl Serialize for RegistryVersion {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.artifact {
+            VersionArtifact::Tapp(tapp) => TappVersionOut {
+                version: &self.version,
+                tapp_url: &tapp.tapp_url,
+                tapp_root_hash_hex: &tapp.tapp_root_hash_hex,
+                tapp_size_bytes: tapp.tapp_size_bytes,
+                released_at_unix: self.released_at_unix,
+                tapp_blake3_hex: &tapp.tapp_blake3_hex,
+                target: &tapp.target,
+            }
+            .serialize(serializer),
+            VersionArtifact::Bot(bot) => BotVersionOut {
+                version: &self.version,
+                released_at_unix: self.released_at_unix,
+                bot,
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RegistryVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match VersionIn::deserialize(deserializer)? {
+            VersionIn::Bot {
+                version,
+                released_at_unix,
+                bot,
+            } => Self {
+                version,
+                released_at_unix,
+                artifact: VersionArtifact::Bot(bot),
+            },
+            VersionIn::Tapp {
+                version,
+                tapp_url,
+                tapp_root_hash_hex,
+                tapp_size_bytes,
+                released_at_unix,
+                tapp_blake3_hex,
+                target,
+            } => Self {
+                version,
+                released_at_unix,
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url,
+                    tapp_root_hash_hex,
+                    tapp_size_bytes,
+                    tapp_blake3_hex,
+                    target,
+                }),
+            },
+        })
+    }
+}
+
+/// The file a version binds. The variant must match the entry's kind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VersionArtifact {
+    Tapp(TappArtifact),
+    Bot(BotArtifact),
+}
+
+/// A `.tapp` with the download URL and the BLAKE3 root the client verifies after fetching.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TappArtifact {
     /// HTTPS URL of the `.tapp` file.
     pub tapp_url: String,
     /// BLAKE3 hash of the .tapp's signed root (same hash
@@ -144,8 +325,6 @@ pub struct RegistryVersion {
     pub tapp_root_hash_hex: String,
     /// Byte size of the .tapp, for progress bars and integrity pre-flight.
     pub tapp_size_bytes: u64,
-    /// Unix seconds when the publisher released this version.
-    pub released_at_unix: u64,
     /// BLAKE3 of the complete `.tapp` byte stream. The package root above
     /// authenticates the logical package; this additionally pins the exact
     /// transport artifact fetched by clients and reviewed by moderators.
@@ -154,21 +333,123 @@ pub struct RegistryVersion {
     pub target: RegistryTarget,
 }
 
+/// A bot program: a Shortcut's canonical JSON, stored by the registry as a
+/// content-addressed blob, so what a room installs is exactly what was signed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotArtifact {
+    /// `<registry>/blobs/<program_blake3_hex>`; see [`bot_program_url`].
+    pub program_url: String,
+    pub program_blake3_hex: String,
+    /// At most [`MAX_BOT_PROGRAM_BYTES`].
+    pub program_size_bytes: u64,
+    pub requires: BotRequirements,
+}
+
+/// What a bot needs from the room and its host, checked against the program
+/// by the registry and shown on the listing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotRequirements {
+    /// Connector packages the room's host must have installed and configured,
+    /// sorted by package id.
+    pub connectors: Vec<PackageRequirement>,
+    /// Apps whose actions the steps invoke or whose changes the triggers
+    /// watch, sorted. A connector is listed only under `connectors`.
+    pub apps: Vec<String>,
+    /// Whether the program posts under other names and avatars.
+    pub appearance: bool,
+    /// Trigger kinds the program reacts to, sorted, for the listing.
+    pub triggers: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageRequirement {
+    pub package_id: String,
+    /// Semver of the oldest version that works.
+    pub min_version: String,
+}
+
+/// Which versions supersede each other: tapps per platform and architecture,
+/// bots all together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionGroup<'a> {
+    Target {
+        platform: &'a str,
+        architecture: &'a str,
+    },
+    Bot,
+}
+
+impl RegistryVersion {
+    #[must_use]
+    pub fn tapp(&self) -> Option<&TappArtifact> {
+        match &self.artifact {
+            VersionArtifact::Tapp(tapp) => Some(tapp),
+            VersionArtifact::Bot(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn tapp_mut(&mut self) -> Option<&mut TappArtifact> {
+        match &mut self.artifact {
+            VersionArtifact::Tapp(tapp) => Some(tapp),
+            VersionArtifact::Bot(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn bot(&self) -> Option<&BotArtifact> {
+        match &self.artifact {
+            VersionArtifact::Bot(bot) => Some(bot),
+            VersionArtifact::Tapp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn target(&self) -> Option<&RegistryTarget> {
+        self.tapp().map(|tapp| &tapp.target)
+    }
+
+    #[must_use]
+    pub fn group(&self) -> VersionGroup<'_> {
+        match &self.artifact {
+            VersionArtifact::Tapp(tapp) => VersionGroup::Target {
+                platform: &tapp.target.platform,
+                architecture: &tapp.target.architecture,
+            },
+            VersionArtifact::Bot(_) => VersionGroup::Bot,
+        }
+    }
+}
+
+/// The URL a registry at `base` serves the program `program_blake3_hex` at.
+#[must_use]
+pub fn bot_program_url(base: &str, program_blake3_hex: &str) -> String {
+    format!(
+        "{}/blobs/{}",
+        base.trim_end_matches('/'),
+        program_blake3_hex
+    )
+}
+
 /// The machine/runtime contract for one package artifact. Accepted
 /// spellings are defined in [`crate::target`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryTarget {
-    /// Extensible platform-family wire name: `tilo-os` or `web`.
+    /// Extensible platform-family wire name, e.g. `tilo-os` or `linux`.
     pub platform: String,
     /// Architecture wire name.
     pub architecture: String,
-    /// Minimum ISA level, e.g. `x86_64-v3`, or a web feature set such as
-    /// `wasm32-mvp+bulk-memory+sign-ext`.
+    /// Minimum ISA level, e.g. `x86_64-v3`.
     pub isa: String,
-    /// Runtime ABI required by the package: optional for `tilo-os`,
-    /// `tilo-runtime/<version>+wasm.<32 hex>` for `web`.
+    /// Runtime the package links: for `tilo-os`, the exact build
+    /// (`tilo-runtime/<version>+native.<32 hex>`); optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    /// System interfaces the build requires, `<name>@<version>`, sorted:
+    /// the required services of its manifest. A device offers the version
+    /// only when its OS serves every one; see [`crate::interfaces`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<String>,
 }
 
 /// One package entry inside a registry — everything the client needs to render a store card and start a download.
@@ -176,6 +457,10 @@ pub struct RegistryTarget {
 pub struct RegistryEntry {
     /// Reverse-DNS id from `tilo_app_package::Manifest.package.id`.
     pub package_id: String,
+    /// App package or bot program; every version's artifact has this kind.
+    /// Left out for apps, so an app entry encodes as it always has.
+    #[serde(default, skip_serializing_if = "EntryKind::is_app")]
+    pub kind: EntryKind,
     /// Localized display name.
     pub name: LocalizedText,
     /// Localized product description.
@@ -233,16 +518,6 @@ impl RegistryEntry {
         entry_signing_message(self)
     }
 
-    /// Detach the publisher signature, returning an entry with an empty
-    /// `signature_hex` — for preparing an entry to sign or re-signing
-    /// after a moderator edit. Verification uses `signing_message`
-    /// directly and doesn't need this.
-    #[must_use]
-    pub fn without_signature(mut self) -> Self {
-        self.signature_hex.clear();
-        self
-    }
-
     /// Validate the entry's identifiers, localized metadata, package targets,
     /// and artifact bindings.
     ///
@@ -272,24 +547,112 @@ impl RegistryEntry {
         {
             return Err(EntryValidationError::InvalidSupportedLanguages);
         }
-        if self.versions.is_empty()
-            || self.versions.len() > 128
-            || self.versions.iter().any(|v| {
-                v.tapp_url.is_empty()
-                    || v.tapp_url.len() > 4_096
-                    || !valid_artifact_url(&v.tapp_url)
-                    || v.tapp_root_hash_hex.len() != 64
-                    || !v.tapp_root_hash_hex.bytes().all(|b| b.is_ascii_hexdigit())
-                    || v.tapp_blake3_hex.len() != 64
-                    || !v.tapp_blake3_hex.bytes().all(|b| b.is_ascii_hexdigit())
-                    || v.tapp_size_bytes == 0
-                    || v.target.validate().is_err()
-            })
-        {
+        if self.versions.is_empty() || self.versions.len() > MAX_ENTRY_VERSIONS {
             return Err(EntryValidationError::InvalidVersionTarget);
+        }
+        for version in &self.versions {
+            match (self.kind, &version.artifact) {
+                (EntryKind::App, VersionArtifact::Tapp(tapp)) => validate_tapp(tapp)?,
+                (EntryKind::Bot, VersionArtifact::Bot(bot)) => validate_bot(bot)?,
+                _ => return Err(EntryValidationError::ArtifactKindMismatch),
+            }
         }
         Ok(())
     }
+}
+
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn is_hex_64(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn validate_tapp(v: &TappArtifact) -> Result<(), EntryValidationError> {
+    let ok = !v.tapp_url.is_empty()
+        && v.tapp_url.len() <= 4_096
+        && valid_artifact_url(&v.tapp_url)
+        && is_hex_64(&v.tapp_root_hash_hex)
+        && is_hex_64(&v.tapp_blake3_hex)
+        && v.tapp_size_bytes != 0
+        && v.target.validate().is_ok();
+    if ok {
+        Ok(())
+    } else {
+        Err(EntryValidationError::InvalidVersionTarget)
+    }
+}
+
+fn sorted_unique(ids: &[&str]) -> bool {
+    ids.windows(2)
+        .all(|pair| pair.first().zip(pair.get(1)).is_some_and(|(l, r)| l < r))
+}
+
+fn validate_bot(v: &BotArtifact) -> Result<(), EntryValidationError> {
+    let bad = |reason| Err(EntryValidationError::InvalidBotArtifact { reason });
+    if !is_lower_hex_64(&v.program_blake3_hex) {
+        return bad("program_blake3_hex must be 64 lowercase hex digits");
+    }
+    if v.program_size_bytes == 0 || v.program_size_bytes > MAX_BOT_PROGRAM_BYTES {
+        return bad("program_size_bytes must be between 1 and 262144");
+    }
+    // The URL must name exactly this hash under some registry's /blobs/, so
+    // the bytes a client fetches are the ones the publisher signed.
+    let Some(base) = v
+        .program_url
+        .strip_suffix(v.program_blake3_hex.as_str())
+        .and_then(|rest| rest.strip_suffix("/blobs/"))
+    else {
+        return bad("program_url must end in /blobs/<program_blake3_hex>");
+    };
+    if v.program_url.len() > 4_096
+        || !valid_artifact_url(&v.program_url)
+        || base.contains(['?', '#', '@'])
+        || base
+            .split("://")
+            .nth(1)
+            .is_none_or(|authority| authority.is_empty() || authority.contains('/'))
+    {
+        return bad("program_url must be <https origin>/blobs/<hash>");
+    }
+    let r = &v.requires;
+    if r.connectors.len() > 32 || r.apps.len() > 64 || r.triggers.len() > 32 {
+        return bad("too many requirements");
+    }
+    let connectors: Vec<&str> = r.connectors.iter().map(|c| c.package_id.as_str()).collect();
+    let apps: Vec<&str> = r.apps.iter().map(String::as_str).collect();
+    if !sorted_unique(&connectors) || !sorted_unique(&apps) {
+        return bad("requirement ids must be sorted and unique");
+    }
+    if connectors
+        .iter()
+        .chain(&apps)
+        .any(|id| !crate::namespace::valid_package_id(id))
+    {
+        return bad("requirement ids must be package ids");
+    }
+    if apps.iter().any(|app| connectors.contains(app)) {
+        return bad("a package is either an app or a connector requirement");
+    }
+    if r.connectors
+        .iter()
+        .any(|c| semver::Version::parse(&c.min_version).is_err())
+    {
+        return bad("connector min_version must be semver");
+    }
+    let triggers: Vec<&str> = r.triggers.iter().map(String::as_str).collect();
+    if !sorted_unique(&triggers)
+        || triggers.iter().any(|t| {
+            t.is_empty() || t.len() > 64 || !t.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        })
+    {
+        return bad("triggers must be sorted, unique snake_case kinds");
+    }
+    Ok(())
 }
 
 fn valid_artifact_url(value: &str) -> bool {
@@ -419,7 +782,7 @@ pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
     // Postcard's to_stdvec never fails for owned inputs of this shape — unwrap is safe.
     let body = postcard::to_stdvec(&payload).expect("postcard encode entry payload");
     let mut hasher = blake3::Hasher::new();
-    hasher.update(ENTRY_DOMAIN);
+    hasher.update(entry.kind.signing_domain());
     hasher.update(&body);
     *hasher.finalize().as_bytes()
 }
@@ -458,13 +821,23 @@ pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{WASM32_ARCHITECTURE, WEB_PLATFORM};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    fn tilo_target() -> RegistryTarget {
+        RegistryTarget {
+            platform: TILO_OS_PLATFORM.into(),
+            architecture: "x86_64".into(),
+            isa: "x86_64-v3".into(),
+            runtime: None,
+            interfaces: Vec::new(),
+        }
+    }
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: EntryKind::App,
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
             tagline: "Edit together".into(),
@@ -483,21 +856,242 @@ mod tests {
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 12_345_678,
                 released_at_unix: 1_800_000_000,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: RegistryTarget {
-                    platform: TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                },
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                    tapp_root_hash_hex: "cd".repeat(32),
+                    tapp_size_bytes: 12_345_678,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: tilo_target(),
+                }),
             }],
             updated_at_unix: 1_800_000_100,
             signature_hex: String::new(),
         }
+    }
+
+    fn sample_bot() -> RegistryEntry {
+        let hash = "ab".repeat(32);
+        RegistryEntry {
+            package_id: "so.tilo.bots.discord-bridge".into(),
+            kind: EntryKind::Bot,
+            versions: vec![RegistryVersion {
+                version: "0.1.0".into(),
+                released_at_unix: 1_800_000_000,
+                artifact: VersionArtifact::Bot(BotArtifact {
+                    program_url: bot_program_url("https://apps.tilo.so", &hash),
+                    program_blake3_hex: hash,
+                    program_size_bytes: 4_096,
+                    requires: BotRequirements {
+                        connectors: vec![PackageRequirement {
+                            package_id: "so.tilo.discord".into(),
+                            min_version: "0.1.0".into(),
+                        }],
+                        apps: vec!["so.tilo.chat".into()],
+                        appearance: true,
+                        triggers: vec!["connector".into(), "record_changed".into()],
+                    },
+                }),
+            }],
+            ..sample_entry()
+        }
+    }
+
+    fn bot_artifact(entry: &mut RegistryEntry) -> &mut BotArtifact {
+        match &mut entry.versions[0].artifact {
+            VersionArtifact::Bot(artifact) => artifact,
+            VersionArtifact::Tapp(_) => unreachable!("fixture is a bot"),
+        }
+    }
+
+    #[test]
+    fn app_entries_sign_and_encode_exactly_as_before_bots() {
+        // The shape every released client decodes and re-encodes to check a
+        // publisher's signature, declared here as it was before bots.
+        #[derive(Serialize)]
+        struct V1Version<'a> {
+            version: &'a str,
+            tapp_url: &'a str,
+            tapp_root_hash_hex: &'a str,
+            tapp_size_bytes: u64,
+            released_at_unix: u64,
+            tapp_blake3_hex: &'a str,
+            target: &'a RegistryTarget,
+        }
+        #[derive(Serialize)]
+        struct V1Payload<'a> {
+            package_id: &'a str,
+            name: &'a LocalizedText,
+            description: &'a LocalizedText,
+            tagline: &'a LocalizedText,
+            images: &'a LocalizedImages,
+            supported_languages: &'a [String],
+            categories: &'a [String],
+            source_url: &'a Option<String>,
+            homepage: &'a Option<String>,
+            publisher_pubkey_hex: &'a str,
+            versions: Vec<V1Version<'a>>,
+            updated_at_unix: u64,
+        }
+        let app = sample_entry();
+        let versions = app
+            .versions
+            .iter()
+            .map(|v| {
+                let tapp = v.tapp().unwrap();
+                V1Version {
+                    version: &v.version,
+                    tapp_url: &tapp.tapp_url,
+                    tapp_root_hash_hex: &tapp.tapp_root_hash_hex,
+                    tapp_size_bytes: tapp.tapp_size_bytes,
+                    released_at_unix: v.released_at_unix,
+                    tapp_blake3_hex: &tapp.tapp_blake3_hex,
+                    target: &tapp.target,
+                }
+            })
+            .collect();
+        let body = postcard::to_stdvec(&V1Payload {
+            package_id: &app.package_id,
+            name: &app.name,
+            description: &app.description,
+            tagline: &app.tagline,
+            images: &app.images,
+            supported_languages: &app.supported_languages,
+            categories: &app.categories,
+            source_url: &app.source_url,
+            homepage: &app.homepage,
+            publisher_pubkey_hex: &app.publisher_pubkey_hex,
+            versions,
+            updated_at_unix: app.updated_at_unix,
+        })
+        .unwrap();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-registry-entry-v1\0");
+        hasher.update(&body);
+        assert_eq!(app.signing_message(), *hasher.finalize().as_bytes());
+
+        let json = serde_json::to_value(&app).unwrap();
+        assert!(json.get("kind").is_none(), "{json}");
+        let version = json["versions"][0].as_object().unwrap();
+        assert_eq!(
+            version.len(),
+            7,
+            "an app version keeps exactly its released fields: {version:?}"
+        );
+        assert!(version["tapp_url"].is_string());
+
+        // A bot entry signs under its own domain.
+        let mut relabelled = sample_entry();
+        relabelled.kind = EntryKind::Bot;
+        assert_ne!(app.signing_message(), relabelled.signing_message());
+    }
+
+    #[test]
+    fn versions_round_trip_through_json() {
+        let bot = sample_bot();
+        let json = serde_json::to_value(&bot).unwrap();
+        assert_eq!(json["kind"], "bot");
+        assert!(json["versions"][0]["bot"]["program_url"].is_string());
+        assert!(json["versions"][0].get("tapp_url").is_none());
+        assert_eq!(serde_json::from_value::<RegistryEntry>(json).unwrap(), bot);
+        let app = sample_entry();
+        let json = serde_json::to_value(&app).unwrap();
+        assert_eq!(serde_json::from_value::<RegistryEntry>(json).unwrap(), app);
+    }
+
+    #[test]
+    fn bot_entries_validate_and_kind_must_match_every_artifact() {
+        assert_eq!(sample_bot().validate(), Ok(()));
+        let mut mixed = sample_bot();
+        mixed.versions.push(sample_entry().versions[0].clone());
+        assert_eq!(
+            mixed.validate(),
+            Err(EntryValidationError::ArtifactKindMismatch)
+        );
+        let mut app_with_bot = sample_entry();
+        app_with_bot.versions = sample_bot().versions;
+        assert_eq!(
+            app_with_bot.validate(),
+            Err(EntryValidationError::ArtifactKindMismatch)
+        );
+    }
+
+    #[test]
+    fn bot_artifact_url_must_be_this_hash_under_blobs() {
+        let other = "cd".repeat(32);
+        let hash = "ab".repeat(32);
+        for url in [
+            format!("https://apps.tilo.so/blobs/{other}"),
+            format!("https://apps.tilo.so/artifacts/{hash}"),
+            format!("https://apps.tilo.so/blobs/{hash}?x=1"),
+            format!("http://apps.tilo.so/blobs/{hash}"),
+            format!("https://apps.tilo.so/x/blobs/{hash}"),
+            format!("https://user@apps.tilo.so/blobs/{hash}"),
+        ] {
+            let mut bot = sample_bot();
+            bot_artifact(&mut bot).program_url = url.clone();
+            assert!(
+                matches!(
+                    bot.validate(),
+                    Err(EntryValidationError::InvalidBotArtifact { .. })
+                ),
+                "{url} must be refused"
+            );
+        }
+        // Another HTTPS origin is a well-formed entry: which hosts a registry
+        // serves programs from is its own policy, checked at submission.
+        let mut foreign = sample_bot();
+        bot_artifact(&mut foreign).program_url = bot_program_url("https://evil.example", &hash);
+        assert_eq!(foreign.validate(), Ok(()));
+        let mut local = sample_bot();
+        bot_artifact(&mut local).program_url = bot_program_url("http://127.0.0.1:8787", &hash);
+        assert_eq!(local.validate(), Ok(()));
+    }
+
+    #[test]
+    fn bot_artifact_bounds_and_requirement_lists_are_checked() {
+        let edit = |f: &dyn Fn(&mut BotArtifact)| {
+            let mut bot = sample_bot();
+            f(bot_artifact(&mut bot));
+            bot.validate()
+        };
+        assert!(edit(&|a| a.program_size_bytes = 0).is_err());
+        assert!(edit(&|a| a.program_size_bytes = MAX_BOT_PROGRAM_BYTES + 1).is_err());
+        assert_eq!(
+            edit(&|a| a.program_size_bytes = MAX_BOT_PROGRAM_BYTES),
+            Ok(())
+        );
+        assert!(edit(&|a| a.program_blake3_hex = "AB".repeat(32)).is_err());
+        assert!(
+            edit(&|a| a.requires.apps = vec!["so.tilo.chat".into(), "so.tilo.chat".into()])
+                .is_err()
+        );
+        assert!(
+            edit(&|a| a.requires.apps = vec!["so.tilo.notes".into(), "so.tilo.chat".into()])
+                .is_err()
+        );
+        assert!(edit(&|a| a.requires.apps = vec!["Chat".into()]).is_err());
+        assert!(edit(&|a| a.requires.connectors[0].min_version = "latest".into()).is_err());
+        assert!(
+            edit(&|a| a.requires.apps = vec!["so.tilo.discord".into()]).is_err(),
+            "an id is an app or a connector, not both"
+        );
+        assert!(edit(&|a| a.requires.triggers = vec!["Record Changed".into()]).is_err());
+    }
+
+    #[test]
+    fn versions_group_by_target_and_bots_form_one_group() {
+        let app = sample_entry();
+        assert_eq!(
+            app.versions[0].group(),
+            VersionGroup::Target {
+                platform: TILO_OS_PLATFORM,
+                architecture: "x86_64"
+            }
+        );
+        assert_eq!(sample_bot().versions[0].group(), VersionGroup::Bot);
+        assert!(sample_bot().versions[0].target().is_none());
+        assert!(sample_bot().versions[0].tapp().is_none());
     }
 
     #[test]
@@ -529,21 +1123,22 @@ mod tests {
             }
             {
                 let mut alt = sample_entry();
-                alt.versions[0].tapp_root_hash_hex = "ff".repeat(32);
+                alt.versions[0].tapp_mut().unwrap().tapp_root_hash_hex = "ff".repeat(32);
                 assert_ne!(alt.signing_message(), base_msg);
             }
             {
                 let mut bound = sample_entry();
-                bound.versions[0].tapp_blake3_hex = "ee".repeat(32);
-                bound.versions[0].target = RegistryTarget {
+                bound.versions[0].tapp_mut().unwrap().tapp_blake3_hex = "ee".repeat(32);
+                bound.versions[0].tapp_mut().unwrap().target = RegistryTarget {
                     platform: TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: Some("tilo-runtime/2026.07".into()),
+                    interfaces: Vec::new(),
                 };
                 let bound_msg = bound.signing_message();
                 assert_ne!(bound_msg, base_msg);
-                bound.versions[0].tapp_blake3_hex = "fe".repeat(32);
+                bound.versions[0].tapp_mut().unwrap().tapp_blake3_hex = "fe".repeat(32);
                 assert_ne!(bound.signing_message(), bound_msg);
             }
             {
@@ -628,43 +1223,17 @@ mod tests {
         // phase: registry_rejects_non_tilo_platforms_and_unsupported_architectures
         {
             let mut entry = sample_entry();
-            entry.versions[0].target.platform = "freebsd".into();
+            entry.versions[0].tapp_mut().unwrap().target.platform = "freebsd".into();
             assert_eq!(
                 entry.validate(),
                 Err(EntryValidationError::InvalidVersionTarget)
             );
-            entry.versions[0].target.platform = TILO_OS_PLATFORM.into();
-            entry.versions[0].target.architecture = "riscv64".into();
+            entry.versions[0].tapp_mut().unwrap().target.platform = TILO_OS_PLATFORM.into();
+            entry.versions[0].tapp_mut().unwrap().target.architecture = "riscv64".into();
             assert_eq!(
                 entry.validate(),
                 Err(EntryValidationError::InvalidVersionTarget)
             );
         }
-    }
-
-    #[test]
-    fn web_versions_sit_beside_native_versions_of_one_entry() {
-        let mut entry = sample_entry();
-        let mut web = entry.versions[0].clone();
-        web.tapp_url = "https://apps.tilo.so/editor/2026.06-web.tapp".into();
-        web.target = RegistryTarget {
-            platform: WEB_PLATFORM.into(),
-            architecture: WASM32_ARCHITECTURE.into(),
-            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
-            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
-        };
-        entry.versions.push(web);
-        assert_eq!(entry.validate(), Ok(()));
-
-        entry.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
-        entry.versions[1].target.runtime = None;
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
     }
 }

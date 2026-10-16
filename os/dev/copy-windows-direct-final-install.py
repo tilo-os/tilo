@@ -46,6 +46,10 @@ _provenance_path = Path(__file__).with_name("windows-direct-provenance.py")
 _provenance_spec = importlib.util.spec_from_file_location("tilo_windows_direct_provenance", _provenance_path)
 provenance = importlib.util.module_from_spec(_provenance_spec)
 _provenance_spec.loader.exec_module(provenance)
+_dev_spec = importlib.util.spec_from_file_location(
+    "tilo_windows_direct_dev_admission", Path(__file__).with_name("windows-direct-dev-admission.py"))
+development = importlib.util.module_from_spec(_dev_spec)
+_dev_spec.loader.exec_module(development)
 
 
 def require(condition, message):
@@ -295,9 +299,17 @@ def validate_physical(plan, stage_receipt, current, target):
     require(stage.disk_matches(plan, current), "Windows disk identity or state changed")
     require(normalized(current.get("partitions", [])) == rows,
             "Windows partition map differs from reviewed final map")
-    _, physical_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
+    physical_guid, physical_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
     require(same_gpt_content(physical_rows, rows), "physical GPT differs from Windows partition map")
-    return rows, final_rows
+    return rows, final_rows, physical_guid
+
+
+def verified_disk_readback(plan, target, rows, expected_guid):
+    """Bind the receipt to both GPT copies without conflating hardware UniqueId."""
+    disk_guid, post_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
+    require(disk_guid == expected_guid, "physical GPT disk GUID changed during final copy")
+    require(same_gpt_content(post_rows, rows), "physical GPT changed during final copy")
+    return {**plan["windows_disk"], "disk_guid": disk_guid}
 
 
 def transfer(source, target, rows, final_rows, expected_hashes, *, write,
@@ -356,29 +368,36 @@ def run(args):
             "physical final copy requires elevated native Windows")
     if args.command == "execute":
         require(all(path is not None for path in
-                    (args.ci_index_manifest, args.ci_child_manifest, args.vm_proof_checked)),
+                    (args.ci_child_manifest, args.vm_proof_checked)),
                 "execute requires CI manifests and checked VM install proof")
         require(re.fullmatch(r".+@sha256:[0-9a-f]{64}", args.ci_image or "") is not None
                 and source_receipt.get("ci_image") == args.ci_image,
                 "VM source receipt does not bind the digest-pinned CI image")
-        key = args.verify_key
-        require(key is not None and key.is_file() and not key.is_symlink()
-                and source_receipt.get("ci_verification_key_sha256")
-                == hashlib.sha256(key.read_bytes()).hexdigest(),
-                "VM source receipt does not bind the CI verification key")
-        index_digest, child_digest, children, kind = provenance.signed_ci_child(
-            args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
-        require(kind == "lenovo-83ed",
-                "physical install requires the signed Lenovo ARM64 CI image")
-        ci_provenance = provenance.verify_ci_image(
-            args.ci_image, key, children, kind,
-            args.cosign_command_json, args.cosign_key_arg)
-        checked = provenance.checked_guest_proof(
-            args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
-        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
-                "physical install requires backend-derived signed target proof v2")
-        dual_gate = provenance.dual_ci_medium_gate(
-            args, checked, child_digest, ci_provenance["source_revision"])
+        if getattr(args, "development", False):
+            ci_provenance, checked, dual_gate = development.verify(args)
+            index_digest = child_digest = args.ci_image.split("@", 1)[1]
+            require(source_receipt.get("ci_verification_key_sha256") is None,
+                    "development source receipt must not claim a release verification key")
+        else:
+            key = args.verify_key
+            require(key is not None and key.is_file() and not key.is_symlink()
+                    and args.ci_index_manifest is not None
+                    and source_receipt.get("ci_verification_key_sha256")
+                    == hashlib.sha256(key.read_bytes()).hexdigest(),
+                    "VM source receipt does not bind the CI verification key")
+            index_digest, child_digest, children, kind = provenance.signed_ci_child(
+                args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+            require(kind == "lenovo-83ed",
+                    "physical install requires the signed Lenovo ARM64 CI image")
+            ci_provenance = provenance.verify_ci_image(
+                args.ci_image, key, children, kind,
+                args.cosign_command_json, args.cosign_key_arg)
+            checked = provenance.checked_guest_proof(
+                args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+            require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                    "physical install requires backend-derived signed target proof v2")
+            dual_gate = provenance.dual_ci_medium_gate(
+                args, checked, child_digest, ci_provenance["source_revision"])
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
@@ -395,14 +414,17 @@ def run(args):
                 "VM source receipt does not bind verified CI child and checked guest proof")
         require(all(source_receipt.get(field) == value
                     for field, value in dual_gate.items()),
-                "source receipt does not bind paired signed CI media and WHPX proofs")
+                "source receipt does not bind paired CI media and WHPX proofs")
     disk_number = plan["windows_disk"]["number"]
     current = stage.snapshot(disk_number)
     require(stage.disk_matches(plan, current), "Windows disk identity or state changed")
     # The caller must also have independently confirmed the matching BitLocker
     # recovery key before any physical write.
     if args.command == "execute":
-        stage.windows_install_gate()
+        # Final copies cannot touch the Windows extent. Its pagefile is only a
+        # shrink constraint; requiring it to disappear here forces a needless
+        # Windows reboot after the final partitions have already been allocated.
+        stage.windows_install_gate(require_no_pagefile=False)
     rows, final_rows = expected_rows(plan, stage_receipt, current.get("partitions", []))
     live_number = live_windows_partition(rows, disk_number)
     hashes = source_preflight(args.source_raw, source_receipt, rows, final_rows,
@@ -422,16 +444,17 @@ def run(args):
                     and source_receipt.get("loader_sha256") == loader_hash,
                     "VM source ESP loader differs from source receipt")
     with stage.open_physical_drive(disk_number) as target:
-        validate_physical(plan, stage_receipt, current, target)
+        _, _, physical_guid = validate_physical(plan, stage_receipt, current, target)
         with args.source_raw.open("rb", buffering=0) as source:
             result = transfer(source, target, rows, final_rows, hashes,
                               write=args.command == "execute",
                               live_windows_partition_number=live_number)
-        _, post_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
-        require(same_gpt_content(post_rows, rows), "physical GPT changed during final copy")
-    require(normalized(stage.snapshot(disk_number)["partitions"]) == rows,
+        reviewed_disk = verified_disk_readback(plan, target, rows, physical_guid)
+    post_snapshot = stage.snapshot(disk_number)
+    require(stage.disk_matches(plan, post_snapshot), "Windows disk identity changed during final copy")
+    require(normalized(post_snapshot["partitions"]) == rows,
             "Windows partition map changed during final copy")
-    output = {"schema": "tilo.windows-direct-final-readback.v1", "disk": plan["windows_disk"],
+    output = {"schema": "tilo.windows-direct-final-readback.v2", "disk": reviewed_disk,
               "final": result,
               "static_preserved_partitions_sha256_compared": len(rows) - len(final_rows) - 1,
               "live_windows_partition": live_number,
@@ -445,6 +468,8 @@ def run(args):
         output["final_esp_partuuid"] = final_rows[0]["partuuid"]
         output["loader_path"] = loader_path
         output["loader_sha256"] = loader_hash
+        if getattr(args, "development", False):
+            output["development_admission"] = dual_gate["development_admission"]
         require(args.output is not None, "execute requires --output")
         stage.atomic_json(args.output, output)
     print(json.dumps(output, indent=2))
@@ -467,6 +492,7 @@ def main(argv=None):
         command.add_argument("--ci-index-manifest", type=Path)
         command.add_argument("--ci-child-manifest", type=Path)
         command.add_argument("--vm-proof-checked", type=Path)
+        development.add_arguments(command)
         for field in ("generic-ci-image", "generic-index-manifest",
                       "generic-child-manifest", "generic-vm-proof-checked",
                       "generic-medium-identity", "generic-ci-guest-proof",

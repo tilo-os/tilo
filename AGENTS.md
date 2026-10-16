@@ -27,8 +27,13 @@ Most user-facing design questions reduce to that one decision:
 - **Accessibility and automation are the same door.** A screen-reader user, a script and an
   agent browse resources and invoke actions; none touch the UI. A capability reachable only
   by clicking is not finished.
-- **Search is a system service.** Apps register a search provider *and* a renderer per
-  resource type, so a hit opens the app at that position.
+- **Search is a system service.** Apps register a search provider per resource type and
+  say what each hit is (a message, a video, a file match — `ui::search::SearchRow`); they
+  never draw a search field. A hit opens the app at that position through the resource's
+  `open` view action with the hit's anchor (`ViewCx::on_open` in a framework app), so a
+  person's click and an agent's call land in the same place. Apps open the platform search
+  narrowed to themselves or one of their parts (`ui::search::SearchRequest`), and narrow
+  lists or find in documents only through the framework's filter field and find bar.
 - **Undo, history, device sync and theming are system services**, not forty implementations.
 - **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
   app; each machine draws natively and state syncs as a CRDT. Agents are ordinary
@@ -46,18 +51,18 @@ Most user-facing design questions reduce to that one decision:
 - **The OS owns window chrome**; apps must not draw their own title bar. Windows never
   overlap — reject designs that reintroduce floating.
 
+## Policies
+
+Every standing project rule, why it exists, and the check that enforces it (or that it is
+review-only) is in [`docs/policies.md`](docs/policies.md), with the exception path for each.
+This file keeps what an agent needs to operate; where the two differ, the policy page and its
+checks win.
+
 ## Repository Layout
 
-Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
-
-- `crates/session/shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
-  sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
-- `crates/sdk/ui-core/` — the internal toolkit behind `tilo-app`: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
-  `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `crates/system/fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
-- `apps/` — ~40 app crates built on `ui`.
-- `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
-- `os/` — Containerfile, systemd units, image build scripts.
+Single Cargo workspace, no submodules: apps in `apps/`, libraries in `crates/<domain>/`, the OS
+image in `os/`. For "where is X", start at `docs/codemap.md`: every crate and what it owns, one
+line each. Prefer explicit paths over `git add -A`.
 
 ## Build & Test
 
@@ -73,7 +78,7 @@ Functions take usually ≤5 params, never more than 8: clippy denies it and no `
 first is hashed into sccache's cache key, so it costs every hit even when set to the path
 cargo would have picked anyway; the second collides silently and hands you the other
 worktree's binary. Delete a landed worktree's `target/` — those bytes serve one worktree, the
-same bytes in the cache serve all of them. `DEVELOPMENT.md` carries the measurements.
+same bytes in the cache serve all of them. `docs/measurements/build-speed.md` carries the measurements.
 
 Scope tests to what you are proving — the compile dominates, and a whole-crate run is minutes:
 
@@ -85,6 +90,7 @@ cargo test --locked -p shell --test it interaction_test::   # headless Wayland s
 Shell integration files are modules of the single `it` target, not individual
 Cargo targets. Use `--test it MODULE::` to select a module, or its full
 `MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+and CI's exact Clippy gate on crates your host cannot build (operation `clippy`),
 see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
@@ -97,11 +103,20 @@ Before pushing:
 2. Run the narrow tests that prove the change, plus the relevant all-target compile check
    (for shell work, `cargo check -p shell --tests`).
 3. Commit the candidate, then inspect the affected plan with
-   `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
-   selection is a bug to understand before pushing.
-4. Push a task branch and use a PR. Do not probe `main` with a direct push. After pushing, let
-   the Codex CI hook report completion; inspect a failure once with
-   `fgj actions run view <run> --log-failed` and rerun only the failed job when it is transient.
+   `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
+   Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
+   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
+   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
+   source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
+   and runs this worktree's selector while forbidding every non-Git subprocess. A stale
+   selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.
+   Do not reuse an unverified export or manufacture a partial graph. Without a verified bundle,
+   leave selection to normal CI. The current direct selector also rejects a local default;
+   older worktrees require the stable launcher rather than their historical relative command.
+   Unexpected full-workspace selection is a bug to understand before pushing.
+4. Run `t` for the checks your change affects ([docs/t.md](docs/t.md)), rebase on `main`
+   and push straight to `main`. CI on `main` informs and never reverts; if `t main` shows a
+   failure you caused, fix it forward. See "Routine delivery workflow" in `DEVELOPMENT.md`.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
 `tilo`.
@@ -165,21 +180,29 @@ click handler is invisible to every one of them.
 
 **There is one story. Do not build a second one.**
 
-`tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
-default `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (never `/tmp`: anyone could bind a
-shared name first). It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
-if you use it often. It has two halves; reach for the first.
+`tilo-control` is the CLI over the compositor's control sockets (never in `/tmp`: anyone could
+bind a shared name first). Every image ships it at `/usr/bin/tilo-control`; from a checkout run
+`cargo run -q --bin tilo-control --`. It has two halves; reach for the first.
+
+The semantic half needs no development build and no environment variable: every compositor
+serves `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the **device admin's** session (the
+`wheel` account whose identity owns the device) once first login is complete, to that account's
+own unconfined processes — its login or ssh — and never to an app. On a real device, ssh in as
+the admin and run `tilo-control actions list`. A development session started with
+`$TILO_TEST_CONTROL` serves both halves there, and a set `$TILO_TEST_CONTROL` routes every
+subcommand to it.
 
 Semantic — how a collaborator, an agent or a script drives an app:
 
 ```bash
 cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
 cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
+cargo run -q --bin tilo-control -- windows                      # which windows are open, in View terms
 cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
 ```
 
-Input — for when the thing under test *is* the pointer, hit-testing or painting:
+Input — for when the thing under test *is* the pointer, hit-testing or painting (development
+sessions only):
 
 ```bash
 cargo run -q --bin tilo-control -- list-targets      # named rects, via Widget::test_id
@@ -189,6 +212,12 @@ cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
 is worth more than a synthetic click that proves only geometry.
+
+An agent in a terminal inside a Tilo login (Claude Code, Codex) reaches the same actions through
+`tilo-runtime-mcp --connect` (`claude mcp add tilo -- tilo-runtime-mcp --connect`): the session's
+agent door, with path-addressed tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`), e.g.
+`notes/Todo/body#append-paragraph`. It never starts a standalone runtime inside the login, whatever
+environment a multiplexer or ssh left it (docs/runtime-mcp.md).
 
 The installer and the greeter run before any compositor exists; they answer the same semantic
 ops on their own console socket, so it is still `tilo-control --socket <path> actions list`
@@ -246,15 +275,13 @@ pushing. `--locked` in CI. Commit a lock-only update with the command declared,
 `TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`; the pre-commit hook refuses any
 other lock change without a manifest beside it (DEVELOPMENT.md, "Pre-commit hook").
 
-Tilo's own crates use one RustCrypto generation, the one iroh uses: `ed25519-dalek` and
-`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13,
-`chacha20poly1305` 0.11. Take OS randomness from `getrandom::SysRng`, wrapped as
-`UnwrapErr(SysRng)` where an infallible `CryptoRng` is required. The previous generation is in
-the lock only through third-party crates (openmls, frost-ed25519, authenticode, smithay, …); do
-not add a direct dependency on it. The two sanctioned exceptions exist because the newest
-releases of those dependencies still require it: frost's `rand_core` 0.6 is reached only
-through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's stack
-(`authenticode-sha2`, `x509-cert`/`cms` 0.2 on `der` 0.7).
+Tilo's own crates use one RustCrypto generation, the one iroh uses; the versions are in
+[`docs/policies.md`](docs/policies.md#dependencies-and-runtime) and
+`tools/policy/check_crypto_generation.py` refuses a direct dependency on the previous one. Take
+OS randomness from `getrandom::SysRng`, wrapped as `UnwrapErr(SysRng)` where an infallible
+`CryptoRng` is required. frost's `rand_core` 0.6 is reached only through `threshold-identity`'s
+RNG bridge, and tilo-crypto keeps authenticode's stack (`authenticode-sha2`, `x509-cert`/`cms`
+0.2 on `der` 0.7), because the newest releases of those dependencies still require it.
 
 ## Traps that have cost real time
 
@@ -274,9 +301,17 @@ through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's 
 
 ## Verification covenant
 
-Declared in the header of `crates/session/shell/tests/concept_parity_spec.rs` and applying to **all** tests:
-never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
-path rather than a tautological helper.
+Never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
+path rather than a tautological helper. It applies to **all** tests; the rest of the testing
+rules are in [`docs/policies.md`](docs/policies.md#testing-and-verification).
+
+## Self-contained repository
+
+This is an open-source repository; everything in it must stand on its own. Never reference
+internal documents, trackers or private links (issue-tracker ids, internal docs or wikis, chat
+threads) in code, comments, docs, tests, scripts, commit messages and bodies, PR titles and
+descriptions, branch names or fixture strings. State the reason itself where it is needed.
+Hooks and CI reject them ([`docs/policies.md`](docs/policies.md#process) names the checks).
 
 ## Where to read first
 
@@ -286,16 +321,18 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
 
-Use a task branch and a pull request for routine integration. Group related,
-tested changes into small coherent increments; do not push work-in-progress or
-minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. Open the PR ready (not draft) and move on: it lands
-automatically once the required checks (`CI / affected packages` and
-`CI / fast quality`) pass on its current head. It does not need to be up to date
-with main; resolve only real conflicts. Park a PR with draft, the `hold` label or
-a `WIP` title. If a landed PR breaks main, it is reverted automatically and the
-PR gets a comment on how to reland. Review is optional and informational and never
-blocks integration. See `DEVELOPMENT.md`.
+Push your work straight to `main`; there are no pull requests to land and nothing
+reverts automatically. Before pushing, run `t` in your checkout and fix what fails
+because of you (exit code `3`: everything that failed also fails on `main` already).
+Keep each push a small, coherent, tested increment, then `git pull --rebase` and push.
+CI on `main` informs: `t main` shows what fails there and who is on it. Fix your own
+failures forward, and `t claim` someone else's before you work on it. `stable` is
+moved by the stabilizer alone. The full workflow is in `DEVELOPMENT.md`, "Routine
+delivery workflow"; using t is in `docs/t.md`. A change that reaches the shell also
+runs the desktop smoke (`desktop_smoke::` in the shell `it` target): a frozen
+compositor fails it within half a second with every thread's backtrace, so treat that
+failure as a freeze, never as a timeout to retry (docs/headless-testing.md, "Desktop
+smoke gate").
 
 Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS

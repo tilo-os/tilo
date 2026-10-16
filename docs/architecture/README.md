@@ -11,39 +11,70 @@ CRDT state the system owns.
 
 **Applications own neither their pixels nor their persistent storage.**
 
-An app exports **resources** — a video, an ebook, a note, a file. Resources nest: an ebook
-contains annotations and bookmarks. For each it exports **actions**: CRUD on an
-annotation, turn-page on a book, seek on a video. Files are resources on their own; where
-the format-aware filesystem already understands a type, the app does not handle it.
+There is one resource / action / view model for every app, written one way
+([resources.md](resources.md)):
 
-A resource separately exports **views**: editor, reader, map, grid, calendar, timeline.
-A view has its own stable identity and human label, and names the actions that open or
-mount it. This is an explicit catalogue rather than a convention around an action called
-`open`: ordinary presentation actions such as toggling a sidebar never become composable
-views by accident. The same resource can therefore appear in several honest forms without
-being copied into several app-owned documents.
+- **Model.** State is a `#[derive(Model)]` struct in a CRDT document. Storage
+  types declare how concurrent edits merge; apps never call Automerge.
+- **Actions.** Every field has a typed path and editing it is a built-in
+  action; `#[action]` methods are the real verbs. An action's kind (Read,
+  Undoable, Outside) is derived from what its code can do, never declared.
+  Outside consequences go through an `Outbox` drained by the owning device.
+- **Views.** Views bind controls by path and submit typed actions; forms are
+  local; only controls whose paths a change touched re-run.
+- **Visible.** Invoking an action makes its view live and runs it there, on the
+  strip where the task runs, with the actor present and attributed. Nothing is
+  performed out of sight.
+- **History.** Entries are structured data (actor, on whose behalf, what, which
+  item); sentences are rendered from Fluent in the reader's language.
+- **Permissions.** Grants over the published tree, filtered by kind, answering
+  Allow, Ask or Deny; enforced at every door and on receipt by relays and
+  devices ([permissions.md](permissions.md)).
 
-UI is a suggestion for presenting resources and actions, not the interface itself. An app
-can open a resource it never defined and it opens in the right application: URLs or
-intents for everything, above and below file granularity.
+### Settings, files and secrets
 
-Displaying a resource is not destructive. Taking an action needs a permission, confirmed
-by the user by default.
+What follows a person or a device but is not shared with a room is not the
+document. A preference is a typed `Settings<T>` whose type declares its scope:
+`Personal` roams across the person's own devices, `DeviceLocal` never leaves
+this one, `Shared` reads a per-user section every app follows (locale,
+spelling). Views and surfaces get settings, the app's files and its secrets
+from their context; a secret of one document item is keyed by the item's id,
+so the document names it and the secret stays on the device. See
+`storage.md` §13.6.
 
-Code: `crates/collab/actions` — `resource.rs`, `action.rs`, `registry.rs`, `executor.rs`.
-Apps register; `shell` serves the result into search, the palette and the control socket.
+### Views, versions and captures
+
+A resource can name more than one view (editor, reader) with a stable id.
+UI is a suggestion for presenting resources and actions, not the interface
+itself. An app can open a resource it never defined and it opens in the right
+application: URLs or intents for everything, above and below file granularity.
+Opening something is a record and actions, not a second launcher.
+
+A view is built for a live window, a past version (History builds the same view
+again for every version it previews) or a screenshot. Only a live view starts
+work that reaches outside the process. A screenshot scenario is the same view,
+never a second widget tree: what the resource does not hold is the scenario's
+fixture, prepared before the view is built; the resource is staged with its
+actions; and the capture waits until views report nothing left to draw.
+
+Code: `crates/sdk/tilo-resource` (`Model`, `Resource`, `publish`),
+`crates/sdk/tilo-resource-macros`, `crates/collab/actions` (protocol),
+`crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`), `crates/collab/action-policy`
+(grants). Apps register; `shell` serves the published tree into search, the
+palette and the control socket.
 
 ## What follows
 
 - **Accessibility and automation are the same door.** Screen readers, scripts and agents
   browse resources and invoke actions; none see or click. A capability reachable only
   through a click handler does not exist for them.
-- **Search is a system service.** Apps register a search provider and a renderer per
-  resource type, so a hit opens the app at that position. See `search.md`.
+- **Search is a system service.** An app's resource and its surfaces publish search
+  entries, each invoking the action that opens the app at that position. See
+  `search.md`.
 - **Undo, history, device sync and theming are system services.** One implementation, not
-  forty. Undo works from the document's Automerge history: each action records the heads
-  before and after it and who made it, and undo writes the inverse as a new change, so one
-  person's undo reverts their own action and keeps everyone else's concurrent edits.
+  forty. Per-author undo reverts through the inverse document action when the action
+  recorded an outside consequence, otherwise through Automerge inverse patches, so one
+  person's undo keeps everyone else's concurrent edits.
 - **Collaboration reduces to transport.** See `collaboration.md` and `rooms.md`.
 - **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
   presentation defaults and the user overrides them; the app does not.
@@ -64,16 +95,23 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | | |
 |---|---|
 | `overview.md` | component overview and system stack |
+| `resources.md` | the one app model: models, field edits, verbs, kinds, views, visible actions, history, evolution |
+| `permissions.md` | grants over the published tree: kinds, answers, delegation, enforcement at doors and on receipt |
 | `compositor.md` | strips, window model, input |
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
+| `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
-| `security.md` | sandbox, permissions, capability grants |
+| `security.md` | sandbox and capability grants for app code |
+| `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
+| `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
+| `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
+| `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |

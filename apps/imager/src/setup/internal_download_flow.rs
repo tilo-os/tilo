@@ -96,7 +96,10 @@ struct SelectionPreference {
 pub(super) struct DownloadPresentation {
     pub(super) phase: Option<WorkerPhase>,
     pub(super) title: String,
+    /// Everything known about the download, for status readers.
     pub(super) details: String,
+    /// The one sentence the page shows under the title.
+    pub(super) summary: String,
     pub(super) pending: bool,
 }
 
@@ -106,6 +109,7 @@ impl Default for DownloadPresentation {
             phase: None,
             title: "Full Tilo download".into(),
             details: "Choose Download Tilo after reviewing this setup.".into(),
+            summary: "Download Tilo when you have reviewed this setup.".into(),
             pending: false,
         }
     }
@@ -610,6 +614,7 @@ impl InternalDownloadFlow {
             // The download itself stayed verified; the installer helper stopped.
             next.title = crate::setup::strings::t("imager-setup-internal-download-kept");
             next.details = status.error.unwrap_or_default();
+            next.summary.clone_from(&next.details);
         }
         if next == self.presentation {
             return false;
@@ -669,38 +674,31 @@ fn presentation_from_facts(
 ) -> DownloadPresentation {
     let consumption: (String, String);
     let (title, summary) = match phase {
-        WorkerPhase::Authenticating => (
-            "Downloading Tilo",
-            "Checking the selected Tilo release against this signed app catalog.",
-        ),
-        WorkerPhase::Acquiring | WorkerPhase::Preparing => (
-            "Downloading Tilo",
-            "Checking retained download data before continuing.",
-        ),
-        WorkerPhase::Downloading => (
-            "Downloading Tilo",
-            "Downloading verified Tilo installation data.",
-        ),
+        WorkerPhase::Authenticating => ("Downloading Tilo", "Checking the Tilo release."),
+        WorkerPhase::Acquiring | WorkerPhase::Preparing => {
+            ("Downloading Tilo", "Checking what was already downloaded.")
+        }
+        WorkerPhase::Downloading => ("Downloading Tilo", "Downloading and checking Tilo."),
         WorkerPhase::Ready => (
             "Download ready",
             "Download verified. Installation has not started.",
         ),
         WorkerPhase::Paused => (
             "Download paused",
-            "The download is paused. Resume will recheck any retained download data before continuing.",
+            "Paused. Resuming checks what was already downloaded first.",
         ),
         WorkerPhase::Cancelled => (
             "Download cancelled",
-            "Unfinished download data or completed components may remain. Discarding unfinished data is a separate action.",
+            "Cancelled. Downloaded data may remain until you discard it.",
         ),
         WorkerPhase::Failed => ("Download failed", "The download did not finish."),
         WorkerPhase::Released => (
             "Kept for later",
-            "Verified download data was retained. Installation has not started.",
+            "The verified download is kept on this computer. Installation has not started.",
         ),
         WorkerPhase::Discarded => (
             "Unfinished download data discarded",
-            "Owned unfinished data was discarded for this selection. Completed components or other data may remain.",
+            "Unfinished download data was removed. Completed parts may remain.",
         ),
         WorkerPhase::Consuming => {
             consumption = (
@@ -760,6 +758,7 @@ fn presentation_from_facts(
         phase: Some(phase),
         title: title.into(),
         details,
+        summary: summary.to_string(),
         pending: false,
     }
 }
@@ -843,7 +842,8 @@ impl SelectionPreference {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::release::InternalRelease;
@@ -1491,7 +1491,7 @@ mod tests {
             assert_eq!(presentation.title, "Download paused");
             assert_eq!(
                 presentation.details,
-                "The download is paused. Resume will recheck any retained download data before continuing."
+                "Paused. Resuming checks what was already downloaded first."
             );
         }
 

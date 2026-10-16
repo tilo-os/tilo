@@ -44,6 +44,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
+  TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
   # Tags and explicit full-native dispatches use the native-ARM pool.
@@ -51,13 +52,19 @@ env:
 
 jobs:
   validate:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       release_arches: ${{ steps.lanes.outputs.release_arches }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Require this exact release commit to be checked on main
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
       - name: Validate packaging inputs before allocating native builders
         id: preflight
         shell: bash
@@ -74,6 +81,8 @@ jobs:
             diagnostic=arch-version-drift
           elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
             diagnostic=rpm-version-drift
+          elif ! python3 -m unittest discover -s tools/tests -p test_rpm_broker.py; then
+            diagnostic=rpm-broker-contract
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
           elif ! dist/ci/run-payload-contract-tests.sh; then
@@ -97,24 +106,13 @@ jobs:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
         shell: bash
         run: |
-          # Shared references must pin multi-architecture indexes, not amd64
-          # child manifests: Docker selects the immutable native child for
-          # each matrix lane from the index.
-          common_targets=$(cat <<'EOF'
-          nix|docker.io/nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c|
-          ubuntu-24.04|docker.io/library/ubuntu@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9|1+ubuntu24.04
-          debian-13|docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1|1+deb13
-          fedora-44|registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c|
-          EOF
-          )
+          # The lanes' userspaces and their pinned images
+          # (dist/ci/package-targets.txt).
+          amd64_targets=$(dist/ci/package-targets.sh amd64)
+          arm64_targets=$(dist/ci/package-targets.sh arm64)
           # Fat-LTO desktop packaging needs the larger runner class.
           amd64_runner=runner-large
           arm64_runner=runner-large-arm64
-          # menci's cross-build image deliberately declares an amd64 OCI
-          # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
-          # but give native runners an arm64-declared image.
-          amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
-          arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
           release_arches=amd64
           if [[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
@@ -161,7 +159,13 @@ jobs:
           fallback-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
             github-assets-all-v1-
-      - name: Build and install-test all five target userspaces
+      # The tilo-session-apps RPM ships the published env-runtime environment
+      # image, so a first environment opens offline. It is resolved and
+      # Cosign-verified here on the host; the Fedora container's source copy
+      # carries it to dist/rpm/build-rpm.sh.
+      - name: Fetch the env-runtime environment image
+        run: bash dist/ci/fetch-package-env-runtime.sh
+      - name: Build and install-test unsigned candidate userspaces
         env:
           # The compiler cache never enters pull-request code here, and a
           # payload that can be published never compiles through the
@@ -173,14 +177,6 @@ jobs:
           # The larger runner supports six native compiler processes.
           TILO_CARGO_JOBS: "6"
           TILO_LANE_TARGETS: ${{ matrix.targets }}
-          # RPM signing is restricted to protected desktop tags and happens in
-          # the Fedora packaging userspace, where rpm-sign is installed. The
-          # key is never available to pull requests or ordinary branch builds.
-          TILO_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
-          TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
-          TILO_RPM_SIGNING_KEY_B64: ${{ secrets.TILO_RPM_SIGNING_KEY_B64 }}
-          TILO_RPM_SIGNING_KEY_ID: ${{ secrets.TILO_RPM_SIGNING_KEY_ID }}
-          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
           while IFS='|' read -r distro image revision; do
@@ -193,38 +189,79 @@ jobs:
             fi
             echo "::endgroup::"
           done <<<"$TILO_LANE_TARGETS"
-      # Forgejo's native artifact service implements the v3 protocol. Upstream
-      # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      # The v4 artifact pins are Forgejo's builds (tag forgejo/v4): upstream's
+      # v4 accepts only GitHub-hosted servers. A copy on GitHub pins upstream's.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: arch-${{ matrix.arch }}
           path: dist/ci-output/arch-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: nix-${{ matrix.arch }}
           path: dist/ci-output/nix-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: ubuntu-24.04-${{ matrix.arch }}
           path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: debian-13-${{ matrix.arch }}
           path: dist/ci-output/debian-13-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: fedora-44-${{ matrix.arch }}
           path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
+
+  sign-rpm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: [validate, package]
+    # Verification is architecture-independent; no native build or private key.
+    runs-on: runner
+    enable-openid-connect: true
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: fedora-44-${{ matrix.arch }}
+          path: signed-fedora
+      - name: Acquire and verify isolated-broker signatures for the exact tested RPMs
+        env:
+          TILO_RPM_ARCH: ${{ matrix.arch }}
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
+        run: |
+          dist/rpm/sign-rpms.sh signed-fedora
+          if [[ "$TILO_RPM_ARCH" == amd64 ]]; then
+            dist/rpm/make-repo-file.sh "$(<dist/VERSION)" signed-fedora/tilo-fedora-44.repo
+            (cd signed-fedora && sha256sum tilo-fedora-44.repo > tilo-fedora-44.repo.sha256)
+          fi
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: signed-fedora-44-${{ matrix.arch }}
+          path: signed-fedora/*
+          if-no-files-found: error
+
+  # The amd64 Fedora RPMs this run built, installed on stock Fedora in a KVM
+  # VM and logged into through a display manager, with apps opened.
+  host-session-e2e:
+    if: ${{ !cancelled() && needs.package.result == 'success' && (!startsWith(github.ref, 'refs/tags/desktop-v') || needs.sign-rpm.result == 'success') }}
+    needs: [package, sign-rpm]
+    uses: ./.forgejo/workflows/host-session-e2e.yml
+    with:
+      rpm-artifact: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && 'signed-fedora-44-amd64' || 'fedora-44-amd64' }}
 
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -232,7 +269,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 120
     steps:
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
@@ -317,33 +354,28 @@ jobs:
             echo '::notice::requested continuous desktop/OS integration release'
           fi
 
-  release-guard:
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: validate
-    runs-on: runner
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
-      - name: Require this exact commit to be checked on main
-        shell: bash
-        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
-
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: [validate, package, release-guard]
+    # Publication must retain the native session result for these exact RPMs.
+    # The reviewed Desktop catalog additionally requires the complete journey.
+    needs: [validate, package, sign-rpm, host-session-e2e]
     runs-on: runner
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
+      - name: Retain only broker-qualified Fedora release copies
+        env:
+          RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}
+        run: |
+          for arch in ${RELEASE_ARCHES//,/ }; do
+            test -s "release/signed-fedora-44-$arch/tilo-rpm-signing-receipt-$arch.json"
+            # Signed copies include every original non-RPM lane artifact.
+            # The broker client already verified identical immutable RPM bytes.
+            rm -rf -- "release/fedora-44-$arch"
+          done
       - name: Flatten per-target artifact directories
         run: |
           find release -mindepth 2 -type f -print0 | while IFS= read -r -d '' artifact; do
@@ -354,6 +386,7 @@ jobs:
           find release -mindepth 1 -type d -empty -delete
       - name: Check release version and create checksums
         env:
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
           RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}
         run: |
           version="${GITHUB_REF_NAME#desktop-v}"

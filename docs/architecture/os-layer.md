@@ -27,10 +27,12 @@ UEFI → systemd-boot → unified kernel image → systemd
 ```
 
 `tilo-greeter` is a graphical Tilo UI running inside Cage; it is not
-`tuigreet`. The session entries in `os/usr/share/wayland-sessions/` invoke
-`/usr/libexec/tilo-session`, which owns the lifetime of the Tilo user targets
-and starts `/usr/bin/shell` as the native Wayland compositor. The peer-sync
-entry is an explicit opt-in variant.
+`tuigreet`. The image ships one session entry,
+`os/usr/share/wayland-sessions/shell.desktop`, so the greeter starts it
+directly and shows no session picker. It invokes `/usr/libexec/tilo-session`,
+which owns the lifetime of the Tilo user targets and starts `/usr/bin/shell`
+as the native Wayland compositor. Peer sync is part of every session, not a
+separate entry.
 
 `fs.service` mounts `/var/workspace` before the compositor. Identity migration
 and first-login verification happen in the session targets and greeter flow;

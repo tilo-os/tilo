@@ -475,8 +475,7 @@ fn authenticated_session_ready(
     use std::os::unix::fs::MetadataExt;
     let pin = PinnedDirectory::open_absolute(runtime).map_err(|e| e.to_string())?;
     let metadata = pin.file.metadata().map_err(|e| e.to_string())?;
-    // SAFETY: getuid has no arguments or memory contract.
-    let uid = unsafe { libc::getuid() };
+    let uid = tilo_process::uid();
     if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
         return Err("Session runtime directory is not private".into());
     }
@@ -634,7 +633,8 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
 }
 
 // Migration fixtures exercise Linux directory handles and session sockets.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};
@@ -1080,9 +1080,8 @@ mod tests {
     #[ignore = "controller-only disposable native current-user fixture; requires TILO_CONTINUATION_FIXTURE_SOURCE"]
     fn seed_native_first_login_fixture() {
         use std::os::unix::fs::MetadataExt;
-        // SAFETY: getuid has no memory contract. A root-run seed would name the
         // wrong account and must never prepare another user's continuation.
-        let uid = unsafe { libc::getuid() };
+        let uid = tilo_process::uid();
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
         let home = tilo_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(

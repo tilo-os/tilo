@@ -20,19 +20,14 @@ web-features = ["media"]
 
 [dependencies]
 fnv.workspace = true
-hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 automerge.workspace = true
-# The Tilo ACTION model: Tube's `actions` module exports its collaborative
-# operations (likes, queue, comment replies) as replayable actions the host's
-# Ctrl+K palette dispatches.
-tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -45,11 +40,11 @@ anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
-# The owner-only watch history file.
+# Fully-rangeable playback URLs through Invidious media proxies.
+tilo-invidious = { path = "../../crates/platform/tilo-invidious" }
+# Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
-blake3.workspace = true
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
@@ -81,6 +76,13 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach YouTube through the YouTube client's engine library in the runtime
+# bundle (libtilo_youtube_engine.so, crates/runtime/engines/youtube) instead
+# of the executable. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links rustypipe statically, because the engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "live", "tilo-youtube-engine/thin"]
 # The default app includes live YouTube and media features. Shots/tests remain
 # hermetic at runtime because their live workers are not spawned; Grayjay sync
 # also fails closed if the system secret store is unavailable.

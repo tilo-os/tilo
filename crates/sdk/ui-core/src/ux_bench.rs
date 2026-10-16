@@ -231,9 +231,9 @@ impl Scenario {
                     if spec.actions.len() != 1 {
                         return Err("one input per step required".into());
                     }
-                    if let Some(crate::headless::Action::WaitForNamed { timeout, .. }) =
+                    if let Some(crate::headless::Action::WaitForNamed { timeout_ms, .. }) =
                         spec.actions.first()
-                        && timeout.as_secs_f64() > 30.0
+                        && *timeout_ms > 30_000
                     {
                         return Err("wait timeout exceeds 30 seconds".into());
                     }

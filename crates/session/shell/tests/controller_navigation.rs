@@ -49,6 +49,7 @@ fn group(id: GroupId, tab: u64, label: &str) -> WindowGroup {
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -104,8 +105,8 @@ fn desk() -> Desk {
 }
 
 fn tick(host: &mut ShellOverlayHost) {
-    let mut doc = automerge::AutoCommit::new();
-    host.update(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
 }
 
 /// The `workspace_tree` half of `state-dump`, built the way the compositor

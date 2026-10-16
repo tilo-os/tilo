@@ -28,7 +28,7 @@ under `web/`. It is reference material only; nothing is ported verbatim.
 | Accessibility | The toolkit's semantic routes projected into an accessible DOM tree; DOM actions invoked the real widget actions. |
 | Clipboard | Text only, and only inside trusted clipboard events. |
 | Fonts | The product fonts from `crates/sdk/ui-core/assets/fonts/manifest.toml`, copied into the bundle with a `fonts.json` (name, bytes, sha256, `browser_startup`). `font-loader.mjs` fetched same-origin, verified hashes, loaded startup fonts before first frame and optional ones on demand. |
-| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. |
+| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. The page decodes images with the browser's own decoders (`createImageBitmap`) and hands the module RGBA pixels, so app images need no decoder in the module. Pages a native peer paints still decode their images in the module (`webview::paint`), and the text renderer keeps a PNG decoder for bitmap emoji. |
 | Storage | IndexedDB with strict-durability transactions storing bytes and Automerge actor together, in a dedicated worker. An exclusive Web Lock per profile/device serialised tabs. A write counted as saved only after commit. Failed closes retained custody until `retryPendingRecovery()`. |
 | Identity | Browser-held keys (a Cloud owner root and a device key per Cloud machine) persisted in IndexedDB under Web Locks (`cloud-identity-custody.mjs`). Enrollment went through an injected `CloudEnrollmentAdapter` (`inspect`/`apply` against the Cloud Store); `signCloudMachineMesh` signed machine-link grants inside WASM. |
 | Peer transport | "One browser state owner with authenticated HTTPS delivery; no relay fallback": a long-poll HTTPS carrier (`tilo-delivery-protocol`) authenticated with the peer key. Live presence used a separate channel; media used MoQ over WebTransport. `iroh` was linked for wasm but not used as the state carrier. |
@@ -88,7 +88,10 @@ Reshape to fit `main`:
   idempotent invocation ids). The broker catalogue is the remote action
   directory; the ticket model maps to invocation ids.
 - **Content keys.** Encrypted channels use `channel-crypto` (OpenMLS) exactly
-  as native peers do; the browser is a member device.
+  as native peers do; the browser is a member device. Its member state lives
+  in the profile's durable store, sealed under a vault key that is itself
+  sealed under a non-extractable AES-GCM key in IndexedDB
+  (`channel-vault.mjs`) and unsealed into wasm memory only.
 - **Transport.** `tilo-relay` over iroh (below), replacing HTTPS delivery.
 
 Drop: `retryPendingRecovery`/`pendingComponentCloseCount` diagnostics that
@@ -126,8 +129,8 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `identity_flow`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
-| 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `tilo_files::native::private` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 7 | No private-file platform | `tilo_files::native::private` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
 | 10 | `web_time::SystemTime` ≠ `std::time::SystemTime` on wasm | `tilo-ui` (settings stamps, signed ops, identity flow) | `ui::time::{to_std, from_std}` — identity on native, epoch arithmetic on the web — at the six crossings | fixed |
@@ -140,7 +143,7 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 17 | No browser fonts | `tilo-ui` text | Ported from 541: manifest `browser_startup`, `FontCatalog::load_browser_startup_bytes`, `TextRenderer::with_browser_font_system`, demand/install, browser emoji shaping | fixed |
 | 18 | App image stores spawn decode threads | `tilo-ui::image_store` | Ported from 541: `ImageStore::with_host_factory_with_max_dimension` | fixed |
 | 19 | Apps depend on `tilo-app` with native defaults | every app (`apps/*`) | Per-app `native` feature forwarding `tilo-app/native`, default on; browser builds use `default-features = false`. Notes also needs `portal` under `native` (`tilo-ui/portal` implies `native`) and `tilo-content` without `device` (`device` → `runtime-fs` → tokio `net`) | remaining |
-| 20 | Shell desktop (`crates/session/shell`) is native | shell | The portable part is `tilo-desktop-surface` (below): the toolkit's strip widgets over `tilo-desktop-model`. Pure tree operations the shell owned (`reconcile_strip_topology`, tab removal) moved into `tilo-desktop-model`; the shell delegates. Desktop search is shared through `tilo-desktop-search` (result kinds, the cross-provider ranking, portable providers, the palette session); the surface draws it with the toolkit's `CommandPalette` on Super/Cmd+K, Ctrl+K off macOS, Super+Space and the `global-search`/`commands` navigation commands. Other shell chrome (top bar, wheel, overview) stays native | fixed (surface, search) |
+| 20 | Shell desktop (`crates/session/shell`) is native | shell | The portable part is `tilo-desktop-surface` (below): the toolkit's strip widgets over `tilo-desktop-model`. Pure tree operations the shell owned (`reconcile_strip_topology`, tab removal) moved into `tilo-desktop-model`; the shell delegates. Desktop search is shared through `tilo-desktop-search` (result kinds, the cross-provider ranking, portable providers, the palette session); the surface draws it with the toolkit's `CommandPalette` on Super/Cmd+K, Ctrl+K off macOS, Super+Space and the `global-search`/`commands` navigation commands. The page mounts the surface under `tilo-desktop`'s backdrop and top bar (`src/shell.rs`), answering the bar's `DesktopChromeSource` from the tree and the page clock and applying its intents as navigation commands; an empty workspace shows `tilo-desktop`'s launchpad, and the bar's overview button `tilo-desktop`'s `OverviewPanel`. The wheel stays native | fixed (surface, search, top bar, launchpad, overview) |
 | 21 | `std::time` clocks panic at run time | `tilo-clock`, `qdoc::history` | `tilo-clock` uses `web-time` on wasm (target-only dep); `qdoc` stamps commits through `tilo-clock`. Other direct `SystemTime::now`/`Instant::now` callers remain run-time hazards | fixed (record flush path) |
 | 22 | Strip widgets hide their children | `tilo-ui` `GroupRow`/`WindowGroup` | `GroupRow::exposing_children` (opt-in) reports groups, handles, tab bars and active tiles in layout order, so in-process components get semantics, focus and lifecycle | fixed |
 | 23 | `ring` C code | `ring` | Builds with Apple clang 21 and upstream clang (wasm32 target). CI needs a clang with the wasm backend. Apple `ar` writes empty archives for wasm objects. That only breaks linking when a crate needs ring's C code at link time (it did while iroh, whose `iroh-relay` links a `cdylib`, was in the bundle); if it recurs, point `CC_wasm32_unknown_unknown`/`AR_wasm32_unknown_unknown` at LLVM (e.g. Homebrew `llvm@21`) | note |
@@ -154,12 +157,12 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Gap | Where | Browser implementation |
 |---|---|---|
 | Threads | `render_thread` (`ui-render`), `tilo_rt::app()` (a dedicated thread), `cpu_pool` (rayon), `ThreadPool` background executor, collaboration broker worker | *Done except the broker.* Render on the page thread (`FrameHarness` + Vello on the canvas). `tilo_rt::app()` on wasm is a `LocalSet` polled by one `wasm_bindgen_futures::spawn_local` task (same `spawn`/`spawn_then`/`spawn_blocking` signatures; `block_on` refuses with `UiThread`; tokio `time`/`net` have no driver). `cpu()` runs as an app task, `cpu_pool()` is the page thread alone, `tilo_rt::io` refuses. `tilo-host`'s default `Background` on wasm is `PageExecutor` (microtasks + `setTimeout`). The broker worker is behind `broker-transport` (milestone 5). Frames follow input, component wakes, animation and wake deadlines only (`FrameHarness::frame_schedule`, as the native runner): an idle mount presents nothing. |
-| Files | `settings-store`, `app-state::FsStore`, `xdg-paths`, `atomic-file`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
+| Files | `settings-store`, `app-state::FsStore`, `tilo-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
 | Local daemons | none linked (milestone 5) | `CollaborationManager::with_transport` with a relay-backed `CollabTransport` (not wired yet); the certified peer installs its user as `ui::local_identity` ([Seams](#seams-the-page-installs)). |
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
 | Clipboard, pickers, URI, notifications | `HostServices` | *Done* (`src/host_services.rs`, `web/host-services.mjs`). Clipboard: trusted clipboard events plus `execCommand('copy')` for clicked Copy (the async Clipboard API cannot give Cut the synchronous answer it needs). Files: `FilePicker::pick_contents`/`save_contents` (new, with path-reading defaults for native hosts) answered by `<input type=file>` and a download; path pickers refuse. URIs: `window.open` for http/https/mailto/tel only, without an opener. Notifications API with permission requested on first use. |
-| TCP pairing | `identity_flow` | Replaced by relay-mediated certification. |
+| TCP pairing | `tilo-identity-ceremony` | Replaced by relay-mediated certification. |
 
 ### Seams the page installs
 
@@ -206,18 +209,17 @@ for capnp, not at all, so the linker already discarded them.
 Still in the wasm graph, left for later:
 
 - `app-state` → `cli` → `runtime-portal` (discovery only), `advisory-lock`,
-  `atomic-file`, `xdg-paths`: `FsStore` and the package path helpers share
+  `tilo-paths`: `FsStore` and the package path helpers share
   `app-state/src/lib.rs` with `DocOwner`/`DocWriter`. Splitting `FsStore`
   behind an `app-state` feature would drop `cli`, `advisory-lock` and
-  `anyhow`; `atomic-file` stays through `channel-crypto`, `xdg-paths`
-  through `spellcheck`.
+  `anyhow`; `tilo-paths` stays through `spellcheck`.
 - `tts`: on wasm only its vocabulary (`Speaker`, `Priority`, `NullSpeaker`)
   compiles; the SSIP backend is `cfg(unix)`.
 - `spellcheck`: pure Rust, but embeds a ~690 KB word list. Candidate for a
   feature or fetched dictionary if the bundle budget needs it.
 - `media` (with `rustfft`), `syntect`/`two-face`, `image`, `openmls` and
   `threshold-identity`: portable and used by portable widgets.
-- WebView/adblock, WPE, GPU video, MPRIS, XDG portal and notifications were
+- WebView/adblock, GPU video, MPRIS, XDG portal and notifications were
   already opt-in features and are not in the portable graph.
 
 ## Transport from browser to machine
@@ -241,21 +243,22 @@ host) and the carrier.
   barrier runs before the change counts as delivered.
 - **Durable plane: signed Automerge changes over an HTTPS delivery
   carrier.** The browser uploads its own signed changes from a durable
-  outbox (`POST /peer/v3/state`). It reads the host-ordered replay through
-  held long-poll chains (`/peer/v3/events`) starting at a host-signed opaque
-  cursor, and acknowledges consumption (`/peer/v3/acks`). A reconnecting
-  browser resumes from its cursor and re-uploads anything unacknowledged.
-  The host de-duplicates by digest/operation id. When history is gone it
-  answers with a reset to a snapshot (`/peer/v3/snapshots`). Every request
-  carries a device-signed HTTP proof.
+  outbox. It reads the host-ordered replay through held long polls starting
+  at a host-signed opaque cursor, and acknowledges consumption. A
+  reconnecting browser resumes from its cursor and re-uploads anything
+  unacknowledged. The host de-duplicates by digest/operation id. When
+  history is gone it answers with a reset to a snapshot. `main` does not
+  serve 541's routes or its HTTP request proofs: its routes are the
+  `/peer/v1` carrier below (`tilo_relay_protocol::web`).
 - **Conflicts** are CRDT merges (Automerge: deterministic per-property
   last-writer-wins, the same outcome on every replica). The host decides
   *admission*, not merge results.
-- **Live plane (`LIVE_V1`).** Ephemeral and never authority
-  (`tilo-delivery-protocol::delivery_v3::live_wire`):
+- **Live plane (`LIVE_V1`).** Ephemeral and never authority. The frames
+  are `tilo-relay-protocol::live`, the one copy the relay and the browser
+  speak:
   - A latest-value `presence` track (datagrams): `PresenceFrame {seq,
-    sent_at_ms, focus, pointer, selection anchors, drag}`. Receivers drop
-    older sequence numbers.
+    sent_at_ms, focus, pointer, selection anchors, drag, participant}`.
+    Receivers drop older sequence numbers.
   - One ordered `ops/<record>` track per record: `OpsFrame::Preview` (text
     preview ops against CRDT anchors) and `OpsFrame::SignedChange`, an
     early forward of a durable change.
@@ -264,10 +267,11 @@ host) and the carrier.
     the publisher namespace.
   - The shared `LiveService` (commit `67c31b331`) issues 60-second
     host-signed live grants and re-checks each session's current roster
-    permission from one shared owner turn every 50 ms, so revocation cuts
-    live sessions within about 100 ms.
+    permission from one shared owner turn whenever an authority change is
+    announced, so revocation cuts live sessions within about 100 ms.
   - The carrier is moq-lite over WebTransport (`/moq/live`), with an HTTPS
-    streaming fallback (`/peer/v3/live/fallback/*`). There are no WebSockets.
+    streaming fallback (`/peer/v3/live/fallback/*`, the paths `main` still
+    serves). There are no WebSockets.
 - **Browser speculation.** `peer_live/speculation.rs` keeps a *durable
   basis* plus an in-memory *view*: basis + early-forwarded changes. The
   view is what renders. A durable cut settles each outstanding change:
@@ -346,7 +350,13 @@ rather than a second host:
     `CoverageStatement` naming the retained entries (by digest of their
     body) it had delivered or published before the request. The host
     removes exactly those. Rooms whose replay a native shell selects
-    (`shell_authority`) are left to that selection.
+    (a bound shell retention authority) are left to that selection. It runs for
+    checkpoints, room frames and before every replay, not per keystroke:
+    a signed route increment that sorts after the route's
+    accepted tails and applies to them is published as an original from an
+    in-memory cursor the last clean selection left behind
+    (`tilo-relay-shell`'s `selection/tail_cache.rs`), since a selection could only
+    have listed it.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
@@ -354,12 +364,15 @@ rather than a second host:
     with the host's canonical codec.
   - A grant (`/live/grant`) is bound to the HTTPS session and presented in
     the carrier's admission preface.
-  - One observer checks every grant every 50 ms (session open, device not
-    revoked, still admitted), and the relay re-checks each session against
-    that snapshot. This is 541's batched `LiveService` observation, run on a
-    tokio interval.
+  - One observer checks every grant (session open, device not revoked,
+    still admitted), and the relay re-checks each session against that
+    snapshot. This is 541's batched `LiveService` observation, run when
+    something it reads announces a change — the relay's authority epoch
+    (`tilo-relay/src/authority_epoch.rs`), a session ending or running out, a
+    grant issued — and on the 5 s session sweep as a backstop.
   - Browsers without WebTransport use 541's HTTPS stream fallback
-    (`/peer/v1/live/fallback/{open,send,resume}`) with the same frames.
+    (`/peer/v3/live/fallback/{open,send,resume}`, outside `API_PREFIX`;
+    `tilo-moq` `live/fallback.rs`) with the same frames.
   - Live frames from iroh peers are bridged into the relay, so native and
     browser members share one live room.
 - **Early forwarding is dropped.** In 541 it hid long-poll latency. Here a
@@ -371,8 +384,8 @@ rather than a second host:
   synchronously inside a `tokio::select!` loop and retried with
   `std::thread::sleep`. Here every handler is async and awaits the relay's
   own locks, workspace I/O already runs on the blocking pool, and the only
-  periodic work (the 50 ms observation and the session janitor) runs on
-  tokio intervals. No thread ever sleeps in async code.
+  periodic work (the session janitor, which also backstops the grant
+  observation) runs on a tokio interval. No thread ever sleeps in async code.
 - **The browser side** is `crates/browser/tilo-browser-peer`: custody,
   session, outbox and replay, live state, and the `CollabTransport`.
   - It reaches the host through an `HttpClient` seam (`fetch` in the page).
@@ -440,9 +453,221 @@ proof of possession) to `POST /peer/v1/certify`, then long-polls
 - The host checks the certificate against the request and the browser
   policy (no `can_admit_devices`, no `can_act_as_host`, bounded expiry, not
   revoked), then hands it to the waiting browser.
-- The host never holds the root, and the browser never generates one.
-  Revocation is enforced at request, at issuance and at every later
-  handshake.
+- The host never holds the root. Revocation is enforced at request, at
+  issuance and at every later handshake.
+
+The same pending set pairs any member's devices, not only the host owner's.
+A request for another person's root is queued when that root is a member of
+a room on the host. The approver is then the person's own browser, which
+holds their root: it sends a root-signed `MemberApproval` (`tilo member
+approval v1\0`, the root, the time and the command, fresh within five
+minutes) to `POST /peer/v1/certify/approve`. With it the person can list
+only their own pending requests and answer only those. The host checks the
+issued certificate as above and hands it to the new device. It relays and
+nothing more: the root signs the certificate, and the two devices share no
+other server.
+
+In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
+copies a link that opens the current workspace with a `pair` link secret
+naming the person (`web-routing.md` §6.2), and says "Link copied" in
+passing. When the clipboard refuses, a banner holds the link with **Copy
+link**, whose click may be allowed where the search choice was not; refused
+again, the page shows the link selected in a read-only field to copy by
+hand. Once copied, the banner is withdrawn. The new device asks for a
+certificate and shows its pairing code. The person's device then offers a
+banner that names the code, and choosing the banner approves the device.
+In a governed room the certificate alone admits no device. So where the
+host has an admission door, the new device then joins as that person:
+`<admission>join` pre-admits the root and the device redeems the invitation
+with its paired certificate (`askToJoinAs`). The membership kept for the
+host is marked `paired`, so later visits reconnect as that person. A paired
+device holds no root, so it offers no identity actions.
+
+### A browser-held root
+
+A person with only a browser holds their user root in the page
+(`web/root-identity.mjs`). The root is generated with WebCrypto and stored
+only wrapped, as a root envelope that any server may keep:
+
+```json
+{"version": 1, "root_public_key": "<hex>", "wraps": [
+  {"kind": "passkey", "credential_id": "…", "rp_id": "…", "prf_salt": "…", "nonce": "…", "ciphertext": "…"},
+  {"kind": "recovery", "salt": "…", "nonce": "…", "ciphertext": "…"}]}
+```
+
+Each wrap is AES-256-GCM over the root's PKCS#8 encoding under
+HKDF-SHA256 of a passkey's WebAuthn PRF output or of the recovery key (160
+random bits, shown once as `XXXX-XXXX-…` Crockford base32), bound to its kind,
+the root public key and the credential. `tilo_user_identity::root_envelope`
+reads and writes the same format natively. Unlocking unwraps straight into a
+non-extractable `CryptoKey`; the root never exists in the clear outside the
+page's memory.
+
+The first visit to the Tilo app makes such a person at once, with no
+passkey and nothing to type (`browserIdentity()`; `browserPerson()` is what
+every join asks for). Its root is held in IndexedDB wrapped under a
+non-extractable AES-GCM key stored as the `CryptoKey` itself, so it never
+leaves the browser; the page also calls `navigator.storage.persist()`. It is
+a real identity from the start: it joins and owns
+workspaces like any other, and a host that prunes it lets the same person
+join again. Keeping it only adds wraps to its envelope, through the
+desktop's host actions (`identity-actions.mjs`: desktop search, and one
+banner per browser session, never on arrival: after `ASK_AFTER_ACTIONS`
+separate actions or once the person sets their name, at a pause in their
+input):
+
+- **Keep your name and work**: one passkey whose user handle is the root public
+  key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
+- **Save a recovery key**: to the password manager (`PasswordCredential`)
+  where the browser has one, else as a file.
+- **Sign in with a passkey**: one discoverable assertion names the root and
+  yields the PRF output; the envelope comes from a host that keeps it; the
+  root is then kept in this browser instead.
+- **Set your name**: the name others see in history and presence, applied
+  live through `peer.setDisplayName` and kept as the person's profile on
+  every host they joined (below), so each of their devices comes up with it.
+  A name is at most 128 bytes of UTF-8, as hosts keep it; a host's refusal
+  is said in the form, which stays open.
+  Choosing one also offers to keep the person it names.
+- **Pair a new device**: see "Device certification" above.
+
+Every host the person is a member of keeps the envelope (ciphertext only):
+`POST /peer/v1/envelope` `{envelope, issued_at_ms, signature}` (the root
+signs `tilo root envelope v1\0`, the time as u64 LE, the envelope's JSON;
+members only, newer statements only) and `POST /peer/v1/envelope/fetch`
+with the root key as hex, answering `{"envelope": …}`, or `{"envelope":
+null}` when none is kept (a new person, the usual case).
+
+The person's profile travels the same way: `POST /peer/v1/profile`
+`{profile, issued_at_ms, signature}`, where `profile` is the JSON text of
+`{version: 1, user_public_key, display_name}` and the root signs
+`tilo person profile v1\0`, the time and that text; `POST
+/peer/v1/profile/fetch` answers `{"profile": …}`, or `{"profile": null}`. A page that joined asks the hosts it
+knows for the profile (`syncProfile` in `identity-actions.mjs`): a kept one
+wins and becomes this browser's name for the person, so a paired device or a
+passkey sign-in on a new browser shows the name chosen elsewhere; without
+one, a page holding the root publishes the name it chose. Choosing a name
+publishes it to every host the person joined.
+
+Everything below is exported by `root-identity.mjs` and re-exported by
+`peer.mjs`. The identity created or unlocked last is the page's current one
+and the default wherever an `identity` is taken.
+
+```ts
+createIdentity({rpId, userName, userId, displayName?, passkey?: boolean, prfSalt?})
+  : Promise<{envelope, recoveryKey: string, identity: RootIdentity}>;
+unlockIdentity(envelope, {passkey: true, rpId?} | {prfOutput, credentialId} | {recoveryKey: string})
+  : Promise<RootIdentity>;
+addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>;
+// A native node that hosts and governs the person's workspaces: host, owns
+// and reads all workspaces, admits no devices, one year. Never the root.
+certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser', encoding?: 'canonical' | 'json'})
+  : Promise<string /* canonical DeviceCert, base64 (what a native device keeps on disk); or JSON */>;
+installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
+installNode({origin, devicePublicKey, installToken, identity?, label?, runtime?, onProgress?}): Promise<{device_public_key, user_public_key}>;
+// The page's own device, certified by the root itself against the host's
+// certificate (which must be a host of this root), no approver. Defaults:
+// a profile per identity, its device key, the page host's runtime.
+connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
+// Another person's workspace: what an invitation offers, then join it as
+// this identity (its own root certifies the device; the owner admits it).
+inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter?: {name, userPublicKey}}>;
+joinWorkspace({origin, invitation, identity?, displayName, signal, onProgress?}): Promise<CertifiedPeer>;
+// onProgress({phase: 'asking' | 'waiting' | 'admitted'}); rejects when declined or refused
+// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
+```
+
+A peer connected to a room its host governs administers it as the owner
+(`web/membership.mjs`; each call is one `/rooms` request the host
+authorizes):
+
+```ts
+peer.createInvitation({role?: 'editor' | 'commenter' | 'viewer', expiresIn?: seconds /* ≤ 30 days, default 7 */})
+  : Promise<string /* invitation text, base64url */>;
+peer.membership.list(): Promise<{room, name, generation,
+  members: [{userPublicKey, name, role, owner, removed}],
+  waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
+  invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.requests(): Promise<[{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}]>;  // waiting only, one request
+peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
+  / remove(userPublicKey) / cancelInvitation(inviteId);
+// The rooms the host governs, before the peer is in one (connect again with `room`):
+peer.workspaces.list(): Promise<[{room, name, generation, members}]>;
+peer.workspaces.create(name) / enter(room): Promise<{room, name, generation, members}>;
+```
+
+An owner can admit someone in advance whom another party vouches for (a
+co-founder whose email a backend verified, a teammate an admin listed):
+
+```ts
+peer.membership.preAdmit({tokenSha256 /* hex */, label, role?, expiresIn?}): Promise<string /* invitation */>;
+joinWorkspace({origin, invitation, admissionToken, …});   // admitted at once
+peer.membership.list() → {…, notices: [{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}]};
+```
+
+The owner's unlocked root signs a `PreAdmission` (room, role, the SHA-256
+of a one-time token, a label, an expiry of at most 30 days); the host
+verifies it is the room owner's and issues a single-use invitation with it
+(`RoomsRequest::PreAdmit`). Whoever vouches hands the person the invitation
+and the token, never the room's keys. The person redeems it with the token
+(`JoinStep::ProvePreAdmitted`): the host admits the device without the
+owner, spends the grant and records a `RoomNotice::PreAdmitted`
+(`RoomsRequest::Notices`), and the owner may remove them like any member. A
+wrong token is refused; without one the request waits for the owner as
+usual.
+
+An invitation names its inviter: the host records the user root of the
+device that asked and the `displayName` the peer connected with, and signs
+both into the invitation (`tilo_peer_state::join::Inviter`, invitation
+version 2), so `inspectInvitation` shows who sent it as the host attests.
+
+`createIdentity` refuses a passkey without PRF (`IdentityError` code
+`prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
+All of an identity's passkeys share one PRF input (`prf_salt`; random unless
+`prfSalt` is given), so a login that already asserted a passkey with
+`extensions.prf.eval` of it unlocks with `{prfOutput, credentialId}` and no
+second prompt. `addPasskey` excludes the envelope's existing credentials, so
+the new passkey lands on another authenticator instead of replacing one; its
+`userName`/`userId` default to those the identity was created with.
+
+A node provisioned without a certificate (`tilo-relay run --web …
+--install-token-file PATH`) creates its device key, prints
+`{"event": "awaiting_certificate", "devicePublicKey": …}` and serves only
+`POST /peer/v1/install` (the certificate as JSON or canonical bytes, the token in
+`x-tilo-install-token`; every other route answers `503`). Once a valid host
+certificate for its key is installed it starts as that identity's host on the
+same origin.
+
+`installNode` does the whole install (`nodeInstallInfo`, `certifyDevice`
+for the node and its session, `installNodeCertificate`), saying each step
+to `onProgress({phase: 'checking' | 'certifying' | 'installing'})`. A
+refusal is an `IdentityError`: `install-token-refused` (403), `not-waiting`
+(a host already serving answers no install route) or `install-refused`. The
+web desktop offers it to the person as "Set up a machine", typed in or
+filled in from an `install` link (`web/machine-setup.mjs`;
+web-routing.md §6.3). The node must allow the page's origin
+(`--allowed-origin`) for the page to reach its install route.
+The web desktop then makes workspaces on it, invites people into them and
+lets in who asks (`web/workspace-actions.mjs`; web-routing.md §6.4).
+
+Browsers accept a device as a room's governor when its certificate owns
+workspaces (`can_own_workspaces`), so such a node governs and stewards the
+person's rooms; a plain host certificate never does. A page whose host is
+such a node takes it as the governor of every room it joins there, also a
+room of another person it was invited to, unless a genesis frame from a
+device of its own person names another governor.
+
+The node governs the rooms created on it through `/rooms` (the company
+workspace) and stewards their channels (`tilo-relay` `rooms/stewardship.rs`):
+it admits to a channel exactly the room's governed member devices that ask
+for it, removes those governance removed, and retains the channel's
+governance frames as its own writes. Members' records reach the relay only
+sealed; it keeps no copy of a sealed record. Channel state is sealed on disk
+under a key derived from the node's device key. `tests/node_workspace.rs`
+(`tilo-browser-peer`) runs the whole path: a passkey root in Chrome
+certifies and installs a waiting node, the page writes a document the node
+retains only as ciphertext, and a person invited by name joins and reads its
+whole history.
 
 ### Live layer interface
 
@@ -621,13 +846,14 @@ cursor is drawn by every participant.
   confirmation and binding as the live host. `tilo-automation` Shortcuts
   lower to the same catalogue.
 
-The mechanism chosen for browser sessions is generic: **mount the app's
-`ApplicationDefinition` component headless on the room's record and use
-only its published surface.** This is the same component the browser
-runtime mounts, so an agent reaches exactly what a person in the page can.
-Declared actions carry an app's domain vocabulary; the semantic projection
-covers everything else. On a native desktop, the same agent code can
-target `BrokerActionHost` instead, because both are the same door.
+The mechanism chosen for browser sessions is generic: **hold the room's
+record as a replica of the app's resource and use only what the resource
+publishes.** The resource type is looked up by the kind the record names
+(`ui::framework::hosted_kinds`), so the agent links no app's code at the
+call site and renders nothing: it reaches the same document operations a
+person's window offers, checked, attributed and replayed the same way. On
+a native desktop, the same agent code can target `BrokerActionHost`
+instead, because both are the same door.
 
 ### Identity and consent
 
@@ -656,10 +882,23 @@ than proposed (`AgentProposal::admits`), so an agent never exists without its
 delegation and the host never holds the root. `tilo-relay dev`'s approver
 approves proposals as they come; a production approver shows them.
 
+An agent never confirms an action by its own word. When its grants leave an
+action to the person, the host puts that one invocation to the same approvers
+as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
+`ApproverRequest::Answer` gives `AllowOnce` or `Deny`); the approver shows it
+as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
+shows it is waiting meanwhile, runs the step only on the witnessed answer, and
+takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
+allows each once. A Tilo shell that holds the person's root keeps an approver
+session with each host it connects to and shows every question on its own
+confirmation sheet, the one an agent acting for the person on that machine is
+confirmed on.
+
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
-  one-second access audit.
+  access audit: registering, replacing or withdrawing a delegation starts
+  one, and so does its expiry.
 - `Relay::withdraw_agent` refuses it entirely.
 - Remote actions from the device carry `Caller::delegated_agent`: the
   agent is its own principal, never the person who delegated it.
@@ -675,58 +914,38 @@ is the same one a page runs.
 
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
-- **Opening an app.** `open(app, record)` seeds the record from the
-  durable changes the host replayed and mounts the component (`HostedApp`)
-  as an agent principal holding the editor role. Without a record it
-  creates one and publishes it.
+- **Opening an app.** `open(app, record)` holds the record, from the
+  durable changes the host replayed, in the app's own view mounted over it
+  and never drawn (`ui::framework::AttachedView`, the participant's
+  `Replica`), as an agent principal holding the editor role. Without a record it creates one (the resource's genesis)
+  and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
   list into agent-participant (`src/web_apps.rs` and its Cargo block) as
   into `tilo-web-desktop`, and `--check` covers both.
-- **Acting.** `invoke` goes through the app's door
-  (`FrameHarness::invoke_action`), so availability, confirmation and
-  argument binding are the app's own. It then commits the change the
+- **Acting.** `invoke` goes through the resource's door
+  (`Participant::invoke`), so permission, confirmation and argument
+  binding are the resource's own. It then commits the change the
   action made as a signed `Commit`. The host orders it with every other
   participant's change and fans it out; browsers receive it through
   `/events`, attributed to the agent's device.
-  - `HostedApp::take_mutation` returns only this participant's own
+  - `Replica::take_mutation` returns only this participant's own
     changes. Changes it received are never republished.
   - The first take of a new record is a snapshot.
 - **Presence.** Around each action it publishes a presence frame: focus on
-  the record, the pointer where a person would point (the control a
-  semantic action drives; for a declared action the control whose name
-  matches its label, else the record's own surface), and
-  `participant: {kind: Agent, label, colour, activity}`, with a 1 s
-  keepalive. `remote_members()` is everyone else's presence as the agent
-  sees it. The pointer is in the focused record's own surface: a page
-  draws it inside the window showing that record (`live-cursors.mjs`
-  `placePointer` over the runtime's `desktop_record_windows`, from the
-  desktop surface's `shown_tabs`), within its bounds, and not at all while
-  no window there shows the record. Pointers without a focus stay in the
-  page surface's coordinates.
-- **Seeding.** Only a record's creator writes its initial content. The
-  component adapter tells an adapted root how it came to its record while
-  it is built (`ui::launch::record_launch()`: `Created` or `Joined`). A
-  root on a record never reads or writes its app-wide state file (Sheets'
-  `workbook.automerge` was imported into shared workbooks), and a joined
-  root leaves an uninitialized record untouched until the creator's
-  content arrives, because get-or-create reads would write a second root
-  object that competes with the creator's in the merge and hides every
-  edit made in the loser. Components (Notes) initialize only on
-  `LaunchTarget::New` and refuse an uninitialized existing record.
+  the record and `participant: {kind: Agent, label, colour, activity}`,
+  with a 1 s keepalive. It renders nothing, so it publishes no pointer.
+  `remote_members()` is everyone else's presence as the agent sees it.
+- **Seeding.** Only a record's creator writes its initial content: a
+  joined replica writes nothing of its own.
   `replicas::only_the_creator_seeds_a_record` checks every web app.
-- **Controls.** `operate(route, control, input)` does what a person's
-  input does to an on-screen control: press, focus, set its value, type
-  into it, scroll it, toggle, step, expand. It uses
-  `FrameHarness::controls`/`operate_control` (below), commits the change
-  and points the agent's cursor at the control.
 - **Tasks.** Each task is planned by a `Planner` into steps
-  (`StepAction`: invoke a published action, operate a control, open an
-  app, or continue planning once earlier steps changed what is
-  published). The planner sees only descriptors and controls, and every
-  step is re-checked against the delegation and the door.
-  - `DirectPlanner` reads steps written as JSON (`{app, resource|control,
-    action, arguments}` or `{app, control, input, text|value|dx|dy}`).
+  (`StepAction`: invoke a published operation, open an app, or continue
+  planning once earlier steps changed what is published). The planner sees
+  only descriptors, and every step is re-checked against the delegation and
+  the door.
+  - `DirectPlanner` reads steps written as JSON (`{app, resource, action,
+    arguments}`).
   - `ModelPlanner` reads JSON steps the same way and sends any other text
     to a `PlanModel`. `GatewayModel` is `apps/agent`'s action discovery
     (`tilo_agent::tools` over a `surface::Catalogue`) through
@@ -761,11 +980,28 @@ and no control was projected for it.
 
 `crates/agent/agent-participant/src/host.rs` runs a supervisor in a host
 process. Each agent's participant runs on its own thread with the host's
-model, pumping its session until it stops or the host shuts down. Grants
+model, pumping its session until it stops or the host shuts down. Between
+pumps the thread sleeps until its session or steering changes or its
+presence keep-alive is due, never on an interval; a pump runs a plan's local
+steps back to back for up to 5 ms. Model calls run on the agent's planner
+thread, so a plan that takes seconds holds back no pump: remote actions,
+presence, pause and stop are taken in meanwhile, and the planner wakes the
+loop the moment the plan is ready. Steps written out in the task (JSON) are
+taken at once, without the planner. Records the
+agent has not opened are held as their documents, history kept and each
+change once, so opening one seeds its replica with exactly what its changes
+made: the shared desktop live, its changes merged once per pump, its tabs
+read only when it changed; every other record saved, with the changes since
+merged in one load once they outweigh it (or 64 KiB). Those changes come
+from room members, so every merge goes through `tilo-automerge-isolate`
+first and none decodes in the host process; a change the isolate refuses is
+dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
-conversation) are kept in `<state>/agents/agents.json` (owner-only). A
-ticker settles expired grants: the agent stops and the relay refuses its
-device. On start the file is restored: approved grants are registered again,
+conversation) are kept in `<state>/agents/agents.json` (owner-only), written
+when they change (at most every 500 ms). The thread that writes it also
+settles expired grants: the agent stops and the relay refuses its device. It
+sleeps until something changes or the next grant expires, never on an
+interval. On start the file is restored: approved grants are registered again,
 agents that were neither stopped nor failed start again with their queued
 tasks, a task that was running at shutdown is marked failed, paused agents
 come back paused, a grant still waiting for its approver is denied.
@@ -788,26 +1024,27 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Each agent has a profile of its own.** Agents' apps run in the host
-process, so without care they would open the host user's files and
-Keychain (TOTP's vault, Passwords, Sheets' workbook). Each agent's thread
-runs under `tilo_paths::scope_profile(<state>/agents/<agent id>/profile)`,
-which moves `home()`, the per-user base folders, the XDG variables and
-`AppPaths::for_app` below that root and mounts no workspace, and under
-`tilo_secrets::scope_thread` with a store of its own kept in memory (lost
-when the host stops). Apps resolve their folders through `tilo-paths`
-rather than reading `HOME` or `XDG_*` themselves. The planner and the
-apps' theme and fonts stay the host's: planning runs `unscoped`, so
-`settings` finds the host user's provider and gateway. `--agent-host-profile`
-(`AgentHost::share_host_profile`) grants agents the host user's own
-profile and secret store instead. Scopes are per thread: a worker thread
-an app starts sees the process's folders, and a store keeps the backend it
-was created with.
+**App code runs in confined workers, never in the host.** An agent holds
+records as replicas of their resources, and a replica runs the app's own
+resource code (its operations, seed and presence). Each record an agent or
+the host's room actions hold lives in its own app worker
+(`tilo_agent_participant::worker`, `ConfinedReplica`): the host's executable
+started again, which confines itself before it reads a request: no path
+opened or changed, no socket, no exec, no signal to another process. The
+same goes for a record's registered reads and its view discovery. The host
+keeps the device keys and signs; the worker returns unsigned Automerge
+bytes, which the host admits through `tilo-automerge-isolate` before it
+signs them. So nothing an agent does reads the host user's files, secret
+store or the agents' keys; it plans with the host's model. Every binary that
+hosts agents calls `tilo_agent_participant::worker::dispatch_early()` first
+thing in `main` (a test crate, `app_worker!()`); see
+`docs/architecture/security.md`, "App workers for host agents and room
+actions".
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the
-agent edits Notes and Sheets, the page merges the edits and sees the agent's
-cursor move between the controls it used with its activity; after a host
+agent edits Notes and Sheets, the page merges the edits and sees the agent
+move between the records it works in with its activity; after a host
 restart the agent resumes on the room's sheet, a stopped agent stays
 stopped, and revoking a grant ends its agent and forgets its key.
 `a_browser_sees_every_task_of_an_agent_live_and_after_a_reload` has an agent
@@ -829,14 +1066,14 @@ user may steer; an agent caller is refused.
 |---|---|---|
 | capabilities, list | `agents#status` | `AgentsStatus {agents: AgentInfo[], grants: AgentGrant[]}` |
 | `spawnAgent({name, task, grantSetId})` | `agents#spawn` `{grant, task}` | `{agentId, taskId}` |
-| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?, mayConfirm?}` | `{grant, pairingCode}` |
+| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?}` | `{grant, pairingCode}` |
 | revoke | `agent:<id>#revoke` | `{}` |
 | `sendMessage(agentId, text)` | `agent:<id>#message` (text) | `{taskId}` |
 | `stopTask` | `agent:<id>#stop` | `{}` |
 | (new) pause, resume | `agent:<id>#pause`, `#resume` | `{}` |
 
 `AgentGrant` carries `state` (`pending|approved|denied|expired|revoked`),
-`color`, `expiresAtMs`, `mayConfirm`, and the `pairingCode` while pending.
+`color`, `expiresAtMs`, and the `pairingCode` while pending.
 `AgentInfo` carries `status` (`starting|running|waiting|paused|stopped|failed`), `room`,
 `tasks[]` (`queued|running|completed|failed|cancelled`, each with the app
 actions it performed), the conversation, the activity line, the device
@@ -850,7 +1087,7 @@ key (the live publisher of its cursor) and the delegation.
 interface Agents {                       // certifiedPeer.agents (web/agents.mjs)
   status(): Promise<AgentsStatus>;
   requestGrant(input: {label: string; rooms: string[]; apps: string[]; expiresInSecs: number;
-    color?: string; mayConfirm?: boolean}): Promise<{grant: string; pairingCode: string}>;
+    color?: string}): Promise<{grant: string; pairingCode: string}>;
   spawn(input: {grant: string; task: string; room?: string}): Promise<{agentId: string; taskId: string}>;
   message(agentId: string, text: string): Promise<{taskId: string}>;
   pause(agentId: string): Promise<void>;
@@ -917,44 +1154,23 @@ Browser previews (`ops/<record>` tracks) are not bridged to iroh yet.
 
 ### Per-app coverage
 
-Two tests exercise every registered web app, finding a user-equivalent
-edit without app knowledge. They try, in order: the app's declared document
-actions; filling empty non-search fields with a value of the kind the
-field's name asks for; typing into text surfaces; other declared actions;
-then buttons, submit-like first, skipping destructive or external ones. They
-survey again after every attempt.
+Two tests exercise every registered web app, finding an edit without app
+knowledge: they try the record's document operations that need no
+confirmation, with a value of each declared type, surveying again after
+every attempt.
 
-- `app_coverage` runs this on headless mounts.
+- `app_coverage` runs this on replicas.
 - `session_coverage` runs it over the real session: an iroh agent with its
   own device and delegation edits, and an HTTPS/WebTransport browser merges
-  the agent-authored changes into its own mount and sees the agent's
-  cursor. It then runs a plain-words task through `ModelPlanner` and the
+  the agent-authored changes into its own replica and sees the agent on the
+  record. It then runs a plain-words task through `ModelPlanner` and the
   `actionsV1` checks.
 
-| App | User-equivalent edit | Via | Browser merged | Agent cursor |
-|---|---|---|---|---|
-| calculator | `calculator.workspace#add-function` | declared | yes | yes |
-| clocks | none: device-local state file | — | yes (open) | yes |
-| contacts | `contacts.book#new-contact` | declared | yes | yes |
-| diffmerge | `diffmerge.merge#edit-merged` | declared | yes | yes |
-| ebook | `ebook.library#toggle-hide-read` | declared | yes | yes |
-| hex-editor | none: edits a local file | — | yes (open) | yes |
-| image-editor | `image-editor.project#exposure` | declared | yes | yes |
-| notes | `notes.notebook#new-page` | declared | yes | yes |
-| passwords | none: device secret store | — | yes (open) | yes |
-| scratchpad | `scratchpad.note#edit` | declared | yes | yes |
-| sheets | `sheets.workbook#insert-column-chart` | declared | yes | yes |
-| slides | `slides.deck#add-slide` | declared | yes | yes |
-| snippets | `snippets.library#new-snippet` | declared | yes | yes |
-| themes | `themes.library#new-theme` | declared | yes | yes |
-| totp | fill Issuer/Account/Secret, press "Add account" | control input | yes | yes, with pointer |
-| typst-editor | set "Typst source" | control input | yes | yes |
-| word-processor | `word-processor.document#insert-table` | declared | yes | yes |
-
-Clocks, hex-editor and passwords keep their state off the shared record
-by design. The agent operates them like anyone else, and there is nothing to
-sync. Image-editor's declared actions needed `component_actions` in its
-definition, a fix that applies to every in-process host.
+Every app takes an edit through a published operation (Writer's
+`append-paragraph`, Photos' `create-album`, Chat's `new-channel`, …), except
+three whose state stays off the shared record by design: hex-editor (edits a
+local file), passwords and totp (secrets in the device's store; adding a
+TOTP account is the device's own).
 
 ## Reused from PR 541
 
@@ -973,7 +1189,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 | `scripts/build.sh` | `scripts/build.sh` | MoQ bundle dropped; optional `--wasm-opt`; fonts from the manifest's `browser_startup` flags |
 | `tilo-ui` `ime.rs`, `headless.rs` frame API, `image_store.rs` host factory | same files | Ported onto `main`'s `FrameHarness`; 541-only system-search and caller-palette branches left out |
 | `tilo-ui` browser fonts (`font_catalog.rs`, `text_render.rs`, `query_text.rs`, `name_field.rs`, `rich_text_editor.rs`, manifest, `tilo-font-catalog`) | same files | Patch applied; `richtext.rs` browser-emoji entry points hand-ported without 541's paragraph chunking and layout reuse |
-| `tilo-ui` rustls/`private-fs` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
+| `tilo-ui` rustls/`tilo_files::native::private` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
 
 ## Deliberately not taken
 
@@ -981,7 +1197,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 |---|---|
 | `qos-desktop`, `desktop_host.rs` (8.7k), speculation, desktop navigation/activity, committed desktop, system search | The desktop comes from `main`'s `tilo-desktop-model` and the shell's desktop through `ui::app`; a second browser-only compositor would fork the desktop |
 | `peer*.rs`, `peer_delivery*`, `peer_journal`, `admission_health`, `admitted_records`, `peer_storage_batch`, `post_ready_repair` | A parallel HTTPS delivery/journal/admission stack. The browser peer uses `tilo-relay-client` over iroh (below) |
-| Browser identity issuance, root key generation, `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Root authority and mesh policy belong on the host. The browser holds only a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root and answers host challenges |
+| `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Mesh policy belongs on the host. A page holds a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root; a person with only a browser also holds that root, never stored unwrapped ([A browser-held root](#a-browser-held-root)) |
 | `tilo-relay-protocol` → `qos-peer-state` dependency, `qos-agent-control-protocol` | qOS-lineage state model and agent protocol; `main` has `tilo_actions::remote` |
 | `live_view`, `peer_live`, `peer_media`, MoQ (`media-*.mjs`, `moq-carrier.mjs`) | Deferred. Reusable later: `live-overlay.mjs` presence rendering, `media-audio*.mjs` worklets, `moq-carrier.mjs` WebTransport carrier |
 | `HostImageLoader::retry`/`loaded`, `probe_pixels`, `destroy_device`, component close-recovery custody | Depend on 541-only internals or are test hooks; asset retry answers `false` for now |
@@ -1022,6 +1238,11 @@ export function openProfileStorage(profile: string, device: string, options?: {s
 }>;
 ```
 
+How a page's URL selects `app`, `room` and the resource it opens, desktop or
+full-tab app mode, Back and Forward, and how links are shared is
+[web-routing.md](web-routing.md); the page translates a link into these
+options and the navigation `open` command, never the other way round.
+
 Rust state kept in the profile (the relay peer's) writes, inside
 `tilo-browser-runtime`, to `crate::storage::store(profile, device)` under a
 reserved `StorageKey::Package` id once the namespace is open; the durable host
@@ -1053,6 +1274,26 @@ host running the portable toolkit can present:
   (page: `desktop_apply_tree`): the next update pass rebuilds the rows by
   tab id, moving surviving tabs' running content and closing removed tabs'
   applications.
+- Workspace Activity, the notification models and their Fluent catalogue live
+  in `desktop-surface`; `tilo-desktop` reexports their native paths. Hosts
+  install a `HistorySource` for Catch up, Explore and Replay. The browser
+  reads the certified room's retained desktop document (or its profile's
+  persisted Automerge log) and detached histories of the records its windows
+  show. It retains author/time attribution and device-private seen frontiers;
+  opening the pane does not mutate the live documents. Navigation publishes
+  `inSurface` when the shared pane draws the view. The surface reaches the
+  pane only through `open_activity`, which `HistorySource::activity_pane`
+  names; the desktop bundle (`tilo-web-desktop/src/activity.rs`) splits the
+  pane into its own module, fetched the first time someone opens Activity,
+  so the start module does not carry it. The request stays open while the
+  module loads; a failed load dismisses it.
+- Browser application notices use `AppNotifier` and the shared banner stack
+  and centre. Expired and dismissed banners enter real retained history;
+  the browser saves that bounded history through its profile's durable store.
+  The native history format preserves age and app attribution across reloads
+  while dropping actions whose sender belonged to the previous session.
+  `notification-center` opens/closes it through the navigation API, whose
+  `notifications` snapshot reports active and retained counts.
 - Hosts supply tab contents through `TileSource`. The browser
   (`tilo-browser-runtime/src/desktop.rs`) maps `TileContent::LocalApp
   {app_id}` to a registered `ApplicationDefinition` and mounts it with
@@ -1065,7 +1306,8 @@ The room's tree and each tab's record id are kept in the profile's durable
 store (`StorageKey::PackageRecord("so.tilo.browser-desktop", room)`, JSON)
 and committed with the records, so a reload restores the same windows on
 the same documents; a profile without one is seeded (one workspace, one
-strip, a window per requested application). In a certified room the
+strip, a window per requested application; without `apps`, none, so the
+empty workspace shows the launchpad). In a certified room the
 tree is also shared with the room's other pages ([Shared sessions](#shared-sessions)).
 
 ## Shared sessions
@@ -1151,8 +1393,15 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
 4. **Desktop surface.** *Done for one strip.* `tilo-desktop-surface` over
    `tilo-desktop-model` (blocker 20), navigation v1, persisted per room,
    tree→widget reconcile, shared per room. Open: semantic `activate` on
-   the new-tab button; shell chrome; desktop input ownership
-   (`desktop_input_ownership`).
+   the new-tab button; desktop input ownership
+   (`desktop_input_ownership`). The top bar and the launchpad are the
+   native shell's (`tilo-desktop`); the overview is `tilo-desktop`'s
+   `OverviewPanel` over the same `room_cards` the shell's overview reads.
+   Desktop chords are listed in
+   [the keyboard map](../shell-navigation-keyboard-map.md#in-the-browser). A desktop with nothing stored opens an
+   empty workspace named by `mountDesktop({workspaceName})`, which shows the
+   launchpad; later mounts restore the stored layout. Invite (the launchpad
+   card and the bar's people control) calls `mountDesktop({onInvite})`.
 5. **Make daemon clients optional.** *Done;* see
    [Local daemons](#local-daemons) and [Seams](#seams-the-page-installs).
 6. **Real peer.** *Done: sessions, records, desktop, carets* ([Shared sessions](#shared-sessions)).
@@ -1189,7 +1438,7 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
      `LiveParticipant` in presence); `Relay::register_agent`/`withdraw_agent`,
      `Caller::delegated_agent`, the browser-to-iroh presence bridge;
      remote-action frames in `tilo-browser-peer`;
-     `crates/agent/agent-participant` (`HostedApp`, `AgentParticipant`,
+     `crates/agent/agent-participant` (`Replica`, `AgentParticipant`,
      `AgentSupervisor` + `SupervisorHost`, `DirectPlanner`); `peer.agents`
      (`web/agents.mjs`), `sendRemoteAction`, `takeRemoteActionEvents`,
      `verifyAgentDelegation`. Tests: `shared_session`, `replicas`,
@@ -1210,6 +1459,14 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
 8. **Cloud cut-over.** *Open.*
 
 ## Verification
+
+The runtime and desktop browser cdylibs reserve a 16 MiB linear stack, matching
+the native thread-stack floor in `.cargo/config.toml`. Their wasm32 build scripts
+apply the policy at each final link; a runtime rlib cannot pass link arguments
+to the desktop cdylib. Unoptimized nested app/layout construction can exceed
+Rust's default 1 MiB before the first frame. This does not raise the WASM memory
+maximum or the renderer's GPU limits. The separate compute module retains its
+own private-memory ceiling and release-size budget.
 
 Keep these green on every change touching the portable toolkit:
 
@@ -1240,3 +1497,38 @@ cargo run -p tilo-relay --features web -- dev
 # in Cloud, with the user key the host printed
 npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-public-key <hex>
 ```
+
+## Updating the engine without replacing the desktop SDK
+
+A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+Cargo graph. It does not build Chromium's optional runtime. Browser declares the
+exact engine reference in its signed `optional-runtimes`; a missing engine does
+not become available merely because the nine userspace components were updated.
+
+The Browser's **Install the browser engine** action opens the existing Store
+review for `so.tilo.runtime.chromium`. Store verifies the configured catalogue and
+uses its ordinary installation action. This does not replace Browser or its
+required core SDK.
+
+For an exact required version, the same canonical package flow is available as:
+
+```sh
+app runtime install tilo-runtime/2026.10.4-chromium --repo 'Tilo main'
+```
+
+The repository must already be enabled and pinned. The runtime offer must match
+this machine's architecture, system interfaces, release channel and the exact
+runtime reference. Download size, content hash, package root and publisher checks
+remain in the normal downloader/installer; the inner bundle must satisfy the
+installed immutable runtime-publisher policy. An existing package follows normal
+update, held-version and downgrade admission. No key is granted by this command.
+The installed engine coexists with the core SDK and becomes visible on the next
+Browser launch. No machine reboot is required.
+
+If the exact engine is not offered, this command fails. The maintained
+`Release / Apps` main-only dispatch can publish the engine alone with
+`engine_runtime_only=true`, `architectures=aarch64`, `apps=browser`, and
+`publish=true`. Publication and an installed, verified engine are separate
+prerequisites; an accepted Browser Open is not proof of either.
+
+The Browser's Install engine action opens `tilo-store:runtime/tilo-runtime/2026.10.4-chromium`. Store asks its launcher-issued AppHost capability to resolve that precise runtime from the person's enabled, independently pinned repositories, including retained versions. The ordinary details sheet shows the signed runtime reference and package version. Review installs nothing. The separate Install runtime action binds the selected signed root and uses the same exact-version InstallOffer downloader/installer as other Store packages, with no launch of the engine host. A changed review, missing offer or ambiguous repository selection refuses rather than choosing another runtime. Matching Store and AppHost schema versions must be delivered together.

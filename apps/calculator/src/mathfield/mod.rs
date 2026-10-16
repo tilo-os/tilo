@@ -26,6 +26,21 @@ use winit::keyboard::{Key as WKey, NamedKey};
 
 use edit::Editor;
 use layout::Layout;
+use model::{Node, Row};
+
+/// The size a formula is set at in `theme`: the `Title` role's resolved size,
+/// less whatever scale the shared renderer already applies to every
+/// renderer-relative size (the math layout sizes its glyphs that way), so the
+/// formula ends up at the theme's size and is never scaled twice.
+pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    let size = theme.tokens.typography.size(ui::tokens::TextRole::Title);
+    let renderer = tr.text_scale();
+    if renderer.is_finite() && renderer > f32::EPSILON {
+        size / renderer
+    } else {
+        size
+    }
+}
 
 /// A controller wrapping one editable formula. The graph screens own one of
 /// these per function row and feed it the linear string from the model.
@@ -45,8 +60,6 @@ pub struct MathField {
     /// keeps typing from re-shaping the whole formula each frame.
     layout_sig: Option<(String, f32)>,
     base_size: f32,
-    /// Accessibility text-scale multiplier supplied by the owning graph panel.
-    text_scale: f32,
     /// Whether a drag-select is in progress.
     dragging: bool,
     /// Content-local pixels scrolled off the top-left. Keeps a long or tall
@@ -71,33 +84,10 @@ impl MathField {
             layout: None,
             layout_sig: None,
             base_size: layout::BASE_SIZE,
-            text_scale: 1.0,
             dragging: false,
             scroll: Vec2::ZERO,
             follows_caret: true,
         }
-    }
-
-    /// Immutable presentation viewport: it never follows an editing caret.
-    pub(crate) fn detached(linear: &str) -> Self {
-        Self {
-            follows_caret: false,
-            ..Self::new(linear)
-        }
-    }
-
-    pub(crate) fn scroll_offset(&self) -> (f64, f64) {
-        (self.scroll.x, self.scroll.y)
-    }
-
-    /// Actual measured content bounds and the clipping rectangle used by draw.
-    #[cfg(test)]
-    pub(crate) fn viewport_geometry(&self) -> (Rect, Rect) {
-        let layout = self.layout.as_ref().expect("laid out field");
-        (
-            self.rect,
-            Rect::from_origin_size(self.content_origin(), (layout.width, layout.height)),
-        )
     }
 
     #[must_use]
@@ -106,11 +96,11 @@ impl MathField {
         self
     }
 
-    /// Apply the active UI text scale before measuring or rendering this
-    /// structured field. Changing it invalidates the cached glyph geometry via
-    /// the effective-size layout signature below.
-    pub fn set_text_scale(&mut self, scale: f32) {
-        self.text_scale = scale.clamp(0.5, 4.0);
+    /// Set the size the formula is set at, resolved from the theme (which
+    /// already carries the text scale). Changing it invalidates the cached
+    /// glyph geometry via the effective-size layout signature below.
+    pub fn set_size(&mut self, size: f32) {
+        self.base_size = size;
     }
 
     /// Sync the editor to an external linear string (e.g. loaded from the
@@ -134,24 +124,8 @@ impl MathField {
         self.editor.expr.is_empty()
     }
 
-    /// Park the caret inside the first 2D structure (fraction numerator,
-    /// power exponent, or radicand) so a static frame shows the caret living
-    /// *inside* a structure rather than at the row's end. Used to seed the
-    /// `--shots` view; harmless for live use (the first real key resets it).
-    pub fn park_caret_in_structure(&mut self) {
-        self.editor.park_in_first_structure();
-    }
-
-    /// Park a representative selection (a span of atoms in the first
-    /// structure, else the whole root row) so a static frame can show the
-    /// drag-selection highlight band. Seed-only; cleared by the first key.
-    pub fn park_demo_selection(&mut self) {
-        self.editor.park_demo_selection();
-    }
-
-    /// Park the caret at the very end of the formula (shot/demo helper), so a
-    /// static frame of a long formula shows it scrolled to its tail with the
-    /// caret in view.
+    /// Park the caret at the very end of the formula, so a field that keeps
+    /// its caret in view scrolls to the formula's tail.
     pub fn park_caret_at_end(&mut self) {
         self.editor.end(false);
     }
@@ -166,10 +140,11 @@ impl MathField {
         // Rebuild only when the content or size actually changed. The linear
         // form is a faithful signature of the (canonical) tree the editor
         // builds, and is far cheaper to compute than a full measure+box pass.
-        let size = self.base_size * self.text_scale;
+        let size = self.base_size;
         let sig = (self.editor.to_linear(), size);
         if self.layout.is_none() || self.layout_sig.as_ref() != Some(&sig) {
-            self.layout = Some(layout::layout(&self.editor.expr.root, tr, size));
+            let shown = display_row(&self.editor.expr.root);
+            self.layout = Some(layout::layout(&shown, tr, size));
             self.layout_sig = Some(sig);
         }
         // Track the caret every pass (a caret move doesn't change the content
@@ -191,7 +166,7 @@ impl MathField {
     }
 
     /// Left padding between the field edge and the content.
-    const PAD_X: f64 = 4.0;
+    const PAD_X: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
     /// Origin (top-left) where content is drawn. Horizontally the content is
     /// left-padded and shifted by the horizontal scroll; vertically it is
@@ -315,6 +290,28 @@ impl MathField {
         if focused && let Some(g) = caret {
             render::draw_caret(&mut ctx, origin, g);
         }
+        // A formula wider than its field says so: it fades out where it runs
+        // on past an edge instead of being cut off.
+        let (max_x, _) = self.scroll_bounds();
+        let ground = theme.tokens.colors.surfaces.content;
+        if self.scroll.x > 0.5 {
+            ui::surface::content_edge_fade(
+                ctx.scene,
+                t,
+                self.rect,
+                ui::surface::ContentEdge::Leading,
+                ground,
+            );
+        }
+        if self.scroll.x < max_x - 0.5 {
+            ui::surface::content_edge_fade(
+                ctx.scene,
+                t,
+                self.rect,
+                ui::surface::ContentEdge::Trailing,
+                ground,
+            );
+        }
         scene.pop_layer();
     }
 
@@ -354,7 +351,7 @@ impl MathField {
         }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         for (bar, col) in bars {
-            scene.fill(Fill::NonZero, t, col, None, &bar);
+            ui::paint::fill_rect(scene, t, bar, col);
         }
         scene.pop_layer();
     }
@@ -526,10 +523,6 @@ impl MathField {
         self.dragging = false;
     }
 
-    pub fn contains(&self, p: Point) -> bool {
-        self.rect.contains(p)
-    }
-
     /// Height the laid-out content needs, measured against `tr` (rebuilding the
     /// layout if the content changed). Callers use this to GROW the hosting card
     /// to fit the formula up to [`CARD_MAX_H`] before handing the field its rect,
@@ -543,7 +536,7 @@ impl MathField {
 /// Smallest inner (content-viewport) height a formula card uses. A short,
 /// single-line formula (`x + 1`, `sin(x)`) sits in a card of this height so the
 /// common case looks unchanged.
-pub const CARD_MIN_H: f64 = 30.0;
+pub const CARD_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 
 /// Largest inner height a formula card grows to. It is generous on purpose: a
 /// single fraction (`(x²+1)/(x−3)` ≈ 67 px) and a stacked `√` over superscripts
@@ -552,7 +545,7 @@ pub const CARD_MIN_H: f64 = 30.0;
 /// fraction-over-fraction and deeper nesting) exceeds this height, at which point
 /// the card stops growing and the formula becomes vertically scrollable within
 /// it — never clipped behind the card edge.
-pub const CARD_MAX_H: f64 = 96.0;
+pub const CARD_MAX_H: f64 = 2.0 * ui::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// The inner (content-viewport) height a card should use for a formula whose
 /// laid-out content is `content_h` tall: grow to fit, clamped to
@@ -561,6 +554,67 @@ pub const CARD_MAX_H: f64 = 96.0;
 /// so the caller knows the formula scrolls within the card.
 pub fn card_view_height(content_h: f64) -> f64 {
     content_h.clamp(CARD_MIN_H, CARD_MAX_H)
+}
+
+/// The formula as it is drawn: the engine's ASCII hyphen reads as the true
+/// minus sign. Only the characters change, so the tree (and with it every
+/// caret path and gap) is the editor's own.
+fn display_row(row: &Row) -> Row {
+    row.iter().map(display_node).collect()
+}
+
+fn display_node(node: &Node) -> Node {
+    match node {
+        Node::Char('-') => Node::Char('−'),
+        Node::Char(c) => Node::Char(*c),
+        Node::Frac { num, den } => Node::Frac {
+            num: display_row(num),
+            den: display_row(den),
+        },
+        Node::Sup { exp } => Node::Sup {
+            exp: display_row(exp),
+        },
+        Node::Sub { sub } => Node::Sub {
+            sub: display_row(sub),
+        },
+        Node::SubSup { sub, sup } => Node::SubSup {
+            sub: display_row(sub),
+            sup: display_row(sup),
+        },
+        Node::Sqrt { index, radicand } => Node::Sqrt {
+            index: index.as_ref().map(display_row),
+            radicand: display_row(radicand),
+        },
+        Node::Paren { body } => Node::Paren {
+            body: display_row(body),
+        },
+        Node::Delimited { open, close, body } => Node::Delimited {
+            open: *open,
+            close: *close,
+            body: display_row(body),
+        },
+        Node::Func { name, arg } => Node::Func {
+            name: name.clone(),
+            arg: display_row(arg),
+        },
+        Node::Text(text) => Node::Text(text.clone()),
+        Node::Accent { base, mark, over } => Node::Accent {
+            base: display_row(base),
+            mark: *mark,
+            over: *over,
+        },
+        Node::UnderOver { base, under, over } => Node::UnderOver {
+            base: display_row(base),
+            under: under.as_ref().map(display_row),
+            over: over.as_ref().map(display_row),
+        },
+        Node::Table { rows: cells } => Node::Table {
+            rows: cells
+                .iter()
+                .map(|row| row.iter().map(display_row).collect())
+                .collect(),
+        },
+    }
 }
 
 /// Editor `·` (middle dot) → engine `*`.

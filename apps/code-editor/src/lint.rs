@@ -190,13 +190,13 @@ fn scan_line_brackets(
     in_block_comment: &mut bool,
     out: &mut Vec<Diagnostic>,
 ) {
-    let mut chars = line.char_indices().peekable();
+    let mut chars = line.char_indices().enumerate().peekable();
     let mut in_string = false;
     let mut string_delim = '"';
-    while let Some((bi, ch)) = chars.next() {
+    while let Some((column, (bi, ch))) = chars.next() {
         if *in_block_comment {
             if ch == '*'
-                && let Some(&(_, '/')) = chars.peek()
+                && let Some(&(_, (_, '/'))) = chars.peek()
             {
                 *in_block_comment = false;
                 chars.next();
@@ -225,10 +225,10 @@ fn scan_line_brackets(
                 string_delim = ch;
             }
             '/' => {
-                if let Some(&(_, '/')) = chars.peek() {
+                if let Some(&(_, (_, '/'))) = chars.peek() {
                     break; // line comment — ignore the rest
                 }
-                if let Some(&(_, '*')) = chars.peek() {
+                if let Some(&(_, (_, '*'))) = chars.peek() {
                     *in_block_comment = true;
                     chars.next();
                 }
@@ -241,7 +241,7 @@ fn scan_line_brackets(
                 break; // hash line comment
             }
             '(' | '[' | '{' => {
-                let col = line.get(..bi).unwrap_or("").chars().count() + 1;
+                let col = column.saturating_add(1);
                 bracket_stack.push((ch, line_no, col));
             }
             ')' | ']' | '}' => {
@@ -255,7 +255,7 @@ fn scan_line_brackets(
                         bracket_stack.pop();
                     }
                     _ => {
-                        let col = line.get(..bi).unwrap_or("").chars().count() + 1;
+                        let col = column.saturating_add(1);
                         out.push(Diagnostic {
                             severity: Severity::Warning,
                             line: line_no,
@@ -273,6 +273,26 @@ fn scan_line_brackets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracket_columns_follow_unicode_scalars_and_skipped_escapes_and_comments() {
+        let prefix = "α\"escaped\\\"text\"/* β */";
+        let source = format!("{prefix}{{]");
+        let diagnostics = lint(&source, Language::Rust, Scope::Full);
+        let unmatched = diagnostics
+            .iter()
+            .find(|item| item.message.contains("Unmatched closing"))
+            .unwrap();
+        let unclosed = diagnostics
+            .iter()
+            .find(|item| item.message.contains("Unclosed"))
+            .unwrap();
+        assert_eq!(unmatched.col, prefix.chars().count().saturating_add(2));
+        assert_eq!(unclosed.col, prefix.chars().count().saturating_add(1));
+        let repeated = "α()[]{}".repeat(100_000);
+        let diagnostics = lint(&repeated, Language::PlainText, Scope::Full);
+        assert!(!diagnostics.iter().any(|item| item.message.contains("Unmatched") || item.message.contains("Unclosed")));
+    }
 
     #[test]
     fn textual_facts_are_reported_and_survive_the_textual_only_scope() {

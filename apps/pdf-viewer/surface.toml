@@ -1,0 +1,222 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "pdf.document"
+label = "PDF"
+version = 1
+fields = [
+  { path = "source", type = "Bytes", readonly = true },
+  { path = "source_name", type = "String", readonly = true },
+  { path = "page_plan_seeded", type = "bool", readonly = true },
+  { path = "imported_source", type = "String", readonly = true },
+  { path = "pages", type = "Collection<PageOccurrence>", stored = "collection" },
+  { path = "pages.*.source_page", type = "usize", readonly = true },
+  { path = "pages.*.imported", type = "Option<ImportedPage>", readonly = true },
+  { path = "pages.*.rotation", type = "i32" },
+  { path = "annotations", type = "Keyed<StoredAnnotation>", stored = "keyed" },
+  { path = "annotations.*.id", type = "String", readonly = true },
+  { path = "annotations.*.page_id", type = "String" },
+  { path = "annotations.*.mark", type = "AnnoKind" },
+  { path = "annotations.*.color", type = "Swatch" },
+  { path = "annotations.*.author", type = "String", readonly = true },
+  { path = "annotations.*.chars", type = "Option<[u32; 2]>", readonly = true },
+  { path = "annotations.*.created_ms", type = "i64", readonly = true },
+  { path = "annotations.*.space", type = "GeomSpace" },
+  { path = "comments", type = "Keyed<StoredComment>", stored = "keyed", unit = true },
+  { path = "comments.*.id", type = "String", readonly = true },
+  { path = "comments.*.anno", type = "String", readonly = true },
+  { path = "comments.*.page_id", type = "String" },
+  { path = "comments.*.author", type = "String", readonly = true },
+  { path = "comments.*.text", type = "String", label = true },
+  { path = "comments.*.rich", type = "Json<Vec<tilo_document::ClipBlock>>" },
+  { path = "comments.*.created", type = "i64", readonly = true },
+  { path = "comments.*.resolved", type = "bool" },
+  { path = "comments.*.replies", type = "Collection<StoredReply>", stored = "collection" },
+  { path = "comments.*.replies.*.author", type = "String", readonly = true },
+  { path = "comments.*.replies.*.text", type = "String", label = true },
+  { path = "comments.*.replies.*.rich", type = "Json<Vec<tilo_document::ClipBlock>>" },
+  { path = "signatures", type = "Keyed<StoredSignature>", stored = "keyed" },
+  { path = "signatures.*.id", type = "String", readonly = true },
+  { path = "signatures.*.page_id", type = "String" },
+  { path = "signatures.*.rect", type = "PtRect" },
+  { path = "signatures.*.signer", type = "String", readonly = true },
+  { path = "signatures.*.date", type = "String", readonly = true },
+  { path = "signatures.*.ink", type = "SignatureInk", readonly = true },
+  { path = "signatures.*.space", type = "GeomSpace" },
+  { path = "form_values", type = "BTreeMap<String, FormEntry>" },
+  { path = "adopted", type = "BTreeMap<String, AdoptedEntry>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "start-page-plan"
+kind = "undoable"
+params = [
+  { name = "pages", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "pin-source"
+kind = "undoable"
+params = [
+  { name = "hash", required = true, schema = { type = "string" } },
+  { name = "len", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "adopt-existing"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "source", required = true, schema = { type = "string" } },
+  { name = "markup", required = true, schema = { type = "object", additionalProperties = false, properties = { adopted = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, index = { type = "integer", minimum = 0 }, kind = { type = "string" }, page = { type = "integer", minimum = 0 }, parent = { type = ["string", "null"] }, print = { type = "string" } }, required = ["id", "page", "index", "name", "kind", "print"] } }, annotations = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, color = { type = "string" }, created_ms = { type = "integer" }, id = { type = "string" }, mark = { oneOf = [{ type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "markup" }, quads = { type = "array", items = { type = "object", additionalProperties = false, properties = { h = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["x", "y", "w", "h"] } }, style = { oneOf = [{ type = "string", const = "highlight" }, { type = "string", const = "underline" }, { type = "string", const = "strikeout" }, { type = "string", const = "squiggly" }] } }, required = ["kind", "style", "quads"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "ink" }, strokes = { type = "array", items = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } } }, required = ["kind", "strokes"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "note" }, x = { type = "number" }, y = { type = "number" } }, required = ["kind", "x", "y"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "freetext" }, rect = { type = "object", additionalProperties = false, properties = { h = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["x", "y", "w", "h"] }, size = { type = "number" }, text = { type = "string" } }, required = ["kind", "rect", "text", "size"] }] }, page_id = { type = "string" } }, required = ["id", "page_id", "mark", "color", "author", "created_ms"] } }, comments = { type = "array", items = { type = "object", additionalProperties = false, properties = { anno = { type = ["string", "null"] }, author = { type = "string" }, created = { type = "integer" }, id = { type = "string" }, page_id = { type = "string" }, replies = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, id = { type = "string" }, text = { type = "string" } }, required = ["id", "author", "text"] } }, text = { type = "string" } }, required = ["id", "page_id", "author", "text", "created", "replies"] } }, form_values = { type = "object" } }, required = ["annotations", "comments", "form_values", "adopted"] } },
+]
+
+[[resources.verbs]]
+id = "import-pages"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "after", required = false, schema = { type = ["string", "null"] } },
+  { name = "pages", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, imported = { type = ["object", "null"], additionalProperties = false, properties = { hash = { type = "string" }, height_milli = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, page = { type = "integer", minimum = 0 }, width_milli = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["hash", "kind", "page", "width_milli", "height_milli"] }, rotation = { type = "integer", maximum = 2147483647, minimum = -2147483648 }, source_page = { type = "integer", minimum = 0 } }, required = ["id", "source_page"] } } },
+]
+
+[[resources.verbs]]
+id = "duplicate-page"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "copy", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "delete-page"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-page"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "after", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "rotate-page"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-annotation"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "annotation", required = true, schema = { type = "object", additionalProperties = false, properties = { chars = { type = ["array", "null"], items = { type = "integer", maximum = 4294967295, minimum = 0 }, maxItems = 2, minItems = 2 }, color = { type = "string" }, id = { type = "string" }, mark = { oneOf = [{ type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "markup" }, quads = { type = "array", items = { type = "object", additionalProperties = false, properties = { h = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["x", "y", "w", "h"] } }, style = { oneOf = [{ type = "string", const = "highlight" }, { type = "string", const = "underline" }, { type = "string", const = "strikeout" }, { type = "string", const = "squiggly" }] } }, required = ["kind", "style", "quads"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "ink" }, strokes = { type = "array", items = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } } }, required = ["kind", "strokes"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "note" }, x = { type = "number" }, y = { type = "number" } }, required = ["kind", "x", "y"] }, { type = "object", additionalProperties = false, properties = { kind = { type = "string", const = "freetext" }, rect = { type = "object", additionalProperties = false, properties = { h = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["x", "y", "w", "h"] }, size = { type = "number" }, text = { type = "string" } }, required = ["kind", "rect", "text", "size"] }] }, page_id = { type = "string" }, space = { type = "string", enum = ["page", "user"] } }, required = ["id", "page_id", "mark", "color", "space"] } },
+]
+
+[[resources.verbs]]
+id = "delete-annotation"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "annotation", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "create-note"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "note", required = true, schema = { type = "object", additionalProperties = false, properties = { annotation = { type = "string" }, color = { type = "string" }, comment = { type = "string" }, page_id = { type = "string" }, space = { type = "string", enum = ["page", "user"] }, text = { type = "string" }, x = { type = "number" }, y = { type = "number" } }, required = ["annotation", "comment", "page_id", "x", "y", "color", "text", "space"] } },
+]
+
+[[resources.verbs]]
+id = "add-note"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "page", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "add-comment"
+field = "comments"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "object", additionalProperties = false, properties = { anno = { type = ["string", "null"] }, id = { type = "string" }, page_id = { type = ["string", "null"] }, rich = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } }, text = { type = "string" } }, required = ["id", "text"] } },
+]
+
+[[resources.verbs]]
+id = "reply"
+field = "comments"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "id", required = false, schema = { type = ["string", "null"] } },
+  { name = "rich", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+]
+
+[[resources.verbs]]
+id = "delete-comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-signature"
+kind = "undoable"
+params = [
+  { name = "signature", required = true, schema = { type = "object", additionalProperties = false, properties = { date = { type = "string" }, id = { type = "string" }, ink = { oneOf = [{ type = "object", additionalProperties = false, properties = { ink = { type = "string", const = "typed" } }, required = ["ink"] }, { type = "object", additionalProperties = false, properties = { ink = { type = "string", const = "drawn" }, strokes = { type = "array", items = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } } }, required = ["ink", "strokes"] }] }, page_id = { type = "string" }, rect = { type = "object", additionalProperties = false, properties = { h = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["x", "y", "w", "h"] }, signer = { type = "string" }, space = { type = "string", enum = ["page", "user"] } }, required = ["id", "page_id", "rect", "signer", "date", "ink", "space"] } },
+]
+
+[[resources.verbs]]
+id = "add-typed-signature"
+kind = "undoable"
+params = [
+  { name = "signer", required = false, schema = { type = ["string", "null"] } },
+  { name = "page", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "delete-signature"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "signature", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "pdf.signature-profile"
+label = "Signature"
+version = 1
+person = true
+fields = [
+  { path = "signer", type = "String" },
+  { path = "strokes", type = "Json<Vec<Vec<(f64, f64)>>>" },
+]
+
+[[resources.verbs]]
+id = "set-signer"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-strokes"
+kind = "undoable"
+params = [
+  { name = "strokes", required = true, schema = { type = "array", items = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } } },
+]
+

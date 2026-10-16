@@ -18,6 +18,9 @@ use tilo_user_identity::{
     verify_image_signing_authorization_at, verify_revocation_entry,
 };
 
+#[path = "image_trust/renewal.rs"]
+mod renewal;
+
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
 #[cfg(target_os = "linux")]
@@ -64,7 +67,7 @@ fn open_lock_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]".into()
+    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust renew-under-update-lock TRUST_DIR DEVICE_KEY IMAGE_SHA256 GENERATION NOW_NS UPDATE_LOCK_FD UPDATE_LOCK".into()
 }
 
 fn parse_bootc_status_bytes(bytes: &[u8]) -> Result<Option<(String, String)>, String> {
@@ -240,9 +243,8 @@ fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
     // Live trust artifacts are mutable root authority, despite containing no
     // secret material. Reject aliases and writable-by-others inodes so an
     // update cannot verify bytes controlled through another pathname.
-    // SAFETY: geteuid takes no arguments and has no failure mode.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
@@ -549,9 +551,8 @@ fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-    // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
     {
@@ -600,10 +601,9 @@ fn install_trust(
     }
     let metadata = std::fs::symlink_metadata(&trust_dir)
         .map_err(|error| format!("cannot inspect {}: {error}", trust_dir.display()))?;
-    // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_dir()
         || metadata.file_type().is_symlink()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.permissions().mode() & 0o777 != 0o700
     {
         return Err("trust directory must be caller-owned mode 0700 and not a symlink".into());
@@ -615,7 +615,7 @@ fn install_trust(
         .metadata()
         .map_err(|error| format!("cannot inspect update lock: {error}"))?;
     if !update_lock_metadata.is_file()
-        || update_lock_metadata.uid() != unsafe { libc::geteuid() }
+        || update_lock_metadata.uid() != rustix::process::geteuid().as_raw()
         || update_lock_metadata.mode() & 0o077 != 0
         || update_lock_metadata.nlink() != 1
     {
@@ -633,7 +633,7 @@ fn install_trust(
         .metadata()
         .map_err(|error| format!("cannot inspect arm lock: {error}"))?;
     if !lock_metadata.is_file()
-        || lock_metadata.uid() != unsafe { libc::geteuid() }
+        || lock_metadata.uid() != rustix::process::geteuid().as_raw()
         || lock_metadata.mode() & 0o077 != 0
         || lock_metadata.nlink() != 1
     {
@@ -694,15 +694,15 @@ fn install_trust(
         ));
     }
 
-    atomic_file::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
+    tilo_files::native::atomic::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
         .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("revocations.bin"),
         &canonical_bytes(&entries).map_err(|error| error.to_string())?,
         0o600,
     )
     .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("endorsement.bin"),
         &canonical_bytes(&endorsement).map_err(|error| error.to_string())?,
         0o600,
@@ -716,13 +716,22 @@ fn install_trust(
     let next_generation = recorded_generation
         .unwrap_or(endorsement.generation)
         .max(endorsement.generation);
-    atomic_file::write_with_mode(&generation_state, &next_generation.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(&trust_dir.join("time.state"), &now_ns.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &generation_state,
+        &next_generation.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &trust_dir.join("time.state"),
+        &now_ns.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     // This marker switches the update path from inert to fail-closed. Publish
     // it only after every validated artifact is durable.
-    atomic_file::write_with_mode(&required, b"armed\n", 0o600).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_with_mode(&required, b"armed\n", 0o600)
+        .map_err(|error| error.to_string())
 }
 
 fn arm(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
@@ -816,18 +825,21 @@ fn verify_common(
             ));
         }
         if expected_generation > floor || recorded.is_none() {
-            atomic_file::write_with_mode(&state, &expected_generation.to_le_bytes(), 0o600)
-                .map_err(|error| {
-                    format!("cannot record generation in {}: {error}", state.display())
-                })?;
+            tilo_files::native::atomic::write_with_mode(
+                &state,
+                &expected_generation.to_le_bytes(),
+                0o600,
+            )
+            .map_err(|error| format!("cannot record generation in {}: {error}", state.display()))?;
         }
     }
     if let Some(state) = time_state {
         let recorded = read_generation_floor(&state)?;
         if recorded.is_none_or(|floor| now_ns > floor) {
-            atomic_file::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600).map_err(
-                |error| format!("cannot record trusted time in {}: {error}", state.display()),
-            )?;
+            tilo_files::native::atomic::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600)
+                .map_err(|error| {
+                    format!("cannot record trusted time in {}: {error}", state.display())
+                })?;
         }
     }
     Ok(())
@@ -857,8 +869,7 @@ fn lock_generation_state(path: &Path) -> Result<advisory_lock::FileLock, String>
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect generation lock: {error}"))?;
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() }
+    if metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
@@ -882,8 +893,7 @@ fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
     if !metadata.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() }
+    if metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
@@ -925,6 +935,7 @@ fn run() -> Result<(), String> {
         Some("revocations") => revocations(args),
         Some("arm") => arm(args),
         Some("rotate") => rotate(args),
+        Some("renew-under-update-lock") => renewal::run(args),
         Some("verify") => verify(args),
         Some("verify-and-record") => verify_common(args, true),
         _ => Err(usage()),
@@ -997,7 +1008,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let artifact = temp.path().join("root.pub");
-            atomic_file::write_with_mode(&artifact, &[7; 32], 0o600)
+            tilo_files::native::atomic::write_with_mode(&artifact, &[7; 32], 0o600)
                 .expect("private trust artifact");
             assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
 
@@ -1017,7 +1028,8 @@ mod tests {
             let marker = temp.path().join("required");
             assert!(!required_marker_is_armed(&marker).expect("absent marker"));
 
-            atomic_file::write_with_mode(&marker, b"armed\n", 0o600).expect("valid marker");
+            tilo_files::native::atomic::write_with_mode(&marker, b"armed\n", 0o600)
+                .expect("valid marker");
             assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
             let linked_parent = temp.path().join("linked-parent");
             std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
@@ -1110,7 +1122,7 @@ mod tests {
             let temp = tempfile::tempdir().expect("temporary directory");
             let state = temp.path().join("generation");
             let link = temp.path().join("generation-link");
-            atomic_file::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
+            tilo_files::native::atomic::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
                 .expect("generation fixture");
             symlink(&state, &link).expect("generation symlink");
             assert!(read_generation_floor(&link).is_err());
@@ -1425,7 +1437,7 @@ mod tests {
             update_lock.to_str().expect("update lock"),
         ]))
         .expect("rotate an armed trust store under the update lock");
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             &trust_dir.join("generation.state"),
             &8_u64.to_le_bytes(),
             0o600,
@@ -1480,8 +1492,12 @@ mod tests {
             fs::read(&time_state_path).expect("read trusted time state"),
             50_u64.to_le_bytes()
         );
-        atomic_file::write_with_mode(&generation_state_path, &8_u64.to_le_bytes(), 0o600)
-            .expect("advance generation state");
+        tilo_files::native::atomic::write_with_mode(
+            &generation_state_path,
+            &8_u64.to_le_bytes(),
+            0o600,
+        )
+        .expect("advance generation state");
         assert!(
             verify_common(
                 arguments(&[
@@ -1501,7 +1517,7 @@ mod tests {
             .is_err(),
             "a valid older endorsement must not cross the recorded rollback floor"
         );
-        atomic_file::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
+        tilo_files::native::atomic::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
             .expect("advance trusted-time state");
         let clock_error = verify_common(
             arguments(&[

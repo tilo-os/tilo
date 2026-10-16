@@ -11,8 +11,8 @@
 //! entirely on the worker — so no live driver handle has to be `Send`/`Sync`.
 //!
 //! The same channel path is driven synchronously by
-//! [`block_until_idle`](DbWorker::block_until_idle) for the hermetic
-//! `--shots`/demo build and the headless tests, so those exercise the identical
+//! [`block_until_idle`](DbWorker::block_until_idle) for a capture and the
+//! headless tests, so those exercise the identical
 //! production engine code and only differ in that they wait for the reply
 //! instead of pumping frames.
 
@@ -45,8 +45,6 @@ pub enum DbRequest {
         limit: usize,
         offset: usize,
     },
-    /// Drop the open engine.
-    Disconnect,
     /// Ask the thread to exit (used on drop).
     Shutdown,
 }
@@ -82,8 +80,6 @@ pub enum DbReply {
         offset: usize,
         result: Result<QueryResult, String>,
     },
-    /// The engine was dropped.
-    Disconnected,
 }
 
 /// Handle to the background worker thread. Owns the request/reply channels and
@@ -162,7 +158,7 @@ impl DbWorker {
     }
 
     /// Block until every outstanding request has replied, returning them in
-    /// order. Used by the hermetic demo/shots build and the headless tests to
+    /// order. Used by a capture and the headless tests to
     /// drive the real engine synchronously; the live event loop uses
     /// [`drain`](Self::drain) instead.
     pub fn block_until_idle(&mut self) -> Vec<DbReply> {
@@ -295,10 +291,6 @@ fn worker_loop(
                     offset,
                     result,
                 }
-            }
-            DbRequest::Disconnect => {
-                engine = None;
-                DbReply::Disconnected
             }
         };
         if tx.send(reply).is_err() {

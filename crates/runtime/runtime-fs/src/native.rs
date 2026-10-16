@@ -506,13 +506,12 @@ impl FsSession {
     /// Terminal for this session and its clones. A fresh bind is independent.
     pub fn close(&self) {
         // Serialize closure with the next syscall boundary and release snapshots.
-        if let Ok(mut table) = self.inner.authority.state.lock() {
-            self.inner.closed.store(true, Ordering::Release);
+        let table = self.inner.authority.state.lock();
+        self.inner.closed.store(true, Ordering::Release);
+        if let Ok(mut table) = table {
             table
                 .snapshots
                 .retain(|_, snapshot| snapshot.session != self.inner.id);
-        } else {
-            self.inner.closed.store(true, Ordering::Release);
         }
     }
 

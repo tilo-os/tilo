@@ -10,8 +10,6 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::personal_continuity::DeviceId;
@@ -159,10 +157,7 @@ pub struct RemoteCaptureGrant([u8; 32]);
 
 impl RemoteCaptureGrant {
     fn mint() -> Self {
-        let mut bytes = [0; 32];
-        while bytes == [0; 32] {
-            UnwrapErr(SysRng).fill_bytes(&mut bytes);
-        }
+        let bytes = crate::random::nonzero::<32>();
         Self(bytes)
     }
 
@@ -299,9 +294,9 @@ impl RemoteCaptureRegistry {
         if self.sessions.len() >= MAX_REMOTE_CAPTURE_SESSIONS {
             return Err("too many active remote capture sessions".into());
         }
-        let mut session_id = [0; 16];
-        while session_id == [0; 16] || self.sessions.contains_key(&session_id) {
-            UnwrapErr(SysRng).fill_bytes(&mut session_id);
+        let mut session_id = crate::random::nonzero::<16>();
+        while self.sessions.contains_key(&session_id) {
+            session_id = crate::random::nonzero::<16>();
         }
         let grant = RemoteCaptureGrant::mint();
         self.sessions.insert(

@@ -17,10 +17,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -31,7 +27,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::manifest::TrustAttestation;
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
     attestation_preimage,
 };
 use tilo_app_package::{Manifest, SigningIdentity, pack};
@@ -183,7 +179,7 @@ impl TestEnv {
         c.env("PATH", std::env::var("PATH").unwrap_or_default());
         c.env("XDG_CONFIG_HOME", self.xdg_config());
         c.env("XDG_DATA_HOME", self.xdg_data());
-        c.env("HOME", self.home.path()); // fallback for xdg_paths::data_dir
+        c.env("HOME", self.home.path()); // fallback for tilo_paths::data_dir
         c
     }
 }
@@ -368,10 +364,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys() {
     // Phase `install_refuses_revoked_publisher`.
     {

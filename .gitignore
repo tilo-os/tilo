@@ -1,11 +1,15 @@
 .env
 os/output/
 os/external-assets/cache/
+os/legacy-guest/agent/
 os/external-assets/cosign-cache/
 os/external-assets/kernel-cache/
 # OEM firmware is staged locally for an explicit hardware image, never committed.
 os/hardware/firmware/*
 !os/hardware/firmware/.gitkeep
+!os/hardware/firmware/generic/
+os/hardware/firmware/generic/*
+!os/hardware/firmware/generic/.gitkeep
 os/tilo-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
@@ -77,6 +81,9 @@ vendor/*/Cargo.lock
 # Local agent captures, logs, source snapshots and review scratch.
 /.superpowers/
 
+# Finder metadata lists a developer's local directory contents.
+.DS_Store
+
 # Python bytecode is regenerated from source.
 __pycache__/
 *.pyc
@@ -84,3 +91,8 @@ __pycache__/
 # Generated audit output; keep written design and review explanations.
 /docs/superpowers/audits/**/*.log
 /docs/superpowers/audits/**/*.json
+
+# Android acceptance receipts, logs and captures are PR/CI artifacts.
+/docs/verification/android-arity/
+/docs/verification/android-mediation/
+/docs/verification/android-integration/

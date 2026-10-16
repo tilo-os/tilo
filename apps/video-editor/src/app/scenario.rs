@@ -93,6 +93,11 @@ pub enum ShotScenario {
     /// The render after it failed, with the reason it gives, so the failing
     /// half of the chip can be reviewed as well as the working half.
     ExportFailed,
+    /// The export dialog open over the editor, before a render starts.
+    ExportDialog,
+    /// The export dialog showing why a render failed, at full length, so the
+    /// reason's wrapping can be reviewed in the details surface.
+    ExportFailedDialog,
     /// In and out marks on the timeline: the band across the ruler, the
     /// bracket at each mark, and the lanes outside the range greyed back — so
     /// what a render will and will not cover can be seen at a glance.
@@ -199,6 +204,8 @@ impl ShotScenario {
         "collaborators",
         "exporting",
         "exportfailed",
+        "exportdialog",
+        "exportfaileddialog",
         "range",
         "format",
         "focusinspector",
@@ -239,6 +246,8 @@ impl ShotScenario {
             "collaborators" => ShotScenario::Collaborators,
             "exporting" => ShotScenario::ExportRunning,
             "exportfailed" => ShotScenario::ExportFailed,
+            "exportdialog" => ShotScenario::ExportDialog,
+            "exportfaileddialog" => ShotScenario::ExportFailedDialog,
             "range" => ShotScenario::RenderRange,
             "format" => ShotScenario::ProjectFormat,
             "focusinspector" => ShotScenario::FocusInspector,
@@ -252,45 +261,86 @@ impl ShotScenario {
     }
 }
 
-/// The capture names the framework stages besides [`ShotScenario::ALL_NAMES`]:
-/// the `--empty` and `--narrow` launch flags select them.
+/// The capture of the live app on a blank project, as a fresh machine shows.
 pub const EMPTY_CAPTURE: &str = "empty";
-/// See [`EMPTY_CAPTURE`].
+/// The capture of the collapsed media bin revealed at a narrow width.
 pub const NARROW_CAPTURE: &str = "narrow";
-/// The prefix of the capture `--import PATH` selects: `import:PATH` stages the
-/// blank live app importing the file at `PATH`.
-pub const IMPORT_CAPTURE: &str = "import:";
 
-/// One-time lifecycle of deterministic screenshot setup and seeding.
+/// The project the `composed` capture loads: the demo project with
+/// everything geometry made possible, arranged through the production model
+/// — an inset over the spine, a title in the lower third, and markers on the
+/// ruler.
+pub(crate) fn composed_project() -> Project {
+    let mut project = crate::seed::sample_project();
+    if let Some(cid) = project.top_video_clip_at(23.0).map(|c| c.id)
+        && let Some(c) = project.clip_mut(cid)
+    {
+        c.transform = crate::model::Transform::pip(0.34, (1.0, -1.0), 0.04);
+    }
+    let title = MediaItem {
+        id: Uuid::new_v4(),
+        name: "Coastline".into(),
+        kind: MediaKind::Text,
+        duration: 8.0,
+        palette: 4,
+        path: String::new(),
+        text: Some(crate::model::TextSource {
+            content: "COASTLINE\nepisode two".into(),
+            size: 0.14,
+            align: crate::model::TextAlign::Left,
+            ..crate::model::TextSource::default()
+        }),
+        ..Default::default()
+    };
+    let tid = title.id;
+    project.media.push(title);
+    if let Some(v2) = project
+        .tracks
+        .iter()
+        .find(|t| t.kind == TrackKind::Video && t.index == 2)
+        .map(|t| t.id)
+        && let Some(cid) = project.add_clip(v2, tid, 34.0)
+        && let Some(c) = project.clip_mut(cid)
+    {
+        c.transform = crate::model::Transform {
+            scale_x: 0.6,
+            scale_y: 0.6,
+            pos_x: -0.1,
+            pos_y: 0.27,
+            ..Default::default()
+        };
+    }
+    project.add_marker(9.0, "act two", 3);
+    project.add_marker(21.0, "sunset", 5);
+    project
+}
+
+/// One-time lifecycle of deterministic screenshot setup.
 #[derive(Default)]
 pub(super) struct ShotLifecycle {
     pub(super) applied: bool,
     pub(super) interaction_applied: bool,
-    pub(super) seeded: bool,
 }
 
 impl VideoEditorApp {
-    /// Stage a framework `--shots` capture on the hosted editor. The
-    /// scenario's project has been loaded through the host already
+    /// Stage a `--shots` capture on the hosted editor. The scenario's
+    /// project has been loaded through the host already
     /// ([`crate::VideoEditor`]'s `scenario`); this arranges the view state
     /// around it — the selection, the open menu, the drag — on the editor's
     /// next sync and draw, through the same one-shot lifecycle the scenario
     /// table always used. `None` is the plain demo capture.
-    ///
-    /// Every capture but the blank one is hermetic: no sound, no decoding of
-    /// the sample project's stand-in media, waveforms computed in the frame,
-    /// so two runs compose the same scene.
     pub fn stage_capture(&mut self, scenario: Option<&str>) {
-        if let Some(path) = scenario.and_then(|name| name.strip_prefix(IMPORT_CAPTURE)) {
-            self.stage_import(vec![PathBuf::from(path)]);
-            return;
-        }
         self.shot_scenario = match scenario {
             // The real live app on a blank project, as a fresh machine shows.
-            Some(EMPTY_CAPTURE) => return,
+            Some(EMPTY_CAPTURE) => {
+                // Nothing on the timeline, so nothing to be part-way through.
+                self.playhead = 0.0;
+                return;
+            }
             Some(NARROW_CAPTURE) => {
                 // The collapsed bin revealed over the editor behind its scrim;
                 // the animation never runs in a one-shot render.
+                self.reconcile_flaps();
                 self.bin_flap.snap(true);
                 self.navigation.flap_settled = true;
                 ShotScenario::Live
@@ -304,8 +354,6 @@ impl VideoEditorApp {
                 ShotScenario::Live
             }
         };
-        self.seed.demo = true;
-        self.render_pipeline.warm_waveforms_sync = true;
         self.shot_lifecycle.applied = false;
         self.shot_lifecycle.interaction_applied = false;
     }
@@ -317,16 +365,6 @@ impl VideoEditorApp {
         self.navigation.flap_settled = false;
     }
 
-    /// Stage a `--shots --import` capture: import `paths` as real clips
-    /// (probed for real metadata), place the first on the timeline and park
-    /// the playhead in it — the path a portal pick drives. The capture waits
-    /// for the import, and for its decoded frame when decoding is compiled in,
-    /// through `has_pending_visual_work`.
-    fn stage_import(&mut self, paths: Vec<PathBuf>) {
-        self.pending_imports = paths;
-        self.media_pipeline.auto_place_imports = true;
-    }
-
     /// Deterministically arrange editor state for a `--shots` scenario. Real
     /// production edit paths are used (split/grade through the CRDT) so the
     /// captured frame reflects genuine behaviour, not a mock.
@@ -334,11 +372,11 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
     )]
-    pub(super) fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
+    pub(super) fn apply_shot_scenario(&mut self, state: &AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.navigation.help_open = true,
-            ShotScenario::GotoTimecode => self.goto_entry = Some("1:30".into()),
+            ShotScenario::GotoTimecode => self.goto_entry = Some(interaction::goto_field("1:30")),
             ShotScenario::ProjectMenu => {
                 // Recents the menu can list. Fabricated only for the capture —
                 // the live app reads them off disk and never invents one.
@@ -361,19 +399,18 @@ impl VideoEditorApp {
                 self.export_status = ExportStatus::Rendering { progress: 0.62 };
             }
             ShotScenario::ExportFailed => {
-                // The normal failure capture exercises the persistent chip;
-                // `TILO_VE_EXPORT=1` is the existing headless modal harness,
-                // and keeps this same failure visible in the full details
-                // surface for visual review.
-                let review_dialog = std::env::var_os("TILO_VE_EXPORT").is_some();
-                self.presentation.export_open = review_dialog;
+                // The persistent chip, with the dialog dismissed.
+                self.presentation.export_open = false;
                 self.export_status = ExportStatus::Failed {
-                    reason: if review_dialog {
-                        "No H.264 encoder is available for the selected export preset. Install an H.264-capable GStreamer plugin, then retry the export."
-                            .to_string()
-                    } else {
-                        "no encoder for H.264 on this machine".to_string()
-                    },
+                    reason: "no encoder for H.264 on this machine".to_string(),
+                };
+            }
+            ShotScenario::ExportDialog => self.presentation.export_open = true,
+            ShotScenario::ExportFailedDialog => {
+                self.presentation.export_open = true;
+                self.export_status = ExportStatus::Failed {
+                    reason: "No H.264 encoder is available for the selected export preset. Install an H.264-capable GStreamer plugin, then retry the export."
+                        .to_string(),
                 };
             }
             // The keyboard cursor, which nothing painted at all until now.
@@ -425,10 +462,10 @@ impl VideoEditorApp {
                     else {
                         continue;
                     };
-                    if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+                    if let Some(m) = self.project.media.find_mut(&key(mid)) {
                         m.has_audio = true;
                     }
-                    self.dispatch_media(state, mid);
+                    self.dispatch_media(mid);
                     let Some(cid) = self
                         .project
                         .clips
@@ -438,7 +475,7 @@ impl VideoEditorApp {
                     else {
                         continue;
                     };
-                    self.attach_linked_audio(state, cid);
+                    self.attach_linked_audio(cid);
                 }
                 // Select the market pair's picture half, and park the playhead
                 // inside it, so one shot shows the selected state and the drone
@@ -488,16 +525,12 @@ impl VideoEditorApp {
                     })
                     .collect();
                 for (tid, gain_db, pan) in lanes {
-                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                    if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.gain_db = gain_db;
                         t.pan = pan;
                     }
                     if let Some(t) = self.project.track(tid).cloned() {
-                        self.actions.dispatch(
-                            state,
-                            VIDEO_EDITOR_ACTION_TYPE,
-                            &upsert_track_action(&t),
-                        );
+                        self.submit_track(&t);
                     }
                 }
                 // What a monitor would have measured playing this: a run of
@@ -553,12 +586,12 @@ impl VideoEditorApp {
             }
             ShotScenario::SavedProject => {
                 let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
-                self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
+                self.project_notice = Some(Notice::ok(project_workflow::saved_words(&path)));
                 self.project_path = Some(path);
                 // Saved *as it stands*, so the badge is off — which is the
                 // half of the button this scenario exists to show.
-                self.saved_heads = Some(state.get_heads());
-                self.doc_heads = state.get_heads();
+                self.saved_heads = Some(state.committed_heads());
+                self.doc_heads = state.committed_heads();
             }
             ShotScenario::SelectedFilters => {
                 // Select the graded drone clip on V1 and park the playhead a
@@ -573,61 +606,18 @@ impl VideoEditorApp {
                 // the grade is unmistakable in the capture.
                 self.set_num(NumField::Saturation, 0.72);
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(state, id);
+                    self.dispatch_clip(id);
                 }
                 self.zoom = 30.0;
             }
             ShotScenario::Composed => {
-                // Everything geometry made possible, arranged through the
-                // production model: an inset over the spine, a title in the
-                // lower third, and markers on the ruler.
+                // The project the scenario loaded is composed already
+                // ([`composed_project`]); look at the inset under the title.
                 self.playhead = 23.0;
                 self.zoom = 26.0;
                 if let Some(c) = self.project.top_video_clip_at(23.0) {
-                    let cid = c.id;
-                    if let Some(c) = self.project.clip_mut(cid) {
-                        c.transform = crate::model::Transform::pip(0.34, (1.0, -1.0), 0.04);
-                    }
-                    self.selection.select_only(cid);
+                    self.selection.select_only(c.id);
                 }
-                let title = MediaItem {
-                    id: Uuid::new_v4(),
-                    name: "Coastline".into(),
-                    kind: MediaKind::Text,
-                    duration: 8.0,
-                    palette: 4,
-                    path: String::new(),
-                    hydration: crate::media::Hydration::Local,
-                    text: Some(crate::model::TextSource {
-                        content: "COASTLINE\nepisode two".into(),
-                        size: 0.14,
-                        align: crate::model::TextAlign::Left,
-                        ..crate::model::TextSource::default()
-                    }),
-                    ..Default::default()
-                };
-                let tid = title.id;
-                self.project.media.push(title);
-                if let Some(v2) = self
-                    .project
-                    .tracks
-                    .iter()
-                    .find(|t| t.kind == TrackKind::Video && t.index == 2)
-                    .map(|t| t.id)
-                    && let Some(cid) = self.project.add_clip(v2, tid, 34.0)
-                    && let Some(c) = self.project.clip_mut(cid)
-                {
-                    c.transform = crate::model::Transform {
-                        scale_x: 0.6,
-                        scale_y: 0.6,
-                        pos_x: -0.1,
-                        pos_y: 0.27,
-                        ..Default::default()
-                    };
-                }
-                self.project.add_marker(9.0, "act two", 3);
-                self.project.add_marker(21.0, "sunset", 5);
-                VideoDoc::write_project(state, &self.project);
             }
             ShotScenario::JustSplit => {
                 // Select the interview body clip and split it at the playhead,
@@ -636,7 +626,7 @@ impl VideoEditorApp {
                     self.selection.select_only(c.id);
                 }
                 self.playhead = 14.0;
-                self.split_selected(state);
+                self.split_selected();
                 self.zoom = 40.0;
             }
             // Rect-dependent interactions are arranged in `draw` (the layout
@@ -698,6 +688,17 @@ impl VideoEditorApp {
         self.shot_presence = Some(ctx);
     }
 
+    /// The regions with the bin showing: folded away on a narrow window, the
+    /// bin is opened (settled, since a one-shot render runs no animation).
+    fn reveal_bin_for_capture(&mut self, r: &Regions) -> Regions {
+        if !r.bin_overlay {
+            return *r;
+        }
+        self.reconcile_flaps();
+        self.bin_flap.snap(true);
+        self.regions()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the capture script: one arm per shot, each setting up exactly what it shows"
@@ -718,6 +719,7 @@ impl VideoEditorApp {
                 | ShotScenario::Mix
         ) {
             self.reveal_inspector();
+            self.reconcile_flaps();
             self.inspector_flap.snap(true);
         }
         match self.shot_scenario {
@@ -755,7 +757,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Mix)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
                 // …with the keyboard cursor on the button that puts the lane
@@ -804,12 +806,17 @@ impl VideoEditorApp {
                 }
             }
             ShotScenario::BinMenu => {
+                // A row is only pressed where it can be seen: on a window
+                // narrow enough to fold the bin away, the bin is summoned
+                // first, as a person would have to.
+                let r = &self.reveal_bin_for_capture(r);
                 if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     let at = Point::new(row.center().x, row.center().y);
                     self.open_bin_menu(mid, at);
                 }
             }
             ShotScenario::BinRename => {
+                let r = &self.reveal_bin_for_capture(r);
                 if let Some((mid, _row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     self.begin_rename(mid);
                 }
@@ -840,8 +847,20 @@ impl VideoEditorApp {
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 6.0;
-                // Scroll the inspector so the effects stack + actions are in view.
-                self.inspector_scroll = self.inspector_max_scroll(r);
+                // Scroll the inspector so the effects stack starts at the top
+                // of the body, its header and every row whole.
+                self.inspector_scroll = 0.0;
+                let top = self.inspector_viewport(r).y0;
+                let header = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Effects)
+                    .map(|(_, rect)| rect.y0);
+                self.inspector_scroll = header.map_or_else(
+                    || self.inspector_max_scroll(r),
+                    |y| (y - top - S2).clamp(0.0, self.inspector_max_scroll(r)),
+                );
             }
             // A clip that has actually been placed, re-timed and keyframed,
             // with the inspector scrolled to the controls that did it. Every
@@ -903,7 +922,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Curves)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -951,9 +970,8 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Key)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    // Land the header a little below the panel's top edge:
-                    // flush against it, its own row is clipped.
-                    let want = y - r.inspector.y0 - 22.0;
+                    // Land the header at the top of the scrolled body, whole.
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -963,7 +981,7 @@ impl VideoEditorApp {
                 // not an inspector posed to look like one.
                 let item = MediaItem {
                     id: Uuid::new_v4(),
-                    name: "COASTLINE".into(),
+                    name: "Coastline".into(),
                     kind: MediaKind::Text,
                     duration: 6.0,
                     width: self.project.width,
@@ -971,9 +989,8 @@ impl VideoEditorApp {
                     fps: self.project.fps,
                     palette: 4,
                     path: String::new(),
-                    hydration: crate::media::Hydration::Local,
                     text: Some(TextSource {
-                        content: "COASTLINE".into(),
+                        content: "Coastline".into(),
                         size: 0.16,
                         color: TITLE_COLORS[2],
                         align: TextAlign::Left,
@@ -990,12 +1007,14 @@ impl VideoEditorApp {
                     .into_iter()
                     .find(|t| t.kind == TrackKind::Video)
                     .map(|t| t.id);
+                // On the top lane's free stretch, after the logo bug and well
+                // before the sunset, so it shares the lane with nothing.
                 if let Some(track) = track
-                    && let Some(cid) = self.project.add_clip(track, mid, 4.0)
+                    && let Some(cid) = self.project.add_clip(track, mid, 7.0)
                 {
                     self.selection.select_only(cid);
                     self.selected_media = Some(mid);
-                    self.playhead = 6.0;
+                    self.playhead = 11.5;
                 }
                 self.project.add_marker(9.0, "act two", 1);
                 self.project.add_marker(18.5, "sunset", 3);
@@ -1015,7 +1034,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Title)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -1117,7 +1136,7 @@ impl VideoEditorApp {
                 // Lock the first video track and select a clip on it, so both
                 // the lane hatch and the inspector's note are visible.
                 if let Some((tid, _, _)) = self.lane_rects(r).into_iter().next() {
-                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                    if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.locked = true;
                     }
                     if let Some(c) = self.project.clips_on(tid).first() {

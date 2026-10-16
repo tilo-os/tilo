@@ -59,20 +59,6 @@ const QUEUED_ACTIONS: [QueuedAction; 5] = [
     ),
 ];
 
-/// The other words people type for each action, by action id. Like the
-/// ids, they are the stable English vocabulary scripts use too.
-fn synonyms(id: &str) -> &'static str {
-    match id {
-        "lock" => "lock screen",
-        "switch-user" => "switch account",
-        "suspend" => "sleep",
-        "restart" => "reboot",
-        "shut-down" => "shutdown power off turn off",
-        LOGOUT_ID => "log out logout sign out",
-        _ => "",
-    }
-}
-
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
 /// The visual power menu and typed action provider must not disagree about a
@@ -106,6 +92,11 @@ impl SessionActionPolicy {
     /// compositor's portal backend.
     pub fn attach(&self, inhibitors: tilo_power_mgmt::InhibitRegistry) {
         *self.inhibitors.borrow_mut() = inhibitors;
+    }
+
+    /// The session's inhibitor registry, shared with every holder.
+    pub fn inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.inhibitors.borrow().clone()
     }
 
     pub fn set_user_switching(&self, supported: bool) {
@@ -179,7 +170,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
     let tags = vec!["desktop".into(), "session".into(), id.into()];
     match action {
         os_actions::SessionAction::Lock => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::None,
             retry: tilo_actions::RetryPolicy::Idempotent,
@@ -187,7 +178,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         os_actions::SessionAction::Suspend => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -195,7 +186,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         _ => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Destructive,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -207,7 +198,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
 
 fn logout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Admin,
+        kind: tilo_actions::ActionKind::Outside,
         risk: tilo_actions::RiskLevel::Destructive,
         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -220,6 +211,19 @@ pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ui::search::ListIndex,
+    /// The rows and their searchable text, built once for what they are
+    /// built from ([`BuiltFrom`]): a keystroke only searches them.
+    built: RefCell<Option<Built>>,
+}
+
+/// Which session actions are offered, the desktop's language, and the
+/// settings document whose shortcuts the rows show.
+type BuiltFrom = (Vec<bool>, String, Option<settings_store::SettingsStamp>);
+
+struct Built {
+    from: BuiltFrom,
+    rows: Vec<SearchResult>,
+    fields: Vec<Vec<(String, FieldWeight)>>,
 }
 
 impl SessionActionsProvider {
@@ -227,7 +231,59 @@ impl SessionActionsProvider {
         Self {
             policy,
             ranker: ui::search::ListIndex::default(),
+            built: RefCell::default(),
         }
+    }
+
+    fn built_from(&self) -> BuiltFrom {
+        (
+            QUEUED_ACTIONS
+                .iter()
+                .map(|(_, action, ..)| self.policy.offers(*action))
+                .collect(),
+            crate::shell::i18n::current_locale(),
+            settings_store::stamp(),
+        )
+    }
+
+    fn build(&self, from: BuiltFrom) -> Built {
+        let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
+            .iter()
+            .zip(&from.0)
+            .filter(|(_, offered)| **offered)
+            .map(|(&entry, _)| self.queued_result(entry))
+            .collect();
+        rows.insert(1.min(rows.len()), self.logout_result());
+        let shortcuts = settings_store::hardware::ShortcutConfig::load();
+        for row in &mut rows {
+            row.shortcut = super::actions::action_shortcut(&shortcuts, &row.id);
+        }
+        let fields = rows
+            .iter()
+            .map(|row| {
+                let mut fields = vec![
+                    (row.title.to_lowercase(), FieldWeight::TITLE),
+                    (row.id.clone(), FieldWeight::IDENTITY),
+                    (
+                        row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                        FieldWeight::SUBTITLE,
+                    ),
+                ];
+                // Lock, restart, shut down: the other words for each, in
+                // every language.
+                fields.extend(
+                    crate::shell::i18n::words_in_every_locale(&format!(
+                        "{}session-{}",
+                        crate::shell::i18n::KEYWORD_PREFIX,
+                        row.id
+                    ))
+                    .into_iter()
+                    .map(|word| (word, FieldWeight::KEYWORD)),
+                );
+                fields
+            })
+            .collect();
+        Built { from, rows, fields }
     }
 }
 
@@ -252,27 +308,15 @@ impl SearchProvider for SessionActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
-            .iter()
-            .filter(|(_, action, ..)| self.policy.offers(*action))
-            .map(|&entry| self.queued_result(entry))
-            .collect();
-        rows.insert(1.min(rows.len()), self.logout_result());
-        let fields: Vec<_> = rows
-            .iter()
-            .map(|row| {
-                vec![
-                    (row.title.clone(), FieldWeight::TITLE),
-                    (row.id.clone(), FieldWeight::IDENTITY),
-                    (synonyms(&row.id).to_owned(), FieldWeight::IDENTITY),
-                    (
-                        row.subtitle.clone().unwrap_or_default(),
-                        FieldWeight::SUBTITLE,
-                    ),
-                ]
-            })
-            .collect();
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
+        let from = self.built_from();
+        let mut built = self.built.borrow_mut();
+        if built.as_ref().is_none_or(|built| built.from != from) {
+            *built = Some(self.build(from));
+        }
+        let Some(Built { rows, fields, .. }) = built.as_ref() else {
+            return Vec::new();
+        };
+        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
     }
 }
 
@@ -295,6 +339,7 @@ impl SessionActionsProvider {
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -321,6 +366,7 @@ impl SessionActionsProvider {
         let contract = logout_contract();
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -460,7 +506,9 @@ mod tests {
                 .select(&ResourceRef::new(PROVIDER_ID, "restart"))
                 .expect("exact session action");
             assert!(
-                restart.invoke(&mut doc, &ROOT, &chrome, []).is_err(),
+                restart
+                    .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+                    .is_err(),
                 "a destructive session action needs explicit confirmation"
             );
             assert!(
@@ -470,12 +518,17 @@ mod tests {
                     .is_empty()
             );
             restart
-                .invoke(&mut doc, &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect("confirmed restart is admitted");
             exact_catalog(&policy, &chrome, "lock")
                 .select(&ResourceRef::new(PROVIDER_ID, "lock"))
                 .expect("exact session action")
-                .invoke(&mut doc, &ROOT, &chrome, [])
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("lock needs no confirmation");
             assert_eq!(
                 chrome.borrow_mut().take_session_action_requests(),
@@ -503,7 +556,12 @@ mod tests {
             let error = exact_catalog(&policy, &chrome, "switch-user")
                 .select(&ResourceRef::new(PROVIDER_ID, "switch-user"))
                 .expect("exact session action")
-                .invoke(&mut AutoCommit::new(), &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect_err("an inhibitor refuses the typed action like the flyout row");
             assert!(format!("{error:?}").contains("Call is sharing the screen"));
             assert!(
@@ -535,6 +593,8 @@ mod tests {
             ("switch user", "switch-user"),
         ] {
             let mut rows = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,

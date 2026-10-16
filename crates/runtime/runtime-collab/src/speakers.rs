@@ -115,14 +115,21 @@ pub struct SpeakerDeviceInfo {
     pub microphones: Vec<SpeakerEndpointInfo>,
 }
 
+/// Where one member of a group stands right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SpeakerMemberStatus {
+    /// Consented (or the leader's own output) and online.
     Ready,
+    /// Asked, not yet answered on that device.
     AwaitingConsent,
+    /// Consented, but the device is offline.
     Offline,
+    /// The device no longer offers this output.
     OutputMissing,
+    /// Media continuity is off there, or it cannot join speaker groups.
     Unavailable,
+    /// Not one of this person's certified devices.
     NotCertified,
 }
 

@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::collab::encoder::EncoderKind;
+use tilo_lock::MutexRecover as _;
 
 /// Default ring capacity — 128 samples ≈ 2.1 s at 60 fps.
 const LATENCY_RING_CAPACITY: usize = 128;
@@ -119,10 +120,7 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn record_received(&self, latency_ns: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.frames_received = inner.frames_received.saturating_add(1);
         if inner.latency_ring.len() < inner.latency_capacity {
             inner.latency_ring.push(latency_ns);
@@ -137,18 +135,12 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn record_dropped(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.frames_dropped = inner.frames_dropped.saturating_add(1);
     }
 
     pub fn record_encode_wallclock(&self, ns: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         if inner.encode_ring.len() < inner.encode_capacity {
             inner.encode_ring.push(ns);
         } else {
@@ -162,20 +154,14 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn record_keyframe(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.keyframes = inner.keyframes.saturating_add(1);
     }
 
     /// Update the bitrate EWMA with a fresh sample (bytes/sec); alpha fixed
     /// at 0.2 so recent samples dominate but stay smooth across the ~5s window the OSD renders.
     pub fn record_bitrate(&self, bytes_per_sec: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         let prev = inner.bitrate_bytes_per_sec_ewma;
         let alpha = 20u64; // 20% new sample weight
         inner.bitrate_bytes_per_sec_ewma = prev
@@ -185,18 +171,12 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn set_chosen_encoder(&self, kind: EncoderKind) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.chosen_encoder = kind;
     }
 
     pub fn set_capture_path(&self, path: CapturePath) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.capture_path = path;
     }
 
@@ -208,10 +188,7 @@ impl PeerSurfaceMetrics {
     /// (older peers, or `#[serde(default)]`); the offset is cleared rather
     /// than storing a bogus value, so downstream queries return `None` (OSD renders "—") instead of a nonsense number.
     pub fn set_clock_offset(&self, sender_ns_at_send: u64, receiver_ns_at_recv: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         if sender_ns_at_send == 0 {
             inner.clock_offset_ns = None;
             return;
@@ -228,10 +205,7 @@ impl PeerSurfaceMetrics {
     /// handshake) — callers skip the measurement rather than push a wrong one to the latency ring.
     pub fn end_to_end_latency_ns(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
         let offset = {
-            let inner = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let inner = self.inner.lock_recover();
             inner.clock_offset_ns
         }?;
         // The sender's `ts` on the receiver's clock is `wire_ts_ns + offset` —
@@ -259,17 +233,11 @@ impl PeerSurfaceMetrics {
     /// Current learned clock offset, or `None` before the handshake —
     /// exposed so the OSD can show a huge offset (drifted NTP, unsync'd hosts) alongside the latency histogram.
     pub fn clock_offset_ns(&self) -> Option<i128> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clock_offset_ns
+        self.inner.lock_recover().clock_offset_ns
     }
 
     pub fn snapshot(&self) -> PeerSurfaceSnapshot {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.lock_recover();
         let latency_samples = inner.latency_ring.len();
         let (latency_ns_mean, latency_ns_max) = if latency_samples == 0 {
             (0, 0)

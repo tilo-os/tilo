@@ -1,4 +1,5 @@
 """Execute the real check workflow's aggregate, including intentional skips."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -48,6 +49,79 @@ class CheckAggregateTests(unittest.TestCase):
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
+    def test_suite_admission_uses_completed_selection_and_explicit_cancellation(self):
+        job = section(self.workflow, "suites", 2)
+        match = re.search(r"(?m)^    if: \$\{\{ (.+) \}\}$", job)
+        self.assertIsNotNone(match, "observe the production job condition")
+
+        def admitted(select="success", required="true", cancelled=False):
+            expression = match[1].replace("!cancelled()", repr(not cancelled))
+            expression = expression.replace("needs.select.result", repr(select))
+            expression = expression.replace("needs.select.outputs.suites_required", repr(required))
+            expression = expression.replace("&&", " and ")
+            tree = ast.parse(expression, mode="eval")
+            allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Compare, ast.Eq, ast.Constant)
+            self.assertTrue(all(isinstance(node, allowed) for node in ast.walk(tree)))
+            return eval(compile(tree, "production suite condition", "eval"), {"__builtins__": {}})
+
+        # The real non-compiling plan has security/native jobs skipped, but
+        # this job depends only on the successful selector and its suite list.
+        self.assertEqual(re.findall(r"needs\.([a-z_]+)\.", match[1]), ["select", "select"])
+        self.assertTrue(admitted())
+        self.assertFalse(admitted(cancelled=True))
+        for result in ("failure", "skipped", "cancelled", "running", ""):
+            self.assertFalse(admitted(select=result))
+        for required in ("false", "", "invalid"):
+            self.assertFalse(admitted(required=required))
+
+    def test_compiler_cache_proxy_detection_cannot_download_an_unused_toolchain(self):
+        package_env = section(section(self.workflow, "tapps", 2), "env", 4)
+        self.assertRegex(package_env, r'(?m)^      RUSTUP_AUTO_INSTALL: "0"$')
+        environment = section(self.workflow, "env", 0)
+        # Preserve exact pinned-image compilation and all warning gates.
+        self.assertIn('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
+        self.assertIn('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
+
+    def test_package_cache_report_observes_the_job_wrapper_after_failure(self):
+        tapps = section(self.workflow, "tapps", 2)
+        report = tapps.split("      - name: Report package compiler cache\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("if: always()", report)
+        self.assertNotIn("continue-on-error:", report)
+        script = textwrap.dedent(report.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory) / "job-wrapper"
+            wrapper.write_text('#!/bin/sh\n[ "$1" = --show-stats ] || exit 91\nprintf "Cache hits 3\\nCache misses 0\\n"\n')
+            wrapper.chmod(0o755)
+            env = dict(os.environ, RUSTC_WRAPPER=str(wrapper))
+            seen = subprocess.run([self.bash, "-eu", "-c", script], env=env,
+                                  text=True, capture_output=True, check=False)
+            self.assertEqual(seen.returncode, 0, seen.stderr)
+            self.assertIn("Cache hits 3", seen.stdout)
+            self.assertIn("Cache misses 0", seen.stdout)
+            wrapper.write_text('#!/bin/sh\nexit 17\n')
+            unavailable = subprocess.run([self.bash, "-eu", "-c", script], env=env,
+                                         text=True, capture_output=True, check=False)
+            self.assertEqual(unavailable.returncode, 0, unavailable.stderr)
+            self.assertIn("statistics unavailable", unavailable.stdout)
+            disabled = subprocess.run([self.bash, "-eu", "-c", script],
+                                      env=dict(env, RUSTC_WRAPPER=""),
+                                      text=True, capture_output=True, check=False)
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            self.assertIn("no hit rate established", disabled.stdout)
+
+    def test_package_timings_observe_the_existing_build_without_a_second_build(self):
+        tapps = section(self.workflow, "tapps", 2)
+        package = tapps.split("      - name: Package the selected tapps\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("EXTRA_CARGO_ARGS: --timings", package)
+        clear = "rm -f target/cargo-timings/cargo-timing.html"
+        self.assertLess(package.index(clear), package.index("tools/ci/measure.sh"))
+        report = tapps.split("      - name: Save package compiler timings\n", 1)[1]
+        self.assertIn("if: always()", report)
+        self.assertIn("path: target/cargo-timings/cargo-timing.html", report)
+        self.assertIn("if-no-files-found: error", report)
+        self.assertNotIn("continue-on-error:", report)
+        self.assertEqual(tapps.count("tools/ci/measure.sh"), 1)
+
     def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
                   event="pull_request",
@@ -55,6 +129,8 @@ class CheckAggregateTests(unittest.TestCase):
                   pins_required="false", pins="skipped",
                   android_required="false", android="skipped",
                   wasm_required="false", wasm="skipped",
+                  tapps_required="false", tapps="skipped",
+                  vendored_required="false", vendored="skipped",
                   test=None, check=None, clippy=None, check_required=None):
         if check_required is None:
             check_required = "true" if required == "true" else "false"
@@ -74,10 +150,87 @@ class CheckAggregateTests(unittest.TestCase):
                      "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
                      "ANDROID_REQUIRED": android_required, "ANDROID_RESULT": android,
                      "WASM_REQUIRED": wasm_required, "WASM_RESULT": wasm,
+                     "TAPPS_REQUIRED": tapps_required, "TAPPS_RESULT": tapps,
+                     "VENDORED_REQUIRED": vendored_required, "VENDORED_RESULT": vendored,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
             return result.returncode, summary.read_text() if summary.exists() else ""
+
+    def test_wasm_qualification_uses_portable_native_without_losing_main_x86(self):
+        job = section(self.workflow, "wasm", 2)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", job)
+        self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
+        self.assertIn('bash tools/ci/check-wasm.sh $PACKAGES', job)
+        self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
+        self.assertIn("timeout-minutes: 90", job)
+        # Native x86/ARM matrices and their warning flags remain independent.
+        for name in ("test", "check", "clippy"):
+            self.assertIn("runs-on: ${{ matrix.runner }}", section(self.workflow, name, 2))
+
+    def test_native_admission_observes_security_without_losing_main_results(self):
+        # Evaluate the actual workflow predicates. This deliberately supports only
+        # the small boolean/comparison grammar used here, rejecting new syntax.
+        values = {
+            "github.event_name": "pull_request",
+            "github.event.inputs.lanes": "all",
+            "needs.builder.result": "success",
+            "needs.select.result": "success",
+            "needs.security.result": "success",
+            "needs.select.outputs.security_required": "true",
+            "needs.select.outputs.rust_required": "true",
+            "needs.select.outputs.check_required": "true",
+            "needs.select.outputs.android_required": "true",
+            "needs.select.outputs.wasm_required": "true",
+            "needs.select.outputs.tapp_required": "true",
+            "needs.select.outputs.vendored_required": "true",
+            "needs.policy.result": "success",
+            "needs.builder.outputs.affected": "true",
+            "needs.builder.outputs.linux_affected": "true",
+        }
+
+        def admitted(job, cancelled=False, **changes):
+            expression = re.search(r"(?m)^    if: \$\{\{ (.+) \}\}$", job).group(1)
+            for key, value in sorted({**values, **changes}.items(), key=lambda item: -len(item[0])):
+                expression = expression.replace(key, repr(value))
+            expression = expression.replace("!cancelled()", repr(not cancelled))
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            parsed = ast.parse(expression, mode="eval")
+            for node in ast.walk(parsed):
+                self.assertIsInstance(node, (ast.Expression, ast.BoolOp, ast.Compare,
+                                              ast.Constant, ast.And, ast.Or, ast.Eq, ast.NotEq))
+            return eval(compile(parsed, "workflow-native-if", "eval"), {"__builtins__": {}})
+
+        for name in ("test", "check", "clippy", "android", "wasm", "tapps", "vendored"):
+            with self.subTest(job=name):
+                job = section(self.workflow, name, 2)
+                self.assertIn("needs: [builder, select, security]", job)
+                self.assertTrue(admitted(job))
+                for status in ("failure", "cancelled", "skipped", "", "running"):
+                    self.assertFalse(admitted(job, **{"needs.security.result": status}))
+                    # Every main commit retains the selected native diagnostics.
+                    self.assertTrue(admitted(job, **{"github.event_name": "push",
+                                                     "needs.security.result": status}))
+                self.assertFalse(admitted(job, cancelled=True))
+                for event in ("pull_request", "push"):
+                    for prerequisite in ("builder", "select"):
+                        for status in ("failure", "cancelled", "skipped", ""):
+                            self.assertFalse(admitted(job, **{"github.event_name": event,
+                                                             f"needs.{prerequisite}.result": status}))
+                self.assertTrue(admitted(job, **{"needs.select.outputs.security_required": "false",
+                                                 "needs.security.result": "skipped"}))
+                for required, result in (("", "success"), ("false", "success"), ("false", "failure")):
+                    self.assertFalse(admitted(job, **{"needs.select.outputs.security_required": required,
+                                                      "needs.security.result": result}))
+                applicability = {"android": "android", "wasm": "wasm", "tapps": "tapp",
+                                 "vendored": "vendored"}.get(name, "rust")
+                self.assertFalse(admitted(job, **{f"needs.select.outputs.{applicability}_required": "false"}))
+                if name == "check":
+                    self.assertFalse(admitted(job, **{"needs.select.outputs.check_required": "false"}))
+                # Skipped native work cannot turn a failed security gate green.
+                self.assertNotEqual(self.aggregate(security="failure", affected="skipped")[0], 0)
 
     def test_aggregate_passes_only_explained_skips_and_fails_every_other_outcome(self):
         with self.subTest(phase='intentional design skip passes with explanation'):
@@ -125,6 +278,30 @@ class CheckAggregateTests(unittest.TestCase):
                 with self.subTest(wasm_required=wasm_required, wasm=wasm):
                     self.assertNotEqual(self.aggregate(wasm_required=wasm_required,
                                                        wasm=wasm)[0], 0)
+        with self.subTest(phase='the tapp size lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(tapps_required="true", tapps="success")[0], 0)
+            for tapps_required, tapps in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(tapps_required=tapps_required, tapps=tapps):
+                    self.assertNotEqual(self.aggregate(tapps_required=tapps_required,
+                                                       tapps=tapps)[0], 0)
+        with self.subTest(phase='the vendored crate lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(vendored_required="true", vendored="success")[0], 0)
+            for vendored_required, vendored in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(vendored_required=vendored_required, vendored=vendored):
+                    self.assertNotEqual(self.aggregate(vendored_required=vendored_required,
+                                                       vendored=vendored)[0], 0)
         with self.subTest(phase='successful rust checks pass'):
             self.doCleanups()
             self.setUp()
@@ -239,7 +416,7 @@ class CheckAggregateTests(unittest.TestCase):
             self.doCleanups()
             self.setUp()
             job = section(self.workflow, "suites", 2)
-            self.assertIn("if: needs.select.outputs.suites_required == 'true'", job)
+            self.assertIn("if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.suites_required == 'true' }}", job)
             self.assertIn("needs: [select]", job)
             self.assertIn("SUITES: ${{ needs.select.outputs.suites }}", job)
             self.assertIn("python3 tools/ci/suites.py run --jobs 2 $SUITES", job)
@@ -273,28 +450,29 @@ class CheckAggregateTests(unittest.TestCase):
             for name, matrix in (("test", "matrix"), ("clippy", "clippy_matrix")):
                 with self.subTest(job=name):
                     job = section(self.workflow, name, 2)
-                    self.assertIn("if: needs.select.outputs.rust_required == 'true'\n", job)
-                    self.assertIn("needs: [builder, select]", job)
+                    self.assertIn("needs.select.outputs.rust_required == 'true' }}\n", job)
+                    self.assertIn("needs: [builder, select, security]", job)
                     self.assertIn(
                         f"fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.{matrix} ||", job)
-                    self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', job)
+                    self.assertIn('{"include":[{"runner":"runner"}]}', job)
             check = section(self.workflow, "check", 2)
             condition = ("needs.select.outputs.rust_required == 'true' && "
                          "needs.select.outputs.check_required == 'true'")
-            self.assertIn(f"if: {condition}\n", check)
-            self.assertIn("needs: [builder, select]", check)
+            self.assertIn(f"&& {condition} }}}}\n", check)
+            self.assertIn("needs: [builder, select, security]", check)
             self.assertIn(f"fromJSON({condition} && needs.select.outputs.check_matrix ||", check)
-            self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', check)
+            self.assertIn('{"include":[{"runner":"runner"}]}', check)
             clippy = section(self.workflow, "clippy", 2)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", clippy)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", check)
-            self.assertIn("key: cargo-deps-", clippy)
+            self.assertIn("key: ${{ steps.rust-build.outputs.cargo-cache-key }}", clippy)
+            self.assertIn("cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}", clippy)
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
-                "needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]",
+                "needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins, tapps]",
                 checks)
-            for name in ("test", "check", "clippy", "android", "wasm"):
+            for name in ("test", "check", "clippy", "android", "wasm", "vendored"):
                 variable = name.upper().replace("-", "_")
                 self.assertIn(f"{variable}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
             self.assertNotIn("test-archive", self.workflow)
@@ -306,23 +484,59 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("android_required: ${{ steps.plan.outputs.android_required }}", select_job)
             self.assertIn("android_packages: ${{ steps.plan.outputs.android_packages }}", select_job)
             android = section(self.workflow, "android", 2)
-            self.assertIn("if: needs.select.outputs.android_required == 'true'\n", android)
-            self.assertIn("needs: [builder, select]", android)
+            self.assertIn("needs.select.outputs.android_required == 'true' }}\n", android)
+            self.assertIn("needs: [builder, select, security]", android)
             self.assertIn("image: ${{ needs.builder.outputs.image }}", android)
             self.assertIn("bash tools/ci/install-android-ndk.sh", android)
             for target in ("aarch64-linux-android", "x86_64-linux-android"):
                 self.assertIn(target, android)
-            self.assertIn("--features android --target \"$target\"", android)
-            self.assertIn("-- -D warnings", android)
+            self.assertIn("bash tools/ci/clippy-android.sh $PACKAGES", android)
+            script = (ROOT / "tools/ci/clippy-android.sh").read_text()
+            self.assertIn("--features android --target \"$target\"", script)
+            self.assertIn("-- -D warnings", script)
+            # Vendored crates' own suites, through the runner the nightly uses.
+            self.assertIn("VENDORED_REQUIRED: ${{ needs.select.outputs.vendored_required }}", checks)
+            self.assertIn("vendored_required: ${{ steps.plan.outputs.vendored_required }}", select_job)
+            self.assertIn("vendored_crates: ${{ steps.plan.outputs.vendored_crates }}", select_job)
+            vendored = section(self.workflow, "vendored", 2)
+            self.assertIn("needs.select.outputs.vendored_required == 'true' }}\n", vendored)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", vendored)
+            self.assertIn("CRATES: ${{ needs.select.outputs.vendored_crates }}", vendored)
+            self.assertIn("bash tools/ci/test-vendored-crates.sh $CRATES", vendored)
+            nightly = section((ROOT / ".forgejo/workflows/ci-nightly.yml").read_text(), "vendored", 2)
+            self.assertIn("run: bash tools/ci/test-vendored-crates.sh\n", nightly + "\n")
             self.assertIn("WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}", checks)
             self.assertIn("wasm_packages: ${{ steps.plan.outputs.wasm_packages }}", select_job)
             wasm = section(self.workflow, "wasm", 2)
-            self.assertIn("if: needs.select.outputs.wasm_required == 'true'\n", wasm)
+            self.assertIn("needs.select.outputs.wasm_required == 'true' }}\n", wasm)
             self.assertIn("image: ${{ needs.builder.outputs.image }}", wasm)
             self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
-            self.assertIn("--target wasm32-unknown-unknown", wasm)
             self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
-            self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
+            self.assertIn("bash tools/ci/check-wasm.sh $PACKAGES", wasm)
+            # Affected tapps against their size budgets, on both architectures,
+            # packaged as Release / apps packages them.
+            self.assertIn("TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}", checks)
+            self.assertIn("tapp_required: ${{ steps.plan.outputs.tapp_required }}", select_job)
+            self.assertIn("tapp_apps: ${{ steps.plan.outputs.tapp_apps }}", select_job)
+            tapps = section(self.workflow, "tapps", 2)
+            self.assertIn("needs.select.outputs.tapp_required == 'true' }}\n", tapps)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", tapps)
+            self.assertEqual(re.findall(r"- arch: (\S+)\s+runner: (\S+)", tapps),
+                             [("x86_64", "runner-large"), ("aarch64", "runner-large-arm64")])
+            self.assertIn("TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}", tapps)
+            self.assertIn("dist/apps/package-apps.sh", tapps)
+            self.assertIn("python3 tools/perf/tapp_size_ratchet.py measure dist/app-release", tapps)
+            release = (ROOT / ".forgejo/workflows/release-apps.yml").read_text()
+            build = section(release, "build", 2)
+            # The same compiler-cache entries as the main builds.
+            for setting in ("CARGO_PROFILE_RELEASE_LTO: thin", 'CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"'):
+                self.assertIn(setting, build)
+                self.assertIn(setting, tapps)
+            self.assertIn("TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}", build)
+            self.assertIn("SCCACHE_GHA_VERSION: tilo/apps/v2/${{ matrix.arch }}", tapps)
+            script = (ROOT / "tools/ci/select.sh").read_text(encoding="utf-8")
+            self.assertIn("tools/perf/tapp_size_ratchet.py select", script)
+            self.assertIn("printf 'tapp_apps=\\ntapp_required=false\\n'", script)
             # The script checks every wasm32 build the workspace-hack policy
             # resolves, with the features its build script uses.
             spec = importlib.util.spec_from_file_location(
@@ -332,7 +546,8 @@ class CheckAggregateTests(unittest.TestCase):
             script = (ROOT / "tools/ci/check-wasm.sh").read_text()
             for package, _ in hack.ROOTS:
                 self.assertIn(f"-p {package}", script)
-            self.assertIn('--target "$target"', script)
+            self.assertIn('clippy --locked --target "$target"', script)
+            self.assertIn("-- -D warnings", script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)
@@ -379,7 +594,10 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("github.ref == 'refs/heads/main'", checkout)
             self.assertNotIn("codex/package-desktop-release", checkout)
             self.assertIn("token: ${{ secrets.REGISTRY_TOKEN }}", checkout)
-            self.assertIn("fetch-depth: 0", checkout)
+            self.assertIn("fetch-depth: 1", checkout)
+            self.assertIn("fetch-tags: false", checkout)
+            self.assertIn("sparse-checkout: tools/ci/receipt.sh", checkout)
+            self.assertIn("sparse-checkout-cone-mode: false", checkout)
             self.assertIn("if: always() && steps.receipt-checkout.outcome == 'success'", receipt)
             self.assertIn("SELECT_RESULT: ${{ needs.select.result }}", receipt)
             self.assertIn("SECURITY_RESULT: ${{ needs.security.result }}", receipt)

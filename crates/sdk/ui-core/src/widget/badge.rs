@@ -1,136 +1,312 @@
-//! Badge widget — a small pill-shaped indicator typically anchored over
-//! another element (avatar, icon, button). Three variants:
+//! Badge widget — the non-interactive member of the chip family: a small
+//! pill typically anchored over another element (avatar, icon, row). Three
+//! contents:
 //!
-//! - [`BadgeContent::Dot`] — a tiny filled circle, no text.
+//! - [`BadgeContent::Dot`] — a small filled circle, no text.
 //! - [`BadgeContent::Count`] — `0` renders nothing; values `>= 100` clamp to
 //!   `"99+"` so the pill never grows past the visual budget reserved for it.
-//! - [`BadgeContent::Text`] — an arbitrary short label ("NEW", "β").
+//! - [`BadgeContent::Text`] — a short status ("Owner", "Beta").
+//!
+//! A badge takes a [`ChipStyle`], never a colour. A count or a dot is
+//! [`ChipStyle::Live`] by default (something new happened), filled in your
+//! colour like a sidebar's unread count; a text badge is
+//! [`ChipStyle::Neutral`]. A status reads as `ChipStyle::Tinted(Tone::…)`.
+//! Canvas hosts paint the same pill with [`BadgeFace`].
+//!
+//! A "modified" mark (unsaved changes) is a dot in neutral primary ink
+//! ([`Badge::modified`], [`BadgeFace::modified`]): it is not new and not
+//! anyone's, so it takes no colour.
 //!
 //! Positioning is the caller's responsibility — `Badge` does not anchor
 //! itself to another widget.
 
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::chip::{ChipLead, ChipStyle, PillPaint, paint_pill};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Circle, Point, Rect};
 
-/// See module docs for variant semantics.
+/// See module docs for content semantics.
 #[derive(Clone, Debug)]
 pub enum BadgeContent {
     Dot,
+    /// Unsaved changes: a dot in neutral primary ink.
+    Modified,
     Count(u32),
     Text(String),
 }
 
-/// Theme-relative semantic treatment for status pills.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BadgeTone {
-    Success,
-    Warning,
-    Neutral,
-    Accent,
+/// The ink of a badge dot: the style's fill, or neutral primary ink for a
+/// modified mark.
+fn dot_colour(style: ChipStyle, modified: bool, theme: &Theme) -> vello::peniko::Color {
+    if modified {
+        theme.text_primary
+    } else {
+        style
+            .colors(theme, theme.tokens.colors.surfaces.content, false, false)
+            .fill
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum BadgeTint {
-    Default,
-    Fixed(Color),
-    Semantic(BadgeTone),
+/// Paint a badge dot centred in `rect`.
+fn paint_dot(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    style: ChipStyle,
+    modified: bool,
+    theme: &Theme,
+) {
+    let radius = BadgeMetrics::of(theme).dot / 2.0;
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        dot_colour(style, modified, theme),
+        None,
+        &Circle::new(rect.center(), radius),
+    );
+}
+
+/// The theme inputs a badge's paint reads, so a theme switch that keeps the
+/// layout (dark to light, a new presence colour) repaints a cached badge.
+type ThemeKey = (
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    Option<vello::peniko::Color>,
+    vello::peniko::Color,
+);
+
+fn theme_key(style: ChipStyle, theme: &Theme) -> ThemeKey {
+    let colors = style.colors(theme, theme.tokens.colors.surfaces.content, false, false);
+    (
+        colors.fill,
+        colors.ink,
+        theme.text_primary,
+        colors.edge,
+        theme.tokens.colors.surfaces.content,
+    )
+}
+
+/// A badge's geometry in one theme.
+#[derive(Clone, Debug, PartialEq)]
+struct BadgeMetrics {
+    /// The caption line plus `spacing.s0` a side: a pill as tight as a
+    /// badge can be and still hold its text at any text scale.
+    height: f64,
+    pad_x: f64,
+    dot: f64,
+    caption: crate::text_render::TextStyle,
+}
+
+impl BadgeMetrics {
+    fn of(theme: &Theme) -> Self {
+        let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let height = (line + 2.0 * f64::from(theme.tokens.spacing.s0)).ceil();
+        Self {
+            height,
+            pad_x: f64::from(theme.tokens.spacing.s2).max((height / 3.0).round()),
+            dot: f64::from(theme.tokens.spacing.s2),
+            caption: theme.text(TextRole::Caption),
+        }
+    }
+
+    fn width(&self, label: &str, text: &mut TextRenderer) -> f64 {
+        if label.is_empty() {
+            return self.dot;
+        }
+        let (w, _) = text.measure_style(label, None, &self.caption);
+        (f64::from(w) + 2.0 * self.pad_x).ceil().max(self.height)
+    }
+}
+
+/// An immediate-mode badge for hosts that own their row geometry (shell
+/// overlays, painted lists): the [`Badge`] look without a layout node.
+pub struct BadgeFace<'a> {
+    rect: Rect,
+    label: &'a str,
+    style: ChipStyle,
+    /// A dot rather than a pill.
+    dot: bool,
+    modified: bool,
+}
+
+impl<'a> BadgeFace<'a> {
+    pub fn new(rect: Rect, label: &'a str) -> Self {
+        Self {
+            rect,
+            label,
+            style: ChipStyle::Neutral,
+            dot: false,
+            modified: false,
+        }
+    }
+
+    /// A dot centred in `rect`: something new, in your colour (or the
+    /// style's tone).
+    #[must_use]
+    pub fn dot(rect: Rect) -> Self {
+        Self {
+            rect,
+            label: "",
+            style: ChipStyle::Live,
+            dot: true,
+            modified: false,
+        }
+    }
+
+    /// Unsaved changes: a dot in neutral primary ink, centred in `rect`.
+    #[must_use]
+    pub fn modified(rect: Rect) -> Self {
+        Self {
+            modified: true,
+            ..Self::dot(rect)
+        }
+    }
+
+    #[must_use]
+    pub fn style(mut self, style: ChipStyle) -> Self {
+        self.style = style;
+        self
+    }
+    /// The badge height in `theme`.
+    pub fn height(theme: &Theme) -> f64 {
+        BadgeMetrics::of(theme).height
+    }
+    /// The width a badge needs for `label` in `theme`.
+    pub fn intrinsic_width(label: &str, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        BadgeMetrics::of(theme).width(label, text)
+    }
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.dot {
+            paint_dot(
+                scene,
+                transform,
+                self.rect,
+                self.style,
+                self.modified,
+                theme,
+            );
+            return;
+        }
+        if self.label.is_empty() {
+            return;
+        }
+        // The pill is the badge's own height wherever the caller's rect is
+        // taller, so its padding comes from its metrics, not the rect.
+        let height = BadgeMetrics::of(theme).height.min(self.rect.height());
+        let cy = self.rect.center().y;
+        let rect = Rect::new(
+            self.rect.x0,
+            cy - height / 2.0,
+            self.rect.x1,
+            cy + height / 2.0,
+        );
+        paint_badge_pill(
+            scene,
+            transform,
+            rect,
+            self.label,
+            self.style,
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+fn paint_badge_pill(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    label: &str,
+    style: ChipStyle,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    paint_pill(
+        &PillPaint {
+            rect,
+            label,
+            lead: ChipLead::None,
+            style,
+            selected: false,
+            hovered: false,
+            remove: None,
+            menu: false,
+            bare: false,
+            opacity: 1.0,
+            role: TextRole::Caption,
+            centred: true,
+        },
+        scene,
+        transform,
+        text_renderer,
+        theme,
+    );
 }
 
 pub struct Badge {
     content: BadgeContent,
+    style: ChipStyle,
     rect: Rect,
     cached: vello::Scene,
     dirty: bool,
     cache_rect: Rect,
-    /// Notification default, fixed caller colour, or a theme-relative status
-    /// tone.
-    tint: BadgeTint,
+    /// The geometry seen in `build_layout`, for the measured width.
+    metrics: Option<BadgeMetrics>,
+    /// The theme inputs `cached` was painted from.
+    cache_theme: Option<ThemeKey>,
 }
 
 impl Badge {
+    fn with_content(content: BadgeContent, style: ChipStyle) -> Self {
+        Self {
+            content,
+            style,
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            cache_rect: Rect::ZERO,
+            metrics: None,
+            cache_theme: None,
+        }
+    }
+
+    /// Unsaved changes: a dot in neutral primary ink.
+    pub fn modified() -> Self {
+        Self::with_content(BadgeContent::Modified, ChipStyle::Neutral)
+    }
+
+    /// Something new, without a number.
     pub fn dot() -> Self {
-        Self {
-            content: BadgeContent::Dot,
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-            tint: BadgeTint::Default,
-        }
+        Self::with_content(BadgeContent::Dot, ChipStyle::Live)
     }
 
+    /// How many new things there are.
     pub fn count(n: u32) -> Self {
-        Self {
-            content: BadgeContent::Count(n),
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-            tint: BadgeTint::Default,
-        }
+        Self::with_content(BadgeContent::Count(n), ChipStyle::Live)
     }
 
+    /// A short status ("Owner", "Beta").
     pub fn text(s: impl Into<String>) -> Self {
-        Self {
-            content: BadgeContent::Text(s.into()),
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-            tint: BadgeTint::Default,
-        }
+        Self::with_content(BadgeContent::Text(s.into()), ChipStyle::Neutral)
     }
 
-    /// A labeled "kind tag" pill where the colour carries meaning, unlike
-    /// [`Badge::text`]'s notification-red default. Ink is derived against
-    /// `tint` so a pale caller-supplied colour still gets readable text.
-    pub fn pill(label: impl Into<String>, tint: Color) -> Self {
-        Self {
-            content: BadgeContent::Text(label.into()),
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-            tint: BadgeTint::Fixed(tint),
-        }
-    }
-
-    /// A status pill whose colour follows the active theme.
-    pub fn semantic_pill(label: impl Into<String>, tone: BadgeTone) -> Self {
-        Self {
-            content: BadgeContent::Text(label.into()),
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-            tint: BadgeTint::Semantic(tone),
-        }
-    }
-
-    /// Pairs with [`Badge::count`] / [`Badge::text`] without switching to [`Badge::pill`].
+    /// What the badge is: neutral, tinted with a tone, or live.
     #[must_use]
-    pub fn with_tint(mut self, tint: Color) -> Self {
-        self.tint = BadgeTint::Fixed(tint);
+    pub fn style(mut self, style: ChipStyle) -> Self {
+        self.style = style;
         self
-    }
-
-    /// Exposed so tests can pin the kind-tag colour without rendering.
-    pub fn background(&self, theme: &Theme) -> Color {
-        match self.tint {
-            BadgeTint::Default => theme.tokens.colors.semantic.danger,
-            BadgeTint::Fixed(color) => color,
-            BadgeTint::Semantic(BadgeTone::Success) => theme.status_success,
-            BadgeTint::Semantic(BadgeTone::Warning) => theme.tokens.colors.semantic.warning,
-            BadgeTint::Semantic(BadgeTone::Neutral) => theme.text_dim,
-            BadgeTint::Semantic(BadgeTone::Accent) => theme.accent_primary,
-        }
     }
 
     /// `None` when no text should be drawn (the dot variant, or the
@@ -138,63 +314,12 @@ impl Badge {
     /// logic here lets tests pin the contract without rendering.
     pub fn display_text(&self) -> Option<String> {
         match &self.content {
-            BadgeContent::Dot | BadgeContent::Count(0) => None,
+            BadgeContent::Dot | BadgeContent::Modified | BadgeContent::Count(0) => None,
             BadgeContent::Count(n) if *n >= 100 => Some("99+".to_string()),
             BadgeContent::Count(n) => Some(n.to_string()),
             BadgeContent::Text(s) => Some(s.clone()),
         }
     }
-
-    /// Immediate-mode counterpart to the retained badge widget. Shell
-    /// overlays commonly own their own row geometry, so this preserves the
-    /// shared badge's tint, readable ink, and text metrics without forcing a
-    /// throwaway Taffy node for every frame.
-    pub fn paint_at(
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        label: &str,
-        tint: Color,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 || label.is_empty() {
-            return;
-        }
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
-        scene.fill(vello::peniko::Fill::NonZero, transform, tint, None, &shape);
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-        let (tw, th) = text_renderer.measure(label, size, None);
-        text_renderer.draw_text(
-            scene,
-            label,
-            size,
-            theme.tokens.colors.ink_on_any(
-                &[tint],
-                theme.tokens.colors.text_primary,
-                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
-            ),
-            translated(
-                transform,
-                rect.center().x - f64::from(tw) / 2.0,
-                rect.center().y - f64::from(th) / 2.0,
-            ),
-            None,
-        );
-    }
-}
-
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
 }
 
 impl Widget for Badge {
@@ -204,28 +329,17 @@ impl Widget for Badge {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Height is twice the dot radius, so the dot fits perfectly inside a
-        // single-character pill. Text/count width is a rough approximation —
-        // the real width is recomputed in `draw`, so this is just a layout hint.
-        let dot_radius = f64::from(theme.tokens.spacing.s2);
-        let pad_x = f64::from(theme.tokens.spacing.s2);
-        let height = dot_radius * 2.0;
-        let width = match &self.content {
-            BadgeContent::Dot => height,
-            BadgeContent::Count(0) => 0.0,
-            _ => {
-                let s = self.display_text().unwrap_or_default();
-                let approx_char_w = 7.0_f64;
-                // A badge label is a handful of characters ("99+", a short
-                // word), so the char count is well within f64 precision.
-                #[allow(
-                    clippy::cast_precision_loss,
-                    reason = "badge label length is a tiny UI count, well within f64 precision"
-                )]
-                let char_count = s.chars().count() as f64;
-                (char_count * approx_char_w + pad_x * 2.0).max(height)
-            }
+        let metrics = BadgeMetrics::of(theme);
+        let (width, height) = match &self.content {
+            BadgeContent::Dot | BadgeContent::Modified => (metrics.dot, metrics.dot),
+            BadgeContent::Count(0) => (0.0, 0.0),
+            // `auto`: measured in `measure`, pinned in `adjust_layout_style`.
+            _ => (-1.0, metrics.height),
         };
+        if self.metrics.as_ref() != Some(&metrics) {
+            self.dirty = true;
+        }
+        self.metrics = Some(metrics);
         // Layout dimensions are bounded logical-pixel measurements; the
         // f64->f32 narrowing for taffy's `Dimension` cannot lose meaningful
         // precision at UI scale.
@@ -233,27 +347,69 @@ impl Widget for Badge {
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel layout size; f32 precision is sufficient"
         )]
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
-                width: Dimension::length(width as f32),
+                width: if width < 0.0 {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(width as f32)
+                },
                 height: Dimension::length(height as f32),
             },
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    /// A text or count badge is as wide as its measured label.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let (Some(label), Some(metrics)) = (self.display_text(), self.metrics.as_ref()) else {
+            return false;
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel width; f32 precision is sufficient"
+        )]
+        let width = Dimension::length(metrics.width(&label, text) as f32);
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let (Some(label), Some(metrics)) = (self.display_text(), self.metrics.as_ref()) else {
+            return Size::ZERO;
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel size; f32 precision is sufficient"
+        )]
+        Size {
+            width: known.width.unwrap_or(metrics.width(&label, text) as f32),
+            height: known.height.unwrap_or(metrics.height as f32),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Exact equality is the point — this is change detection for the
         // paint cache, not a numerical comparison that needs a tolerance.
         #[allow(
@@ -278,62 +434,53 @@ impl Widget for Badge {
         if matches!(self.content, BadgeContent::Count(0)) {
             return;
         }
-        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
+        let key = theme_key(self.style, theme);
+        let needs_emit =
+            self.dirty || self.cache_rect == Rect::ZERO || self.cache_theme != Some(key);
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(&self.cached, Some(translated(out_transform, dx, dy)));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform.pre_translate((dx, dy).into())),
+            );
             return;
         }
         // mem::take dance — `display_text` borrows &self while `cached` needs &mut self.
         let mut cached = std::mem::take(&mut self.cached);
         cached.reset();
         let transform = Affine::IDENTITY;
-        let bg = self.background(theme);
-
-        match &self.content {
-            BadgeContent::Dot => {
-                let radius = f64::from(theme.tokens.spacing.s2);
-                let circle = Circle::new(self.rect.center(), radius);
-                cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &circle);
+        match self.display_text() {
+            None => {
+                let modified = matches!(self.content, BadgeContent::Modified);
+                paint_dot(
+                    &mut cached,
+                    transform,
+                    self.rect,
+                    self.style,
+                    modified,
+                    theme,
+                );
             }
-            BadgeContent::Count(_) | BadgeContent::Text(_) => {
-                let radius = f64::from(theme.tokens.radii.full);
-                let pill = RoundedRect::from_rect(self.rect, radius);
-                cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
-
-                if let Some(label) = self.display_text() {
-                    let text_size =
-                        renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-                    let (tw, th) = text_renderer.measure(&label, text_size, None);
-                    let tx = self.rect.center().x - f64::from(tw) / 2.0;
-                    let ty = self.rect.center().y - f64::from(th) / 2.0;
-                    text_renderer.draw_text(
-                        &mut cached,
-                        &label,
-                        text_size,
-                        theme.tokens.colors.ink_on_any(
-                            &[bg],
-                            theme.tokens.colors.text_primary,
-                            crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
-                        ),
-                        translated(transform, tx, ty),
-                        None,
-                    );
-                }
+            Some(label) => {
+                paint_badge_pill(
+                    &mut cached,
+                    transform,
+                    self.rect,
+                    &label,
+                    self.style,
+                    text_renderer,
+                    theme,
+                );
             }
         }
         out_scene.append(&cached, Some(out_transform));
         self.cached = cached;
         self.cache_rect = self.rect;
+        self.cache_theme = Some(key);
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
     }
@@ -348,8 +495,13 @@ impl Widget for Badge {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The dot variant and zero-count case have no text and so no value.
-        Some(AccessNode::new(Role::StaticText).with_optional_value(self.display_text()))
+        // The dot variant and zero-count case have no text and so no value;
+        // a modified mark says so.
+        let value = match self.content {
+            BadgeContent::Modified => Some("Modified".to_owned()),
+            _ => self.display_text(),
+        };
+        Some(AccessNode::new(Role::StaticText).with_optional_value(value))
     }
 }
 
@@ -357,6 +509,7 @@ impl Widget for Badge {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::widget::Tone;
     use vello_encoding::DrawTag;
 
     /// COLOR is Vello's tag for a solid-colour fill — circles, rounded
@@ -378,108 +531,148 @@ mod tests {
     }
 
     #[test]
-    fn badge_paints_count_dot_and_pill_variants() {
-        /// Asserting via the Vello encoding is the strongest possible check: if
-        /// any code path leaks a stray fill (pill, dot, glyph), it's caught.
-        fn badge_count_zero_paints_nothing() {
-            let mut b = Badge::count(0);
-            let fills = color_fill_count(&mut b);
-            assert_eq!(
-                fills, 0,
-                "Badge::count(0) must not emit any COLOR draw tags (got {fills})",
-            );
-        }
+    fn badge_paints_count_dot_and_text_variants() {
+        let mut zero = Badge::count(0);
+        assert_eq!(
+            color_fill_count(&mut zero),
+            0,
+            "a zero count paints nothing"
+        );
 
-        fn badge_count_one_hundred_paints_99plus() {
-            assert_eq!(
-                Badge::count(100).display_text().as_deref(),
-                Some("99+"),
-                "values >= 100 must clamp to the \"99+\" overflow string",
-            );
-            // A larger value, so a future "only 100 is special" off-by-one doesn't slip by.
-            assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"),);
-            // The boundary just below: `99` must NOT clamp.
-            assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"),);
-        }
+        assert_eq!(Badge::count(100).display_text().as_deref(), Some("99+"));
+        assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"));
+        assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"));
 
-        /// Exactly one fill — the circle. No pill background, no glyphs, no shadow.
-        fn badge_dot_paints_filled_circle() {
-            let mut b = Badge::dot();
-            let fills = color_fill_count(&mut b);
-            assert_eq!(
-                fills, 1,
-                "Badge::dot() must emit exactly one COLOR draw tag (the \
-             filled circle); got {fills}",
-            );
-        }
+        let mut dot = Badge::dot();
+        assert_eq!(color_fill_count(&mut dot), 1, "a dot is one filled circle");
 
-        fn immediate_pill_uses_the_shared_badge_painter() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            Badge::paint_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 72.0, 20.0),
-                "Owner",
-                theme.tokens.colors.accent[5],
-                &mut tr,
-                &theme,
-            );
-            assert!(
-                scene.encoding().draw_tags.contains(&DrawTag::COLOR),
-                "the immediate badge bridge must paint its pill rather than becoming a no-op"
-            );
-        }
-
-        badge_count_zero_paints_nothing();
-        badge_count_one_hundred_paints_99plus();
-        badge_dot_paints_filled_circle();
-        immediate_pill_uses_the_shared_badge_painter();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        BadgeFace::new(Rect::new(0.0, 0.0, 72.0, 20.0), "Owner")
+            .style(ChipStyle::Tinted(Tone::Info))
+            .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(scene.encoding().draw_tags.contains(&DrawTag::COLOR));
     }
 
     #[test]
-    fn badge_semantics_and_theme_colours() {
-        fn accessibility_reports_static_text_role_and_value() {
-            use crate::a11y::Role;
-            let b = Badge::count(3);
-            let node = Widget::accessibility(&b).expect("badge is not presentational");
-            assert_eq!(node.role, Role::StaticText);
-            assert_eq!(node.value.as_deref(), Some("3"));
-            assert!(!node.state.focusable, "a badge is not focusable");
-
-            // Overflow clamps in the value too.
-            let over = Badge::count(250);
-            assert_eq!(
-                Widget::accessibility(&over).unwrap().value.as_deref(),
-                Some("99+")
+    fn a_text_badge_is_as_wide_as_its_label_at_every_text_scale() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let harness = crate::headless::FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(crate::widget::Row::new().push(Box::new(
+                    Badge::text("Maintainer").style(ChipStyle::Tinted(Tone::Success)),
+                ))),
+                (600, 200),
+                theme.clone(),
             );
-
-            // Dot variant carries no text → no accessible value.
-            let dot = Badge::dot();
-            assert_eq!(Widget::accessibility(&dot).unwrap().value, None);
+            let rect = harness.inspection().root.children[0].rect;
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let (label, line) =
+                text.measure_style("Maintainer", None, &theme.text(TextRole::Caption));
+            assert!(rect[2] > f64::from(label), "{scale}x: {rect:?}");
+            assert!(rect[3] >= f64::from(line), "{scale}x: {rect:?}");
         }
+    }
 
-        fn pill_uses_tint_text_uses_danger_default() {
-            let theme = Theme::dark();
-            let tint = Color::from_rgb8(10, 200, 90);
-            let pill = Badge::pill("ONLINE", tint);
-            assert_eq!(pill.background(&theme), tint, "pill must paint its tint");
-            assert_eq!(pill.display_text().as_deref(), Some("ONLINE"));
+    #[test]
+    fn accessibility_reports_static_text_role_and_value() {
+        use crate::a11y::Role;
+        let b = Badge::count(3);
+        let node = Widget::accessibility(&b).expect("badge is not presentational");
+        assert_eq!(node.role, Role::StaticText);
+        assert_eq!(node.value.as_deref(), Some("3"));
+        assert!(!node.state.focusable, "a badge is not focusable");
+        assert_eq!(
+            Widget::accessibility(&Badge::count(250))
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("99+")
+        );
+        assert_eq!(Widget::accessibility(&Badge::dot()).unwrap().value, None);
+    }
 
-            let plain = Badge::text("NEW");
-            assert_eq!(
-                plain.background(&theme),
-                theme.tokens.colors.semantic.danger,
-                "plain text badge keeps the notification-red default",
-            );
+    #[test]
+    fn a_cached_badge_repaints_when_the_theme_changes() {
+        let mut badge = Badge::count(3);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map = std::collections::HashMap::new();
+        let dark = Theme::dark();
+        let light = Theme::light();
+        let node = badge.build_layout(&mut taffy, &dark, &mut map);
+        let mut text = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                |known, available, _, _, _| badge_measure(known, available),
+            )
+            .unwrap();
+        badge.apply_layout(&taffy, node, Point::ZERO);
+        let presence = crate::presence::PresenceCtx::default();
+        let mut first = Scene::new();
+        badge.draw(&mut first, Affine::IDENTITY, &mut text, &dark, &presence);
+        badge.mark_drawn();
+        let mut second = Scene::new();
+        badge.draw(&mut second, Affine::IDENTITY, &mut text, &light, &presence);
+        assert_ne!(
+            first.encoding().draw_data,
+            second.encoding().draw_data,
+            "a badge drawn dark is repainted for light"
+        );
+    }
 
-            // `with_tint` overrides a count badge's colour too.
-            let counted = Badge::count(3).with_tint(tint);
-            assert_eq!(counted.background(&theme), tint);
+    fn badge_measure(
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+    ) -> Size<f32> {
+        Size {
+            width: known.width.unwrap_or(20.0),
+            height: known.height.unwrap_or(16.0),
         }
+    }
 
-        accessibility_reports_static_text_role_and_value();
-        pill_uses_tint_text_uses_danger_default();
+    #[test]
+    fn dots_and_the_modified_mark_paint_in_their_ink() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let mut live = Scene::new();
+        BadgeFace::dot(rect).paint(&mut live, Affine::IDENTITY, &mut text, &theme);
+        let mut modified = Scene::new();
+        BadgeFace::modified(rect).paint(&mut modified, Affine::IDENTITY, &mut text, &theme);
+        assert!(!live.encoding().draw_tags.is_empty());
+        assert_ne!(live.encoding().draw_data, modified.encoding().draw_data);
+        assert_eq!(
+            Widget::accessibility(&Badge::modified())
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Modified")
+        );
+        // A tall rect does not pad the pill more than its own metrics.
+        let mut short = Scene::new();
+        let mut tall = Scene::new();
+        BadgeFace::new(Rect::new(0.0, 0.0, 60.0, BadgeFace::height(&theme)), "Beta").paint(
+            &mut short,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+        );
+        BadgeFace::new(
+            Rect::new(0.0, -20.0, 60.0, BadgeFace::height(&theme) + 20.0),
+            "Beta",
+        )
+        .paint(&mut tall, Affine::IDENTITY, &mut text, &theme);
+        assert_eq!(
+            short.encoding().resources.glyph_runs.len(),
+            tall.encoding().resources.glyph_runs.len()
+        );
     }
 }

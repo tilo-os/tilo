@@ -285,10 +285,6 @@ impl ModerationApiService {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeping all four wire mutations in one exhaustive authorization match makes role and package-owner checks auditable together"
-    )]
     fn authorize_and_prepare(
         &self,
         request: &SignedModerationMutation,
@@ -315,16 +311,12 @@ impl ModerationApiService {
                             .flatten()
                     })
                     .ok_or(ModerationApiError::NotFound)?;
-                let short_hash =
-                    blake3::hash(format!("{}:{}", package_id, request.request_id).as_bytes())
-                        .to_hex()
-                        .chars()
-                        .take(24)
-                        .collect::<String>();
-                let case_id = format!("case-{short_hash}");
                 Ok((
                     ModerationCase {
-                        case_id,
+                        case_id: registry_types::moderation_case_id(
+                            package_id,
+                            &request.request_id,
+                        ),
                         package_id: package_id.clone(),
                         publisher_pubkey_hex: entry.publisher_pubkey_hex,
                         status: ModerationCaseStatus::Open,
@@ -381,12 +373,7 @@ impl ModerationApiService {
                     return Err(ModerationApiError::Forbidden);
                 }
                 let mut case = self.case(case_id)?.ok_or(ModerationApiError::NotFound)?;
-                case.status = match decision {
-                    ModerationDecision::NeedsInformation => ModerationCaseStatus::NeedsInformation,
-                    ModerationDecision::NoAction => ModerationCaseStatus::ClosedNoAction,
-                    ModerationDecision::Quarantine => ModerationCaseStatus::Quarantined,
-                    ModerationDecision::Restore => ModerationCaseStatus::Restored,
-                };
+                case.status = decision.status();
                 Ok((
                     case,
                     ModerationEventKind::ReviewerDecided {
@@ -515,46 +502,19 @@ fn bounded(value: &str, min: usize, max: usize) -> Result<(), ModerationApiError
     }
 }
 
+/// A log that is whole from its first event: contiguous, chained and signed.
 fn verify_complete_log(events: &[ModerationEvent]) -> Result<(), ModerationApiError> {
-    for (index, event) in events.iter().enumerate() {
-        let expected = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-        if event.sequence != expected {
-            return Err(ModerationApiError::CorruptLog);
-        }
-    }
     registry_types::verify_transparency_chain(events, "")
         .map(|_| ())
         .map_err(|_| ModerationApiError::CorruptLog)
 }
 
+/// The case the log's events for it (in order) leave behind.
 fn rebuild_case<'a>(events: impl Iterator<Item = &'a ModerationEvent>) -> Option<ModerationCase> {
-    let mut case = None;
+    let mut case: Option<ModerationCase> = None;
     for event in events {
-        let current = case.get_or_insert_with(|| ModerationCase {
-            case_id: event.case_id.clone(),
-            package_id: event.package_id.clone(),
-            publisher_pubkey_hex: event.publisher_pubkey_hex.clone(),
-            status: ModerationCaseStatus::Open,
-            opened_at_unix: event.recorded_at_unix,
-            updated_at_unix: event.recorded_at_unix,
-            latest_sequence: event.sequence,
-        });
-        current.updated_at_unix = event.recorded_at_unix;
-        current.latest_sequence = event.sequence;
-        match &event.event {
-            ModerationEventKind::ReviewerDecided { decision, .. } => {
-                current.status = match decision {
-                    ModerationDecision::NeedsInformation => ModerationCaseStatus::NeedsInformation,
-                    ModerationDecision::NoAction => ModerationCaseStatus::ClosedNoAction,
-                    ModerationDecision::Quarantine => ModerationCaseStatus::Quarantined,
-                    ModerationDecision::Restore => ModerationCaseStatus::Restored,
-                }
-            }
-            ModerationEventKind::PublisherAppealed { .. } => {
-                current.status = ModerationCaseStatus::Appealed;
-            }
-            _ => {}
-        }
+        case.get_or_insert_with(|| ModerationCase::opened_by(event))
+            .advance(event);
     }
     case
 }
@@ -606,6 +566,7 @@ mod tests {
         let reviewer = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = RegistryEntry {
             package_id: "so.tilo.notes".into(),
+            kind: registry_types::EntryKind::App,
             name: "Notes".into(),
             description: "Native notes app".into(),
             tagline: "Write together".into(),
@@ -620,17 +581,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: RegistryTarget {
+                        platform: TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

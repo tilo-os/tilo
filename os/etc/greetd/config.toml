@@ -15,15 +15,13 @@
 #
 # Chain: greetd → cage → tilo-greeter → (greetd StartSession) → shell.
 #
-# WLR_NO_HARDWARE_CURSORS=1: force cage/wlroots to composite a SOFTWARE cursor
-# instead of programming the DRM hardware-cursor plane. The virtio-gpu HW
-# cursor renders Y-flipped + offset under qemu's `gtk,gl=on` (the visible
-# sprite is upside-down ~30px off while input lands at the true position), and
-# a leftover HW-cursor plane also bleeds into the session compositor. A
-# software cursor avoids the buggy plane entirely.
+# tilo-cage-session chooses cage's renderer and cursor for the display: the
+# hardware cursor plane on physical GPUs, where wlroots' composited software
+# cursor leaves a trail of old pointer stamps, and a software cursor only on
+# QEMU's virtio-gpu, whose hardware cursor renders Y-flipped and offset.
 [terminal]
 vt = 1
 
 [default_session]
-command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"
+command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"
 user = "greetd"

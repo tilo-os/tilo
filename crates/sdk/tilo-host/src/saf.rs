@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(save_mime_type(&filters, "photo.qvp", known), "image/png");
         assert_eq!(save_mime_type(&filters, "photo", known), "image/png");
         assert_eq!(
-            save_mime_type(&[], "notes.qdoc", known),
+            save_mime_type(&[], "notes.tilo-doc", known),
             "application/octet-stream"
         );
         assert_eq!(

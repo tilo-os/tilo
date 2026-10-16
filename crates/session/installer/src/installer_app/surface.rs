@@ -17,19 +17,17 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    ERASE_CONFIRM_PATH, FILESYSTEMS, FULL_NAME_PATH, HOSTNAME_PATH, InstallMethod, InstallState,
-    InstallerApp, KEYMAP_PATH, LOCALE_PATH, STEP_LABELS, Step, TIMEZONE_PATH, USERNAME_PATH,
-    VerifiedBootState, clear_secret_buffer, prev_step, secret_copy, step_index, valid_full_name,
-    valid_hostname, valid_locale, valid_timezone_name, valid_username, validate_passwords,
-    validate_startup_secret_for,
+    CODECS_DESCRIPTION, FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step,
+    VerifiedBootState, clear_secret_buffer, local_text, prev_step, secret_copy, step_index,
+    valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
+    validate_passwords, validate_startup_secret_for,
 };
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
     SESSION, STORAGE, disk_resource, region_resource,
 };
-use automerge::{AutoCommit, ObjId};
 
 /// A reason an action cannot run now: a stable code and the sentence the
 /// wizard would show.
@@ -183,6 +181,7 @@ impl InstallerApp {
             .with_child(self.storage_resource())
             .with_child(self.account_resource())
             .with_child(self.options_resource())
+            .with_child(self.media_resource())
             .with_child(self.review_resource());
         if let Some(recovery) = self.recovery_resource() {
             root = root.with_child(recovery);
@@ -276,7 +275,7 @@ impl InstallerApp {
     fn keyboard_resource(&self) -> Resource {
         Resource::new(KEYBOARD, "installer.keyboard", "Keyboard layout")
             .with_presentation(ResourcePresentation {
-                detail: Some(self.keymap.trim().to_owned()),
+                detail: Some(self.keymap().trim().to_owned()),
                 ..ResourcePresentation::default()
             })
             .with_action(gate(
@@ -499,7 +498,9 @@ impl InstallerApp {
         };
         Resource::new(ACCOUNT, "installer.account", "Account")
             .with_presentation(ResourcePresentation {
-                detail: (!self.username.trim().is_empty()).then(|| bounded(self.username.trim(), 160)),
+                detail: self.username.with(|name| {
+                    (!name.trim().is_empty()).then(|| bounded(name.trim(), 160))
+                }),
                 ..ResourcePresentation::default()
             })
             .with_action(gate(
@@ -579,9 +580,9 @@ impl InstallerApp {
                     &format!(
                         "{} · {} · {} · {}",
                         self.filesystem(),
-                        self.hostname.trim(),
-                        self.locale.trim(),
-                        self.timezone.trim()
+                        local_text(&self.hostname).trim(),
+                        self.locale().trim(),
+                        self.timezone().trim()
                     ),
                     160,
                 )),
@@ -611,15 +612,6 @@ impl InstallerApp {
                 on_step.clone(),
             ))
             .with_action(gate(
-                toggle(
-                    "set-media-codecs",
-                    "Install media codecs",
-                    "Download RPM Fusion and Cisco codecs once the new system is online",
-                    |enabled| Operation::SetMediaCodecs { enabled },
-                ),
-                on_step.clone(),
-            ))
-            .with_action(gate(
                 typed(
                     "set-hostname",
                     "Set hostname",
@@ -640,7 +632,7 @@ impl InstallerApp {
                     "Choose language and locale",
                     vec![
                         ActionParam::required("locale", ParamType::Text, "Language and locale")
-                            .with_choices(crate::locales::list()),
+                            .with_choices(install_profile_model::locales()),
                     ],
                     |args| Operation::SetLocale {
                         locale: args.text("locale").unwrap_or_default().to_owned(),
@@ -661,6 +653,31 @@ impl InstallerApp {
                     },
                 ),
                 on_step,
+            ))
+    }
+
+    fn media_resource(&self) -> Resource {
+        Resource::new(MEDIA, "installer.media", "More video and audio formats")
+            .with_presentation(ResourcePresentation {
+                detail: Some(
+                    if self.codecs {
+                        "chosen: installed once the new system is online"
+                    } else {
+                        "not chosen"
+                    }
+                    .to_owned(),
+                ),
+                ..ResourcePresentation::default()
+            })
+            .with_action(gate(
+                toggle(
+                    "set-media-codecs",
+                    "Install media codecs",
+                    CODECS_DESCRIPTION,
+                    |enabled| Operation::SetMediaCodecs { enabled },
+                )
+                .with_description(CODECS_DESCRIPTION),
+                self.off_step(Step::Media),
             ))
     }
 
@@ -815,8 +832,6 @@ impl InstallerApp {
     /// sentence an external caller receives.
     pub(super) fn invoke_control(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         resource: &str,
         action: &str,
         mut args: Map<String, Value>,
@@ -854,24 +869,19 @@ impl InstallerApp {
             // Handlers set the status or notice the wizard shows; the
             // returned error only matters to a caller that cannot see it.
             Ok(admitted) => {
-                let _ = self.apply_encoded(&admitted.encoded, state, root);
+                let _ = self.apply_encoded(&admitted.encoded);
             }
             Err(refusal) => self.set_status(&refusal.message),
         }
     }
 
     /// Decode and apply one encoded installer operation.
-    pub(super) fn apply_encoded(
-        &mut self,
-        encoded: &EncodedAction,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> Applied {
+    pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Applied {
         if encoded.type_id != OPERATION_TYPE {
             return Err(format!("not an installer operation: {}", encoded.type_id));
         }
         let operation = Operation::decode(&encoded.payload)?;
-        self.apply(operation, state, root)
+        self.apply(operation)
     }
 
     /// Apply one operation. Every door ends here, after resolution,
@@ -887,7 +897,7 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "one match arm per operation keeps each handler next to its siblings"
     )]
-    pub fn apply(&mut self, operation: Operation, state: &mut AutoCommit, root: &ObjId) -> Applied {
+    pub fn apply(&mut self, operation: Operation) -> Applied {
         let done = || Ok(ActionOutput::default());
         match operation {
             Operation::Status => Ok(ActionOutput {
@@ -920,8 +930,7 @@ impl InstallerApp {
                 if layouts::by_display_name(layout.trim()).is_none() {
                     return Err(format!("Unknown keyboard layout {layout:?}"));
                 }
-                ui::put_text_diffed(state, root, KEYMAP_PATH, layout.trim());
-                layout.trim().clone_into(&mut self.keymap);
+                self.keymap.set(layout.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -987,8 +996,7 @@ impl InstallerApp {
                     );
                 }
                 if self.install_method != method {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
@@ -1000,10 +1008,8 @@ impl InstallerApp {
             }
             Operation::RefreshDisks => {
                 self.require_step(Step::Disk)?;
-                Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                 let disks = self.backend.read_disks();
                 self.refresh_disks_with(disks);
-                self.ensure_disk_paths(state, root);
                 done()
             }
             Operation::SelectDisk { device } => {
@@ -1021,8 +1027,7 @@ impl InstallerApp {
                     return Err(format!("{device} cannot be an installation target"));
                 }
                 if self.selected_disk != Some(index) {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
@@ -1042,8 +1047,7 @@ impl InstallerApp {
                     return Err("That unallocated region is not offered; refresh disks".into());
                 }
                 if self.selected_guided_extent != Some(index) {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = Some(index);
                     self.status.clear();
                     self.dirty_structure = true;
@@ -1072,12 +1076,10 @@ impl InstallerApp {
                     );
                 }
                 if let Some(username) = username {
-                    ui::put_text_diffed(state, root, USERNAME_PATH, &username);
-                    self.username = username;
+                    self.username.set(username);
                 }
                 if let Some(full_name) = full_name {
-                    ui::put_text_diffed(state, root, FULL_NAME_PATH, &full_name);
-                    self.full_name = full_name;
+                    self.full_name.set(full_name);
                 }
                 self.status.clear();
                 self.dirty_structure = true;
@@ -1160,7 +1162,7 @@ impl InstallerApp {
                 done()
             }
             Operation::SetMediaCodecs { enabled } => {
-                self.require_step(Step::Options)?;
+                self.require_step(Step::Media)?;
                 self.codecs = enabled;
                 self.dirty_structure = true;
                 done()
@@ -1170,8 +1172,7 @@ impl InstallerApp {
                 if !valid_hostname(&hostname) {
                     return Err("Enter a valid hostname (letters, digits, hyphens)".into());
                 }
-                ui::put_text_diffed(state, root, HOSTNAME_PATH, hostname.trim());
-                hostname.trim().clone_into(&mut self.hostname);
+                self.hostname.set(hostname.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -1180,8 +1181,7 @@ impl InstallerApp {
                 if !valid_locale(locale.trim()) {
                     return Err("Choose a supported language and locale from the list".into());
                 }
-                ui::put_text_diffed(state, root, LOCALE_PATH, locale.trim());
-                locale.trim().clone_into(&mut self.locale);
+                self.locale.set(locale.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -1191,8 +1191,7 @@ impl InstallerApp {
                 if !valid_timezone_name(&timezone) || !self.timezones.contains(&timezone) {
                     return Err("Choose a valid time zone from the list".into());
                 }
-                ui::put_text_diffed(state, root, TIMEZONE_PATH, &timezone);
-                self.timezone = timezone;
+                self.timezone.set(timezone);
                 self.dirty_structure = true;
                 done()
             }
@@ -1213,9 +1212,8 @@ impl InstallerApp {
                 }
                 // The door verified the typed phrase. Reflect it into the
                 // Review field so the screen and the launch agree.
-                ui::put_text_diffed(state, root, ERASE_CONFIRM_PATH, &target);
-                self.erase_confirmation = target;
-                self.begin_install(state, root);
+                self.set_erase_confirmation(target);
+                self.begin_install();
                 if self.install_launched {
                     done()
                 } else {

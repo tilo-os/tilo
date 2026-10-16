@@ -37,6 +37,35 @@ GNUPGHOME="$gpg_home" gpg --batch --armor --export "$fingerprint" \
     > "$fixture/tilo-rpm-signing-key.asc"
 printf '%s\n' "$fingerprint" > "$fixture/tilo-rpm-signing-key.fingerprint"
 "$repo_root/dist/rpm/make-repo-file.sh" 0.1.5 "$fixture/tilo-fedora-44.repo"
+# Retain the public broker provenance pair, using synthetic immutable RPM bytes.
+python3 - "$repo_root" "$fixture" "$fingerprint" <<'PYFIXTURE'
+import importlib.util
+import json
+import os
+from pathlib import Path
+import struct
+import sys
+root, directory, fingerprint = sys.argv[1:]
+directory = Path(directory)
+spec = importlib.util.spec_from_file_location('broker', Path(root) / 'dist/rpm/sign-rpms-broker.py')
+broker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(broker)
+for file in directory.glob('*.rpm'):
+    file.write_bytes(bytes.fromhex('edabeedb') + bytes(92) + broker.MAGIC + bytes(4) + struct.pack('>II', 0, 0) + broker.MAGIC + b'fixture payload')
+env = dict(os.environ, GITHUB_REPOSITORY='tilo/tilo', GITHUB_EVENT_NAME='push',
+           GITHUB_REF='refs/tags/desktop-v0.1.5', GITHUB_SHA=os.environ.get('GITHUB_SHA', 'b' * 40),
+           GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '123'),
+           GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'),
+           TILO_RPM_ARCH='amd64', TILO_RPM_SIGNING_FINGERPRINT=fingerprint,
+           ACTIONS_ID_TOKEN_REQUEST_URL='test-only-not-fetched', ACTIONS_ID_TOKEN_REQUEST_TOKEN='test-only')
+request = broker.request_for(directory, env)
+request_path = directory / 'tilo-rpm-signing-request-amd64.json'
+request_path.write_text(json.dumps(request) + '\n')
+receipt = {'schema': 1, 'request_sha256': broker.digest(request_path), 'fingerprint': fingerprint,
+           'signed_sha256': {p.name: broker.digest(p) for p in directory.glob('*.rpm')}}
+(directory / 'tilo-rpm-signing-receipt-amd64.json').write_text(json.dumps(receipt) + '\n')
+PYFIXTURE
+
 (cd "$fixture" && sha256sum \
     tilo-rpm-signing-key.asc > tilo-rpm-signing-key.asc.sha256 && sha256sum \
     tilo-rpm-signing-key.fingerprint > tilo-rpm-signing-key.fingerprint.sha256 && sha256sum \
@@ -64,7 +93,7 @@ SH
 chmod 0755 "$fake_bin/rpmkeys"
 verify="$repo_root/dist/ci/verify-release-artifacts.sh"
 run_verify() {
-    PATH="$fake_bin:$PATH" TILO_FAKE_KEY_ID="$key_id" \
+    PATH="$fake_bin:$PATH" TILO_FAKE_KEY_ID="$key_id" TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
         "$verify" "$1" 0.1.5 amd64
 }
 run_verify "$fixture" >/dev/null
@@ -115,8 +144,12 @@ printf '\nbaseurl=https://attacker.invalid/repo\n' >> "$altered_repo/tilo-fedora
 (cd "$altered_repo" && sha256sum tilo-fedora-44.repo > tilo-fedora-44.repo.sha256)
 expect_reject run_verify "$altered_repo"
 
+expect_reject env -u TILO_RPM_SIGNING_FINGERPRINT PATH="$fake_bin:$PATH" \
+    TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 expect_reject env TILO_FAKE_RPM_MODE=unsigned PATH="$fake_bin:$PATH" \
+    TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
     TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 expect_reject env TILO_FAKE_RPM_MODE=wrong PATH="$fake_bin:$PATH" \
+    TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
     TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 printf 'RPM signing trust-contract negatives: PASS\n'

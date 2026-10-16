@@ -379,7 +379,7 @@ mod tests {
         // Phase `v1_migrates_without_inventing_wifi_or_conflicts`.
         {
             let decoded = RoamingProvenance::from_slice(
-                br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.theme","device_id":"laptop","counter":4}]}"#,
+                br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.mode","device_id":"laptop","counter":4}]}"#,
             )
             .unwrap();
             assert_eq!(decoded.schema_version, SCHEMA_VERSION);
@@ -403,7 +403,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 generated_unix_ms: 9,
                 settings: vec![SettingResolution {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     winner: origin("b", 3),
                     alternatives: vec![origin("c", 1), origin("a", 2)],
                 }],

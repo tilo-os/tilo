@@ -6,6 +6,7 @@ BOOTC="${TILO_IMAGE_TRUST_BOOTC:-/usr/bin/bootc}"
 TRUST_DIR="${TILO_IMAGE_TRUST_DIR:-/var/lib/tilo/image-trust}"
 GATE="${TILO_IMAGE_TRUST_GATE:-/usr/libexec/tilo-image-trust-staged}"
 UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-/run/tilo-verified-update.lock}"
+SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor}"
 
 # One lock spans download, identity verification, rollback-floor publication,
 # and activation. It is taken even before owner trust is armed: `tilo-image-trust
@@ -26,7 +27,14 @@ expected_lock="$(id -u):600:1"
 }
 flock -x "$update_lock_fd"
 
-if [ ! -e "$TRUST_DIR/required" ] && [ ! -L "$TRUST_DIR/required" ]; then
+board=0
+if "$SUCCESSOR" applicable; then
+  board=1
+else
+  result=$?
+  [ "$result" -eq 3 ] || exit "$result"
+fi
+if [ "$board" -eq 0 ] && [ ! -e "$TRUST_DIR/required" ] && [ ! -L "$TRUST_DIR/required" ]; then
   exec "$BOOTC" upgrade "$@"
 fi
 
@@ -44,12 +52,39 @@ for argument in "$@"; do
     *) common+=("$argument") ;;
   esac
 done
-"$BOOTC" upgrade --download-only "${common[@]}"
-if "$GATE" --require-staged; then
+command=upgrade
+gate_arguments=(--require-staged)
+if [ "$board" -eq 1 ]; then
+  now="$("$GATE" --trusted-time)"
+  if selected="$("$SUCCESSOR" "$now")"; then
+    readarray -t fields <<<"$selected"
+    [ "${#fields[@]}" -eq 4 ] \
+      && [[ "${fields[0]}" =~ ^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]] \
+      && [[ "${fields[1]}" =~ ^[1-9][0-9]*$ ]] \
+      && [[ "${fields[2]}" =~ ^[0-9a-f]{40}$ ]] \
+      && [[ "${fields[3]}" =~ ^[1-9][0-9]*$ ]] || {
+      echo 'tilo-verified-update: malformed verified successor result' >&2
+      exit 1
+    }
+  else
+    result=$?
+    if [ "$result" -eq 3 ]; then
+      echo 'tilo-verified-update: no newer verified board release'
+      exit 0
+    fi
+    exit "$result"
+  fi
+  command=switch
+  gate_arguments=(--successor "${fields[0]##*@}" "${fields[1]}" "${fields[3]}" "$update_lock_fd" "$UPDATE_LOCK")
+  "$BOOTC" switch --download-only "${common[@]}" "${fields[0]}"
+else
+  "$BOOTC" upgrade --download-only "${common[@]}"
+fi
+if "$GATE" "${gate_arguments[@]}"; then
   :
 else
   result=$?
-  if [ "$result" -eq 3 ]; then
+  if [ "$result" -eq 3 ] && [ "$board" -eq 0 ]; then
     echo 'tilo-verified-update: no new deployment to activate'
     exit 0
   fi
@@ -57,4 +92,4 @@ else
 fi
 activate=(--from-downloaded)
 [ "$apply" -eq 0 ] || activate+=(--apply)
-"$BOOTC" upgrade "${activate[@]}" "${common[@]}"
+"$BOOTC" "$command" "${activate[@]}" "${common[@]}"

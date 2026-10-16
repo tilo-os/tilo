@@ -5,7 +5,7 @@
 //! encrypted with MLS application messages but under per-epoch *content
 //! keys* derived from the MLS exporter ([`content`]), so every member —
 //! including one added later — can read the channel's whole history. The
-//! envelope's metadata (author, artifact, `op_class`, timestamp, seq) stays
+//! envelope's metadata (author, artifact, `kind`, timestamp, seq) stays
 //! cleartext so the broker routes by artifact and filters by op class
 //! without decrypting.
 //!
@@ -49,19 +49,6 @@
 //! Welcome/commit/key-history bytes; [`GovernanceJournal`] persists its
 //! targeted delivery outbox.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod content;
 pub mod crypto;
 pub mod endpoint;
@@ -70,7 +57,9 @@ pub mod governance;
 pub mod group;
 pub mod member;
 pub mod persistence;
+pub mod signer;
 pub mod steward;
+pub mod store;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
@@ -82,7 +71,9 @@ pub use governance::{
 pub use group::{ChannelGroup, MemberAddition};
 pub use member::{Access, ChannelMember, MemberEvent};
 pub use persistence::VaultKey;
+pub use signer::{DeviceSigner, SignFuture};
 pub use steward::{ChannelSteward, Outgoing, Reconciled};
+pub use store::{FileStewardStore, MemoryStewardStore, StewardRecord, StewardStore};
 // Re-exported so callers can take/return KeyPackage values without
 // pulling openmls into their own Cargo.toml — a version-pinning
 // hazard if openmls reshapes `KeyPackage`, flagged in the README.

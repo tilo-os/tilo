@@ -1,0 +1,88 @@
+{
+  "before_commit": "ae67fc35d70b479b9a24a8c3a1426e289cbc6a12",
+  "after_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+  "render_backend": "Vulkan / Mesa lavapipe (CPU)",
+  "capture_matrix": "12 before / 12 after",
+  "artifacts": [
+    {
+      "file_name": "power-details-before-large-text.png",
+      "file_id": "file_00000000d3ac81f7aa714b3de028ba77",
+      "library_file_id": "libfile_cef23983575481919c54a253574a1fa8",
+      "file_size_bytes": 66588,
+      "source_commit": "ae67fc35d70b479b9a24a8c3a1426e289cbc6a12",
+      "width": 800,
+      "height": 700,
+      "sha256": "eb2272f4867c15b8cfd5373e75e823c3183f1a9097fc737a6be192ae1e0a2d2c"
+    },
+    {
+      "file_name": "power-tooltip-before-large-text.png",
+      "file_id": "file_00000000396881f591fcf11f05677c70",
+      "library_file_id": "libfile_2e77e09f65d881919d4961aaffd07d86",
+      "file_size_bytes": 22579,
+      "source_commit": "ae67fc35d70b479b9a24a8c3a1426e289cbc6a12",
+      "width": 800,
+      "height": 700,
+      "sha256": "98feadf67e653fdbe7be5f6f0f65c7ed127795b05d8f50ccd6781c9a3fad5406"
+    },
+    {
+      "file_name": "power-details-after-large-text.png",
+      "file_id": "file_00000000dce081f7a48e87008e13a33d",
+      "library_file_id": "libfile_44766b2c3cc48191a70d755bab29c2c4",
+      "file_size_bytes": 72466,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 800,
+      "height": 700,
+      "sha256": "ebaf110de268da3792bb92d2f297350da026e26c5307d309c0bb9e150da2f308"
+    },
+    {
+      "file_name": "power-tooltip-after-large-text.png",
+      "file_id": "file_0000000024c881f58abd327cab5ea933",
+      "library_file_id": "libfile_ae28d5b1cf74819185ec2c880bafe01e",
+      "file_size_bytes": 34110,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 800,
+      "height": 700,
+      "sha256": "b76f2d31365b46669ce1610d7632a3ab2d1be0f3c308c0556d7f01930f6a3555"
+    },
+    {
+      "file_name": "power-details-after-light.png",
+      "file_id": "file_00000000e38081f7b98a41ed4c74ffca",
+      "library_file_id": "libfile_bbf23a3c50288191a685f6450a27c08e",
+      "file_size_bytes": 59803,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 1280,
+      "height": 800,
+      "sha256": "84b66ada901b631aba17f0097c46e56e27a28d35609cbb4a6379e8f152b0c715"
+    },
+    {
+      "file_name": "power-details-after-high-contrast.png",
+      "file_id": "file_00000000186481f794f3181cd91627a9",
+      "library_file_id": "libfile_0681f7b91884819191e0eff5ba6f5734",
+      "file_size_bytes": 57341,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 1280,
+      "height": 800,
+      "sha256": "4461b009cebb4adbb54835f4c6d6d6b44d19714d59f241f863b330ab51017b75"
+    },
+    {
+      "file_name": "power-details-after-narrow.png",
+      "file_id": "file_00000000f25881f7989ade6509c054bf",
+      "library_file_id": "libfile_af48c285a2348191b200ed74c0ce54e9",
+      "file_size_bytes": 42041,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 320,
+      "height": 480,
+      "sha256": "038f55c6e69e9db37383d51ac139326d0d0e4f6575a4d97f43b06541a942d4fc"
+    },
+    {
+      "file_name": "power-details-after-ui-text-scaled.png",
+      "file_id": "file_00000000194081f5950726ba7b99ec3b",
+      "library_file_id": "libfile_e342f6c4ba408191809f913543a0915e",
+      "file_size_bytes": 82468,
+      "source_commit": "2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9",
+      "width": 1280,
+      "height": 800,
+      "sha256": "92bccdc8c63ef6e32cc6ea2b4cfa9eef57500b368057e7d58f70edda93d1d864"
+    }
+  ]
+}

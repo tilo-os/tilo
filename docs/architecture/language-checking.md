@@ -70,9 +70,15 @@ grammar is additive, not the foundation.
 ## Integration
 
 The shared TextInput baseline is now implemented: checking defaults on, follows
-the session or field language, uses persistent installed Hunspell workers with
-an embedded in-process English fallback, paints shaped/wrapped squiggles, and
-offers corrections plus "Add to dictionary" on right-click. Untouched inactive
+the session or field language, checks against the installed Hunspell
+dictionaries in-process (parsed by `spellbook`; the launcher's system read
+profile exposes `/usr/share/hunspell` and `/usr/share/myspell` to every
+sandboxed app, so there is no spelling service or helper process) with an
+embedded English word list, paints shaped/wrapped squiggles, and offers
+corrections plus "Add to dictionary" on right-click. Once the word under the
+caret has rested for a few hundred milliseconds — a pause at the end of a
+word, or the caret moved back into an earlier one — a misspelled word shows
+its best suggestion in a chip that a click applies. Untouched inactive
 fields do no checking; edits are debounced. Structured fields opt out by semantic
 `TextInputKind`, and shared search, number, code, secret, and editable-name
 widgets set that intent automatically. Common offline dictionaries ship in the

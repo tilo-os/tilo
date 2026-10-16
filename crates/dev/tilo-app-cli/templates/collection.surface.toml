@@ -1,0 +1,26 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "generated.items"
+label = "Items"
+version = 1
+fields = [
+  { path = "items", type = "Collection<Item>", stored = "collection" },
+  { path = "items.*.title", type = "String", label = true },
+  { path = "items.*.done", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "undoable"
+params = [
+  { name = "item", required = true, schema = { type = "string" } },
+]
+

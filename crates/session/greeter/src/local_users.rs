@@ -1,9 +1,9 @@
 //! Conservative discovery of the account to present on a personal Tilo device.
 //!
 //! The greeter may collapse to a one-field, passcode-only form only when the
-//! machine has exactly one ordinary interactive local account. Ambiguity is a
-//! security boundary: zero or multiple candidates return `None`, leaving the
-//! username field visible instead of guessing who is signing in.
+//! machine has exactly one ordinary interactive local account. With several it
+//! lists them to choose from; with none, or an account database it cannot read
+//! with certainty, it asks for a username instead of guessing.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,21 +18,50 @@ pub struct LoginUser {
     pub display_name: String,
 }
 
-/// Discover the sole ordinary interactive account from the host account
-/// database. Any read or parsing ambiguity keeps the two-field fallback.
-pub fn discover_default_login_user() -> Option<LoginUser> {
-    discover_login_user(
+/// Discover the ordinary interactive accounts from the host account
+/// database, in database order. Any read or parsing ambiguity returns none,
+/// which keeps the typed-username fallback.
+pub fn discover_login_users() -> Vec<LoginUser> {
+    discover_in(
         Path::new("/etc/passwd"),
         Path::new("/etc/login.defs"),
         Path::new("/etc/shells"),
     )
 }
 
-fn discover_login_user(passwd: &Path, login_defs: &Path, shells: &Path) -> Option<LoginUser> {
-    let passwd = std::fs::read_to_string(passwd).ok()?;
+fn discover_in(passwd: &Path, login_defs: &Path, shells: &Path) -> Vec<LoginUser> {
+    let Ok(passwd) = std::fs::read_to_string(passwd) else {
+        return Vec::new();
+    };
     let login_defs = std::fs::read_to_string(login_defs).unwrap_or_default();
     let shells = std::fs::read_to_string(shells).ok();
-    select_login_user(&passwd, &login_defs, shells.as_deref())
+    select_login_users(&passwd, &login_defs, shells.as_deref()).unwrap_or_default()
+}
+
+/// The account last signed in to on this machine, remembered by the greeter
+/// in its own state directory. Only a name that is one of `users` counts.
+pub fn remembered_user(users: &[LoginUser]) -> Option<usize> {
+    let name = std::fs::read_to_string(last_user_path()?).ok()?;
+    let name = name.trim();
+    users.iter().position(|user| user.username == name)
+}
+
+/// Remember `username` as the account to offer first next time.
+pub fn remember_user(username: &str) {
+    let Some(path) = last_user_path() else { return };
+    if let Some(dir) = path.parent()
+        && std::fs::create_dir_all(dir).is_ok()
+    {
+        let _ = std::fs::write(&path, username);
+    }
+}
+
+fn last_user_path() -> Option<std::path::PathBuf> {
+    Some(
+        tilo_paths::xdg::state_home()?
+            .join("tilo-greeter")
+            .join("last-user"),
+    )
 }
 
 fn uid_bounds(login_defs: &str) -> (u32, u32) {
@@ -99,13 +128,25 @@ fn safe_display_name(gecos: &str, username: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn select_login_user(passwd: &str, login_defs: &str, shells: Option<&str>) -> Option<LoginUser> {
+    let mut users = select_login_users(passwd, login_defs, shells)?;
+    (users.len() == 1).then(|| users.remove(0))
+}
+
+/// Every ordinary interactive account, or `None` when the database is
+/// malformed (a reason not to guess at all).
+fn select_login_users(
+    passwd: &str,
+    login_defs: &str,
+    shells: Option<&str>,
+) -> Option<Vec<LoginUser>> {
     let (uid_min, uid_max) = uid_bounds(login_defs);
     if uid_min > uid_max {
         return None;
     }
     let allowed_shells = login_shells(shells);
-    let mut candidate = None;
+    let mut candidates = Vec::new();
     for line in passwd.lines().filter(|line| !line.trim().is_empty()) {
         let mut fields = line.split(':');
         let username = fields.next()?;
@@ -132,15 +173,12 @@ fn select_login_user(passwd: &str, login_defs: &str, shells: Option<&str>) -> Op
         {
             continue;
         }
-        let found = LoginUser {
+        candidates.push(LoginUser {
             username: username.to_owned(),
             display_name: safe_display_name(gecos, username),
-        };
-        if candidate.replace(found).is_some() {
-            return None;
-        }
+        });
     }
-    candidate
+    Some(candidates)
 }
 
 #[cfg(test)]
@@ -172,6 +210,15 @@ mod tests {
             let multiple = "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
                             bob:x:1001:1001:Bob:/home/bob:/bin/zsh\n";
             assert_eq!(select_login_user(multiple, "", Some(SHELLS)), None);
+            let listed = select_login_users(multiple, "", Some(SHELLS)).unwrap();
+            assert_eq!(
+                listed
+                    .iter()
+                    .map(|u| u.username.as_str())
+                    .collect::<Vec<_>>(),
+                ["alice", "bob"],
+                "several accounts are listed to choose from, in database order"
+            );
         }
         // Phase `uid_bounds_and_shell_allowlist_are_enforced`.
         {

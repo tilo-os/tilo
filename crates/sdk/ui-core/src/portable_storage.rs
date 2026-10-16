@@ -274,10 +274,10 @@ mod tests {
         assert_eq!(status.committed.unwrap().1.bytes, vec![2]);
     }
     #[test]
-    fn pending_summaries_and_captured_heads_match_the_copying_forms() {
+    fn pending_writes_capture_heads_bound_to_their_exact_bytes() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        assert!(!cache.has_pending_writes());
+        assert!(cache.pending_writes().is_empty());
         let key = StorageKey::Record {
             package: "app".into(),
             workspace: "room".into(),
@@ -295,16 +295,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(cache.has_pending_writes());
         let writes = cache.pending_writes();
-        let mut sizes = cache.pending_write_sizes();
-        sizes.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
-        let mut expected: Vec<_> = writes
-            .iter()
-            .map(|w| (w.key.clone(), w.value.bytes.len()))
-            .collect();
-        expected.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
-        assert_eq!(sizes, expected);
+        assert_eq!(writes.len(), 2);
         let record = writes.iter().find(|w| w.key == key).unwrap();
         assert_eq!(record.document_heads(), Some(Ok(doc.get_heads())));
         let mut altered = record.clone();
@@ -319,46 +311,7 @@ mod tests {
         for write in &writes {
             cache.acknowledge(write, Ok(())).unwrap();
         }
-        assert!(!cache.has_pending_writes());
-        assert!(cache.pending_write_sizes().is_empty());
-    }
-    #[test]
-    fn status_meta_and_committed_borrow_match_the_copying_status() {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Admission {
-            workspace: "room".into(),
-        };
-        assert_eq!(cache.status_meta(&key), None);
-        assert_eq!(cache.with_committed(&key, |_, _| ()), None);
-        cache.put(key.clone(), vec![1], None).unwrap();
-        let first = cache.pending_writes().remove(0);
-        assert_eq!(cache.with_committed(&key, |_, _| ()), None);
-        cache.put(key.clone(), vec![2], None).unwrap();
-        cache.acknowledge(&first, Ok(())).unwrap();
-        let second = cache.pending_writes().remove(0);
-        cache.acknowledge(&second, Err("quota".into())).unwrap();
-        let status = cache.status(&key).unwrap();
-        let meta = cache.status_meta(&key).unwrap();
-        assert_eq!(
-            (
-                meta.revision,
-                meta.durable,
-                meta.error.clone(),
-                meta.committed_revision
-            ),
-            (
-                status.revision,
-                status.durable,
-                status.error.clone(),
-                status.committed.as_ref().map(|c| c.0)
-            )
-        );
-        assert_eq!(
-            cache.with_committed(&key, |revision, value| (revision, value.bytes.clone())),
-            status
-                .committed
-                .map(|(revision, value)| (revision, value.bytes))
-        );
+        assert!(cache.pending_writes().is_empty());
     }
     #[test]
     fn cache_flush_requires_matching_durable_ack_and_retains_failed_bytes() {
@@ -538,14 +491,6 @@ pub struct StorageStatus {
     pub error: Option<String>,
     pub committed: Option<(u64, CachedBytes)>,
 }
-/// [`StorageStatus`] without the committed bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StorageMeta {
-    pub revision: u64,
-    pub durable: bool,
-    pub error: Option<String>,
-    pub committed_revision: Option<u64>,
-}
 // Bind derived metadata to exact serialized bytes, including across queued
 // snapshots whose public PendingWrite fields callers may subsequently modify.
 #[derive(Clone, Debug)]
@@ -674,18 +619,6 @@ impl PortableStorage {
             .borrow_mut()
             .owners
             .insert((package.into(), workspace.into()), Rc::downgrade(owner));
-    }
-    /// Every live record owner of `workspace` in this cache: the stores the
-    /// page's mounts share, for a host replicating the room itself.
-    pub fn record_stores(&self, workspace: &str) -> Vec<crate::record::RecordStore> {
-        self.cache
-            .borrow()
-            .owners
-            .iter()
-            .filter(|((_, home), _)| home == workspace)
-            .filter_map(|(_, owner)| owner.upgrade())
-            .map(crate::record::RecordStore::from_owner)
-            .collect()
     }
     pub fn namespace(&self) -> &ProfileNamespace {
         &self.cache.namespace
@@ -852,25 +785,6 @@ impl PortableStorage {
         }
         Ok(())
     }
-    /// Whether any value awaits host acknowledgement, without copying the
-    /// queued values (`pending_writes` copies every queued document).
-    pub fn has_pending_writes(&self) -> bool {
-        self.cache
-            .borrow()
-            .entries
-            .values()
-            .any(|entry| !entry.durable)
-    }
-    /// Key and byte length of every queued value, without copying the bytes.
-    pub fn pending_write_sizes(&self) -> Vec<(StorageKey, usize)> {
-        self.cache
-            .borrow()
-            .entries
-            .iter()
-            .filter(|(_, entry)| !entry.durable)
-            .map(|(key, entry)| (key.clone(), entry.current().bytes.len()))
-            .collect()
-    }
     pub fn pending_writes(&self) -> Vec<PendingWrite> {
         self.cache
             .borrow()
@@ -952,32 +866,6 @@ impl PortableStorage {
             }
         }
         Ok(())
-    }
-    /// [`Self::status`] without copying the committed bytes: hot readers
-    /// (health reports, delivery checks) run several times per frame and the
-    /// admission journal grows with the session.
-    pub fn status_meta(&self, key: &StorageKey) -> Option<StorageMeta> {
-        self.cache
-            .borrow()
-            .entries
-            .get(key)
-            .map(|entry| StorageMeta {
-                revision: entry.revision,
-                durable: entry.durable,
-                error: entry.error.clone(),
-                committed_revision: entry.committed.as_ref().map(|v| v.revision),
-            })
-    }
-    /// Borrow the committed value (revision and bytes) without copying it.
-    /// The closure must not re-enter this storage.
-    pub fn with_committed<R>(
-        &self,
-        key: &StorageKey,
-        read: impl FnOnce(u64, &CachedBytes) -> R,
-    ) -> Option<R> {
-        let cache = self.cache.borrow();
-        let committed = cache.entries.get(key)?.committed.as_ref()?;
-        Some(read(committed.revision, &committed.value))
     }
     pub fn status(&self, key: &StorageKey) -> Option<StorageStatus> {
         self.cache
@@ -1178,7 +1066,8 @@ impl PrivateActionsCapture {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_tests {
     use super::*;
     use crate::host_worker::private_actions::SenderStorageCode as Code;
@@ -1219,7 +1108,8 @@ mod private_capture_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_transfer_tests {
     use super::*;
     #[test]
@@ -1401,7 +1291,8 @@ impl PortableStorage {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod private_physical_current_tests {
     use super::*;
     use crate::host_worker::private_actions::{SenderStorageCode, committed_test_fixture};

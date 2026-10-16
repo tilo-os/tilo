@@ -32,32 +32,10 @@ use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
+use crate::widget::window_header::HistoryControl;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
-pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
-pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
-
-#[expect(
-    clippy::expect_used,
-    reason = "fixed nullary View payload serializes infallibly"
-)]
-pub(crate) fn search_resource() -> Resource {
-    Resource::new(
-        SEARCH_RESOURCE,
-        "tilo.host.search",
-        I18nManager::lookup_plain("standalone-search-title"),
-    )
-    .with_action(
-        ActionSpec::operation(
-            "open",
-            I18nManager::lookup_plain("standalone-search-title"),
-            OperationKind::View,
-            SEARCH_OPERATION,
-            &(),
-        )
-        .expect("unit Search operation serializes"),
-    )
-}
+use crate::search::search_resource;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
@@ -126,6 +104,63 @@ pub(crate) struct HostHistoryLayout {
     content: NodeId,
 }
 
+impl HostHistoryLayout {
+    /// Whether `node` is History chrome: a button, the pane or the preview.
+    pub(crate) fn contains(&self, taffy: &TaffyTree<()>, node: NodeId) -> bool {
+        let mut pending: Vec<_> = self.toolbar.into_iter().collect();
+        pending.extend(self.search);
+        pending.extend(self.pane);
+        pending.extend(self.preview);
+        while let Some(next) = pending.pop() {
+            if next == node {
+                return true;
+            }
+            if let Ok(children) = taffy.children(next) {
+                pending.extend(children);
+            }
+        }
+        false
+    }
+}
+
+/// The document History browses: the preferred (focused or root) binding,
+/// else the one binding laid out, else the active record. Two bindings laid
+/// out at once are ambiguous, as is an open record set with none active.
+pub(crate) fn capture_history_target(
+    preferred: Option<crate::bound_dispatch::CallbackBinding>,
+    bindings: &crate::bound_dispatch::BoundNodeMap,
+    laid_out: impl IntoIterator<Item = NodeId>,
+    records: Option<&crate::record::RecordSet>,
+    document_identity: uuid::Uuid,
+) -> Result<HistoryTarget, HistoryError> {
+    let mut binding = preferred;
+    if binding.is_none() {
+        for node in laid_out {
+            let Some(candidate) = bindings.binding_for(node) else {
+                continue;
+            };
+            if binding
+                .as_ref()
+                .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
+            {
+                return Err(HistoryError::Unavailable);
+            }
+            binding = Some(candidate);
+        }
+    }
+    if binding.is_none() && records.is_some_and(|records| records.active().is_none()) {
+        return Err(HistoryError::Unavailable);
+    }
+    Ok(binding.map_or_else(
+        || HistoryTarget::Legacy {
+            app_id: crate::collaboration::local_app_id(),
+            record: records.and_then(|records| records.active()).cloned(),
+            document_identity,
+        },
+        |binding| HistoryTarget::Bound(Box::new(binding)),
+    ))
+}
+
 pub(crate) struct StandaloneHistoryHost {
     session: Option<StandaloneHistory>,
     session_id: Option<uuid::Uuid>,
@@ -134,6 +169,10 @@ pub(crate) struct StandaloneHistoryHost {
     toolbar: Option<Button>,
     search: Option<Button>,
     search_enabled: bool,
+    /// The app draws the window's header row, which holds the History
+    /// control, so the window draws no bar of its own.
+    app_presents_button: bool,
+    in_window_history: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -166,23 +205,17 @@ fn restore_message(result: &Result<bool, HistoryError>) -> &'static str {
 }
 
 impl StandaloneHistoryHost {
-    #[expect(
-        clippy::expect_used,
-        reason = "fixed unit View operation and its nullary binding serialize infallibly"
-    )]
     pub(crate) fn new() -> Self {
-        let resource = open_resource();
-        let binding = ActionBinding::unit_for(&resource, "open").expect("unit history action");
         Self {
             session: None,
             session_id: None,
             toolbar: Some(
-                Button::new("standalone-history-open", "standalone-history-title", None)
-                    .on_action(binding)
-                    .with_enabled(false),
+                history_control_button(BAR_BUTTON_ID, HistoryControl::Closed).with_enabled(false),
             ),
             search: None,
             search_enabled: false,
+            app_presents_button: false,
+            in_window_history: true,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -314,18 +347,90 @@ impl StandaloneHistoryHost {
             .map_or(0, |session| session.selection().len())
     }
 
+    /// What the window's History control shows, or `None` where the host's
+    /// own chrome (a menu bar, the Tilo shell) presents History.
+    fn control(&self) -> Option<HistoryControl> {
+        self.in_window_history
+            .then(|| HistoryControl::of(self.is_open()))
+    }
+
+    /// Offer the History control to the app's header row before the app is
+    /// built. Where the app draws one, the window draws no bar of its own.
+    pub(crate) fn place_in_app_header(&mut self, root: &mut dyn Widget) {
+        self.app_presents_button =
+            crate::widget::window_header::offer_history_control(root, self.control());
+    }
+
+    /// Keep the window's own History control in step with the session: on
+    /// and closing while History shows, opening otherwise.
+    fn sync_control(&mut self) {
+        let open = self.is_open();
+        let can_open = self.can_open();
+        if let Some(toolbar) = &mut self.toolbar
+            && toolbar.is_toggled() != open
+        {
+            *toolbar = history_control_button(BAR_BUTTON_ID, HistoryControl::of(open))
+                .with_enabled(open || can_open);
+            self.structure_dirty = true;
+        }
+    }
+
     /// The host's own chrome presents History and Search: drop the in-window
     /// buttons. Their actions stay, reachable from that chrome.
     #[cfg(any(feature = "native", test))]
     pub(crate) fn remove_in_window_controls(&mut self) {
+        self.in_window_history = false;
+        self.remove_fallback_bar();
+    }
+
+    /// Keep the app's integrated History control while dropping the redundant
+    /// standalone band. Header placement must not depend on a fallback button.
+    pub(crate) fn remove_fallback_bar(&mut self) {
         let had_toolbar = self.toolbar.take().is_some();
         let had_search = self.search.take().is_some();
         self.structure_dirty |= had_toolbar || had_search;
     }
 
-    /// The in-window buttons, for draining and refreshing their invocations.
-    pub(crate) fn in_window_controls_mut(&mut self) -> impl Iterator<Item = &mut Button> {
-        self.toolbar.iter_mut().chain(self.search.iter_mut())
+    /// The in-window buttons and the open pane: every control History owns.
+    pub(crate) fn controls_mut(&mut self) -> impl Iterator<Item = &mut dyn Widget> {
+        let pane = self.session.is_some().then_some(&mut self.pane);
+        self.toolbar
+            .iter_mut()
+            .chain(self.search.iter_mut())
+            .map(|button| button as &mut dyn Widget)
+            .chain(pane.map(|pane| pane as &mut dyn Widget))
+    }
+
+    /// Drain the invocations History's controls queued.
+    pub(crate) fn take_control_invocations(&mut self) -> Vec<tilo_actions::ControlInvocation> {
+        let mut pending = Vec::new();
+        for control in self.controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(control) {
+                pending.push(intent);
+            }
+        }
+        pending
+    }
+
+    /// Tell History's controls how an invocation they queued finished.
+    pub(crate) fn report_control_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &crate::widget::controls::ControlResult,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::on_control_invocation_result(control, address, result);
+        }
+    }
+
+    /// Enable History's controls whose actions the door currently offers.
+    pub(crate) fn refresh_control_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(control, allowed);
+        }
     }
 
     /// Presence is a host capability, not an OS check. Hosts without the
@@ -342,7 +447,7 @@ impl StandaloneHistoryHost {
                 .shortcut(platform)
                 .label(platform);
             self.search = Some(
-                Button::new("standalone-search-open", "standalone-search-title", None)
+                Button::new("standalone-search-open", "standalone-search-title")
                     .tooltip(format!(
                         "{} ({shortcut})",
                         I18nManager::lookup_plain("standalone-search-title")
@@ -373,7 +478,7 @@ impl StandaloneHistoryHost {
         StandaloneHistory::open(
             self.content_target.clone().ok()?,
             context,
-            AuthorDirectory::new(),
+            AuthorDirectory::with_room_agents(),
         )
         .ok()?;
         Some(focus)
@@ -413,12 +518,12 @@ impl StandaloneHistoryHost {
         context: &HistoryReadContext<'_>,
     ) -> Result<Vec<Resource>, HistoryHostError> {
         self.refresh(context)?;
-        Ok(self.own_resources())
+        Ok(self.own_resources(context))
     }
 
     /// History, Search and the open session, each action available exactly
     /// when invoking it would do something.
-    fn own_resources(&self) -> Vec<Resource> {
+    fn own_resources(&self, context: &HistoryReadContext<'_>) -> Vec<Resource> {
         let mut resources = vec![history_resource(self.can_open(), self.is_open())];
         if self.has_search() {
             resources.push(search_resource());
@@ -434,9 +539,36 @@ impl StandaloneHistoryHost {
                 compare.contract.availability =
                     unavailable("selection_too_small", "host-history-compare-unavailable");
             }
+            self.set_restore_availability(&mut session, context);
             resources.push(session);
         }
         resources
+    }
+
+    fn set_restore_availability(&self, resource: &mut Resource, context: &HistoryReadContext<'_>) {
+        let can_review = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.can_restore(context));
+        let can_confirm = self.review.as_ref().is_some_and(|review| {
+            self.session
+                .as_ref()
+                .is_some_and(|session| session.validate_restore(context, review).is_ok())
+        });
+        for action in &mut resource.actions {
+            let enabled = match action.id.as_str() {
+                "review_restore" => can_review,
+                "restore" => can_confirm,
+                "cancel_restore" => self.review.is_some(),
+                _ => continue,
+            };
+            if !enabled {
+                action.contract.availability = unavailable(
+                    "restore_unavailable",
+                    "standalone-history-restore-unavailable",
+                );
+            }
+        }
     }
 
     /// Execute only after the host establishes trusted local dispatch. This
@@ -459,7 +591,7 @@ impl StandaloneHistoryHost {
         command: HistoryCommand,
         context: &HistoryReadContext<'_>,
     ) -> Result<(), HistoryHostError> {
-        if let HistoryCommand::Hide = command {
+        if command == HistoryCommand::Hide {
             if self.session.is_some() {
                 self.close();
             }
@@ -476,19 +608,21 @@ impl StandaloneHistoryHost {
                 context,
             );
         }
-        if let HistoryCommand::Open = command {
+        if command == HistoryCommand::Open {
             // Repeated Open retains the original captured document and focus.
             if self.session.is_some() {
                 self.refresh(context)?;
                 return Ok(());
             }
             let target = self.content_target.clone()?;
-            let session = StandaloneHistory::open(target, context, AuthorDirectory::new())?;
+            let session =
+                StandaloneHistory::open(target, context, AuthorDirectory::with_room_agents())?;
             self.pane.clear();
             self.pane.set_entries(session.rows());
             self.session = Some(session);
             self.session_id = Some(uuid::Uuid::new_v4());
             self.revision = self.revision.wrapping_add(1);
+            self.sync_control();
             return Ok(());
         }
         self.refresh(context)?;
@@ -586,19 +720,41 @@ impl StandaloneHistoryHost {
         let Some(session) = &self.session else {
             return;
         };
-        let details = session
+        let selected: Vec<_> = session
             .selection()
             .iter()
             .filter_map(|id| session.rows().iter().find(|entry| entry.id == *id))
-            .map(|entry| format!("{}: {}", entry.author.name, entry.summary))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // These are selected-change details. Exact comparison snapshots remain
-        // available through session(); a resource renderer owns diff display.
-        let summary = format!(
-            "{}\n{details}",
-            I18nManager::lookup_plain("standalone-history-selected-details")
-        );
+            .cloned()
+            .collect();
+        let Some(detail) = crate::HistorySelectionDetail::from_range(
+            &selected,
+            (0, selected.len().saturating_sub(1)),
+        ) else {
+            self.pane.set_comparison_summary(None);
+            return;
+        };
+        let mut lines = vec![detail.title];
+        if let Some(purpose) = detail.purpose
+            && !lines.contains(&purpose)
+        {
+            lines.push(purpose);
+        }
+        for resource in detail.resources {
+            lines.push(resource.app_label.map_or_else(
+                || resource.label.clone(),
+                |app| format!("{app}: {}", resource.label),
+            ));
+        }
+        let now = crate::time::wall();
+        for entry in selected {
+            let action = &entry.summary;
+            lines.push(format!("{}: {action}", entry.author.name));
+            lines.push(crate::widget::history::format_relative_time(
+                entry.timestamp,
+                now,
+            ));
+        }
+        let summary = lines.join("\n");
         self.pane.set_comparison_summary(Some(&summary));
     }
 
@@ -611,6 +767,7 @@ impl StandaloneHistoryHost {
         self.pane.clear();
         self.restore_focus = self.content_focus.take();
         self.revision = self.revision.wrapping_add(1);
+        self.sync_control();
     }
 
     /// Drain after canonical widget operation/semantic dispatch. Both pointer
@@ -763,7 +920,7 @@ impl StandaloneHistoryHost {
         layout: HostHistoryLayout,
     ) -> Result<Vec<Resource>, HistoryHostError> {
         self.validate_presentation(context, layout)?;
-        let mut resources = self.own_resources();
+        let mut resources = self.own_resources(context);
         if self.is_open() {
             crate::widget::collect_widget_resources(&self.pane, context.document, &mut resources);
         }
@@ -795,9 +952,11 @@ impl StandaloneHistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         viewport_width: f64,
     ) -> HostHistoryLayout {
+        let app_presents_button = self.app_presents_button;
         let toolbar = self
             .toolbar
             .as_mut()
+            .filter(|_| !app_presents_button)
             .map(|button| button.build_layout(taffy, theme, nodes));
         let search = self
             .search
@@ -811,12 +970,15 @@ impl StandaloneHistoryHost {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
-                    padding: crate::chrome::bar_padding(theme),
+                    padding: crate::widget::toolbar::band_padding(theme),
                     gap: Size {
                         width: taffy::LengthPercentage::length(theme.gap_standard),
                         height: taffy::LengthPercentage::length(0.0),
                     },
                     align_items: Some(taffy::AlignItems::Center),
+                    // Window controls stand at the trailing edge, where a
+                    // header row holds them.
+                    justify_content: Some(taffy::JustifyContent::FlexEnd),
                     ..Default::default()
                 },
                 &buttons,
@@ -875,10 +1037,7 @@ impl StandaloneHistoryHost {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                min_size: Size::from_lengths(0.0, 0.0),
                 flex_grow: 1.0,
                 flex_basis: Dimension::length(0.0),
                 gap: Size {
@@ -891,10 +1050,7 @@ impl StandaloneHistoryHost {
         );
         let root = taffy.parent_node(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
                 ..Default::default()
@@ -922,8 +1078,7 @@ impl StandaloneHistoryHost {
         taffy: &TaffyTree<()>,
         origin: Point,
     ) -> Point {
-        let outer = taffy.layout(layout.root).copied().unwrap_or_default();
-        let origin = origin + (f64::from(outer.location.x), f64::from(outer.location.y));
+        let origin = crate::widget::layout_rect(taffy, layout.root, origin).origin();
         let bar = layout
             .bar
             .and_then(|node| taffy.layout(node).ok())
@@ -940,16 +1095,8 @@ impl StandaloneHistoryHost {
         if let (Some(search), Some(node)) = (&mut self.search, layout.search) {
             search.apply_layout(taffy, node, toolbar_origin);
         }
-        let content = taffy.layout(layout.content).copied().unwrap_or_default();
-        let content_origin =
-            origin + (f64::from(content.location.x), f64::from(content.location.y));
-        self.content_rect = Rect::from_origin_size(
-            content_origin,
-            (
-                f64::from(content.size.width),
-                f64::from(content.size.height),
-            ),
-        );
+        self.content_rect = crate::widget::layout_rect(taffy, layout.content, origin);
+        let content_origin = self.content_rect.origin();
         if let Some(pane) = layout.pane {
             self.pane.apply_layout(taffy, pane, content_origin);
         }
@@ -959,12 +1106,9 @@ impl StandaloneHistoryHost {
         content_origin
     }
 
-    pub(crate) fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        for button in self.in_window_controls_mut() {
-            button.sync(doc, path);
-        }
-        if self.is_open() {
-            self.pane.sync(doc, path);
+    pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {
+        for control in self.controls_mut() {
+            control.sync(doc, path);
         }
     }
 
@@ -978,11 +1122,15 @@ impl StandaloneHistoryHost {
         presence: &PresenceCtx,
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
-        if self.toolbar.is_some() {
-            crate::chrome::paint_bar(scene, transform, theme, self.bar_rect);
+        let toolbar_shown = self.toolbar.is_some() && !self.app_presents_button;
+        if toolbar_shown || self.search.is_some() {
+            bar_edge(scene, transform, theme, self.bar_rect);
         }
-        for button in self.in_window_controls_mut() {
+        if toolbar_shown && let Some(button) = self.toolbar.as_mut() {
             button.draw(scene, transform, text, theme, presence);
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.draw(scene, transform, text, theme, presence);
         }
         if self.is_open() {
             self.pane.draw(scene, transform, text, theme, presence);
@@ -991,6 +1139,26 @@ impl StandaloneHistoryHost {
             self.canvas.draw(scene, transform, text, theme, presence);
         }
         Ok(())
+    }
+
+    /// The History chrome's part of the window's top layer: the restore
+    /// review is a modal, painted over everything else in the window.
+    pub(crate) fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.is_open() {
+            self.pane
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+        if self.preview_visible {
+            self.canvas
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
     }
 }
 
@@ -1013,16 +1181,6 @@ impl Widget for PresentationRoots<'_> {
     ) -> NodeId {
         self.layout_root
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
     }
@@ -1040,6 +1198,71 @@ impl Widget for PresentationRoots<'_> {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+/// The test id of the window's own History control, in its bar.
+pub(crate) const BAR_BUTTON_ID: &str = "standalone-history-open";
+
+/// The look of the window's History control: the History glyph as a Plain
+/// icon button, announced and tooltipped as "History" with its shortcut,
+/// reading as on while History shows. Every History host draws this one
+/// control, wherever it stands.
+pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
+    let platform = crate::platform::PlatformConventions::default();
+    let shortcut = crate::platform::HostShortcut::History
+        .shortcut(platform)
+        .label(platform);
+    Button::icon_only(id, crate::icons::Icon::History, "standalone-history-title")
+        .tooltip(format!(
+            "{} ({shortcut})",
+            I18nManager::lookup_plain("standalone-history-title")
+        ))
+        .toggled(control.is_open())
+}
+
+/// The window's History control, bound to the History door: closed it
+/// opens History, open it closes it, exactly as the History shortcut and
+/// the palette do.
+#[must_use]
+pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
+    history_control_face(id, control).on_action(history_control_binding(control))
+}
+
+/// The History door a press of the window's History control goes through:
+/// Open while History is closed, Hide while it shows.
+///
+/// # Panics
+///
+/// Never: Open and Hide are fixed unit operations whose bindings always
+/// serialize.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "fixed unit View operations and their nullary bindings serialize infallibly"
+)]
+pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<()> {
+    match control {
+        HistoryControl::Closed => ActionBinding::unit_for(&open_resource(), "open"),
+        HistoryControl::Open => ActionBinding::unit_for(&history_resource(true, true), "hide"),
+    }
+    .expect("unit history action")
+}
+
+/// The edge under a bar of window chrome: the bar stands on the content
+/// ground and is told from the app by one hairline at its bottom, never by
+/// a raised fill.
+pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule <= 0.0 || bar.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+        None,
+        &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
+    );
 }
 
 #[expect(
@@ -1153,7 +1376,66 @@ fn session_resource(session: uuid::Uuid) -> Resource {
         "standalone-history-close",
         &HistoryCommand::Close { session },
     ))
+    .with_action(review_restore_operation(session))
+    .with_action(restore_operation(session))
+    .with_action(operation(
+        "cancel_restore",
+        "standalone-history-restore-cancel",
+        &HistoryCommand::CancelRestore { session },
+    ))
 }
+
+#[expect(
+    clippy::expect_used,
+    reason = "typed History command payload contains only a validated entry and session UUID"
+)]
+fn review_restore_operation(session: uuid::Uuid) -> ActionSpec {
+    ActionSpec::typed_operation(
+        "review_restore",
+        I18nManager::lookup_plain("standalone-history-restore"),
+        I18nManager::lookup_plain("standalone-history-select-hint"),
+        OperationKind::View,
+        HISTORY_OPERATION,
+        vec![
+            ActionParam::required_owned(
+                "entry",
+                ParamType::Text,
+                I18nManager::lookup_plain("standalone-history-entry-ids"),
+            )
+            .with_schema(serde_json::json!({"pattern": "^[0-9a-f]{32}$"})),
+        ],
+        move |args| {
+            EncodedAction::encode_operation(
+                HISTORY_OPERATION,
+                &HistoryCommand::ReviewRestore {
+                    session,
+                    entry: args.text("entry").unwrap_or_default().to_owned(),
+                },
+            )
+            .expect("validated history review serializes")
+        },
+    )
+    .of_kind(tilo_actions::ActionKind::Undoable)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "fixed restore command contains only a serializable session UUID"
+)]
+fn restore_operation(session: uuid::Uuid) -> ActionSpec {
+    ActionSpec::operation(
+        "restore",
+        I18nManager::lookup_plain("standalone-history-restore-confirm"),
+        OperationKind::Effect,
+        HISTORY_OPERATION,
+        &HistoryCommand::Restore { session },
+    )
+    .expect("history restore serializes")
+    .of_kind(tilo_actions::ActionKind::Undoable)
+    .destructive()
+    .reversible()
+}
+
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::widget::history_group::hex16(&id)
 }
@@ -1277,7 +1559,7 @@ mod tests {
                 resources
                     .iter()
                     .flat_map(|resource| &resource.actions)
-                    .all(|action| action.kind == OperationKind::View)
+                    .all(|action| action.kind == OperationKind::View || action.id == "restore")
             );
             context.document_identity = uuid::Uuid::new_v4();
             assert_eq!(
@@ -1448,7 +1730,10 @@ mod tests {
             .into_iter()
             .map(|resource| resource.id.as_str().to_owned())
             .collect();
-        assert_eq!(ids, [HISTORY_RESOURCE, SEARCH_RESOURCE]);
+        assert_eq!(
+            ids,
+            [HISTORY_RESOURCE, crate::search::request::SEARCH_RESOURCE]
+        );
 
         let mut app = Text::new("app");
         let mut tree = TaffyTree::new();
@@ -1474,6 +1759,269 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_app_header_row_takes_the_history_control() {
+        use crate::widget::window_header::offer_history_control;
+
+        // Case `the_header_row_is_found_anywhere_in_the_app_tree`.
+        {
+            let mut plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
+            assert!(!offer_history_control(
+                &mut plain,
+                Some(HistoryControl::Closed)
+            ));
+            let shell = crate::widget::NavShell::new().content(Box::new(Text::new("Notes")));
+            let mut app = crate::widget::Column::new().push(Box::new(shell));
+            assert!(offer_history_control(
+                &mut app,
+                Some(HistoryControl::Closed)
+            ));
+        }
+
+        // Case `the_window_draws_no_bar_while_the_app_has_a_header_row`.
+        {
+            let mut host = StandaloneHistoryHost::new();
+            let mut app = Text::new("app");
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            host.place_in_app_header(&mut app);
+            let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let with_bar =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(with_bar.toolbar.is_some(), "the window's own History bar");
+
+            let mut shell = crate::widget::NavShell::new().content(Box::new(Text::new("app")));
+            host.place_in_app_header(&mut shell);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let app_node = shell.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let layout =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(layout.toolbar.is_none(), "no stacked bar above the app");
+            assert_eq!(tree.children(layout.root).unwrap(), vec![layout.content]);
+        }
+
+        // Case `the_control_is_one_named_glyph_that_reads_as_on_while_open`.
+        {
+            for control in [HistoryControl::Closed, HistoryControl::Open] {
+                let button = history_control_button(BAR_BUTTON_ID, control);
+                let node = Widget::accessibility(&button).unwrap();
+                assert_eq!(
+                    node.name,
+                    Some(I18nManager::lookup_plain("standalone-history-title")),
+                    "an icon-only control named History"
+                );
+                assert_eq!(node.state.checked, Some(control.is_open()));
+                assert!(
+                    Widget::tooltip(&button).is_some_and(|tip| tip.starts_with("History (")),
+                    "the tooltip names it and its shortcut"
+                );
+                let address = crate::widget::controls::control_action_bindings(&button)
+                    .into_iter()
+                    .find_map(|binding| match binding.kind {
+                        crate::widget::ControlBindingKind::Action(address) => Some(address),
+                        _ => None,
+                    })
+                    .unwrap();
+                let action = if control.is_open() { "hide" } else { "open" };
+                assert_eq!(
+                    address,
+                    tilo_actions::ActionAddress::new(HISTORY_RESOURCE, action)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn published_history_restore_actions_review_cancel_and_confirm_without_writing() {
+        let (doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let before = doc.base_heads();
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open"),
+            None,
+            false,
+        )
+        .unwrap();
+        let resource = format!("tilo.host.history:{}", host.session_id.unwrap());
+        let specs = host.local_resources(&context).unwrap();
+        let session = specs
+            .iter()
+            .find(|item| item.id.as_str() == resource)
+            .unwrap();
+        assert_restore_contract(session);
+        let arguments = serde_json::json!({"entry": entry})
+            .as_object()
+            .unwrap()
+            .clone();
+        let review_address = tilo_actions::ActionAddress::new(&resource, "review_restore");
+        published_invoke(
+            &mut host,
+            &context,
+            review_address.clone(),
+            Some(&arguments),
+            false,
+        )
+        .unwrap();
+        assert!(host.pane.review_is_open());
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(&resource, "cancel_restore"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!host.pane.review_is_open());
+        assert!(host.take_confirmed_restore().is_none());
+        assert_eq!(doc.base_heads(), before);
+        published_invoke(&mut host, &context, review_address, Some(&arguments), false).unwrap();
+        let restore_address = tilo_actions::ActionAddress::new(&resource, "restore");
+        assert_eq!(
+            published_invoke(&mut host, &context, restore_address.clone(), None, false),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        );
+        assert!(host.take_confirmed_restore().is_none());
+        published_invoke(&mut host, &context, restore_address, None, true).unwrap();
+        let confirmed = host.take_confirmed_restore().unwrap();
+        assert_eq!(encode_entry(confirmed.review.entry), entry);
+        assert!(matches!(confirmed.target, HistoryTarget::Legacy {
+            app_id, record: None, document_identity,
+        } if app_id == "notes" && document_identity == identity));
+        assert!(!confirmed.review.target_heads().is_empty());
+        assert_eq!(
+            doc.base_heads(),
+            before,
+            "only the owner may apply the reviewed restore"
+        );
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
+    #[test]
+    fn published_history_restore_refuses_a_review_after_the_live_document_changes() {
+        let (mut doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open"),
+            None,
+            false,
+        )
+        .unwrap();
+        let resource = format!("tilo.host.history:{}", host.session_id.unwrap());
+        let arguments = serde_json::json!({"entry": entry})
+            .as_object()
+            .unwrap()
+            .clone();
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(&resource, "review_restore"),
+            Some(&arguments),
+            false,
+        )
+        .unwrap();
+        doc.put(ROOT, "value", "another collaborator's edit")
+            .unwrap();
+        doc.commit();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let specs = host.local_resources(&context).unwrap();
+        let restore = specs
+            .iter()
+            .find(|item| item.id.as_str() == resource)
+            .unwrap()
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .unwrap();
+        assert!(!restore.contract.availability.is_available());
+        // Even an already encoded, confirmed request must revalidate the frontier.
+        let session = host.session_id.unwrap();
+        assert_eq!(
+            invoke(&mut host, &HistoryCommand::Restore { session }, &context),
+            Err(HistoryHostError::History(HistoryError::StaleReview))
+        );
+        assert!(host.take_confirmed_restore().is_none());
+        assert_eq!(
+            doc.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("another collaborator's edit")
+        );
+    }
+
+    #[test]
+    fn published_history_selection_reads_action_resource_and_time_metadata() {
+        let (doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open_at"),
+            Some(serde_json::json!({"entry": entry}).as_object().unwrap()),
+            false,
+        )
+        .unwrap();
+        host.sync(&doc, &ROOT);
+        let children = host.pane.children();
+        let summary = children
+            .iter()
+            .find(|child| child.test_id() == Some("standalone-history-summary"))
+            .unwrap()
+            .accessibility()
+            .unwrap()
+            .name
+            .unwrap();
+        assert!(summary.contains("Move meeting"), "{summary}");
+        assert!(summary.contains("Calendar: Planning"), "{summary}");
+        assert!(
+            summary.contains(&crate::widget::history::format_relative_time(
+                host.session
+                    .as_ref()
+                    .unwrap()
+                    .rows()
+                    .iter()
+                    .find(|row| row.id == decode_entry(&entry).unwrap())
+                    .unwrap()
+                    .timestamp,
+                crate::time::wall()
+            )),
+            "{summary}"
+        );
+        assert!(!summary.contains("event:one"), "{summary}");
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
     use super::*;
     use crate::permissions::PermissionContext;
     use crate::widget::Text;
@@ -1486,6 +2034,80 @@ mod tests {
     ) -> Result<(), HistoryHostError> {
         let encoded = EncodedAction::encode_operation(HISTORY_OPERATION, command).unwrap();
         host.invoke_local(&encoded, context)
+    }
+
+    fn assert_restore_contract(session: &Resource) {
+        let review = session
+            .actions
+            .iter()
+            .find(|action| action.id == "review_restore")
+            .unwrap();
+        assert_eq!(review.kind, OperationKind::View);
+        assert_eq!(review.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert!(review.contract.availability.is_available());
+        let restore = session
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .unwrap();
+        assert_eq!(restore.kind, OperationKind::Effect);
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert_eq!(
+            restore.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(!restore.contract.availability.is_available());
+        let cancel = session
+            .actions
+            .iter()
+            .find(|action| action.id == "cancel_restore")
+            .unwrap();
+        assert_eq!(cancel.kind, OperationKind::View);
+        assert!(!cancel.contract.availability.is_available());
+    }
+
+    fn history_fixture() -> (AutoCommit, String, uuid::Uuid) {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "value", "before").unwrap();
+        doc.commit();
+        doc.put(ROOT, "value", "after").unwrap();
+        let context =
+            tilo_actions::ActionContext::for_resource("event:one", "calendar.event", "Planning")
+                .with_app("calendar", "Calendar")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("calendar", "calendar.event", "move-meeting"),
+                    [],
+                )));
+        let hash = doc
+            .commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(context.change_message().unwrap())
+                    .with_time(1_700_000_000),
+            )
+            .unwrap();
+        let entry = encode_entry(crate::history_source::entry_id_from_hash(&hash.to_string()));
+        (doc, entry, uuid::Uuid::new_v4())
+    }
+
+    fn published_invoke(
+        host: &mut StandaloneHistoryHost,
+        context: &HistoryReadContext<'_>,
+        address: tilo_actions::ActionAddress,
+        arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        confirmed: bool,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let resources = host.local_resources(context).unwrap();
+        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources, &address, None, arguments, confirmed,
+        )?;
+        let encoded = crate::bound_dispatch::encode_resource_action(
+            &resources,
+            &address,
+            arguments.as_ref(),
+            None,
+        )?;
+        host.invoke_local(&encoded, context)
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(format!("{error:?}")))
     }
 
     fn remember(host: &mut StandaloneHistoryHost, identity: uuid::Uuid) {

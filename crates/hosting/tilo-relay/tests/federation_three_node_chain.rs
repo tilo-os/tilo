@@ -24,32 +24,19 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient, apply_sync_response, send_sync_request};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
-
-fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
-    match doc.get(ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 /// Connect B to `r3_addr`, subscribe, and drain until it converges with
 /// `doc_a` — applying live `Delta`s R3 fans out plus any `SyncResponse`,
@@ -184,7 +171,7 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
         "device on R3 must converge with the author on R1 across the two-hop chain"
     );
     assert_eq!(
-        read_str(&doc_b, "note").as_deref(),
+        doc_b.str_at(&ROOT, "note").as_deref(),
         Some("across-the-chain")
     );
     assert_eq!(

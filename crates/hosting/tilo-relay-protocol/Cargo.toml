@@ -14,7 +14,7 @@ homepage.workspace = true
 # `tilo-relay-client`, the iroh endpoint, runtime and storage in `tilo-relay`.
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
@@ -30,6 +30,10 @@ toml.workspace = true
 thiserror.workspace = true
 # Live frames have one canonical encoding the host re-checks before relaying.
 postcard = { workspace = true, features = ["alloc"] }
+# Live frames are sealed with their record's channel content keys.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# Agent and bot delegations and room shard ids, re-exported unchanged.
+tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

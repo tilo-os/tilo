@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+# The Tilo app on the web: the browser runtime's
+# desktop bundle, laid out by layout.py in CI (context: site/), served as
+# static files. Nothing here compiles; the image only compresses and serves.
+# Pinned on registry.fedoraproject.org, which keeps superseded digests;
+# quay.io prunes them, so a digest pinned there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS compress
+RUN microdnf install -y --setopt=install_weak_deps=0 brotli zstd findutils && microdnf clean all
+COPY site/ /site/
+# Precompressed beside each text-like file, served by Content-Encoding to
+# browsers that accept it; fonts and images are compressed already.
+RUN find /site -type f \( -name '*.wasm' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' -o -name '*.html' -o -name '*.css' -o -name '*.svg' -o -name '*.txt' -o -name '*.ttf' -o -name '*.otf' \) -size +1k \
+      -exec brotli -q 11 -k {} \; -exec zstd -q -19 -k {} \;
+
+# 2.11: 2.10 answers every precompressed response with 206 Partial Content,
+# which CDNs do not cache.
+FROM docker.io/library/caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo web entry" \
+      org.opencontainers.image.description="The Tilo app on the web, a Tilo session in the browser" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+COPY --from=compress /site/ /srv/tilo-web/
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-web-entry
+# The base image's binary carries cap_net_bind_service as a file capability,
+# which execve refuses outright once every capability is dropped under
+# no_new_privs, as a restricted pod runs it. This server listens on 8080, so
+# a plain copy, which carries no capability, takes its place.
+RUN cp /usr/bin/caddy /tmp/caddy && mv -f /tmp/caddy /usr/bin/caddy
+USER 10001
+ENV XDG_DATA_HOME=/tmp/caddy XDG_CONFIG_HOME=/tmp/caddy
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/tilo-web-entry"]

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Ensure path-filtered workflows follow workspace dependency closures."""
+"""Ensure path-filtered workflows and t checks follow workspace dependency closures.
+
+A workflow's `paths` lists decide when it runs; a t check's `inputs` decide when its cached
+result is stale. Either must cover every directory of the package's dependency closure. Name a
+t check as `t.toml#<check>`. A t check that names the package in `cargo_packages` covers it by
+construction: t derives those inputs from the manifests and the lockfile.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import Any
 
 
@@ -104,7 +111,8 @@ def _cargo_tree_directories(
     optional and test-only crates into packages that a release binary does not
     link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
     Containerfiles, so path filters rebuild when the image's inputs change and
-    stay quiet for pure test-harness edges.
+    stay quiet for pure test-harness edges. Both Linux architectures are
+    named, so the graph doesn't depend on the machine resolving it.
     """
     output = subprocess.check_output(
         [
@@ -117,6 +125,10 @@ def _cargo_tree_directories(
             "--prefix",
             "none",
             "--locked",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
         ],
         cwd=root,
         text=True,
@@ -153,11 +165,40 @@ def pattern_covers(directory: str, pattern: str) -> bool:
     )
 
 
+def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
+    """Trigger patterns no tracked file matches: a moved or deleted input whose
+    changes would no longer start the workflow."""
+    return sorted(
+        pattern
+        for pattern in set().union(*workflow_path_blocks(workflow_text))
+        if not pattern.startswith("!")
+        and not any(fnmatchcase(path, pattern) for path in files)
+    )
+
+
+def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
+    """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
+    names `package`, whose dependency closure t then derives itself."""
+    for check in tomllib.loads(text).get("check", []):
+        if check.get("name") == name:
+            packages = check.get("cargo_packages", [])
+            if any(fnmatchcase(package, pattern) for pattern in packages):
+                return []
+            # As t reads it: without `inputs`, everything, unless it names packages instead.
+            return [set(check.get("inputs", [] if packages else ["**"]))]
+    raise ValueError(f"t.toml declares no check {name}")
+
+
 def audit(
-    metadata: dict[str, Any], root: Path, package: str, workflow_text: str
+    metadata: dict[str, Any],
+    root: Path,
+    package: str,
+    workflow_text: str,
+    blocks: list[set[str]] | None = None,
 ) -> list[Violation]:
     directories = dependency_directories(metadata, root, package)
-    blocks = workflow_path_blocks(workflow_text)
+    if blocks is None:
+        blocks = workflow_path_blocks(workflow_text)
     if not blocks:
         return []
     return [
@@ -200,19 +241,12 @@ def main() -> int:
         parser.error("supply a package/workflow pair or at least one --check")
     try:
         metadata = load_metadata(ROOT)
-        results = [
-            (
-                package,
-                workflow,
-                audit(
-                    metadata,
-                    ROOT,
-                    package,
-                    (ROOT / workflow).read_text(encoding="utf-8"),
-                ),
-            )
-            for package, workflow in checks
-        ]
+        results = []
+        for package, workflow in checks:
+            path, _, check = str(workflow).partition("#")
+            text = (ROOT / path).read_text(encoding="utf-8")
+            blocks = t_check_blocks(text, check, package) if check else None
+            results.append((package, workflow, audit(metadata, ROOT, package, text, blocks)))
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2

@@ -98,13 +98,7 @@ fn validate_submission_projection(
 ) -> Result<(), ModerationClientError> {
     let valid = match &request.mutation {
         ModerationMutation::FileReport { package_id, .. } => {
-            let short_hash =
-                blake3::hash(format!("{}:{}", package_id, request.request_id).as_bytes())
-                    .to_hex()
-                    .chars()
-                    .take(24)
-                    .collect::<String>();
-            case.case_id == format!("case-{short_hash}")
+            case.case_id == registry_types::moderation_case_id(package_id, &request.request_id)
                 && case.package_id == *package_id
                 && case.status == registry_types::ModerationCaseStatus::Open
         }
@@ -115,24 +109,7 @@ fn validate_submission_projection(
         }
         ModerationMutation::ReviewerDecision {
             case_id, decision, ..
-        } => {
-            case.case_id == *case_id
-                && case.status
-                    == match decision {
-                        registry_types::ModerationDecision::NeedsInformation => {
-                            registry_types::ModerationCaseStatus::NeedsInformation
-                        }
-                        registry_types::ModerationDecision::NoAction => {
-                            registry_types::ModerationCaseStatus::ClosedNoAction
-                        }
-                        registry_types::ModerationDecision::Quarantine => {
-                            registry_types::ModerationCaseStatus::Quarantined
-                        }
-                        registry_types::ModerationDecision::Restore => {
-                            registry_types::ModerationCaseStatus::Restored
-                        }
-                    }
-        }
+        } => case.case_id == *case_id && case.status == decision.status(),
     };
     if valid && case.latest_sequence > 0 {
         Ok(())
@@ -177,7 +154,7 @@ pub fn fetch_verified_case(
         &events,
         case_id,
         &registry.owner_pubkey_hex,
-        &snapshot.moderation_head_hex,
+        snapshot.moderation_head_hex(),
     )
     .map_err(|error| ModerationClientError::InvalidProof(error.to_string()))
 }

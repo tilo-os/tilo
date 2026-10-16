@@ -1,0 +1,34 @@
+[package]
+name = "tilo-extension"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Downloaded, Tilo-signed system extensions: fetches, verifies and activates what a signed manifest pins."
+
+[lib]
+name = "tilo_extension"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-extension"
+path = "src/main.rs"
+
+[dependencies]
+hex.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+# utimensat without following a symlink, umask, geteuid and uname without FFI.
+rustix = { workspace = true, features = ["fs", "process", "system", "std"] }
+serde_json.workspace = true
+sha2.workspace = true
+# rpm2archive's stream.
+tar.workspace = true
+tempfile.workspace = true
+tilo-advisory-lock = { path = "../advisory-lock" }
+# The one blocking HTTP client builder on Tilo's TLS provider and trust.
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-pycompat = { path = "../tilo-pycompat" }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

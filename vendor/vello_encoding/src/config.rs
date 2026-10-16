@@ -487,10 +487,14 @@ impl BufferSizes {
                 .max(floor.seg_counts)
                 .min(budget.binding_capacity::<SegmentCount>()),
         );
+        // Every crossing `path_count` counts becomes one segment, and no
+        // stage reports running out of segments: a frame whose counts fit
+        // must find room for all of them.
         let segments = BufferSize::new(
             budget
                 .segments
                 .max(floor.segments)
+                .max(seg_counts.len())
                 .min(budget.binding_capacity::<PathSegment>()),
         );
         // One blend spill occupies 16 * 16 words.
@@ -646,7 +650,9 @@ const FLOOR_PTCL_MIN: u32 = 5 << 19;
 /// Growth is one-way within a process. A window that once drew a map
 /// keeps room to draw a map, on the grounds that it probably will again,
 /// and that handing the memory back costs a reallocation of every buffer
-/// at the moment the user is busiest.
+/// at the moment the user is busiest. A renderer that opts in
+/// (`Renderer::set_shrink_scratch` in `vello`) hands it back once its
+/// scene has stayed much lighter for a while.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BumpBudget {
     /// Flattened line segments ([`LineSoup`]).
@@ -807,7 +813,14 @@ impl BumpBudget {
         grow(&mut self.binning, used.binning, ceiling.binning);
         grow(&mut self.tiles, used.tile, ceiling.tiles);
         grow(&mut self.seg_counts, used.seg_counts, ceiling.seg_counts);
-        grow(&mut self.segments, used.segments, ceiling.segments);
+        // A frame that ran out of segment counts never reached the stage
+        // that allocates segments, so its counts are the segments the next
+        // frame needs.
+        grow(
+            &mut self.segments,
+            used.segments.max(used.seg_counts),
+            ceiling.segments,
+        );
         grow(&mut self.blend_spill, used.blend, ceiling.blend_spill);
         grow(&mut self.ptcl, used.ptcl, ceiling.ptcl);
         self.clamp_to_binding();
@@ -938,6 +951,41 @@ mod tests {
             BumpBudget::ceiling_for_viewport(1),
             BumpBudget::CEILING,
             "a one-tile viewport keeps the flat ceiling"
+        );
+    }
+
+    /// Marching ants (thousands of dashes) first ran out of segment counts
+    /// (`failed=0x8`), which stops the frame before any segment is
+    /// allocated. The counts grew; segments, having reported none, stayed at
+    /// the floor, and the next frame wrote 3.6M segments into room for 164K.
+    /// No stage reports running out of segments, so that frame showed with
+    /// geometry missing and said it fit.
+    #[test]
+    fn segments_cover_every_count_a_frame_may_make() {
+        let (width, height) = (480_u32, 320_u32);
+        let n_tiles = width.div_ceil(16) * height.div_ceil(16);
+        let used = BumpAllocators {
+            failed: 0x8,
+            lines: 3_310_659,
+            binning: 642,
+            tile: 82_223,
+            seg_counts: 3_602_928,
+            ..BumpAllocators::default()
+        };
+        let mut budget = BumpBudget::INITIAL;
+        budget.observe_within(&used, &BumpBudget::ceiling_for_viewport(n_tiles));
+        assert!(budget.segments >= used.seg_counts);
+        // Whatever the budget says, the buffers keep the pair in step.
+        let lopsided = BumpBudget {
+            seg_counts: 7_205_856,
+            ..BumpBudget::INITIAL
+        };
+        let s = sizes(width, height, &lopsided);
+        assert!(
+            s.segments.len() >= s.seg_counts.len(),
+            "{} segments for {} counts",
+            s.segments.len(),
+            s.seg_counts.len(),
         );
     }
 
@@ -1246,7 +1294,10 @@ mod tests {
             ..BumpAllocators::default()
         };
         assert!(wrapped.segments >= CORRUPT_COUNT && wrapped.blend >= CORRUPT_COUNT);
-        assert!(budget.observe(&wrapped), "the plausible lines count still grows");
+        assert!(
+            budget.observe(&wrapped),
+            "the plausible lines count still grows"
+        );
         assert_eq!(budget.lines, 2 * 38_037);
         assert_eq!(budget.segments, BumpBudget::INITIAL.segments);
         assert_eq!(budget.blend_spill, BumpBudget::INITIAL.blend_spill);

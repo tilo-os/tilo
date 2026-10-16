@@ -115,7 +115,7 @@ impl MediaFrameSource {
             sources: Self::index(project),
             pool: SessionPool::for_editor(),
             software: SessionPool::new(
-                EngineConfig::default().software_only().silent(),
+                EngineConfig::default().software_only().frames_only(),
                 2,
                 Duration::from_secs(30),
             ),
@@ -145,6 +145,12 @@ impl MediaFrameSource {
     /// stall on a fixed cadence forever.
     pub fn is_undecodable(&self, media: MediaId) -> bool {
         self.undecodable.contains(&media)
+    }
+
+    /// Whether `media` may still be served a decoded picture: it has bytes
+    /// this source can decode, and it has not been written off.
+    pub fn may_serve(&self, media: MediaId) -> bool {
+        self.sources.contains_key(&media) && !self.undecodable.contains(&media)
     }
 
     /// How many times a pipeline has been asked for a frame. For tests: it is

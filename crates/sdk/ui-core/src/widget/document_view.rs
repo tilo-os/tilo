@@ -10,15 +10,57 @@
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
+
+/// The style of the boundary node a [`ModelView`] puts around its child.
+///
+/// A dynamic page is a transparent layout boundary, not an intrinsic
+/// desktop-width island: it fills its parent's width so percent-width cards
+/// and wrapping rows reflow on narrow windows. It hands its child's own
+/// claim on the parent through: a percent height (a pane that fills its
+/// column), flex growth (a `Scrollable` under a fixed bar) and its basis,
+/// so the child sizes exactly as if the boundary were not there. A child
+/// out of the flow takes the boundary out too.
+fn boundary_style(child: Option<&Style>) -> Style {
+    let mut style = Style {
+        display: taffy::Display::Flex,
+        flex_direction: taffy::FlexDirection::Column,
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::auto(),
+        },
+        min_size: taffy::Size {
+            width: taffy::Dimension::length(0.0),
+            height: taffy::Dimension::auto(),
+        },
+        flex_shrink: 1.0,
+        ..Style::default()
+    };
+    let Some(child) = child else {
+        return style;
+    };
+    if child.display == taffy::Display::None {
+        style.display = taffy::Display::None;
+        return style;
+    }
+    if child.size.height.tag() == taffy::CompactLength::PERCENT_TAG {
+        style.size.height = child.size.height;
+    }
+    if child.min_size.height.tag() == taffy::CompactLength::PERCENT_TAG {
+        style.min_size.height = child.min_size.height;
+    }
+    style.flex_grow = child.flex_grow;
+    if child.flex_grow > 0.0 {
+        style.flex_basis = child.flex_basis;
+        // The child grows into whatever the boundary is given.
+        style.min_size.height = taffy::Dimension::length(0.0);
+    }
+    style
+}
 
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
 type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
@@ -40,6 +82,7 @@ pub struct ModelView<K> {
     structure_dirty: bool,
     focus_reset: bool,
     autofocus: bool,
+    wake_deadline: Option<Box<dyn Fn() -> Option<crate::time::Instant>>>,
 }
 
 impl<K> ModelView<K>
@@ -70,6 +113,7 @@ where
             structure_dirty: false,
             focus_reset: false,
             autofocus: false,
+            wake_deadline: None,
         }
     }
 
@@ -95,6 +139,18 @@ where
     #[must_use]
     pub fn autofocus_on_change(mut self, autofocus: bool) -> Self {
         self.autofocus = autofocus;
+        self
+    }
+
+    /// Reconcile a time-sensitive projection through the host's existing wake
+    /// scheduler, including while the window is idle. Return None once the
+    /// projection no longer needs a deadline; this never starts a polling loop.
+    #[must_use]
+    pub fn with_wake_deadline(
+        mut self,
+        deadline: impl Fn() -> Option<crate::time::Instant> + 'static,
+    ) -> Self {
+        self.wake_deadline = Some(Box::new(deadline));
         self
     }
 
@@ -201,18 +257,17 @@ where
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::record::capability::RecordScoped,
-        dyn crate::view::capability::ViewState,
-        dyn crate::undo::UndoPoints
+        dyn crate::view::capability::ViewState
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }
@@ -224,83 +279,44 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        // A dynamic page is a transparent layout boundary, not an intrinsic
-        // desktop-width island. Constrain it to its parent so percent-width
-        // cards and wrapping rows reflow correctly on narrow windows.
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: taffy::Dimension::length(0.0),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                ..Style::default()
-            },
+        taffy.widget_node(
+            boundary_style(taffy.style(child).ok()),
             &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
+    /// A child that left the flow (an absent element, bound text with
+    /// nothing to say) takes the boundary out with it.
+    fn adjust_layout_style(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
+        let child = taffy
+            .children(node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        let Some(child) = child else {
+            return false;
+        };
+        let wanted = boundary_style(taffy.style(child).ok());
+        match taffy.style(node) {
+            Ok(style) if style.display != wanted.display => {
+                let mut style = style.clone();
+                style.display = wanted.display;
+                taffy.set_style(node, style).is_ok()
+            }
+            _ => false,
         }
     }
 
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "ModelView"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -315,43 +331,31 @@ where
         self.child.needs_idle_sync()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.wake_deadline
+            .as_ref()
+            .and_then(|deadline| deadline())
+            .into_iter()
+            .chain(self.child.next_wake_deadline())
+            .min()
+    }
+
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         self.child.on_external_event(payload, state, root);
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
-        self.child.apply_room_action(doc, type_id, payload)
-    }
-
-    fn draw_with_presence(
+    fn apply_room_action(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-}
-
-impl<K> crate::undo::UndoPoints for ModelView<K>
-where
-    K: PartialEq + 'static,
-{
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
+        self.child.apply_room_action(doc, type_id, payload)
     }
 }
 
@@ -389,7 +393,17 @@ where
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         crate::search::capability::search_providers(self.child.as_ref())
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        crate::search::capability::search_provider_descriptors(self.child.as_ref())
+    }
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         crate::search::capability::activate_search_result(
             self.child.as_mut(),
             action_id,
@@ -403,9 +417,6 @@ impl<K> crate::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::resources::resources(self.child.as_ref(), doc)
-    }
     fn document_action_result(
         &self,
         doc: &AutoCommit,
@@ -465,6 +476,69 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     use super::*;
+    use vello::kurbo::Point;
+
+    #[test]
+    fn deadline_reconciles_an_idle_projection_through_the_real_frame_host() {
+        let deadline = Rc::new(Cell::new(
+            crate::time::now() + crate::time::Duration::from_secs(60),
+        ));
+        let expired = Rc::new(Cell::new(false));
+        let projected_deadline = deadline.clone();
+        let projected_expired = expired.clone();
+        let built_expired = expired.clone();
+        let scheduled_deadline = deadline.clone();
+        let scheduled_expired = expired.clone();
+        let view = ModelView::from_document(
+            move |_, _| projected_expired.get() || crate::time::now() >= projected_deadline.get(),
+            move |expired| {
+                built_expired.set(*expired);
+                Box::new(Text::new(if *expired {
+                    "Pairing expired"
+                } else {
+                    "Pairing active"
+                }))
+            },
+        )
+        .with_wake_deadline(move || (!scheduled_expired.get()).then(|| scheduled_deadline.get()));
+        let mut host =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(view), (600, 400));
+        assert!(!expired.get());
+        assert_eq!(
+            host.frame_schedule().next_wake_deadline,
+            Some(deadline.get())
+        );
+        assert!(!host.frame_schedule().needs_animation_frame);
+        // Move the actual projection's deadline to now, without delivering an
+        // input or editing its model. Its existing host wake must remain due.
+        deadline.set(crate::time::now());
+        assert!(host.frame_schedule().next_wake_deadline.unwrap() <= crate::time::now());
+        assert!(host.wait_until(crate::time::Duration::ZERO, |_| expired.get()));
+        assert_eq!(host.frame_schedule().next_wake_deadline, None);
+        assert!(host.a11y_nodes().iter().any(|(_, node)| {
+            node.value() == Some("Pairing expired") || node.label() == Some("Pairing expired")
+        }));
+    }
+
+    #[test]
+    fn model_view_publishes_each_admitted_child_resource_once() {
+        use crate::widget::ToggleGroup;
+        use crate::widget::toggle_group::Segment;
+        let state = crate::LocalState::new(0_u8);
+        let mut view = ModelView::from_state(&state, |_| {
+            Box::new(
+                ToggleGroup::new(vec![Segment::new("One"), Segment::new("Two")], 0)
+                    .on_view("model-view-mode", |_| {}),
+            )
+        });
+        let doc = AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
+        let resources = crate::widget::published_resources(&view, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id.as_str(), "tilo.control:model-view-mode");
+        assert_eq!(resources[0].actions.len(), 1);
+        assert_eq!(resources[0].actions[0].id, "select");
+    }
 
     fn string(doc: &AutoCommit, key: &str) -> String {
         match doc.get(&ROOT, key) {
@@ -474,6 +548,80 @@ mod tests {
             },
             _ => String::new(),
         }
+    }
+
+    fn solve(root: &mut dyn Widget, width: f32, height: f32) {
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let node = root.build_layout(&mut tree, &theme, &mut map);
+        crate::text_render::with_layout_renderer(1.0, |text| {
+            tree.compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+                |known, available, node, _, _| {
+                    map.get(&node).map_or(taffy::Size::ZERO, |&widget| {
+                        // SAFETY: the map points into `root`, alive and not
+                        // otherwise borrowed for the duration of this solve.
+                        unsafe { (*widget).measure(known, available, text) }
+                    })
+                },
+            )
+            .expect("layout solves");
+        });
+        root.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    #[test]
+    fn the_boundary_passes_percent_height_and_growth_through() {
+        use crate::widget::{Column, Scrollable, Spacer};
+        let page = || -> Element {
+            Box::new(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_intrinsic_height()
+                            .push(Box::new(Spacer::fixed(2000.0))),
+                    )),
+            )
+        };
+        let state = crate::LocalState::new(0_u8);
+        let mut root = Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(Spacer::fixed(40.0)))
+            .push(Box::new(ModelView::from_state(&state, move |_| page())));
+        let doc = AutoCommit::new();
+        root.sync(&doc, &ROOT);
+        solve(&mut root, 400.0, 300.0);
+        let view = root.children()[1].get_rect();
+        assert!(
+            view.height() > 200.0 && view.y1 <= 300.5,
+            "the scroller fills the column below the bar: {view:?}"
+        );
+
+        let absent = crate::LocalState::new(0_u8);
+        let mut root = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(10.0)
+            .push(Box::new(Spacer::fixed(10.0)))
+            .push(Box::new(ModelView::from_state(&absent, |_| {
+                crate::widget::optional(None)
+            })))
+            .push(Box::new(Spacer::fixed(10.0)));
+        root.sync(&doc, &ROOT);
+        solve(&mut root, 400.0, 300.0);
+        let children = root.children();
+        let gap = children[2].get_rect().y0 - children[0].get_rect().y1;
+        assert!(
+            (gap - 10.0).abs() < 0.01,
+            "an absent view takes no gap: {gap}"
+        );
     }
 
     #[test]
@@ -491,18 +639,18 @@ mod tests {
             let mut doc = AutoCommit::new();
             doc.put(&ROOT, "selection", "alpha").unwrap();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 1);
             assert!(view.take_structure_dirty());
             assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
 
             doc.put(&ROOT, "unrelated", 42).unwrap();
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
             assert!(!view.take_structure_dirty());
 
             doc.put(&ROOT, "selection", "beta").unwrap();
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2);
             assert!(view.take_structure_dirty());
             assert_eq!(
@@ -521,7 +669,7 @@ mod tests {
             )
             .autofocus_on_change(true);
 
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("list")
@@ -530,14 +678,14 @@ mod tests {
 
             state.doc.put(&ROOT, "mode", "detail").unwrap();
             state.commit_action(None, None);
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("detail")
             );
 
             state.undo(None, None).unwrap();
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("list")
@@ -547,15 +695,15 @@ mod tests {
         fn typed_state_selects_arbitrary_subtrees() {
             let state = crate::LocalState::new(String::from("loading"));
             let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("loading")
             );
             state.set(String::from("ready"));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("ready")
@@ -594,13 +742,13 @@ mod tests {
                     Box::new(Text::new(label))
                 },
             );
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             state.set(LoadState::Ready(Project {
                 title: String::from("First"),
             }));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
@@ -610,7 +758,7 @@ mod tests {
             state.set(LoadState::Ready(Project {
                 title: String::from("Updated without structural replacement"),
             }));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
         }
 

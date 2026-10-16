@@ -36,6 +36,7 @@ use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hd
 use smithay::backend::allocator::Buffer as _;
 #[cfg(target_os = "linux")]
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use tilo_lock::MutexRecover as _;
 
 /// Software-encoder FPS ceiling — a CPU encoder can't sustain more on a
 /// typical laptop; hardware backends lift this.
@@ -122,6 +123,57 @@ impl EncodedFrame {
     }
 }
 
+/// `SurfaceStreamStart::codec` of a page shared as a display list.
+pub const PAINT_CODEC: &str = ui::webview::paint::stream::wire::CODEC;
+
+/// What [`SharedFlatpakSession::assemble`] builds a session from.
+struct Started {
+    host_user_id: PeerId,
+    app_id: String,
+    surface_id: SurfaceId,
+    width: u32,
+    height: u32,
+    local_caps: CodecCapabilities,
+    metrics: Option<PeerSurfaceMetrics>,
+    paint: bool,
+}
+
+/// The encoder of a paint share: its frames come from the app already
+/// encoded, so it is never handed pixels and refuses any it is given.
+struct PaintPassthrough {
+    width: u32,
+    height: u32,
+}
+
+impl Encoder for PaintPassthrough {
+    fn kind(&self) -> EncoderKind {
+        EncoderKind::RoyaltyFreeSoftware
+    }
+    fn codec(&self) -> Codec {
+        Codec::H264
+    }
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
+    fn accepts_dmabuf(&self, _fourcc: u32, _modifier: u64) -> bool {
+        false
+    }
+    fn force_keyframe(&mut self) {}
+    fn encode(
+        &mut self,
+        _input: FrameInput<'_>,
+        _out: &mut Vec<u8>,
+    ) -> Result<crate::collab::encoder::FrameStats, EncoderError> {
+        Err(EncoderError::EncodeFailed {
+            kind: self.kind(),
+            detail: "paint_passthrough".into(),
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
     #[error("encoder {choice:?} is not available in this build")]
@@ -145,6 +197,49 @@ struct CodecState {
     /// configured but no hardware 10-bit encoder every viewer can decode
     /// exists (the wire must match the bytes).
     hdr: Option<HdrConfig>,
+    /// The size frames are encoded at: the window's, or smaller where a
+    /// receiver's hardware decoder stops short of it.
+    encoded: (u32, u32),
+}
+
+/// The size to encode a `source`-sized window at in `codec` for `receivers`:
+/// at most what every receiver that decodes `codec` in hardware takes, so
+/// none falls back to software decoding. With mixed receivers this is the
+/// lowest common limit: one encode serves all, where an encode per limit
+/// would multiply the host's encoder load. Aspect is kept; sides are even;
+/// a window is never scaled up.
+pub fn encode_size(
+    codec: Codec,
+    source: (u32, u32),
+    receivers: &[CodecCapabilities],
+) -> (u32, u32) {
+    let even = |value: u32| (value & !1).max(2);
+    // `numerator * scale / denominator` in integers, saturating.
+    let scaled = |numerator: u32, scale: u32, denominator: u32| {
+        u64::from(numerator)
+            .saturating_mul(u64::from(scale))
+            .checked_div(u64::from(denominator.max(1)))
+            .map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX))
+    };
+    let fitted = receivers
+        .iter()
+        .filter(|receiver| receiver.hardware_decode.contains(&codec))
+        .filter_map(|receiver| receiver.hardware_decode_max.get(&codec).copied())
+        .map(|(max_w, max_h)| {
+            if source.0 <= max_w && source.1 <= max_h {
+                return source;
+            }
+            // Fit inside the limit at the window's aspect.
+            let by_width = scaled(source.1, max_w, source.0);
+            if by_width <= max_h {
+                (max_w, by_width)
+            } else {
+                (scaled(source.0, max_h, source.1), max_h)
+            }
+        })
+        .min_by_key(|(w, h)| u64::from(*w).saturating_mul(u64::from(*h)))
+        .unwrap_or(source);
+    (even(fitted.0), even(fitted.1))
 }
 
 /// This machine's capabilities as the configured preference allows using
@@ -179,6 +274,9 @@ pub struct SharedFlatpakSession {
     pub surface_id: SurfaceId,
     width: u32,
     height: u32,
+    /// The app streams the window's page as a display list; see
+    /// [`Self::start_paint`].
+    paint: bool,
     config: FlatpakShareConfig,
     encoder: Arc<Mutex<Box<dyn Encoder>>>,
     /// What the running encoder is, and why; replaced by [`Self::renegotiate`].
@@ -206,6 +304,9 @@ pub struct SharedFlatpakSession {
     /// lets late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
     color_override: Arc<Mutex<ColorOverride>>,
+    /// The workspace tab holding the window, announced with the stream so a
+    /// viewer shows it in exactly that tab; `0` names none.
+    tab: u64,
 }
 
 impl SharedFlatpakSession {
@@ -268,6 +369,81 @@ impl SharedFlatpakSession {
         if let Some(m) = &metrics {
             m.set_chosen_encoder(state.kind);
         }
+        Ok(Self::assemble(
+            Started {
+                host_user_id,
+                app_id: app_id.into(),
+                surface_id,
+                width,
+                height,
+                local_caps,
+                metrics,
+                paint: false,
+            },
+            config,
+            encoder,
+            state,
+        ))
+    }
+
+    /// A share of a window whose app streams its page as a display list
+    /// ([`PAINT_CODEC`]): the app hands over frames ([`Self::paint_message`]),
+    /// so nothing is captured or encoded and viewers draw the page themselves.
+    ///
+    /// # Errors
+    ///
+    /// [`ShareError::DimensionsExceeded`] for a window outside 1..=4096.
+    pub fn start_paint(
+        host_user_id: PeerId,
+        app_id: impl Into<String>,
+        surface_id: SurfaceId,
+        width: u32,
+        height: u32,
+        config: &FlatpakShareConfig,
+    ) -> Result<Self, ShareError> {
+        if width == 0 || height == 0 || width > 4096 || height > 4096 {
+            return Err(ShareError::DimensionsExceeded { width, height });
+        }
+        let encoder = PaintPassthrough { width, height };
+        let state = CodecState {
+            kind: encoder.kind(),
+            codec: encoder.codec(),
+            hdr: None,
+            encoded: (width, height),
+        };
+        Ok(Self::assemble(
+            Started {
+                host_user_id,
+                app_id: app_id.into(),
+                surface_id,
+                width,
+                height,
+                local_caps: CodecCapabilities::default(),
+                metrics: None,
+                paint: true,
+            },
+            config,
+            Box::new(encoder),
+            state,
+        ))
+    }
+
+    fn assemble(
+        started: Started,
+        config: &FlatpakShareConfig,
+        encoder: Box<dyn Encoder>,
+        state: CodecState,
+    ) -> Self {
+        let Started {
+            host_user_id,
+            app_id,
+            surface_id,
+            width,
+            height,
+            local_caps,
+            metrics,
+            paint,
+        } = started;
         // Software encoders cannot sustain more than the ceiling.
         let effective_fps = if state.kind.is_hardware() {
             config.target_fps.max(1)
@@ -283,14 +459,18 @@ impl SharedFlatpakSession {
                 .max(1),
         );
         let stream_sender = Arc::new(SurfaceStreamSender::new(surface_id, host_user_id));
-        stream_sender.set_format(state.codec, display_size(state.codec, width, height));
+        stream_sender.set_format(
+            state.codec,
+            display_size(state.codec, state.encoded.0, state.encoded.1),
+        );
 
-        Ok(Self {
+        Self {
             host_user_id,
-            app_id: app_id.into(),
+            app_id,
             surface_id,
             width,
             height,
+            paint,
             config: FlatpakShareConfig {
                 max_bitrate_kbps: config.max_bitrate_kbps,
                 target_fps: effective_fps,
@@ -309,7 +489,8 @@ impl SharedFlatpakSession {
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
             color_override: Arc::new(Mutex::new(None)),
-        })
+            tab: 0,
+        }
     }
 
     /// Negotiate a codec for `receivers` and open its encoder. An HDR
@@ -334,12 +515,16 @@ impl SharedFlatpakSession {
             config.max_bitrate_kbps.max(500)
         };
         let fps = config.target_fps.max(1);
-        let init = match hdr {
+        let output = encode_size(codec, (width, height), receivers);
+        let mut init = match hdr {
             None => EncoderInit::sdr(codec, width, height, fps, bitrate_kbps, 1),
             Some(hdr_cfg) => {
                 EncoderInit::hdr10(codec, width, height, fps, bitrate_kbps, 1, hdr_cfg)
             }
         };
+        if output != (width & !1, height & !1) {
+            init.output = Some(output);
+        }
         let encoder = build(init, config.encoder).map_err(|e| match e {
             EncoderError::Unavailable { .. } => ShareError::EncoderUnavailable {
                 choice: config.encoder,
@@ -353,6 +538,7 @@ impl SharedFlatpakSession {
             kind: encoder.kind(),
             codec,
             hdr,
+            encoded: output,
         };
         tracing::info!(
             codec = codec.wire_label(),
@@ -370,14 +556,17 @@ impl SharedFlatpakSession {
     /// receivers rebuild their decoders. A negotiation that cannot open an
     /// encoder keeps the running one.
     pub fn renegotiate(&self, receivers: &[CodecCapabilities]) -> bool {
+        if self.paint {
+            return false;
+        }
         let Some((codec, hdr)) = choose(&self.config, &self.local_caps, receivers) else {
             return false;
         };
-        let current = *self
-            .codec_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if current.codec == codec && current.hdr.is_some() == hdr.is_some() {
+        let current = *self.codec_state.lock_recover();
+        if current.codec == codec
+            && current.hdr.is_some() == hdr.is_some()
+            && current.encoded == encode_size(codec, (self.width, self.height), receivers)
+        {
             return false;
         }
         let opened = Self::open_encoder(
@@ -394,17 +583,11 @@ impl SharedFlatpakSession {
                 return false;
             }
         };
-        *self
-            .encoder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = encoder;
-        *self
-            .codec_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+        *self.encoder.lock_recover() = encoder;
+        *self.codec_state.lock_recover() = state;
         self.stream_sender.set_format(
             state.codec,
-            display_size(state.codec, self.width, self.height),
+            display_size(state.codec, state.encoded.0, state.encoded.1),
         );
         if let Some(m) = &self.metrics {
             m.set_chosen_encoder(state.kind);
@@ -434,27 +617,18 @@ impl SharedFlatpakSession {
     }
 
     pub fn chosen_encoder(&self) -> EncoderKind {
-        self.codec_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .kind
+        self.codec_state.lock_recover().kind
     }
 
     /// Bitstream codec the encoder is emitting.
     pub fn chosen_codec(&self) -> Codec {
-        self.codec_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .codec
+        self.codec_state.lock_recover().codec
     }
 
     /// Update the capture path (SHM ↔ DMABUF); propagates into the shared
     /// metrics handle so the OSD sees the switch immediately.
     pub fn set_capture_path(&self, path: CapturePath) {
-        let mut slot = self
-            .capture_path
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.capture_path.lock_recover();
         *slot = path;
         drop(slot);
         if let Some(m) = &self.metrics {
@@ -463,14 +637,30 @@ impl SharedFlatpakSession {
     }
 
     pub fn capture_path(&self) -> CapturePath {
-        *self
-            .capture_path
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.capture_path.lock_recover()
     }
 
+    /// The window's size, the size frames are captured at.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The size frames are encoded and announced at: the window's, or less
+    /// for a receiver's hardware decoder.
+    pub fn encoded_dimensions(&self) -> (u32, u32) {
+        self.codec_state.lock_recover().encoded
+    }
+
+    /// Name the workspace tab the window is in, for the stream start.
+    #[must_use]
+    pub fn with_tab(mut self, tab: u64) -> Self {
+        self.tab = tab;
+        self
+    }
+
+    /// The workspace tab the stream names; `0` when none.
+    pub fn tab(&self) -> u64 {
+        self.tab
     }
 
     pub fn snapshot_config(&self) -> FlatpakShareConfig {
@@ -482,10 +672,7 @@ impl SharedFlatpakSession {
         // `sender_monotonic_ns_at_send` — reading twice would smear the
         // clock-offset handshake by a couple hundred ns.
         let now_ns = self.monotonic_ns_now();
-        let state = *self
-            .codec_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = *self.codec_state.lock_recover();
         // The label and bit depth always describe the bytes. Colour
         // precedence: client-declared colorimetry > HDR config > SDR BT.709.
         let (default_color, default_hdr, bit_depth) = match state.hdr {
@@ -496,19 +683,39 @@ impl SharedFlatpakSession {
             Some((client_color, client_hdr)) => (Some(client_color), client_hdr.or(default_hdr)),
             None => (Some(default_color), default_hdr),
         };
-        let codec_label = state.codec.wire_label().to_string();
+        let codec_label = if self.paint {
+            PAINT_CODEC.to_string()
+        } else {
+            state.codec.wire_label().to_string()
+        };
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
             app_id: self.app_id.clone(),
-            width: self.width,
-            height: self.height,
+            width: state.encoded.0,
+            height: state.encoded.1,
             codec: codec_label,
             ts: now_ns,
             sender_monotonic_ns_at_send: now_ns,
             colorimetry,
             hdr_static_metadata: hdr_static,
             bit_depth,
+            tab: self.tab,
+        }
+    }
+
+    /// Whether the app streams this window's page ([`Self::start_paint`]).
+    pub fn is_paint(&self) -> bool {
+        self.paint
+    }
+
+    /// One frame of a paint share's stream, as the app encoded it.
+    pub fn paint_message(&self, payload: Vec<u8>) -> NeighbourMsg {
+        NeighbourMsg::SurfaceFrame {
+            surface: self.surface_id,
+            source_peer: self.host_user_id,
+            encoded_h264: payload,
+            ts: self.monotonic_ns_now(),
         }
     }
 
@@ -529,13 +736,19 @@ impl SharedFlatpakSession {
     /// allocation-free; a mismatch surfaces as
     /// `EncodeError::BufferSizeMismatch` on the next pump.
     pub fn deposit_captured_rgba(&self, rgba: Vec<u8>) {
+        self.stage(StagedKind::Rgba(rgba));
+    }
+
+    /// Replace any undrained deposit with `kind`, stamped now. A paint
+    /// share never takes captured frames.
+    fn stage(&self, kind: StagedKind) {
+        if self.paint {
+            return;
+        }
         let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self
-            .staged_frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.staged_frame.lock_recover();
         *slot = Some(StagedFrame {
-            kind: StagedKind::Rgba(rgba),
+            kind,
             capture_ts_ns,
         });
     }
@@ -547,21 +760,29 @@ impl SharedFlatpakSession {
     /// fallback picks up on the next commit.
     #[cfg(target_os = "linux")]
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
-        let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self
-            .staged_frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(StagedFrame {
-            kind: StagedKind::Dmabuf(dmabuf),
-            capture_ts_ns,
-        });
+        self.stage(StagedKind::Dmabuf(dmabuf));
     }
 
     /// Pump one iteration of the encode loop. `None` covers throttled,
     /// nothing staged, or a swallowed encode error (logged once per
     /// consecutive run) — matches the compositor's "encode or drop" contract.
     #[tracing::instrument(level = "trace", skip(self))]
+    /// When a captured frame the throttle held back is due to be encoded;
+    /// `None` when nothing waits. A window that goes still right after a
+    /// change commits nothing more, so its last frame is sent at this time
+    /// rather than on a commit that never comes.
+    pub fn staged_due(&self) -> Option<Instant> {
+        if !self.active.load(Ordering::Acquire) || self.staged_frame.lock_recover().is_none() {
+            return None;
+        }
+        Some(
+            self.throttle
+                .lock_recover()
+                .next_due()
+                .unwrap_or(self.origin),
+        )
+    }
+
     pub fn encode_next_frame(&self, now: Instant) -> Option<EncodedFrame> {
         if !self.active.load(Ordering::Acquire) {
             return None;
@@ -570,27 +791,17 @@ impl SharedFlatpakSession {
         // than across the (potentially slow) encode below; re-acquired
         // briefly again on success to record `mark_encoded`.
         {
-            let throttle = self
-                .throttle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let throttle = self.throttle.lock_recover();
             if !throttle.should_encode(now) {
                 return None;
             }
         }
         // Drain staged frame before taking the encoder lock — avoid holding both.
-        let staged = self
-            .staged_frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let staged = self.staged_frame.lock_recover().take();
         let staged = staged?;
         let carried_ts = staged.capture_ts_ns;
 
-        let mut encoder = self
-            .encoder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut encoder = self.encoder.lock_recover();
         let mut nalus = Vec::new();
         // DMABUF paths lift plane fd/offset/stride off the `Dmabuf` handle
         // (Arc keeps the fds alive for the borrow); RGBA paths just hand the
@@ -609,10 +820,7 @@ impl SharedFlatpakSession {
         drop(encoder);
         match encode_result {
             Ok(stats) => {
-                self.throttle
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .mark_encoded(now);
+                self.throttle.lock_recover().mark_encoded(now);
                 // Record capture path only after the encoder actually
                 // succeeds, not merely when a DMABUF buffer was detected.
                 self.set_capture_path(path_taken);
@@ -659,27 +867,18 @@ impl SharedFlatpakSession {
     /// later via [`Self::set_read_only`]) and subscribe them to the
     /// [`SurfaceStreamSender`].
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reg = self.share_registry.lock_recover();
         reg.insert(peer, self.surface_id, StreamingShare { read_only });
         drop(reg);
         self.stream_sender.subscribe(peer);
         // A new viewer can only start decoding at a keyframe.
-        self.encoder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .force_keyframe();
+        self.encoder.lock_recover().force_keyframe();
     }
 
     /// Drop a viewer — subsequent `RemoteInput` events fall on the floor and
     /// their substream subscription closes.
     pub fn drop_viewer(&self, peer: PeerId) {
-        let mut reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reg = self.share_registry.lock_recover();
         reg.remove(peer, self.surface_id);
         drop(reg);
         self.stream_sender.unsubscribe(peer);
@@ -692,8 +891,7 @@ impl SharedFlatpakSession {
     pub fn sync_viewers(&self, desired: &std::collections::HashSet<PeerId>) {
         let existing = self
             .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .peers_for(self.surface_id);
         for peer in existing {
             if !desired.contains(&peer) {
@@ -733,18 +931,12 @@ impl SharedFlatpakSession {
     }
 
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reg = self.share_registry.lock_recover();
         reg.set_read_only(peer, self.surface_id, read_only);
     }
 
     pub fn accept_remote_input(&self, peer: PeerId) -> bool {
-        let reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reg = self.share_registry.lock_recover();
         reg.accept_remote_input(peer, self.surface_id)
     }
 
@@ -752,17 +944,13 @@ impl SharedFlatpakSession {
     /// full firewall can mirror the session-owned permission immediately
     /// before reviewing an inbound event.
     pub fn viewer_share(&self, peer: PeerId) -> Option<StreamingShare> {
-        let reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reg = self.share_registry.lock_recover();
         reg.get(peer, self.surface_id).cloned()
     }
 
     pub fn viewer_ids(&self) -> Vec<PeerId> {
         self.share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .peers_for(self.surface_id)
     }
 
@@ -777,10 +965,7 @@ impl SharedFlatpakSession {
         event: InputEvent,
         sink: &mut S,
     ) -> bool {
-        let reg = self
-            .share_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reg = self.share_registry.lock_recover();
         reg.route_to(peer, self.surface_id, event, sink)
     }
 
@@ -826,6 +1011,61 @@ fn display_size(codec: Codec, width: u32, height: u32) -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paint_share_announces_its_codec_and_never_captures_or_encodes() {
+        let s = SharedFlatpakSession::start_paint(
+            0xBEEF,
+            "so.tilo.browser",
+            42,
+            800,
+            600,
+            &cfg_software(),
+        )
+        .expect("start");
+        assert!(s.is_paint());
+        match s.stream_start_msg() {
+            NeighbourMsg::SurfaceStreamStart {
+                codec,
+                width,
+                height,
+                app_id,
+                ..
+            } => {
+                assert_eq!(codec, PAINT_CODEC);
+                assert_eq!((width, height), (800, 600));
+                assert_eq!(app_id, "so.tilo.browser");
+            }
+            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+        }
+        s.deposit_captured_rgba(vec![0; 800 * 600 * 4]);
+        assert!(
+            s.staged_due().is_none(),
+            "the window's pixels are never captured"
+        );
+        assert!(s.encode_next_frame(Instant::now()).is_none());
+        assert!(!s.renegotiate(&[CodecCapabilities::default()]));
+        match s.paint_message(vec![0, 1, 2]) {
+            NeighbourMsg::SurfaceFrame {
+                surface,
+                source_peer,
+                encoded_h264,
+                ..
+            } => {
+                assert_eq!(
+                    (surface, source_peer, encoded_h264),
+                    (42, 0xBEEF, vec![0, 1, 2])
+                );
+            }
+            other => panic!("expected SurfaceFrame, got {other:?}"),
+        }
+        s.add_viewer(9, false);
+        assert!(
+            s.accept_remote_input(9),
+            "viewers drive a painted window as any other"
+        );
+        assert!(SharedFlatpakSession::start_paint(1, "x", 1, 0, 600, &cfg_software()).is_err());
+    }
     use crate::network::streaming::test_support::RecordingSink;
 
     fn cfg_software() -> FlatpakShareConfig {
@@ -856,6 +1096,55 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A Pi-class viewer's 1080p hardware decoder bounds the encode; the
+    /// window keeps its aspect and is never scaled up; with several viewers
+    /// the smallest limit serves all; a viewer decoding in software or
+    /// without a stated limit bounds nothing.
+    #[test]
+    fn the_encode_fits_every_hardware_decoder_watching() {
+        use media::StreamCodec::{Av1, H264};
+        let board = |limit| CodecCapabilities {
+            hardware_decode: [H264].into(),
+            hardware_decode_max: [(H264, limit)].into(),
+            ..CodecCapabilities::default()
+        };
+        let desk = CodecCapabilities {
+            hardware_decode: [H264, Av1].into(),
+            ..CodecCapabilities::default()
+        };
+        let pi = board((1920, 1088));
+        let small = board((1280, 720));
+
+        assert_eq!(
+            encode_size(H264, (2560, 1440), std::slice::from_ref(&pi)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            encode_size(H264, (1440, 2560), std::slice::from_ref(&pi)),
+            (612, 1088)
+        );
+        assert_eq!(
+            encode_size(H264, (1280, 800), std::slice::from_ref(&pi)),
+            (1280, 800)
+        );
+        assert_eq!(
+            encode_size(H264, (2560, 1440), &[pi.clone(), small, desk.clone()]),
+            (1280, 720),
+            "one encode at the lowest common limit"
+        );
+        assert_eq!(encode_size(H264, (3840, 2160), &[desk]), (3840, 2160));
+        assert_eq!(
+            encode_size(Av1, (3840, 2160), &[pi]),
+            (3840, 2160),
+            "a codec the board decodes in software is not its concern"
+        );
+        assert_eq!(
+            encode_size(H264, (1001, 701), &[]),
+            (1000, 700),
+            "even sides"
+        );
     }
 
     #[test]
@@ -968,6 +1257,7 @@ mod tests {
                     hdr_static_metadata,
                     bit_depth,
                     app_id,
+                    tab: _,
                 } => {
                     assert_eq!(surface, 42);
                     assert_eq!(source_peer, 0xBEEF);

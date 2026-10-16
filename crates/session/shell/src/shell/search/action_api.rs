@@ -81,6 +81,7 @@ pub struct ActionHierarchy {
     pub room: String,
     pub record: String,
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub operation: String,
 }
 
@@ -140,6 +141,7 @@ pub struct ActionCatalog {
     /// accessor works through this.
     visible: Vec<usize>,
     hierarchies: Vec<Option<ActionHierarchy>>,
+    completion: super::QueryCompletion,
 }
 
 impl ActionCatalog {
@@ -166,11 +168,22 @@ impl ActionCatalog {
             doc,
             doc_root,
         };
+        Self::build_query(registry, &args, visibility, false)
+    }
+
+    /// Explicit bounded machine discovery uses the same visibility gate.
+    pub fn build_query(
+        registry: &SearchRegistry,
+        args: &QueryArgs<'_>,
+        visibility: &dyn ActionVisibility,
+        include_programmatic: bool,
+    ) -> Self {
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
-        registry.refresh_indexes(&args);
-        let results = registry.query_exhaustive(&args);
+        registry.begin_catalogue_query();
+        registry.refresh_indexes(args);
+        let (results, completion) = registry.query_catalogue(args, include_programmatic);
         let visible: Vec<usize> = results
             .iter()
             .enumerate()
@@ -182,6 +195,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion,
         }
     }
 
@@ -228,6 +242,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
@@ -236,15 +251,21 @@ impl ActionCatalog {
         results: &[SearchResult],
         visible: &[usize],
     ) -> Vec<Option<ActionHierarchy>> {
+        // Each provider once by id (the first registered, as a scan would
+        // find), not a scan of the registry per row.
+        let mut providers: std::collections::HashMap<&str, &dyn super::SearchProvider> =
+            std::collections::HashMap::new();
+        for provider in registry.providers_iter() {
+            providers.entry(provider.id()).or_insert(provider);
+        }
         let mut hierarchies = vec![None; results.len()];
         for &index in visible {
             let Some((result, hierarchy)) = results.get(index).zip(hierarchies.get_mut(index))
             else {
                 continue;
             };
-            *hierarchy = registry
-                .providers_iter()
-                .find(|provider| provider.id() == result.provider_id)
+            *hierarchy = providers
+                .get(result.provider_id.as_str())
                 .and_then(|provider| provider.action_hierarchy(&result.id));
         }
         hierarchies
@@ -287,13 +308,83 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
+    pub fn completion(&self) -> &super::QueryCompletion {
+        &self.completion
+    }
+
     pub fn enumerate(&self) -> Vec<ExportedAction> {
+        self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// Narrow and order the visible rows for a caller that reads the
+    /// listing as a whole (an agent over the control socket), where the
+    /// palette's ranking by score would put every file whose path contains
+    /// the word beside the one app that offers the action.
+    ///
+    /// With no `kinds`, every kind is kept except files and folders, which
+    /// stay out unless `files`: a checkout's worth of `markdown.rs` is not
+    /// what a search for an app's action means. With `kinds` (`application`,
+    /// `action`, `note`, `file`, …; singular or plural, any case) only those
+    /// are kept, files included when named. The rows left are ordered live
+    /// app resources and their actions first, then by kind in the palette's
+    /// own order, each group keeping its relevance order.
+    pub fn arrange(&mut self, kinds: &[String], files: bool) {
+        fn normal(name: &str) -> String {
+            let mut name: String = name
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect();
+            if name.ends_with('s') {
+                name.pop();
+            }
+            name
+        }
+        let wanted: Vec<String> = kinds.iter().map(|kind| normal(kind)).collect();
+        let results = &self.results;
+        self.visible.retain(|&index| {
+            results.get(index).is_some_and(|result| {
+                if wanted.is_empty() {
+                    files || !matches!(result.kind, ResourceKind::File | ResourceKind::Folder)
+                } else {
+                    wanted.contains(&normal(result.kind.id()))
+                }
+            })
+        });
+        self.visible.sort_by_key(|&index| {
+            results.get(index).map_or((u8::MAX, u8::MAX), |result| {
+                (
+                    u8::from(
+                        result.provider_id
+                            != crate::shell::search::providers::live_app_actions::PROVIDER_ID,
+                    ),
+                    result.kind.sort_key().0,
+                )
+            })
+        });
+    }
+
+    /// The visible actions' addresses, in [`Self::enumerate`]'s order,
+    /// without describing them.
+    pub fn addresses(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.visible
+            .iter()
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| (r.provider_id.as_str(), r.id.as_str()))
+    }
+
+    /// [`Self::enumerate`]'s rows at `rows`, describing only those — one
+    /// page of a listing costs the page, not the catalogue.
+    pub fn enumerate_rows(&self, rows: std::ops::Range<usize>) -> Vec<ExportedAction> {
+        self.visible
+            .get(rows)
+            .unwrap_or_default()
             .iter()
             .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
             .map(|(i, r)| ExportedAction {
@@ -384,7 +475,7 @@ impl SelectedAction<'_> {
 
     fn invoke_bound(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         bound: &ActionArgs,
@@ -436,31 +527,13 @@ impl SelectedAction<'_> {
     /// provider's own callback found nothing to act on.
     pub fn invoke(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<InvocationDisposition, ActionError> {
         let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
         self.invoke_bound(doc, root, chrome, &bound)
-    }
-
-    /// Begin an invocation without fabricating success for a remote action
-    /// whose current authority is still being checked. Agents can retain and
-    /// poll the returned ticket just as the visual palette does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an argument-binding or provider refusal error; callers must
-    /// poll a pending disposition rather than treating it as success.
-    pub fn invoke_disposition(
-        &self,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<InvocationDisposition, ActionError> {
-        self.invoke(doc, root, chrome, args)
     }
 
     /// Invoke from the canonical JSON object used by control sockets and MCP.
@@ -475,7 +548,7 @@ impl SelectedAction<'_> {
     /// cannot perform the bound action.
     pub fn invoke_json(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -495,7 +568,7 @@ impl SelectedAction<'_> {
     /// falling back to a different invocation callback.
     pub fn invoke_json_disposition(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -513,7 +586,7 @@ impl SelectedAction<'_> {
     /// parameters.
     pub fn invoke_nullary(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
     ) -> Result<InvocationDisposition, ActionError> {
@@ -524,12 +597,90 @@ impl SelectedAction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::search::providers::{ActionsProvider, NotesProvider};
+    use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::rc::Rc;
-    use std::sync::Arc;
+
+    struct DeferredEmptyCatalogue(std::cell::Cell<bool>);
+
+    impl super::super::SearchProvider for DeferredEmptyCatalogue {
+        fn id(&self) -> &'static str {
+            "deferred-empty"
+        }
+        fn name(&self) -> &'static str {
+            "Deferred empty"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+        fn query(&self, _: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            Vec::new()
+        }
+        fn query_incomplete_reason(
+            &self,
+            _ctx: &super::super::SearchContext<'_>,
+        ) -> Option<super::super::QueryIncompleteReason> {
+            (!self.0.get()).then_some(super::super::QueryIncompleteReason::Pending)
+        }
+        fn query_page(
+            &self,
+            _: super::super::SearchContext<'_>,
+            _: Option<&super::super::SearchCursor>,
+            _: super::super::SearchBudget,
+        ) -> super::super::SearchPage {
+            if self.0.get() {
+                super::super::SearchPage::exhausted("ready", Vec::new())
+            } else {
+                super::super::SearchPage {
+                    revision: "pending".into(),
+                    results: Vec::new(),
+                    next_cursor: Some(super::super::SearchCursor {
+                        revision: "pending".into(),
+                        token: "pending".into(),
+                    }),
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: false,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_catalogue_retains_pending_and_complete_traversal() {
+        let source = Rc::new(DeferredEmptyCatalogue(std::cell::Cell::new(false)));
+        let mut registry = SearchRegistry::new();
+        registry.register(source.clone());
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(pending.completion()).unwrap(),
+            serde_json::json!({
+                "complete": false, "incomplete": [{"provider": "deferred-empty", "reason": "pending"}],
+            })
+        );
+        source.0.set(true);
+        let complete = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(complete.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(complete.completion()).unwrap(),
+            serde_json::json!({
+                "complete": true, "incomplete": [],
+            })
+        );
+    }
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();
@@ -538,8 +689,84 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
+    }
+
+    #[test]
+    fn an_agents_listing_ranks_apps_first_and_leaves_files_out_until_asked() {
+        let row = |kind: ResourceKind, provider: &str, id: &str| {
+            SearchResult::nullary(kind, provider, id, id, None, 0, |_, _, _| {})
+        };
+        let results = [
+            row(ResourceKind::File, "files", "/src/a/markdown.rs"),
+            row(ResourceKind::Folder, "files", "/src/a"),
+            row(ResourceKind::Application, "applications", "so.tilo.notes"),
+            row(ResourceKind::Action, "actions", "window.new"),
+            row(ResourceKind::Action, "app-actions", "notes.new-page"),
+            row(ResourceKind::File, "files", "/src/b/markdown.rs"),
+            row(ResourceKind::Note, "notes", "todo"),
+        ];
+        let catalog = || {
+            let visible = (0..results.len()).collect();
+            ActionCatalog {
+                results: results
+                    .iter()
+                    .map(|result| {
+                        SearchResult::nullary(
+                            result.kind.clone(),
+                            result.provider_id.clone(),
+                            result.id.clone(),
+                            result.title.clone(),
+                            None,
+                            0,
+                            |_, _, _| {},
+                        )
+                    })
+                    .collect(),
+                visible,
+                hierarchies: vec![None; results.len()],
+                completion: super::super::QueryCompletion::default(),
+            }
+        };
+        let ids = |catalog: &ActionCatalog| -> Vec<String> {
+            catalog.addresses().map(|(_, id)| id.to_owned()).collect()
+        };
+
+        let mut by_default = catalog();
+        by_default.arrange(&[], false);
+        assert_eq!(
+            ids(&by_default),
+            ["notes.new-page", "window.new", "so.tilo.notes", "todo"],
+            "live app rows lead, then kinds in the palette's order, and no file"
+        );
+        let mut with_files = catalog();
+        with_files.arrange(&[], true);
+        assert_eq!(
+            ids(&with_files),
+            [
+                "notes.new-page",
+                "window.new",
+                "so.tilo.notes",
+                "todo",
+                "/src/a/markdown.rs",
+                "/src/b/markdown.rs",
+                "/src/a",
+            ],
+            "files come last and keep their relevance order"
+        );
+        let mut files_only = catalog();
+        files_only.arrange(&["File".into()], false);
+        assert_eq!(
+            ids(&files_only),
+            ["/src/a/markdown.rs", "/src/b/markdown.rs"]
+        );
+        let mut narrowed = catalog();
+        narrowed.arrange(&["applications".into(), "note".into()], false);
+        assert_eq!(ids(&narrowed), ["so.tilo.notes", "todo"]);
+        let mut nothing = catalog();
+        nothing.arrange(&["no-such-kind".into()], true);
+        assert!(nothing.is_empty());
     }
 
     fn registry_with_actions() -> SearchRegistry {
@@ -601,7 +828,7 @@ mod tests {
 
             // INVOKE — run the side-effect. No scene is ever constructed.
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action invoked with no arguments must run");
 
             assert!(
@@ -614,7 +841,7 @@ mod tests {
         // The permission seam gates enumeration and selection uniformly.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -651,7 +878,7 @@ mod tests {
         // `ActiveApp` scope narrows the survey to the focused app's provider.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -818,7 +1045,7 @@ mod tests {
                 .expect("addressable");
 
             let err = selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect_err("a required parameter must not be skippable");
             assert!(matches!(
                 err,
@@ -831,7 +1058,12 @@ mod tests {
 
             // …and with the argument it declared, it runs.
             selected
-                .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    [("text".to_string(), text("ok"))],
+                )
                 .expect("the declared argument must be accepted");
             assert!(ran.get(), "a satisfied invocation reaches the action");
         }
@@ -862,7 +1094,7 @@ mod tests {
                 "a chrome toggle declares no parameters"
             );
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action takes no arguments");
             assert!(chrome.borrow().overlays.ws_settings);
         }
@@ -886,6 +1118,7 @@ mod tests {
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             let ran = std::rc::Rc::clone(&self.ran);
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Document,
                 provider_id: "params".to_string(),
@@ -928,6 +1161,7 @@ mod tests {
 
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "receipts".into(),
@@ -978,7 +1212,7 @@ mod tests {
             let disposition = catalog
                 .select(&ResourceRef::new("receipts", "broker.action"))
                 .expect("the broker action is addressable")
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("the provider admits the action");
             let InvocationDisposition::Accepted(receipt) = disposition else {
                 panic!("the synchronous provider must return its receipt immediately");
@@ -1018,7 +1252,12 @@ mod tests {
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable");
             let InvocationDisposition::Pending(ticket) = selected
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect("begin returns a pending ticket")
             else {
                 panic!("admission must remain pending")
@@ -1064,7 +1303,12 @@ mod tests {
             let error = catalog
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable")
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect_err("rejected admission must be returned");
             assert_eq!(begins.get(), 1);
             assert!(
@@ -1097,6 +1341,7 @@ mod tests {
             let polls = std::rc::Rc::clone(&self.polls);
             let refuse = self.refuse;
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().into(),

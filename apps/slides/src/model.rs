@@ -1,7 +1,7 @@
 //! Pure data model for a Slides deck.
 //!
-//! The on-wire source of truth lives in the Automerge document (see
-//! [`crate::doc`]); this module is the in-memory mirror plus the pure
+//! The deck is stored as the [`crate::deck::Deck`] record; this module is
+//! the deck as the window draws it, plus the pure
 //! logic the editor needs (geometry, palette resolution, the seed deck).
 //! Nothing here touches the CRDT, the renderer, or winit — it is unit
 //! testable in isolation.
@@ -16,8 +16,10 @@
 // call-by-call.
 #![allow(clippy::should_implement_trait)]
 
-use ui::ColorCompat;
+use serde::{Deserialize, Serialize};
 use ui::paint::with_alpha;
+use ui::tilo_resource::{self, JsonSchema, Model};
+use ui::tokens::colors::{PresenceHue, mix8};
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
@@ -40,8 +42,10 @@ pub fn new_id() -> Id {
 // Elements
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ElementKind {
+    #[default]
     Text,
     Rect,
     Ellipse,
@@ -79,8 +83,10 @@ impl ElementKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TextAlign {
+    #[default]
     Left,
     Center,
     Right,
@@ -236,6 +242,13 @@ impl Element {
     /// The text as written: its blocks, or for an element built from plain
     /// text, a paragraph per line carrying the element's bold and italic
     /// over all of it.
+    /// Whether a text box has no words yet.
+    pub fn is_blank_text(&self) -> bool {
+        self.kind == ElementKind::Text
+            && self.text.trim().is_empty()
+            && self.blocks.iter().all(|block| block.text.trim().is_empty())
+    }
+
     pub fn rich_blocks(&self) -> Vec<BlockContent> {
         if !self.blocks.is_empty() {
             return self.blocks.clone();
@@ -406,9 +419,11 @@ impl PartialEq for Element {
 // Slides + layouts
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Layout {
     Title,
+    #[default]
     TitleContent,
     TwoColumn,
     Section,
@@ -444,8 +459,8 @@ impl Layout {
     pub fn label(self) -> &'static str {
         match self {
             Layout::Title => "Title",
-            Layout::TitleContent => "Title + Body",
-            Layout::TwoColumn => "Two Column",
+            Layout::TitleContent => "Title and body",
+            Layout::TwoColumn => "Two columns",
             Layout::Section => "Section",
             Layout::Blank => "Blank",
         }
@@ -459,9 +474,11 @@ impl Layout {
 
 /// Per-slide background treatment, resolved against the palette at draw
 /// time. Keeps slides theme-driven while still allowing variety.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Background {
     /// Neutral content surface (raised panel).
+    #[default]
     Surface,
     /// Full accent wash — used for section / cover slides.
     Accent,
@@ -552,8 +569,10 @@ impl Slide {
 /// Named accent palettes a deck can adopt. Every colour is still pulled
 /// from the OS [`Theme`](ui::theme::Theme) so the deck respects the
 /// system look — the palette only chooses *which* token drives the accent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PaletteKind {
+    #[default]
     Indigo,
     Emerald,
     Amber,
@@ -612,12 +631,6 @@ pub struct Deck {
 }
 
 impl Deck {
-    pub fn slide(&self, idx: usize) -> Option<&Slide> {
-        self.slides.get(idx)
-    }
-    pub fn slide_mut(&mut self, idx: usize) -> Option<&mut Slide> {
-        self.slides.get_mut(idx)
-    }
     pub fn index_of(&self, id: &str) -> Option<usize> {
         self.slides.iter().position(|s| s.id == id)
     }
@@ -640,41 +653,61 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
+    /// The status colour of an image that could not be loaded.
+    pub failed: Color,
     /// The `text` and `text-dim` inks for each slide background, in
     /// [`Background::ALL`] order. See [`Palette::on`].
     inks: [(Color, Color); 3],
 }
 
+/// The deck's deep tone: an authored dark treatment in every OS theme (a
+/// theme-tracking neutral would flip near-white in the light palette).
+const DEEP: Color = Color::from_rgb8(15, 23, 42);
+
+/// A deck's colours are content: they come from the presence palette's
+/// evenly spaced hues, never from the status colours, and a deck looks the
+/// same in either theme, so its hues are the light palette's (deep enough to
+/// carry white type).
+static DECK_HUES: std::sync::LazyLock<ui::tokens::colors::PresencePalette> =
+    std::sync::LazyLock::new(|| ui::tokens::Colors::light().presence);
+
 impl Palette {
     /// Build the resolved palette for `kind` against `theme`.
     pub fn resolve(kind: PaletteKind, theme: &ui::theme::Theme) -> Palette {
         let c = &theme.tokens.colors;
+        let hue = |h: PresenceHue| DECK_HUES.hue(h);
         let accent = match kind {
-            PaletteKind::Indigo => theme.accent_primary,
-            PaletteKind::Emerald => c.semantic.success,
-            PaletteKind::Amber => c.semantic.warning,
-            PaletteKind::Rose => c.semantic.danger,
-            PaletteKind::Sky => c.semantic.info,
+            PaletteKind::Indigo => hue(PresenceHue::Blue),
+            PaletteKind::Emerald => hue(PresenceHue::Green),
+            PaletteKind::Amber => hue(PresenceHue::Amber),
+            PaletteKind::Rose => hue(PresenceHue::Pink),
+            PaletteKind::Sky => hue(PresenceHue::Sky),
         };
         let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
-            accent_deep: mix(accent, c.surfaces.base, 0.62),
+            accent_deep: mix8(accent, DEEP, 0.62),
             surface: c.surfaces.raised,
-            surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
+            surface_dim: mix8(c.surfaces.raised, c.surfaces.content, 0.5),
             // A "Deep" slide is an authored dark treatment in every OS theme
             // — a theme-tracking neutral flips near-white in the light
             // palette. A fixed deep tone keeps it dramatic; its text inks
             // are chosen against it below.
-            deep: Color::from_rgb8(15, 23, 42),
+            deep: DEEP,
             text: c.text_primary,
             text_dim: c.text_dim,
             // White on the accent where it reads, else the legible ink.
-            on_accent: c.readable_on(accent, Color::WHITE),
-            success: c.semantic.success,
-            warning: c.semantic.warning,
-            danger: c.semantic.danger,
-            info: c.semantic.info,
+            // White type on the accent, as slides set it large.
+            on_accent: c.ink_on_any(
+                &[accent],
+                Color::WHITE,
+                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
+            success: hue(PresenceHue::Green),
+            warning: hue(PresenceHue::Amber),
+            danger: hue(PresenceHue::Red),
+            info: hue(PresenceHue::Violet),
+            failed: c.semantic.danger,
             inks: [(c.text_primary, c.text_dim); 3],
         };
         // The theme's text colours are chosen for the theme's own surfaces;
@@ -690,7 +723,7 @@ impl Palette {
             let preferred_dim = if text == c.text_primary {
                 c.text_dim
             } else {
-                mix(text, ground, 0.3)
+                mix8(text, ground, 0.3)
             };
             (text, c.readable_on(ground, preferred_dim))
         });
@@ -767,35 +800,54 @@ impl Palette {
         }
     }
 
-    /// Default body / heading text colour for a slide background: the ink
-    /// the `text` role resolves to on it (see [`Palette::on`]).
-    pub fn on_bg(&self, bg: Background) -> Color {
-        self.on(bg).text
+    /// The `text` (or, with `dim`, `text-dim`) ink for text standing on
+    /// `ground`: the slide's own ink where it clears AA on that ground,
+    /// otherwise whichever of the palette's inks reads best on it.
+    pub fn ink_on(&self, ground: Color, dim: bool) -> Color {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST as AA;
+        let text = if contrast_ratio(self.text, ground) >= AA {
+            self.text
+        } else {
+            std::iter::once(self.text)
+                .chain(self.inks.iter().map(|(ink, _)| *ink))
+                .max_by(|a, b| contrast_ratio(*a, ground).total_cmp(&contrast_ratio(*b, ground)))
+                .unwrap_or(self.text)
+        };
+        if !dim {
+            return text;
+        }
+        if text == self.text && contrast_ratio(self.text_dim, ground) >= AA {
+            return self.text_dim;
+        }
+        let soft = mix8(text, ground, 0.3);
+        if contrast_ratio(soft, ground) >= AA {
+            soft
+        } else {
+            text
+        }
     }
 }
 
-/// The fill/stroke roles offered in the inspector swatch row.
+/// The fill roles the inspector offers. They stay distinct from one another
+/// in either OS theme: `surface` is the slide's own ground and `text` its
+/// ink, which sit at opposite ends whichever theme is showing, and the rest
+/// are the deck's hues.
 pub const FILL_ROLES: [&str; 8] = [
     "accent",
     "accent-soft",
     "surface",
-    "deep",
+    "text",
     "success",
     "warning",
     "danger",
     "info",
 ];
-pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
-
-/// Linear blend `a*(1-t) + b*t` in straight RGB.
-fn mix(a: Color, b: Color, t: f64) -> Color {
-    let l = |x: u8, y: u8| {
-        (f64::from(x) * (1.0 - t) + f64::from(y) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    Color::from_rgba8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), 255)
-}
+/// The stroke roles the inspector offers: no stroke, the slide's ink, and
+/// the deck's hues.
+pub const STROKE_ROLES: [&str; 7] = [
+    "none", "text", "accent", "success", "warning", "danger", "info",
+];
 
 // ===========================================================================
 // Starter deck — the minimal blank document a *live* launch opens with.
@@ -807,9 +859,11 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
-    s.add(Element::text("Title", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
+    // Empty boxes: the editor prompts for their words, a presentation
+    // shows nothing until they are written.
+    s.add(Element::text("", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
     s.add(
-        Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
+        Element::text("", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
             e.fill = "text-dim".into();
         }),
     );
@@ -848,7 +902,7 @@ fn seed_slide_cover() -> Slide {
                the workshop is for."
         .into();
     s.add(
-        Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
+        Element::text("Concept review", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
             e.fill = "on-accent".into();
             e.bold = true;
         }),
@@ -869,7 +923,7 @@ fn seed_slide_cover() -> Slide {
     );
     s.add(
         Element::text(
-            "Design workshop  ·  spring review",
+            "Design workshop, spring review",
             110.0,
             500.0,
             900.0,
@@ -881,7 +935,7 @@ fn seed_slide_cover() -> Slide {
         }),
     );
     s.add(
-        Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+        Element::shape(ElementKind::Rect, 110.0, 222.0, 92.0, 8.0).with(|e| {
             e.fill = "white".into();
             e.radius = 4.0;
         }),
@@ -897,7 +951,7 @@ fn seed_slide_goals() -> Slide {
                wetland — that's the constraint everything else works around."
         .into();
     s.add(
-        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 76.0, 56.0).with(|e| {
             e.bold = true;
         }),
     );
@@ -945,7 +999,7 @@ fn seed_slide_two_column() -> Slide {
                before we cost them out."
         .into();
     s.add(
-        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
+        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 76.0, 56.0)
             .with(|e| e.bold = true),
     );
     s.add(
@@ -963,7 +1017,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "accent".into();
             e.bold = true;
         }),
@@ -983,7 +1037,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }),
@@ -1092,7 +1146,7 @@ fn seed_slide_closing() -> Slide {
     );
     s.add(
         Element::text(
-            "Share feedback by Friday  ·  prototype in April",
+            "Share feedback by Friday, prototype in April",
             110.0,
             450.0,
             1000.0,

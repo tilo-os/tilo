@@ -1,29 +1,37 @@
 //! Breadcrumb widget — a horizontal path indicator with clickable ancestor
-//! segments and a chevron (`>`) separator between them.
+//! segments and a chevron icon between them.
 //!
-//! When the total width exceeds the available rect, the widget truncates
-//! the middle with `...`: keeps the first segment, inserts `...`, keeps the
+//! The trail takes the width it is given. When its segments do not fit, it
+//! truncates the middle: keeps the first segment, puts the
+//! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
 //! last two. A trail of 4 or fewer segments never truncates (the truncated
 //! form wouldn't be shorter).
+//!
+//! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
+//! segment (a drive, Home). A trail that doubles as an editable path
+//! reports a click on its empty space through
+//! [`Breadcrumb::on_edit_requested`], so the host can swap in a field.
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_metrics::renderer_type_size;
+use crate::icons::Icon;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
 
-/// ASCII `>` so it always falls back to the system font even when no
-/// fancy chevron face is loaded.
-const SEPARATOR_GLYPH: &str = ">";
+/// The separator between two segments: a chevron from the one icon set,
+/// at the small glyph size, never a typed character.
+fn separator_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_sm)
+}
 
-/// Three ASCII dots (rather than the `…` codepoint) keep the truncation
-/// visible in plain-text dumps.
+/// The stand-in for the hidden middle segments in the visible list; it
+/// paints as [`Icon::MoreHorizontal`], never as text.
 const ELLIPSIS: &str = "...";
 
 /// `segment_rects` and `visible_origin` mirror the truncated
@@ -44,6 +52,11 @@ pub struct Breadcrumb {
     /// Index (into `cached_visible`) the cursor is hovering. Ellipsis
     /// entries don't latch hover.
     hover_idx: Option<usize>,
+    /// A glyph leading the first segment.
+    root_icon: Option<Icon>,
+    last_cursor: Option<Point>,
+    /// A click on the trail's empty space asks to edit the path.
+    on_edit_requested: Option<Box<dyn FnMut()>>,
     rect: Rect,
 }
 
@@ -58,8 +71,27 @@ impl Breadcrumb {
             visible_origin: Vec::new(),
             cached_visible: Vec::new(),
             hover_idx: None,
+            root_icon: None,
+            last_cursor: None,
+            on_edit_requested: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Lead the first segment with `icon` (a drive, Home). It belongs to
+    /// the first segment: a click on it navigates there.
+    #[must_use]
+    pub fn root_icon(mut self, icon: Icon) -> Self {
+        self.root_icon = Some(icon);
+        self
+    }
+
+    /// Called when the person clicks the trail's empty space, past its last
+    /// segment: the host swaps the trail for an editable path field.
+    #[must_use]
+    pub fn on_edit_requested<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_edit_requested = Some(Box::new(f));
+        self
     }
 
     /// Builder: install a click callback. The callback receives the index
@@ -96,7 +128,7 @@ impl Breadcrumb {
         if self.segments.is_empty() {
             return Vec::new();
         }
-        let full_width = measure_total_width(&self.segments, theme, tr);
+        let full_width = measure_total_width(&self.segments, theme, tr) + self.root_width(theme);
         if full_width <= available_width {
             return self.segments.clone();
         }
@@ -149,17 +181,20 @@ impl Breadcrumb {
 
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        // The root icon leads the first segment's rect.
+        let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
-        let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = f64::from(sep_w);
+        let sep_w = separator_width(theme);
         let mut rects = Vec::with_capacity(labels.len());
         let mut cursor_x = self.rect.x0;
         let pill_y0 = self.rect.y0;
         let pill_y1 = self.rect.y1;
         for (i, label) in labels.iter().enumerate() {
-            let (w, _h) = tr.measure(label, size, None);
-            let w = f64::from(w);
+            let w = if label == ELLIPSIS && origin.get(i).copied().flatten().is_none() {
+                f64::from(theme.tokens.metrics.icon_sm)
+            } else {
+                f64::from(tr.measure_style(label, None, &style).0)
+            } + if i == 0 { self.root_width(theme) } else { 0.0 };
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
             cursor_x += w;
@@ -171,6 +206,22 @@ impl Breadcrumb {
         self.cached_visible = labels;
         self.segment_rects = rects;
         self.visible_origin = origin;
+    }
+
+    /// The room the root icon takes before the first label, with its gap.
+    fn root_width(&self, theme: &Theme) -> f64 {
+        self.root_icon.map_or(0.0, |_| {
+            f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.metrics.icon_label_gap)
+        })
+    }
+
+    /// The trail's empty space: past the last segment, inside the rect.
+    fn in_empty_space(&self, point: Point) -> bool {
+        let end = self
+            .segment_rects
+            .last()
+            .map_or(self.rect.x0, |rect| rect.x1);
+        self.rect.contains(point) && point.x > end
     }
 
     /// Test-only helper: rebuild rects against a synthetic `self.rect`
@@ -187,30 +238,18 @@ impl Breadcrumb {
 /// [`Breadcrumb::visible_segments`] to decide whether the full path
 /// fits. A free function (not a method) since it touches no `self` field.
 fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-    let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+    let style = theme.text(TextRole::Caption);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
-    let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
-    let sep_block = f64::from(sep_w) + sep_pad * 2.0;
+    let sep_block = separator_width(theme) + sep_pad * 2.0;
     let mut total = 0.0_f64;
     for (i, label) in labels.iter().enumerate() {
-        let (w, _) = tr.measure(label, size, None);
+        let (w, _) = tr.measure_style(label, None, &style);
         total += f64::from(w);
         if i.saturating_add(1) < labels.len() {
             total += sep_block;
         }
     }
     total
-}
-
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
 }
 
 impl Widget for Breadcrumb {
@@ -220,29 +259,25 @@ impl Widget for Breadcrumb {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Width isn't known until taffy runs, so leave it auto; height is a
-        // single line of `sm` text plus 1.5x line-height for click comfort.
-        let line_h = theme.tokens.typography.scale.sm * 1.5;
-        let node = taffy.leaf_node(Style {
+        // The trail takes the width its parent gives it (and truncates to
+        // it); the height is a line of `Caption` with room for a click.
+        // In a row it shrinks to what its neighbours leave and stretches to
+        // the row's height; in a column it spans the column.
+        let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
+        let style = Style {
             size: Size {
-                width: Dimension::auto(),
-                height: Dimension::length(line_h),
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
-            flex_shrink: 0.0,
+            min_size: Size::from_lengths(0.0, line_h),
+            flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Per-segment rects need text measurements, which need a
         // `TextRenderer` we don't have here — deferred to `draw`. Stale
         // rects until the first paint are fine: no hover happens before it.
@@ -260,22 +295,39 @@ impl Widget for Breadcrumb {
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
 
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         // One measured line height serves every segment and chevron: all are
-        // single lines at one size, so cosmic-text gives each the same line
-        // box. Centre that, not the font size — the latter sat the whole
+        // single lines at one style, so cosmic-text gives each the same line
+        // box. Centre that, not the font style — the latter sat the whole
         // trail 1.5 px below the row's centre.
-        let (_, line_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
+        let (_, line_h) = text_renderer.measure_style("Home", None, &style);
         let text_y = centered_text_top(self.rect.y0, self.rect.height(), f64::from(line_h));
 
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
+        if let (Some(icon), Some(first)) = (self.root_icon, self.segment_rects.first()) {
+            let edge = f64::from(theme.tokens.metrics.icon_sm);
+            let hovered = self.hover_idx == Some(0) && active_origin != 0;
+            icon.draw(
+                scene,
+                transform,
+                Rect::from_center_size(
+                    Point::new(first.x0 + edge / 2.0, self.rect.center().y),
+                    (edge, edge),
+                ),
+                if hovered || active_origin == 0 {
+                    text_primary
+                } else {
+                    text_dim
+                },
+            );
+        }
         // Zipped rather than indexed by a shared `i`: `rebuild_rects` builds
         // `cached_visible`, `segment_rects` and `visible_origin` together
         // from the same label list, so they're always the same length —
@@ -293,24 +345,43 @@ impl Widget for Breadcrumb {
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            text_renderer.draw_text(
-                scene,
-                label,
-                size,
-                color,
-                translated(transform, r.x0, text_y),
-                None,
-            );
+            if orig.is_none() {
+                let edge = f64::from(theme.tokens.metrics.icon_sm);
+                Icon::MoreHorizontal.draw(
+                    scene,
+                    transform,
+                    Rect::from_center_size(
+                        Point::new(r.center().x, self.rect.center().y),
+                        (edge, edge),
+                    ),
+                    color,
+                );
+            } else {
+                let x = if i == 0 {
+                    r.x0 + self.root_width(theme)
+                } else {
+                    r.x0
+                };
+                text_renderer.draw_style(
+                    scene,
+                    label,
+                    color,
+                    transform.pre_translate((x, text_y).into()),
+                    None,
+                    &style,
+                );
+            }
             // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
-                let sep_x = r.x1 + sep_pad;
-                text_renderer.draw_text(
+                let edge = separator_width(theme);
+                let centre = Point::new(r.x1 + sep_pad + edge / 2.0, self.rect.center().y);
+                crate::icons::draw_icon(
                     scene,
-                    SEPARATOR_GLYPH,
-                    size,
+                    transform,
+                    Rect::from_center_size(centre, (edge, edge)),
+                    crate::icons::Icon::ChevronRight,
                     text_dim,
-                    translated(transform, sep_x, text_y),
-                    None,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
@@ -319,8 +390,8 @@ impl Widget for Breadcrumb {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
+                self.last_cursor = Some(logical);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);
                 for (i, r) in self.segment_rects.iter().enumerate() {
@@ -354,6 +425,12 @@ impl Widget for Breadcrumb {
                         cb(orig);
                     }
                     *ctx.handled = true;
+                } else if let Some(point) = self.last_cursor
+                    && self.in_empty_space(point)
+                    && let Some(cb) = self.on_edit_requested.as_mut()
+                {
+                    cb();
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -375,7 +452,7 @@ impl Widget for Breadcrumb {
         let value = self.segments.last().cloned();
         Some(
             AccessNode::new(Role::List)
-                .with_name("Breadcrumb")
+                .with_name(crate::i18n::widget_format("widget-breadcrumb", &[]))
                 .with_optional_value(value)
                 .with_state(AccessState::default()),
         )
@@ -385,55 +462,15 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`, mirroring `permission_prompt.rs`'s helper.
-        unsafe { std::mem::zeroed() }
-    }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    /// Drive an event through the breadcrumb with default scaffolding.
-    /// Mirrors `permission_prompt.rs::tests::dispatch`.
-    fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        bc.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn breadcrumb_paints_separators_centres_labels_and_truncates() {
@@ -473,16 +510,16 @@ mod tests {
             );
             assert_eq!(
                 scene.encoding().resources.glyph_runs.len(),
-                3,
-                "home, chevron, docs"
+                2,
+                "home and docs; the chevron is an icon, not a glyph"
             );
-            let size = theme.tokens.typography.scale.sm;
-            for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
+            let style = theme.text(TextRole::Caption);
+            for (index, text) in ["home", "docs"].into_iter().enumerate() {
                 crate::widget::text::assert_glyph_run_centred_in_band(
                     &scene,
                     index,
                     text,
-                    size,
+                    &style,
                     rect.y0,
                     rect.height(),
                     &mut tr,
@@ -543,7 +580,7 @@ mod tests {
             );
             let middle_center = bc.segment_rects[1].center();
             dispatch(&mut bc, &cursor_at(middle_center));
-            dispatch(&mut bc, &left_press());
+            dispatch(&mut bc, &mouse_press());
 
             assert_eq!(
                 *received.borrow(),
@@ -561,7 +598,7 @@ mod tests {
             ]);
             let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
             assert_eq!(node.role, Role::List);
-            assert_eq!(node.name.as_deref(), Some("Breadcrumb"));
+            assert_eq!(node.name.as_deref(), Some("Path"));
             assert_eq!(
                 node.value.as_deref(),
                 Some("readme.md"),

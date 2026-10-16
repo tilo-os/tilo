@@ -1,11 +1,6 @@
 //! Leases exclude across processes and release when their holder exits. A
 //! separate test binary: a child spawned while unit tests hold locks would
 //! briefly inherit those descriptors and hold the locks with them.
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{BufRead, Write as _};
 use std::path::PathBuf;

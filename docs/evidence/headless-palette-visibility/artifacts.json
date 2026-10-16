@@ -1,0 +1,22 @@
+[
+  {
+    "file_name": "headless-palette-visibility-live-search.png",
+    "source_commit": "3ff688550948a466898c026785d2785a1ada2ab7",
+    "compositor_commit": "840309547ab0f36f11d2c3c4c2fd16dd5069db92",
+    "width": 1600,
+    "height": 900,
+    "sha256": "9f1640d0ca3bee95b8fe096faccb1ca0d64948a1b9c48a3c4cd20ff0dad33540",
+    "file_size_bytes": 1248842,
+    "provenance": "tracked production full-loop; named input pixel guard and Escape; private scratch session cleaned"
+  },
+  {
+    "file_name": "headless-palette-visibility-live-escaped.png",
+    "source_commit": "3ff688550948a466898c026785d2785a1ada2ab7",
+    "compositor_commit": "840309547ab0f36f11d2c3c4c2fd16dd5069db92",
+    "width": 1600,
+    "height": 900,
+    "sha256": "d4303050c6df6268894b55a871615a449ad1bd1a97ef21f71dc69245228bc6e7",
+    "file_size_bytes": 2343999,
+    "provenance": "tracked production full-loop; named input pixel guard and Escape; private scratch session cleaned"
+  }
+]

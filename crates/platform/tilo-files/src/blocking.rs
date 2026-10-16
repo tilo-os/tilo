@@ -32,6 +32,19 @@ pub fn read_prefix(dir: &Dir, path: &VPath, max: usize) -> Result<Vec<u8>, FsErr
     dir.local()?.read_prefix(path, max)
 }
 
+/// The whole file when it holds at most `max` bytes, `None` when it holds
+/// more: a user's file opened under a size limit. At most `max + 1` bytes
+/// are read, so a file that grows while it is read is still refused without
+/// loading it.
+///
+/// # Errors
+///
+/// As [`read_prefix`].
+pub fn read_bounded(dir: &Dir, path: &VPath, max: usize) -> Result<Option<Vec<u8>>, FsError> {
+    let bytes = read_prefix(dir, path, max.saturating_add(1))?;
+    Ok((bytes.len() <= max).then_some(bytes))
+}
+
 /// Add `bytes` to the end of the file, creating it and its folders when
 /// missing: a progressive download a reader follows, a log. Not atomic: a
 /// crash may leave part of `bytes` written.

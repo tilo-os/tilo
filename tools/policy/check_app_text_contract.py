@@ -15,6 +15,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_app_resource_action_contract import is_compute_package  # noqa: E402
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 APPS = ROOT / "apps"
@@ -35,12 +39,12 @@ PRIVATE_SOURCE_PATTERNS = {
     "private font system": re.compile(r"\b(?:FontSystem|SwashCache)::new\s*\("),
     "raw Vello glyph emission": re.compile(r"\.draw_glyphs\s*\(|\bvello::Glyph\b"),
     "product font family literal": re.compile(
-        r'"Noto (?:Sans(?: Mono| Math)?|Serif)"'
+        r'"(?:Noto (?:Sans(?: Mono| Math)?|Serif)|New Computer Modern[^"]*)"'
     ),
 }
 
 SHARED_TEXT_SURFACES = re.compile(
-    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextEditor|RichTextLine|"
+    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextLine|"
     r"BlockEditor|CodeEditor|QueryComposition|widget::Text)\b"
 )
 
@@ -74,10 +78,6 @@ def dependency_tables(manifest: dict) -> list[dict]:
     return tables
 
 
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
-
-
 def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
     apps = root / "apps"
     manifests = sorted(apps.glob("*/Cargo.toml"))
@@ -98,7 +98,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
                     f"depends directly on private text crate `{dependency}`; use `ui`",
                 )
             )
-        if "ui" not in dependencies:
+        # An app model crate (`apps/*-model`) is data shared with an app, not
+        # an app, and a compute package runs windowless for another app's
+        # action: either may have no UI at all.
+        is_model = manifest_path.parent.name.endswith("-model")
+        windowless = is_model or is_compute_package(manifest_path.parent)
+        if "ui" not in dependencies and not windowless:
             violations.append(
                 Violation(manifest_path, 1, "app does not depend on the shared `ui` crate")
             )

@@ -13,6 +13,7 @@ use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
     SearchScope,
 };
+use crate::tokens::TextRole;
 use tilo_actions::ActionAddress;
 
 const UNAVAILABLE_DOMAINS: &str = "Files and host apps are unavailable in this browser.";
@@ -187,13 +188,13 @@ impl Widget for Overlay {
             self.hover,
         );
         let rect = self.palette.get_rect();
-        text.draw_text(
+        text.draw_style(
             scene,
             UNAVAILABLE_DOMAINS,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + 12.0, rect.y1 + 8.0)),
             Some((rect.width() - 24.0).max(1.0) as f32),
+            &theme.text(TextRole::Caption),
         );
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -253,6 +254,7 @@ impl FrameHarness {
     /// Replace the coherent admitted host snapshot. Revocation updates open
     /// results immediately and invalidates undrained selections from older data.
     pub fn replace_global_search_data(&mut self, data: GlobalSearchSourceData) {
+        self.invalidate_local();
         self.system_search.data = data;
         self.system_search.rows.clear();
         self.system_search.pending = None;
@@ -282,19 +284,13 @@ impl FrameHarness {
         }
     }
     pub fn open_global_search_all(&mut self, query: &str) -> Result<(), String> {
+        self.invalidate_local();
         self.global_search_guard()?;
         if !system::query_input_is_bounded(query) {
             return Err("Search query is too long".into());
         }
         if self.system_search.overlay.is_none() {
-            // SAFETY: the harness exclusively owns these live maps and tree.
-            self.system_search.saved_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            };
+            self.system_search.saved_focus = self.capture_focus_identity();
         }
         let mut palette = CommandPalette::new();
         palette.set_modal(true);
@@ -316,21 +312,14 @@ impl FrameHarness {
         self.relayout();
         Ok(())
     }
-    pub fn toggle_global_search_all(&mut self) -> Result<(), String> {
-        if self.system_search.overlay.is_some() {
-            self.close_system_search();
-            self.relayout();
-            Ok(())
-        } else {
-            self.open_global_search_all("")
-        }
-    }
     pub fn take_global_search_intent(&mut self) -> Option<GlobalSearchIntent> {
+        self.invalidate_local();
         self.system_search.pending.take()
     }
     /// Re-resolve an inert selected address through the existing argument,
     /// confirmation and caller/local-View admission path.
     pub fn handoff_caller_action(&mut self, address: &ActionAddress) -> Result<(), String> {
+        self.invalidate_local();
         self.global_search_guard()?;
         if self.system_search.overlay.is_some() {
             return Err("Close search before handing off an action".into());
@@ -505,7 +494,7 @@ impl FrameHarness {
                 continue;
             };
             let page = provider.search_page(
-                &needle,
+                &crate::search::SearchQuery::new(needle.as_str()),
                 None,
                 SearchBudget::PALETTE.max_work,
                 SearchBudget::PALETTE.max_results,
@@ -522,7 +511,7 @@ impl FrameHarness {
                             && binding.permissions.borrow().check(
                                 &crate::permissions::PermissionScope::app(
                                     &binding.app_id,
-                                    crate::permissions::Verb::Read,
+                                    crate::permissions::ActionKind::Read,
                                 ),
                             );
                     };
@@ -538,7 +527,7 @@ impl FrameHarness {
                         snapshots
                             .iter()
                             .filter(|snapshot| snapshot.binding.same_component(&binding))
-                            .flat_map(|snapshot| &snapshot.resources)
+                            .flat_map(|snapshot| snapshot.resources().iter())
                             .find(|resource| {
                                 tilo_actions::door::resolve(
                                     std::slice::from_ref(resource),
@@ -706,6 +695,7 @@ impl FrameHarness {
             FilterAction::AllKinds => overlay.wanted.clear(),
             FilterAction::ToggleKind(kind) => toggle_kind(&mut overlay.wanted, kind),
             FilterAction::Scope(scope) => overlay.scope = scope,
+            FilterAction::More => overlay.filters.more_open = !overlay.filters.more_open,
         }
         self.refresh_system_search();
     }
@@ -814,7 +804,7 @@ impl FrameHarness {
             &mut crate::widget::EventCtx {
                 scale_factor: self.input_scale,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: crate::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -840,6 +830,7 @@ impl FrameHarness {
         Point::new(position.x / self.input_scale, position.y / self.input_scale)
     }
     pub(super) fn draw_system_search(&mut self) {
+        let transform = self.capture_draw_transform();
         let Some(overlay) = self.system_search.overlay.as_mut() else {
             return;
         };
@@ -877,7 +868,7 @@ impl FrameHarness {
         }
         overlay.draw(
             &mut self.scene,
-            Affine::IDENTITY,
+            transform,
             &mut self.text,
             &self.theme,
             &self.presence,
@@ -948,7 +939,7 @@ impl FrameHarness {
             overlay.palette.perform_semantic_action(
                 target,
                 action,
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )
         })

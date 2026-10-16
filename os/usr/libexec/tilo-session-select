@@ -8,13 +8,12 @@
 #   * otherwise              -> run the normal graphical login greeter
 #
 # Both run inside `cage` (a single-window kiosk wlroots compositor) because
-# greetd has no display of its own. WLR_NO_HARDWARE_CURSORS=1 forces a software
-# cursor — the virtio-gpu HW cursor renders Y-flipped/offset under qemu's GL
-# (see etc/greetd/config.toml for the full rationale).
+# greetd has no display of its own; tilo-cage-session chooses cage's renderer
+# and cursor for the display hardware.
 set -euo pipefail
 
 if grep -qw 'tilo.install' /proc/cmdline 2>/dev/null; then
-  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-installer
+  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-installer
 else
-  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter
+  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter
 fi

@@ -22,7 +22,12 @@ const LAUNCH_RUNTIME_DIR: &str = "run";
 /// A Unix socket path longer than this cannot be connected (`sun_path`).
 const MAX_SOCKET_PATH: usize = 107;
 
-pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
+pub(super) fn launch(
+    apps: &Apps,
+    app: &InstalledApp,
+    sockets: &Sockets,
+    original: &super::creation::OriginalLaunch,
+) -> Result<Launch, String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
@@ -40,6 +45,8 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .arg(&apps.room)
         .arg("--app-id")
         .arg(&app.package_id)
+        .arg("--expected-package-hash")
+        .arg(&original.package_hash)
         .arg("--wayland-socket")
         .arg(&wayland);
     if let Some(identity) = identity {
@@ -56,17 +63,23 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
         .env_remove("TILO_RUNTIME_RESUME_LIVE")
         .stdin(Stdio::null());
-    if !launcher::dev_env::DEV_ENV_OVERRIDES {
+    if !package_store::dev_env::DEV_ENV_OVERRIDES {
         for name in launcher::dev_env::DEV_OVERRIDE_VARS {
             command.env_remove(name);
         }
     }
+    // The launcher waits here until the caller has recorded its pid, so it
+    // can never connect before the broker could attest it.
+    let registration = launcher::registration_gate::install(&mut command).map_err(|error| {
+        format!("refusing to launch: the launcher's registration gate: {error}")
+    })?;
     let child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
     Ok(Launch {
         pid: child.id(),
         child,
+        registration: Some(registration),
     })
 }
 
@@ -80,7 +93,7 @@ fn wayland_socket() -> Result<PathBuf, String> {
     let socket = if display.is_absolute() {
         display
     } else {
-        xdg_paths::xdg::runtime_dir()
+        tilo_paths::xdg::runtime_dir()
             .ok_or("refusing to launch: the Wayland display has no runtime directory")?
             .join(display)
     };

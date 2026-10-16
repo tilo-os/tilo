@@ -2,7 +2,9 @@
 //! mirror of the CRDT document (see `doc.rs`); state is authored here and
 //! flushed into Automerge so undo/redo and live collaboration work.
 
+use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
+use ui::tilo_resource::{self, Model};
 
 /// Top-level app mode (segmented control in the header).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -20,7 +22,7 @@ impl Mode {
             Mode::Graph3d => "Graph 3D",
         }
     }
-    /// Condensed label for a narrow topbar where the full `label` won't fit.
+    /// Condensed label for a narrow header where the full `label` won't fit.
     pub fn short_label(self) -> &'static str {
         match self {
             Mode::Calc => "Calc",
@@ -45,19 +47,33 @@ impl Mode {
             _ => Mode::Calc,
         }
     }
+    /// The graph list this mode plots, if it is a graph mode.
+    pub fn graph(self) -> Option<GraphKind> {
+        match self {
+            Mode::Calc => None,
+            Mode::Graph2d => Some(GraphKind::Curve2d),
+            Mode::Graph3d => Some(GraphKind::Surface3d),
+        }
+    }
 }
 
 /// One evaluated entry in the calculator history.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
+    /// Calculation
+    #[model(label)]
     pub expr: String,
+    /// Result
     pub result: String,
 }
 
-/// A `y = f(x)` curve for the 2D plotter.
-#[derive(Clone, Debug, PartialEq)]
+/// A curve (`y = f(x)`) or surface (`z = f(x, y)`) row of a graph.
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct PlotFn {
+    /// Formula
+    #[model(label)]
     pub expr: String,
+    /// Shown
     pub visible: bool,
 }
 
@@ -149,109 +165,86 @@ impl Default for CalcModel {
 /// (a starter example to explore + edit, not restored user state).
 pub const DEFAULT_SURFACE: &str = "sin(sqrt(x^2+y^2))";
 
+/// The calculations a lived-in calculator shows, newest first: the expression
+/// and the result it evaluated to.
+pub const DEMO_HISTORY: [(&str, &str); 5] = [
+    ("12*(4+3)", "84"),
+    ("sqrt(2)", "1.4142135624"),
+    ("5!", "120"),
+    ("log(2,1024)", "10"),
+    ("2^10", "1024"),
+];
+
+/// The curves a lived-in Graph 2D shows.
+pub const DEMO_CURVES: [&str; 4] = ["(x^2+1)/(x-3)", "0.25*x^2-2", "sqrt(x+6)", "sin(x)"];
+
+/// The surfaces a lived-in Graph 3D shows: sheets at different heights that
+/// never cross, so the plot reads as several surfaces rather than a lone one.
+pub const DEMO_SURFACES: [&str; 2] = [DEFAULT_SURFACE, "sin(x)*cos(y)-3"];
+
 impl CalcModel {
-    /// Rich starting content for the headless `--shots` frame and tests — a
-    /// populated, lived-in calculator + graphs. NEVER used by the live event
-    /// loop (which boots empty via [`CalcModel::default`]).
+    /// The rows of a graph list.
+    pub fn graphs(&self, kind: GraphKind) -> &[PlotFn] {
+        match kind {
+            GraphKind::Curve2d => &self.funcs,
+            GraphKind::Surface3d => &self.surfaces,
+        }
+    }
+
+    pub fn graphs_mut(&mut self, kind: GraphKind) -> &mut Vec<PlotFn> {
+        match kind {
+            GraphKind::Curve2d => &mut self.funcs,
+            GraphKind::Surface3d => &mut self.surfaces,
+        }
+    }
+
+    /// The row of a graph list its editor edits.
+    pub fn active_graph(&self, kind: GraphKind) -> usize {
+        match kind {
+            GraphKind::Curve2d => self.active_fn,
+            GraphKind::Surface3d => self.active_surface,
+        }
+    }
+
+    pub fn active_graph_mut(&mut self, kind: GraphKind) -> &mut usize {
+        match kind {
+            GraphKind::Curve2d => &mut self.active_fn,
+            GraphKind::Surface3d => &mut self.active_surface,
+        }
+    }
+
+    /// Rich starting content for tests and offline demos: a populated,
+    /// lived-in calculator and graphs. The live app boots empty
+    /// ([`CalcModel::default`]); a capture stages the same content through
+    /// the document's actions.
     pub fn seeded() -> Self {
-        let mut m = CalcModel {
+        let plot = |expr: &str| PlotFn {
+            expr: expr.to_string(),
+            visible: true,
+        };
+        CalcModel {
             mode: Mode::Graph2d,
             expr: "sin(0.5)+cos(0.5)".to_string(),
             ans: 1.0,
             memory: 42.0,
-            history: vec![
-                HistoryEntry {
-                    expr: "12*(4+3)".into(),
-                    result: "84".into(),
-                },
-                HistoryEntry {
-                    expr: "sqrt(2)".into(),
-                    result: "1.4142135624".into(),
-                },
-                HistoryEntry {
-                    expr: "5!".into(),
-                    result: "120".into(),
-                },
-                HistoryEntry {
-                    expr: "log(2,1024)".into(),
-                    result: "10".into(),
-                },
-                HistoryEntry {
-                    expr: "2^10".into(),
-                    result: "1024".into(),
-                },
-            ],
-            funcs: vec![
-                PlotFn {
-                    expr: "(x^2+1)/(x-3)".into(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "0.25*x^2-2".into(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "sqrt(x+6)".into(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "sin(x)".into(),
-                    visible: true,
-                },
-            ],
+            history: DEMO_HISTORY
+                .iter()
+                .map(|(expr, result)| HistoryEntry {
+                    expr: (*expr).into(),
+                    result: (*result).into(),
+                })
+                .collect(),
+            funcs: DEMO_CURVES.iter().map(|expr| plot(expr)).collect(),
             active_fn: 0,
-            // A lived-in 3D surface list — several `z = f(x, y)` sheets at
-            // different heights so the Graph 3D shot shows multiple, distinctly
-            // coloured surfaces (not a lone surface).
-            surfaces: vec![
-                PlotFn {
-                    expr: DEFAULT_SURFACE.to_string(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "0.05*(x^2+y^2)-3".into(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "3-0.06*(x^2+y^2)".into(),
-                    visible: true,
-                },
-            ],
+            surfaces: DEMO_SURFACES.iter().map(|expr| plot(expr)).collect(),
             active_surface: 0,
             ..CalcModel::default()
-        };
-        // The headless screenshot picks which tab it captures via this hook;
-        // unset (the live default) keeps the lived-in Graph 2D launch view.
-        if let Some(want) = std::env::var_os("TILO_CALC_MODE") {
-            m.mode = match want.to_string_lossy().as_ref() {
-                "calc" | "calculator" => Mode::Calc,
-                "graph3d" | "3d" => Mode::Graph3d,
-                _ => Mode::Graph2d,
-            };
         }
-        // Shot-only: a single long function so the headless screenshot can show
-        // a formula that overflows the fixed-height field and scrolls within it
-        // (caret kept in view at the end) rather than resizing the row.
-        if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
-            m.mode = Mode::Graph2d;
-            m.funcs = vec![PlotFn {
-                expr: "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)".into(),
-                visible: true,
-            }];
-            m.active_fn = 0;
-        }
-        // Screenshot-only: exercise the visible, truthful parse-error state.
-        // The live app never injects this expression.
-        if std::env::var_os("TILO_CALC_ERROR_DEMO").is_some() {
-            m.apply_error_demo();
-        }
-        m
     }
 
-    /// Configure the deterministic invalid-expression frame used only by the
-    /// headless visual-review hook. Keeping it as a pure transition makes the
-    /// fixture testable without changing global process environment.
-    fn apply_error_demo(&mut self) {
+    /// The invalid-expression state a capture shows: a truthful parse error
+    /// under the expression.
+    pub(crate) fn apply_error_demo(&mut self) {
         self.mode = Mode::Calc;
         self.expr = "sqrt(".into();
         self.after_equals = false;
@@ -267,20 +260,10 @@ impl CalcModel {
         }
     }
 
-    /// Live preview of the current expression (grey under the input).
-    pub fn preview(&self) -> Option<String> {
-        if self.expr.trim().is_empty() {
-            return None;
-        }
-        engine::evaluate(&self.expr, &self.ctx())
-            .ok()
-            .map(engine::format_number)
-    }
-
     /// Commit `=`: evaluate, push history, update Ans. Returns the committed
-    /// [`HistoryEntry`] (a clone) so the caller can dispatch the matching
-    /// [`CommitHistory`](crate::actions::CalculatorAction) action — the shared,
-    /// replayable, undoable path the history list is mutated through. Returns
+    /// [`HistoryEntry`] (a clone) so the caller can submit the matching
+    /// `commit-history` verb — the shared, replayable, undoable path the
+    /// history list is changed through. Returns
     /// `None` when there is nothing to commit (empty or unparseable expression),
     /// so no action is dispatched.
     pub fn commit_equals(&mut self) -> Option<HistoryEntry> {
@@ -356,7 +339,7 @@ impl Key {
             Key::ToggleSign => "±",
             Key::Equals => "=",
             Key::Clear => "AC",
-            Key::Backspace => "⌫",
+            Key::Backspace => "Backspace",
             Key::Ans => "ans",
             Key::MemAdd => "M+",
             Key::MemSub => "M−",
@@ -391,34 +374,36 @@ impl Key {
         }
     }
 
-    /// Visual category → keycap tint family.
+    /// The icon a key shows in place of its label, when it has one.
+    pub fn icon(&self) -> Option<ui::icons::Icon> {
+        match self {
+            Key::Backspace => Some(ui::icons::Icon::Delete),
+            _ => None,
+        }
+    }
+
+    /// What the key is, which decides its control role at draw time.
     pub fn role(&self) -> KeyRole {
         match self {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
-            Key::Equals => KeyRole::Accent,
-            Key::Clear | Key::Backspace => KeyRole::Warm,
-            Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
+            Key::Equals => KeyRole::Equals,
+            Key::Clear => KeyRole::Clear,
+            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }
 }
 
-/// Tint family for a keycap, resolved against the theme at draw time.
+/// What a keycap is: the number entry pad (digits and operators) stands out
+/// from the scientific functions, `=` is the one primary action and `AC`
+/// discards the expression.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum KeyRole {
     Digit,
     Operator,
     Function,
-    Accent,
-    Warm,
-}
-
-/// The full 6-column scientific keypad. Kept for back-compat and used by the
-/// [`KeypadLayout::Scientific`] variant. Row-major; cells are dense.
-pub const KEYPAD_COLS: usize = 6;
-
-pub fn keypad() -> Vec<Key> {
-    KeypadLayout::Scientific.keys()
+    Equals,
+    Clear,
 }
 
 /// How dense the on-screen keypad is, chosen from the available body area so
@@ -428,7 +413,7 @@ pub fn keypad() -> Vec<Key> {
 /// is also present (in the same relative place) on a larger one — so the pad
 /// grows extra columns/rows of functions outward as the window widens without
 /// the core number pad ever jumping around. A "quick calculation" user always
-/// sees the digits, the four basic operators, `=`, `AC` and `⌫` in the same
+/// sees the digits, the four basic operators, `=`, `AC` and backspace in the same
 /// spot regardless of size, so responsiveness never gets in the way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeypadLayout {
@@ -532,21 +517,21 @@ impl KeypadLayout {
             Percent,
             Ins("/"),
             Wrap("(", ")^2"),
-            Ins("1/("),
             Digit('7'),
             Digit('8'),
             Digit('9'),
             Ins("*"),
-            ToggleSign,
+            Ins("1/("),
             Digit('4'),
             Digit('5'),
             Digit('6'),
             Ins("-"),
-            Ans,
+            ToggleSign,
             Digit('1'),
             Digit('2'),
             Digit('3'),
             Ins("+"),
+            Ans,
             DoubleZero,
             Digit('0'),
             Dot,
@@ -734,12 +719,6 @@ mod tests {
     /// after `=` starts fresh while an operator continues, Backspace drops a whole
     /// function name, M+ accumulates, and the error demo yields a renderable Calc
     /// parse error. Fresh model per phase.
-    #[allow(
-        clippy::float_cmp,
-        reason = "2+3 is exactly 5 in f64; an approximate compare would stop \
-                  proving that `=` stores the evaluated value verbatim; 10 + 10 is exact in f64; the point of the test is the exact \
-                  accumulated total"
-    )]
     #[test]
     fn key_entry_and_equals_update_expression_memory_and_history() {
         // phase equals_pushes_history_and_sets_ans
@@ -816,11 +795,6 @@ mod tests {
     /// and every layout keeps the quick-calc essentials.
     #[test]
     fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials() {
-        // phase keypad_is_full_grid
-        {
-            assert_eq!(keypad().len() % KEYPAD_COLS, 0);
-        }
-
         // phase every_keypad_layout_is_a_dense_grid
         {
             for layout in [
@@ -878,7 +852,7 @@ mod tests {
                 );
                 assert!(
                     keys.iter().any(|k| matches!(k, Key::Backspace)),
-                    "{layout:?} missing ⌫"
+                    "{layout:?} missing backspace"
                 );
             }
         }

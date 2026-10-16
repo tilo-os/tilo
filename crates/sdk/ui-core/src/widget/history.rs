@@ -11,7 +11,7 @@
 
 use crate::time::SystemTime;
 
-use collab_types::{ArtifactKind, OpClass};
+use collab_types::ArtifactKind;
 use tilo_actions::{ActionContext, ActionFacet};
 
 /// Opaque: only ever compared for equality (revert/restore callbacks
@@ -36,13 +36,55 @@ impl HistoryEntryId {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryAuthor {
     pub name: String,
-    /// Degrees `[0, 360)`. The widget converts hue → RGB via a fixed
-    /// saturation/value so authors stay visually distinguishable even
-    /// when names collide.
+    /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
+    /// reads hue; paint uses [`HistoryAuthor::rgb`].
     pub avatar_hue: f32,
     /// Short hex fragment of the identity pubkey; the producer decides
     /// the length, the widget treats it as an opaque label.
     pub identity_short: String,
+    /// The colour presence paints this identity in. Defaults to
+    /// [`hue_to_rgb`] of [`Self::avatar_hue`] so existing constructors
+    /// keep their look; [`Self::with_rgb`] and identity resolution set
+    /// the person's colour or the shared [`crate::presence::PEER_PALETTE`]
+    /// slot.
+    avatar_rgb: (u8, u8, u8),
+    /// Who the author is to whoever reads the history: themselves, another
+    /// person, or software acting for someone.
+    pub relation: AuthorRelation,
+    /// Who acted and for whom, when the author is an agent, a Shortcut or an
+    /// app acting for a person: the same facts [`Self::name`] reads as a
+    /// sentence, kept as data for the action surface and assistive tech.
+    pub attribution: Option<HistoryAttribution>,
+}
+
+/// An author that acted for someone: an agent's change is the agent's, on
+/// behalf of its person, in every history (an app's, the Files history, and
+/// what the history actions return).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryAttribution {
+    /// The acting principal as it was authenticated (`agent:scribe`).
+    pub actor: String,
+    /// What the actor is.
+    pub kind: tilo_actions::ActorKind,
+    /// The actor's display name, without the person it acted for.
+    pub actor_name: String,
+    /// The principal of the person it acted for, when it acted for one.
+    pub on_behalf_of: Option<String>,
+    /// That person's display name.
+    pub on_behalf_of_name: Option<String>,
+}
+
+/// Who an author is to the person reading the history. Rows draw the
+/// reader's own changes, a collaborator's and an agent's differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthorRelation {
+    /// The reader's own change.
+    Reader,
+    /// Another person's.
+    #[default]
+    Person,
+    /// An agent's, a Shortcut's or an app's, acting for someone.
+    Software,
 }
 
 impl HistoryAuthor {
@@ -51,11 +93,39 @@ impl HistoryAuthor {
         avatar_hue: f32,
         identity_short: impl Into<String>,
     ) -> Self {
+        let avatar_hue = avatar_hue.rem_euclid(360.0);
         Self {
             name: name.into(),
-            avatar_hue: avatar_hue.rem_euclid(360.0),
+            avatar_hue,
             identity_short: identity_short.into(),
+            avatar_rgb: hue_to_rgb(avatar_hue),
+            relation: AuthorRelation::Person,
+            attribution: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_relation(mut self, relation: AuthorRelation) -> Self {
+        self.relation = relation;
+        self
+    }
+
+    /// Record who acted and for whom.
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: HistoryAttribution) -> Self {
+        self.attribution = Some(attribution);
+        self
+    }
+
+    /// Use this exact RGB for the avatar, cursor and history row.
+    #[must_use]
+    pub fn with_rgb(mut self, rgb: (u8, u8, u8)) -> Self {
+        self.avatar_rgb = rgb;
+        self
+    }
+
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        self.avatar_rgb
     }
 }
 
@@ -81,8 +151,8 @@ pub struct HistoryEntry {
     pub id: HistoryEntryId,
     pub author: HistoryAuthor,
     /// Drives the row's icon glyph and the `[Revert]` chip's visibility
-    /// (see [`op_class_is_revertible`]).
-    pub op_class: OpClass,
+    /// (see [`EntryKind::is_revertible`]).
+    pub entry_kind: EntryKind,
     pub artifact_kind: ArtifactKind,
     pub timestamp: SystemTime,
     /// e.g. "+12 -3 chars", "Moved to Done". Producer should keep it
@@ -110,7 +180,7 @@ impl HistoryEntry {
     /// reverting their metadata would not undo that work and is never offered.
     pub fn is_revertible(&self) -> bool {
         self.redaction.is_none()
-            && op_class_is_revertible(self.op_class)
+            && self.entry_kind.is_revertible()
             && !self.is_effect_receipt()
             && !self.is_genesis()
     }
@@ -155,7 +225,7 @@ pub struct HistoryFilter {
     /// guessing the canonical casing.
     pub authors: Vec<String>,
     /// Empty = all op classes.
-    pub op_classes: Vec<OpClass>,
+    pub entry_kinds: Vec<EntryKind>,
     /// `None` disables the range. Half-open, matching the convention
     /// used elsewhere in Tilo so two adjacent filters never double-count
     /// a boundary entry.
@@ -218,7 +288,7 @@ impl HistoryFilter {
                 return false;
             }
         }
-        if !self.op_classes.is_empty() && !self.op_classes.contains(&entry.op_class) {
+        if !self.entry_kinds.is_empty() && !self.entry_kinds.contains(&entry.entry_kind) {
             return false;
         }
         if let Some((start, end)) = self.time_range
@@ -309,8 +379,8 @@ impl HistoryFilter {
     }
 
     #[must_use]
-    pub fn with_op_class(mut self, op: OpClass) -> Self {
-        self.op_classes.push(op);
+    pub fn with_entry_kind(mut self, op: EntryKind) -> Self {
+        self.entry_kinds.push(op);
         self
     }
 
@@ -351,57 +421,69 @@ impl HistoryFilter {
     }
 }
 
-/// Non-revertible: `Comment` (tombstone, not rollback — never altered
-/// primary content), `Govern` (its own audit trail; counter-op instead of
-/// rewind), `Compaction` (would mean un-evicting bytes the cache may no
-/// longer hold), `Redact` (un-redacting isn't a concept). Every other
-/// class has a meaningful inverse.
-pub fn op_class_is_revertible(op: OpClass) -> bool {
-    match op {
-        OpClass::Splice
-        | OpClass::Move
-        | OpClass::EditMeta
-        | OpClass::Tombstone
-        | OpClass::Restore => true,
-        OpClass::Comment | OpClass::Govern | OpClass::Compaction | OpClass::Redact => false,
+/// What a history entry did, as the history and activity views mark,
+/// filter and group it. Read from the change itself (its entry and what it
+/// wrote), not from the transport that carried it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EntryKind {
+    /// Text typed or removed.
+    Text,
+    /// Things reordered or moved.
+    Move,
+    /// Fields, properties or formatting changed.
+    Details,
+    /// A comment or reaction.
+    Comment,
+    /// Something deleted.
+    Delete,
+    /// Something deleted brought back.
+    Restore,
+    /// Who may do what changed: grants, members, ownership.
+    Access,
+    /// History older than a horizon folded away.
+    Compaction,
+    /// Something earlier redacted.
+    Redaction,
+}
+
+impl EntryKind {
+    /// Whether an entry of this kind can be reverted. Not a comment (never
+    /// altered primary content), an access change (countered by another,
+    /// not rewound), a compaction (the bytes may be gone) or a redaction
+    /// (un-redacting is no concept).
+    #[must_use]
+    pub fn is_revertible(self) -> bool {
+        match self {
+            Self::Text | Self::Move | Self::Details | Self::Delete | Self::Restore => true,
+            Self::Comment | Self::Access | Self::Compaction | Self::Redaction => false,
+        }
+    }
+
+    /// Its row glyph: text symbols stay legible without an emoji font.
+    #[must_use]
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Text => "\u{00b1}",    // ±
+            Self::Move => "\u{2195}",    // ↕
+            Self::Details => "\u{270e}", // ✎
+            Self::Comment => "#",
+            Self::Delete => "\u{2715}",     // ✕
+            Self::Restore => "\u{21b6}",    // ↶
+            Self::Access => "\u{2605}",     // ★
+            Self::Compaction => "\u{2702}", // ✂ — history horizon
+            // The ring reads as a compliance seal rather than a lock.
+            Self::Redaction => "\u{229A}", // ⊚ — redaction seal
+        }
     }
 }
 
-/// Text symbols remain legible in environments without an emoji font.
-pub fn op_class_glyph(op: OpClass) -> &'static str {
-    match op {
-        OpClass::Splice => "\u{00b1}",   // ±
-        OpClass::Move => "\u{2195}",     // ↕
-        OpClass::EditMeta => "\u{270e}", // ✎
-        OpClass::Comment => "#",
-        OpClass::Tombstone => "\u{2715}",  // ✕
-        OpClass::Restore => "\u{21b6}",    // ↶
-        OpClass::Govern => "\u{2605}",     // ★
-        OpClass::Compaction => "\u{2702}", // ✂ — host-driven horizon
-        // The ring reads as a compliance seal rather than a lock.
-        OpClass::Redact => "\u{229A}", // ⊚ — redaction seal
-    }
-}
-
-/// Used by both widgets so the wording stays uniform. Re-renders every
-/// frame, so the label freshens naturally as `now` advances — no clock
-/// plumbing needed.
+/// Used by both widgets so the wording stays uniform with every other
+/// "time ago" label ([`crate::format::relative`]). Re-renders every frame,
+/// so the label freshens naturally as `now` advances — no clock plumbing
+/// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
-    use crate::i18n::widget_format;
-    let delta = now.duration_since(ts).unwrap_or_default();
-    let secs = delta.as_secs();
-    if secs < 60 {
-        return widget_format("relative-time-just-now", &[]);
-    }
-    let mins = secs / 60;
-    let (key, count) = if mins < 60 {
-        ("relative-time-minutes", mins)
-    } else if mins < 60 * 24 {
-        ("relative-time-hours", mins / 60)
-    } else {
-        ("relative-time-days", mins / (60 * 24))
-    };
-    widget_format(key, &[("count", count.into())])
+    let secs = now.duration_since(ts).unwrap_or_default().as_secs();
+    crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`
@@ -452,11 +534,11 @@ mod tests {
     use super::*;
     use crate::time::Duration;
 
-    fn entry(op: OpClass, author: &str, ts_offset_secs: u64) -> HistoryEntry {
+    fn entry(op: EntryKind, author: &str, ts_offset_secs: u64) -> HistoryEntry {
         HistoryEntry {
             id: HistoryEntryId([0; 16]),
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(ts_offset_secs))
@@ -475,26 +557,26 @@ mod tests {
             // The contract the chrome relies on when it constructs
             // `HistoryFilter::default()` and only fills in a single field.
             let f = HistoryFilter::default();
-            assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
-            assert!(f.matches(&entry(OpClass::Comment, "Bob", 999)));
-            assert!(f.matches(&entry(OpClass::Govern, "Carol", 12345)));
+            assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
+            assert!(f.matches(&entry(EntryKind::Comment, "Bob", 999)));
+            assert!(f.matches(&entry(EntryKind::Access, "Carol", 12345)));
         }
 
         fn filter_matches_author_case_insensitive() {
             // Typeahead "author:alice" must hit a row authored by "Alice".
             let f = HistoryFilter::default().with_author("alice");
-            assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
-            assert!(f.matches(&entry(OpClass::Splice, "ALICE", 0)));
-            assert!(!f.matches(&entry(OpClass::Splice, "Bob", 0)));
+            assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
+            assert!(f.matches(&entry(EntryKind::Text, "ALICE", 0)));
+            assert!(!f.matches(&entry(EntryKind::Text, "Bob", 0)));
         }
 
-        fn filter_matches_op_class_subset() {
+        fn filter_matches_entry_kind_subset() {
             // Stays inclusive within the subset — no implicit "Comments
             // must also be from Alice" cross-product.
-            let f = HistoryFilter::default().with_op_class(OpClass::Comment);
-            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 0)));
-            assert!(f.matches(&entry(OpClass::Comment, "Alice", 0)));
-            assert!(f.matches(&entry(OpClass::Comment, "Bob", 0)));
+            let f = HistoryFilter::default().with_entry_kind(EntryKind::Comment);
+            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 0)));
+            assert!(f.matches(&entry(EntryKind::Comment, "Alice", 0)));
+            assert!(f.matches(&entry(EntryKind::Comment, "Bob", 0)));
         }
 
         fn filter_matches_time_range() {
@@ -504,28 +586,23 @@ mod tests {
                 time_range: Some((start, end)),
                 ..Default::default()
             };
-            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 99)));
-            assert!(f.matches(&entry(OpClass::Splice, "Alice", 100)));
-            assert!(f.matches(&entry(OpClass::Splice, "Alice", 150)));
-            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 200)));
-            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 300)));
+            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 99)));
+            assert!(f.matches(&entry(EntryKind::Text, "Alice", 100)));
+            assert!(f.matches(&entry(EntryKind::Text, "Alice", 150)));
+            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 200)));
+            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 300)));
         }
 
         fn semantic_facets_filter_context_without_guessing_legacy_entries() {
-            let mut contextual = entry(OpClass::EditMeta, "Ada", 100);
+            let mut contextual = entry(EntryKind::Details, "Ada", 100);
             contextual.context = Some(
-                ActionContext::for_resource(
-                    "Rename",
-                    "files.entry:brief.md",
-                    "files.entry",
-                    "brief.md",
-                )
-                .with_app("org.tilo.Files", "Files")
-                .with_group("issue:42", "Launch brief", "issue")
-                .with_facet(ActionFacet::new("file-type", "Markdown"))
-                .with_facet(ActionFacet::new("path", "/work/brief.md")),
+                ActionContext::for_resource("files.entry:brief.md", "files.entry", "brief.md")
+                    .with_app("org.tilo.Files", "Files")
+                    .with_group("issue:42", "Launch brief", "issue")
+                    .with_facet(ActionFacet::new("file-type", "Markdown"))
+                    .with_facet(ActionFacet::new("path", "/work/brief.md")),
             );
-            let legacy = entry(OpClass::EditMeta, "Ada", 100);
+            let legacy = entry(EntryKind::Details, "Ada", 100);
 
             let by_app = HistoryFilter::default().with_app("files");
             assert!(by_app.matches(&contextual));
@@ -572,57 +649,57 @@ mod tests {
 
         filter_matches_empty_means_all();
         filter_matches_author_case_insensitive();
-        filter_matches_op_class_subset();
+        filter_matches_entry_kind_subset();
         filter_matches_time_range();
         semantic_facets_filter_context_without_guessing_legacy_entries();
     }
 
     #[test]
-    fn op_class_revertibility_glyphs_and_formatting_helpers() {
-        fn op_class_revertibility_matches_spec_table() {
+    fn entry_kind_revertibility_glyphs_and_formatting_helpers() {
+        fn entry_kind_revertibility_matches_spec_table() {
             // Pin the table — a regression that makes Comment revertible
             // would silently paint a confusing chip on every comment row.
-            assert!(op_class_is_revertible(OpClass::Splice));
-            assert!(op_class_is_revertible(OpClass::Move));
-            assert!(op_class_is_revertible(OpClass::EditMeta));
-            assert!(op_class_is_revertible(OpClass::Tombstone));
-            assert!(op_class_is_revertible(OpClass::Restore));
-            assert!(!op_class_is_revertible(OpClass::Comment));
-            assert!(!op_class_is_revertible(OpClass::Govern));
-            assert!(!op_class_is_revertible(OpClass::Compaction));
-            assert!(!op_class_is_revertible(OpClass::Redact));
+            assert!(EntryKind::Text.is_revertible());
+            assert!(EntryKind::Move.is_revertible());
+            assert!(EntryKind::Details.is_revertible());
+            assert!(EntryKind::Delete.is_revertible());
+            assert!(EntryKind::Restore.is_revertible());
+            assert!(!EntryKind::Comment.is_revertible());
+            assert!(!EntryKind::Access.is_revertible());
+            assert!(!EntryKind::Compaction.is_revertible());
+            assert!(!EntryKind::Redaction.is_revertible());
         }
 
-        fn redacted_entry_is_non_revertible_regardless_of_op_class() {
-            // The widget gates the [Revert] chip on `op_class_is_revertible`
+        fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
+            // The widget gates the [Revert] chip on `EntryKind::is_revertible`
             // AND `entry.redaction.is_none()`; a Splice that has since been
             // redacted MUST NOT show the chip.
-            let mut e = entry(OpClass::Splice, "Alice", 0);
+            let mut e = entry(EntryKind::Text, "Alice", 0);
             e.redaction = Some(RedactionDisplay {
                 redactor_label: "owner@example".into(),
                 reason: "GDPR".into(),
                 redacted_at: SystemTime::UNIX_EPOCH,
             });
-            assert!(op_class_is_revertible(e.op_class));
+            assert!(e.entry_kind.is_revertible());
             assert!(
                 e.redaction.is_some(),
                 "the chrome reads `entry.redaction.is_some()` as the veto",
             );
         }
 
-        fn op_class_glyph_is_ascii_or_symbol_not_emoji() {
+        fn entry_kind_glyph_is_ascii_or_symbol_not_emoji() {
             for op in [
-                OpClass::Splice,
-                OpClass::Move,
-                OpClass::EditMeta,
-                OpClass::Comment,
-                OpClass::Tombstone,
-                OpClass::Restore,
-                OpClass::Govern,
-                OpClass::Compaction,
-                OpClass::Redact,
+                EntryKind::Text,
+                EntryKind::Move,
+                EntryKind::Details,
+                EntryKind::Comment,
+                EntryKind::Delete,
+                EntryKind::Restore,
+                EntryKind::Access,
+                EntryKind::Compaction,
+                EntryKind::Redaction,
             ] {
-                let g = op_class_glyph(op);
+                let g = op.glyph();
                 assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
                 for ch in g.chars() {
                     let cp = ch as u32;
@@ -648,11 +725,11 @@ mod tests {
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
-                "2 h ago"
+                "2 hr ago"
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(259_200)),
-                "3 d ago"
+                "3 days ago"
             );
         }
 
@@ -678,9 +755,9 @@ mod tests {
             );
         }
 
-        op_class_revertibility_matches_spec_table();
-        redacted_entry_is_non_revertible_regardless_of_op_class();
-        op_class_glyph_is_ascii_or_symbol_not_emoji();
+        entry_kind_revertibility_matches_spec_table();
+        redacted_entry_is_non_revertible_regardless_of_entry_kind();
+        entry_kind_glyph_is_ascii_or_symbol_not_emoji();
         format_relative_time_thresholds();
         hue_to_rgb_covers_every_sextant();
     }

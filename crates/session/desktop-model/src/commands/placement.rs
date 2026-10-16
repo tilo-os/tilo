@@ -9,7 +9,11 @@
 //!    two groups, else the next one rightwards.
 //!
 //! An app chosen from search skips rules 1–2 and takes the rightmost
-//! insertion point in view. Rules 1–2 read the tree alone; rule 3 and search
+//! insertion point in view. A view opened for an actor that is not the
+//! person at the keyboard (an agent, a Shortcut, another app) opens as a new
+//! group right after the view that actor works in, on that actor's strip,
+//! which need not be the one the person is looking at: everyone keeps their
+//! place. Rules 1–2 read the tree alone; rule 3 and search
 //! need a [`StripViewport`], which only a host that lays the strip out has.
 //! A host without a layout or a focus (a headless owner placing an agent's
 //! open) gets a new group at the end of its last strip.
@@ -101,6 +105,10 @@ pub enum OpenIntent {
     /// than focus-relative, so selecting a result never silently becomes a
     /// tab just because the focused group holds several.
     Search,
+    /// A view an actor's action needs, opened beside the group that actor
+    /// works in ([`OpenContext::beside`]): a new group right after it, never
+    /// a tab inside it and never at the person's focus.
+    Beside,
 }
 
 /// What an open is placed against: the person's focus and, when the host
@@ -137,6 +145,24 @@ impl<'a> OpenContext<'a> {
             selected: strip.and_then(|strip| tree.active_group_for(strip)),
             viewport,
         }
+    }
+}
+
+impl OpenContext<'_> {
+    /// Opening beside `group`, on whichever strip of `workspace` holds it.
+    /// `None` when no strip holds it any more.
+    #[must_use]
+    pub fn beside(workspace: &Workspace, group: GroupId) -> Option<Self> {
+        let strip = workspace
+            .strips
+            .iter()
+            .find(|strip| strip.window_groups.iter().any(|g| g.id == group))?;
+        Some(Self {
+            intent: OpenIntent::Beside,
+            strip: Some(strip.id),
+            selected: Some(group),
+            viewport: None,
+        })
     }
 }
 
@@ -187,6 +213,12 @@ pub fn open_app_placement(
                 None => new_group(seam(StripViewport::visible_seam)),
             }
         }
+        OpenIntent::Beside => new_group(
+            at.selected
+                .filter(|id| strip.window_groups.iter().any(|g| g.id == *id))
+                .or_else(|| strip.window_groups.last().map(|g| g.id))
+                .filter(|group| owns(*group)),
+        ),
         OpenIntent::Search => {
             new_group(seam(StripViewport::rightmost_visible_seam).or_else(|| {
                 strip
@@ -236,6 +268,7 @@ mod tests {
                     tabs,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }
             })
             .collect();
@@ -365,6 +398,45 @@ mod tests {
             right_of(three_ids[0])
         );
         assert_eq!(place(&three, Search, None, None), right_of(three_ids[2]));
+    }
+
+    #[test]
+    fn an_actors_view_opens_beside_its_group_on_its_own_strip() {
+        let (mut w, ids) = workspace(&[1, 3, 1]);
+        let mut other = Strip::new(StripId(8), "Agent");
+        other.window_groups.push(WindowGroup {
+            id: 900,
+            active_tab: 901,
+            tabs: vec![Tab {
+                id: 901,
+                title: "a".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: "a".into(),
+                },
+            }],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        w.strips.push(other);
+
+        let tabbed = OpenContext::beside(&w, ids[1]).expect("group 1 is on a strip");
+        assert_eq!(
+            open_app_placement(&w, &tabbed, |_| true).unwrap(),
+            right_of(ids[1]),
+            "beside a tabbed group, never a tab inside it",
+        );
+        let elsewhere = OpenContext::beside(&w, 900).expect("group 900 is on a strip");
+        assert_eq!(
+            open_app_placement(&w, &elsewhere, |_| true).unwrap(),
+            TabPlacement::NewGroup {
+                strip: 8,
+                after: Some(900)
+            },
+            "the actor's strip, not the person's",
+        );
+        assert!(OpenContext::beside(&w, 4242).is_none());
     }
 
     #[test]

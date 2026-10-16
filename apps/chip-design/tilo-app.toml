@@ -1,0 +1,68 @@
+# Chip Design — Tilo application manifest.
+#
+# Report imports use the consented framework chooser; no unrestricted paths or network.
+#
+
+
+[package]
+id       = "so.tilo.chip-design"
+name     = "Chip Design"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.names]
+de = "Chip-Entwurf"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["files.open"]
+
+[resources]
+kinds = ["chip_design.project"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/chip-design"
+type            = "gui"
+splash-segments = ["bin/chip-design[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = ["application/json", "application/octet-stream"]
+ext  = ["json"]

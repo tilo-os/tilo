@@ -1,4 +1,4 @@
-//! A hyperlink: theme-driven, underlined accent-coloured text that opens a
+//! A hyperlink: primary ink with an underline, theme-driven, that opens a
 //! URL when clicked, activated by keyboard (Enter / Space), or triggered by
 //! an assistive-technology `Activate`.
 //!
@@ -10,14 +10,15 @@
 //! is also recorded on [`Link::last_activated`] so a parent can confirm the
 //! link fired.
 
-use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use crate::widget::ModelPath;
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -45,7 +46,9 @@ pub struct Link {
     /// Defaults to the URL; a caller can show a friendlier label via
     /// [`with_label`](Self::with_label).
     label: String,
-    font_size: f32,
+    text_role: TextRole,
+    /// The role resolved in the theme seen at `build_layout`, for `measure`.
+    style: TextStyle,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -53,6 +56,8 @@ pub struct Link {
     enabled: bool,
     /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
+    /// An exported action the link runs instead of opening a URL.
+    action: Option<crate::widget::ActionEmitter<()>>,
     dirty: bool,
     last_state: (bool, bool, bool),
 }
@@ -63,16 +68,42 @@ impl Link {
         Self {
             url: url.to_string(),
             label: url.to_string(),
-            font_size: 14.0,
+            text_role: TextRole::Body,
+            style: crate::tokens::typography::stock().style(TextRole::Body),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
             enabled: true,
             last_activated: None,
+            action: None,
             dirty: true,
             last_state: (false, false, false),
         }
+    }
+
+    /// A link that runs an exported action instead of opening a URL ("Search
+    /// everywhere", "Open in Files"): link-shaped navigation inside Tilo.
+    pub fn action(label: &str, binding: tilo_actions::ActionBinding<()>) -> Self {
+        let mut link = Self::new("");
+        link.label = label.to_string();
+        link.action = Some(crate::widget::ActionEmitter::new(binding));
+        link
+    }
+
+    /// Run `binding` when activated, instead of opening the URL.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    fn effectively_enabled(&self) -> bool {
+        self.enabled
+            && self
+                .action
+                .as_ref()
+                .is_none_or(crate::widget::ActionEmitter::is_available)
     }
 
     /// The URL is still what opens and what the accessible value reports.
@@ -82,9 +113,12 @@ impl Link {
         self
     }
 
+    /// Set the link in `role` (default [`TextRole::Body`]), usually the role
+    /// of the text around it.
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size = size;
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.text_role = role;
+        self.style = crate::tokens::typography::stock().style(role);
         self
     }
 
@@ -100,18 +134,6 @@ impl Link {
         self.last_activated.as_deref()
     }
 
-    /// For a parent that routes input by hand instead of through
-    /// [`handle_event`](Widget::handle_event). Returns `true` when the state
-    /// changed, so the caller can request a redraw.
-    pub fn set_hovered(&mut self, hovered: bool) -> bool {
-        if hovered == self.is_hovered {
-            false
-        } else {
-            self.is_hovered = hovered;
-            true
-        }
-    }
-
     /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
     /// parents that lay children out by hand.
@@ -124,7 +146,13 @@ impl Link {
 
     /// Single entry point shared by mouse, keyboard and AT so all three paths behave identically.
     pub fn activate(&mut self) {
-        if !self.enabled {
+        if !self.effectively_enabled() {
+            return;
+        }
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, "action-bound link refused its arguments");
+            }
             return;
         }
         self.last_activated = Some(self.url.clone());
@@ -132,24 +160,53 @@ impl Link {
     }
 }
 
+impl crate::widget::controls::ActionControls for Link {
+    crate::widget::controls::optional_emitter_controls!(custody);
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.label.clone())])
+            .unwrap_or_default()
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.action.is_some()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+            self.dirty = true;
+        }
+    }
+}
+
 impl Widget for Link {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+        let mut style = theme.text(self.text_role);
+        if self.label == self.url {
+            // A link that shows its address is read as one.
+            style = style.with_kind(crate::text_render::TextKind::Url);
+        }
+        if style != self.style {
+            self.style = style;
+            self.dirty = true;
+        }
+        let style = Style {
+            size: Size::auto(),
             flex_shrink: 0.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -158,7 +215,7 @@ impl Widget for Link {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (w, h) = text_renderer.measure(&self.label, self.font_size, None);
+        let (w, h) = text_renderer.measure_style(&self.label, None, &self.style);
         taffy::Size {
             width: w + 0.1,
             height: h,
@@ -174,13 +231,7 @@ impl Widget for Link {
         reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = crate::widget::layout_rect(taffy, node, origin);
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
         }
@@ -200,19 +251,20 @@ impl Widget for Link {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
-        let color = theme.accent_primary;
-        let (tw, th) = text_renderer.measure(&self.label, self.font_size, None);
+        let color = theme.tokens.colors.text_primary;
+        let style = theme.text(self.text_role);
+        let (tw, th) = text_renderer.measure_style(&self.label, None, &style);
         let (tw, th) = (f64::from(tw), f64::from(th));
         let x0 = self.rect.x0;
         let y0 = self.rect.y0;
 
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &self.label,
-            self.font_size,
             color,
             transform * Affine::translate((x0, y0)),
             None,
+            &style,
         );
 
         // A touch thicker on hover so the link reads as "live".
@@ -260,7 +312,7 @@ impl Widget for Link {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -314,7 +366,7 @@ impl Widget for Link {
     }
 
     fn is_focusable(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
@@ -323,13 +375,14 @@ impl Widget for Link {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -350,13 +403,13 @@ impl Widget for Link {
         Some(
             AccessNode::new(Role::Link)
                 .with_name(self.label.clone())
-                .with_value(self.url.clone())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
+                .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled()),
+                ),
         )
     }
 }
@@ -365,7 +418,7 @@ impl Widget for Link {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn link_opens_its_url_by_pointer_and_keyboard() {
@@ -383,26 +436,10 @@ mod tests {
             let mut link = Link::new("https://example.com/page");
             let (tree, node) = laid_out(&mut link);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                link.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                sender.send(link, &ev);
             };
 
             dispatch(
@@ -449,7 +486,12 @@ mod tests {
             let mut link = Link::new("https://w3.org");
             let mut doc = AutoCommit::new();
             let handled = crate::host::scoped(&services, || {
-                link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
+                link.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                )
             });
             assert!(handled, "Activate is handled");
             work.run_pending();
@@ -525,5 +567,25 @@ mod tests {
         renders_as_a_link_in_the_accessibility_tree();
         hovered_link_requests_the_pointer_cursor();
         default_label_is_the_url();
+    }
+    #[test]
+    fn an_action_link_runs_its_action_instead_of_opening() {
+        let resource = tilo_actions::Resource::new("app:1", "app", "App").with_action(
+            tilo_actions::ActionSpec::operation(
+                "search",
+                "Search everywhere",
+                tilo_actions::OperationKind::View,
+                "test.search",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "search").unwrap();
+        let mut link = Link::action("Search everywhere", binding);
+        link.activate();
+        assert!(link.last_activated().is_none(), "no URL opened");
+        assert!(crate::widget::controls::take_control_invocation(&mut link).is_some());
+        let node = Widget::accessibility(&link).expect("semantics");
+        assert_eq!(node.value, None);
     }
 }

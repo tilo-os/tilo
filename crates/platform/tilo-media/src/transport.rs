@@ -10,13 +10,8 @@
 //! all the collaborative-playback timing logic, so they are unit-tested without
 //! any decode, socket, or clock.
 //!
-//! Wiring the state onto an Automerge document is kept behind the [`TransportSync`] trait
-//! so a purely local player never pays for automerge. [`CrdtTransport`] is the
-//! automerge-backed implementation; [`LocalTransport`] is the no-op one.
-
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-use tilo_automerge::ApplyIncoming;
+//! Where the state is kept and how it reaches the other participants is the
+//! app's: a player keeps it in its shared document.
 
 /// Playhead drift (ms) beyond which a follower hard-seeks to the host instead
 /// of letting the small gap ride. Below it the follower stays in sync by simply
@@ -85,191 +80,12 @@ pub fn correction(local_ms: u64, target_ms: u64) -> Correction {
     }
 }
 
-/// The seam between playback and a shared document. A local-only player uses
-/// [`LocalTransport`] (no CRDT); a collaborative one uses [`CrdtTransport`].
-pub trait TransportSync {
-    /// Host side: write the current transport into the shared state.
-    fn publish(&mut self, state: &TransportState);
-    /// Follower side: read the latest transport, if any has been published.
-    fn latest(&self) -> Option<TransportState>;
-}
-
-/// The no-op sync for a purely local player. Publishing is dropped and there is
-/// never a remote state to follow, so a local player carries zero CRDT weight.
-#[derive(Default)]
-pub struct LocalTransport;
-
-impl TransportSync for LocalTransport {
-    fn publish(&mut self, _state: &TransportState) {}
-    fn latest(&self) -> Option<TransportState> {
-        None
-    }
-}
-
-// Root-level keys the transport state occupies in the automerge document.
-const K_PRESENT: &str = "present";
-const K_PLAYING: &str = "playing";
-const K_POSITION: &str = "position_ms";
-const K_RATE: &str = "rate";
-const K_EPOCH: &str = "epoch_ms";
-
-/// The automerge-backed transport. Its whole document is the four transport
-/// scalars, so the sync payload stays tiny — a handful of bytes per publish.
-///
-/// **Only the host calls [`TransportSync::publish`].** Followers merge the
-/// host's incremental changes (via [`Self::merge_incremental`]) and read with
-/// [`TransportSync::latest`]; they never write, so the last-writer-wins
-/// registers never conflict and every follower converges on the host.
-pub struct CrdtTransport {
-    doc: AutoCommit,
-}
-
-impl Default for CrdtTransport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CrdtTransport {
-    /// A fresh, empty transport document (no state published yet).
-    pub fn new() -> Self {
-        Self {
-            doc: AutoCommit::new(),
-        }
-    }
-
-    /// Rebuild a transport from a full saved document (a late-joiner adopting a
-    /// peer's snapshot).
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying automerge error if `bytes` is not a valid saved
-    /// document.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, automerge::AutomergeError> {
-        Ok(Self {
-            doc: AutoCommit::load(bytes)?,
-        })
-    }
-
-    /// The full document, for a late-joiner snapshot handoff.
-    pub fn save(&mut self) -> Vec<u8> {
-        self.doc.save()
-    }
-
-    /// The changes since the last `save` / `save_incremental`, for the
-    /// incremental collab path (host → followers). Pairs with
-    /// [`Self::merge_incremental`].
-    pub fn save_incremental(&mut self) -> Vec<u8> {
-        self.doc.save_incremental()
-    }
-
-    /// Apply an incremental change blob received from the host.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying automerge error if `bytes` is not a valid
-    /// incremental change set.
-    pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
-        self.doc.load_incoming(bytes).map(|_| ())
-    }
-
-    /// Merge a full saved document from a peer (the legacy / late-join
-    /// snapshot path). Converges with the local state rather than replacing it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying automerge error if `bytes` is not a valid saved
-    /// document, or if merging it into the local document fails.
-    pub fn merge_snapshot(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
-        let mut other = AutoCommit::load(bytes)?;
-        self.doc.merge_incoming(&mut other).map(|_| ())
-    }
-
-    fn read_u64(&self, key: &str) -> Option<u64> {
-        match self.doc.get(ROOT, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Uint(u) => Some(*u),
-                ScalarValue::Int(i) => u64::try_from((*i).max(0)).ok(),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn read_bool(&self, key: &str) -> Option<bool> {
-        match self.doc.get(ROOT, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "only used to read the rate scalar, a small playback-speed \
-                  multiplier far inside f64's exact-integer range even if \
-                  stored as Int/Uint"
-    )]
-    fn read_f64(&self, key: &str) -> Option<f64> {
-        match self.doc.get(ROOT, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::F64(f) => Some(*f),
-                ScalarValue::Int(i) => Some(*i as f64),
-                ScalarValue::Uint(u) => Some(*u as f64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-}
-
-impl TransportSync for CrdtTransport {
-    fn publish(&mut self, state: &TransportState) {
-        // Best-effort: a `put` on the root map only fails for a genuinely
-        // corrupt document, which can't happen for scalars we control.
-        let _ = self.doc.put(ROOT, K_PRESENT, ScalarValue::Boolean(true));
-        let _ = self
-            .doc
-            .put(ROOT, K_PLAYING, ScalarValue::Boolean(state.playing));
-        let _ = self
-            .doc
-            .put(ROOT, K_POSITION, ScalarValue::Uint(state.position_ms));
-        let _ = self
-            .doc
-            .put(ROOT, K_RATE, ScalarValue::F64(f64::from(state.rate)));
-        let _ = self
-            .doc
-            .put(ROOT, K_EPOCH, ScalarValue::Uint(state.epoch_ms));
-    }
-
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "rate is always a small playback-speed multiplier (~0.25..=4.0), \
-                  never near f32's range limits"
-    )]
-    fn latest(&self) -> Option<TransportState> {
-        // `present` is set on the first publish; without it there is nothing to
-        // follow yet (a fresh document, or a peer who never played).
-        if self.read_bool(K_PRESENT) != Some(true) {
-            return None;
-        }
-        Some(TransportState {
-            playing: self.read_bool(K_PLAYING).unwrap_or(false),
-            position_ms: self.read_u64(K_POSITION).unwrap_or(0),
-            rate: self.read_f64(K_RATE).unwrap_or(1.0) as f32,
-            epoch_ms: self.read_u64(K_EPOCH).unwrap_or(0),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn transport_projects_drifts_and_syncs_through_the_crdt() {
+    fn transport_projects_and_drifts() {
         // Phase `projection_freezes_while_paused_and_advances_while_playing`.
         {
             let paused = TransportState {
@@ -314,68 +130,6 @@ mod tests {
             // 900ms gap in either direction → hard-seek to the host target.
             assert_eq!(correction(10_000, 10_900), Correction::Seek(10_900));
             assert_eq!(correction(20_000, 18_800), Correction::Seek(18_800));
-        }
-        // Phase `local_transport_never_yields_a_state`.
-        {
-            let mut t = LocalTransport;
-            t.publish(&TransportState {
-                playing: true,
-                position_ms: 1,
-                rate: 1.0,
-                epoch_ms: 1,
-            });
-            assert!(t.latest().is_none());
-        }
-        // Phase `crdt_transport_round_trips_published_state`.
-        {
-            let mut host = CrdtTransport::new();
-            assert!(host.latest().is_none(), "nothing published yet");
-            let state = TransportState {
-                playing: true,
-                position_ms: 7_250,
-                rate: 1.5,
-                epoch_ms: 1_700_000,
-            };
-            host.publish(&state);
-            let got = host.latest().expect("state present after publish");
-            assert!(got.playing);
-            assert_eq!(got.position_ms, 7_250);
-            assert!((got.rate - 1.5).abs() < 1e-6);
-            assert_eq!(got.epoch_ms, 1_700_000);
-        }
-        // Phase `follower_converges_on_host_via_incremental_sync`.
-        {
-            // Host publishes; the incremental blob carries the state to a follower
-            // that never writes — exactly the collab-socket follow-the-host path.
-            let mut host = CrdtTransport::new();
-            let mut follower = CrdtTransport::new();
-
-            host.publish(&TransportState {
-                playing: true,
-                position_ms: 3_000,
-                rate: 1.0,
-                epoch_ms: 500,
-            });
-            let delta = host.save_incremental();
-            follower.merge_incremental(&delta).unwrap();
-
-            let f = follower.latest().expect("follower adopted the host state");
-            assert_eq!(f.position_ms, 3_000);
-            assert!(f.playing);
-
-            // A later host publish (a pause + new epoch) reaches the follower too.
-            host.publish(&TransportState {
-                playing: false,
-                position_ms: 8_000,
-                rate: 1.0,
-                epoch_ms: 6_000,
-            });
-            follower
-                .merge_incremental(&host.save_incremental())
-                .unwrap();
-            let f2 = follower.latest().unwrap();
-            assert_eq!(f2.position_ms, 8_000);
-            assert!(!f2.playing);
         }
     }
 }

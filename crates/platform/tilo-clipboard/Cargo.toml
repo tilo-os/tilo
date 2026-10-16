@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 # Attaching to the runner's display, on every target so the call compiles
 # everywhere; only a Wayland display attaches.
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 raw-window-handle = "0.6"
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
@@ -46,6 +47,11 @@ js-sys = "=0.3.85"
 [dev-dependencies]
 # Bounds the Wayland worker tests' waits.
 tilo-test-env = { path = "../../dev/test-env" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Already locked by the compositor; the isolated fixture drives the real
+# clipboard worker without requiring the compositor's native system libraries.
+wayland-server = "=0.31.13"
 
 [lints]
 workspace = true

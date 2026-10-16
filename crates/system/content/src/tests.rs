@@ -1,9 +1,5 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::string_slice,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -42,6 +38,19 @@ fn unknown_content_still_reports_its_length() {
     assert_eq!(m.mime, "");
     assert_eq!((m.w, m.h), (0, 0));
     assert_eq!(m.len, 19, "length is knowable even when the format is not");
+}
+
+#[test]
+fn image_format_reads_the_signature_alone() {
+    let format = |bytes: &[u8]| image_format(bytes).map(|format| format.extension);
+    assert_eq!(format(b"\x89PNG\r\n\x1a\n"), Some("png"));
+    assert_eq!(format(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
+    assert_eq!(format(b"GIF89a"), Some("gif"));
+    assert_eq!(format(b"RIFFxxxxWEBP"), Some("webp"));
+    assert_eq!(format(b"  <svg xmlns=\"\"/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><svg/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><html/>"), None);
+    assert_eq!(format(b"not an image"), None);
 }
 
 #[test]
@@ -230,4 +239,174 @@ fn inputs_dedupe_and_persist_into_a_store() {
     // A chain answers from the first source that has the content.
     let chain = (NoContent, &store);
     assert_eq!(chain.content(&a).as_deref(), Some(TINY_PNG));
+}
+
+/// A store over a directory backend the test can still inspect.
+fn probed(backend: DirBackend) -> (ContentStore, Arc<DirBackend>) {
+    let backend = Arc::new(backend);
+    (ContentStore::from_backend(backend.clone()), backend)
+}
+
+fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {
+    counter.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn item_path(root: &std::path::Path, hash: &str) -> std::path::PathBuf {
+    root.join(&hash[..2]).join(hash)
+}
+
+#[test]
+fn has_does_not_rehash_a_verified_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
+    let (store, backend) = probed(DirBackend::new(dir.path()));
+    let hash = store.put(&big).unwrap();
+    for _ in 0..1000 {
+        assert!(store.has(&hash));
+        assert_eq!(store.state(&hash), ContentState::Resolved);
+    }
+    assert_eq!(
+        count(&backend.probes().verifications),
+        0,
+        "the writer hashed the item as it streamed in"
+    );
+    // Another backend on the same root has hashed nothing yet: once, then never again.
+    let (other, other_backend) = probed(DirBackend::new(dir.path()));
+    for _ in 0..1000 {
+        assert!(other.has(&hash));
+    }
+    assert_eq!(count(&other_backend.probes().verifications), 1);
+    // A repeated put of the same content is idempotent without reading the item again either.
+    assert_eq!(other.put(&big).unwrap(), hash);
+    assert_eq!(count(&other_backend.probes().verifications), 1);
+}
+
+#[test]
+fn has_reverifies_after_external_modification() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::in_dir(dir.path());
+    let hash = store.put(b"original").unwrap();
+    assert!(store.has(&hash));
+    let path = item_path(dir.path(), &hash);
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    // Same length, different bytes, rewritten in place (same inode), with a later mtime.
+    std::fs::write(&path, b"tampered").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(
+            before
+                .checked_add(std::time::Duration::from_secs(1))
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(!store.has(&hash), "a changed file is verified again");
+    assert_eq!(store.state(&hash), ContentState::Unavailable);
+    assert!(store.read(&hash).is_none());
+    // Replaced by another file holding the right bytes: verified again, and intact.
+    let replacement = dir.path().join("replacement");
+    std::fs::write(&replacement, b"original").unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    assert!(store.has(&hash));
+}
+
+#[test]
+fn new_put_does_not_rescan_when_generation_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, first_backend) = probed(DirBackend::new(dir.path()));
+    first.put(b"one").unwrap();
+    first.put(b"two").unwrap();
+    first.put(b"three").unwrap();
+    assert_eq!(
+        count(&first_backend.probes().scans),
+        1,
+        "only the cold start scans the store"
+    );
+    let (second, second_backend) = probed(DirBackend::new(dir.path()));
+    second.put(b"four").unwrap();
+    assert_eq!(count(&second_backend.probes().scans), 1);
+    first.put(b"five").unwrap();
+    assert_eq!(
+        count(&first_backend.probes().scans),
+        2,
+        "another writer's put makes the kept index stale"
+    );
+    first.put(b"six").unwrap();
+    assert_eq!(count(&first_backend.probes().scans), 2);
+}
+
+#[test]
+fn a_kept_index_still_counts_every_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    // "one" + "two" + "three" = 11 bytes; room for one more byte.
+    let l = limits(8, 12, 64);
+    let (first, _) = probed(DirBackend::with_limits(dir.path(), l));
+    let (second, second_backend) = probed(DirBackend::with_limits(dir.path(), l));
+    first.put(b"one").unwrap();
+    second.put(b"two").unwrap();
+    first.put(b"three").unwrap();
+    first.put(b"4").unwrap();
+    assert_eq!(
+        second.put(b"5"),
+        Err(ContentError::TotalQuotaExceeded {
+            attempted: 13,
+            limit: 12
+        }),
+        "the second backend's kept total misses the first's later writes"
+    );
+    assert_eq!(count(&second_backend.probes().scans), 2);
+}
+
+#[test]
+fn index_recovers_from_external_deletion_before_refusing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, backend) = probed(DirBackend::with_limits(dir.path(), limits(4, 6, 4)));
+    let abc = store.put(b"abc").unwrap();
+    store.put(b"de").unwrap();
+    assert_eq!(count(&backend.probes().scans), 1);
+    std::fs::remove_file(item_path(dir.path(), &abc)).unwrap();
+    assert_eq!(store.put(b"fgh"), Ok(hash_bytes(b"fgh")));
+    assert_eq!(
+        count(&backend.probes().scans),
+        2,
+        "the over-counting index was rescanned before refusing"
+    );
+    // A real refusal still refuses, against the store's true total.
+    assert_eq!(
+        store.put(b"ij"),
+        Err(ContentError::TotalQuotaExceeded {
+            attempted: 7,
+            limit: 6
+        })
+    );
+}
+
+#[test]
+fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, backend) = probed(DirBackend::new(dir.path()));
+    let first = store.put(b"first").unwrap();
+    assert_eq!(
+        count(&backend.probes().dir_syncs),
+        2,
+        "a new shard: the root that gained it and the shard that gained the item"
+    );
+    // Content whose address shares the first one's shard lands in an existing directory.
+    // One candidate in 256 matches; ten thousand candidates all missing is not a real outcome.
+    let same_shard = (0u32..10_000)
+        .map(|i| i.to_string())
+        .find(|candidate| hash_bytes(candidate.as_bytes())[..2] == first[..2])
+        .unwrap();
+    store.put(same_shard.as_bytes()).unwrap();
+    assert_eq!(
+        count(&backend.probes().dir_syncs),
+        3,
+        "an existing shard: only the shard"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    let (store, backend) = probed(DirBackend::new(cache.path()).regenerable());
+    store.put(b"first").unwrap();
+    store.put(same_shard.as_bytes()).unwrap();
+    assert_eq!(count(&backend.probes().dir_syncs), 0);
 }

@@ -1,4 +1,4 @@
-//! Deterministic source fixtures for the production `code_editor --path` route.
+//! Deterministic source fixtures for the production `code-editor FILE` route.
 //! Hashes describe UTF-8 source bytes, not Automerge serialization or pixels.
 
 use std::io::Write;

@@ -14,9 +14,7 @@
     clippy::format_collect,
     clippy::format_push_string,
     clippy::many_single_char_names,
-    clippy::missing_errors_doc,
     clippy::obfuscated_if_else,
-    clippy::redundant_closure_for_method_calls,
     clippy::semicolon_if_nothing_returned,
     clippy::too_many_lines,
     clippy::unnested_or_patterns,
@@ -595,7 +593,7 @@ fn parse_slide(
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
                 if let Some(c) = cur.as_mut()
-                    && let Some(ch) = qdoc_codecs::resolve_general_ref(&r)
+                    && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r)
                 {
                     c.text.push(ch);
                     let (bold, italic) = (c.bold, c.italic);
@@ -744,7 +742,7 @@ fn parse_notes(xml: &str) -> String {
                 }
             }
             Ok(Event::GeneralRef(r)) if in_text => {
-                notes.extend(qdoc_codecs::resolve_general_ref(&r));
+                notes.extend(tilo_doc_codecs::resolve_general_ref(&r));
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
@@ -794,7 +792,7 @@ fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
             }
             (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
             (Ok(Event::GeneralRef(g)), Some(text)) => {
-                text.extend(qdoc_codecs::resolve_general_ref(&g));
+                text.extend(tilo_doc_codecs::resolve_general_ref(&g));
             }
             (Ok(Event::End(_)), Some(_)) => return text,
             (Ok(Event::Eof) | Err(_), _) => return None,
@@ -806,7 +804,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .and_then(|a| qdoc_codecs::unescape_attr(&a))
+        .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {
@@ -826,15 +824,9 @@ fn emu(v: f64) -> i64 {
     (v * EMU).round() as i64
 }
 fn image_ext(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("png")
-    } else if b.starts_with(b"\xff\xd8\xff") {
-        Some("jpg")
-    } else if b.starts_with(b"GIF8") {
-        Some("gif")
-    } else {
-        None
-    }
+    tilo_content::image_format(b)
+        .map(|format| format.extension)
+        .filter(|ext| matches!(*ext, "png" | "jpg" | "gif"))
 }
 
 fn content_types(deck: &Deck, p: &[Picture], has_notes: bool) -> String {

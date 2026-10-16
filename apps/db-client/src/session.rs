@@ -7,23 +7,23 @@
 //! Every blocking operation (connecting, introspecting, running SQL) is handed
 //! to the background [`crate::worker::DbWorker`] so it never stalls the UI
 //! thread. Requests are fire-and-forget; the replies are folded back in by
-//! [`drain`](Session::drain), which the widget calls each frame. The hermetic
-//! demo/`--shots` build and the headless tests drive the identical worker
-//! synchronously via [`block_until_idle`](Session::block_until_idle).
+//! [`drain`](Session::drain), which the widget calls each frame. A capture
+//! and the headless tests drive the identical worker synchronously via
+//! [`block_until_idle`](Session::block_until_idle).
 
 use std::collections::HashMap;
 
 use uuid::Uuid;
 
 use crate::model::{
-    ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, RelationRef, TableInfo,
+    ConnectionProfile, DatabaseSchema, QueryResult, RelationKind, RelationRef, TableInfo,
 };
 use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
 /// Which workspace tab the main panel is showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MainTab {
-    /// SQL editor + results grid.
+    /// SQL editor + results table.
     Query,
     /// Browse rows of the selected table.
     Data,
@@ -72,8 +72,8 @@ const QUERY_HISTORY_LIMIT: usize = 20;
 
 /// Everything the app needs at runtime that is not collaborative.
 pub struct Session {
-    /// Saved connection profiles shown in the sidebar. For the live app these
-    /// mirror `root["connections"]`; for the demo they are seeded view state.
+    /// Saved connection profiles shown in the sidebar: the workspace's
+    /// `root["connections"]` as last presented.
     pub connections: Vec<ConnectionProfile>,
     /// Index into `connections` of the active connection.
     pub active: usize,
@@ -105,6 +105,9 @@ pub struct Session {
     /// Session-only passwords keyed by profile id. Never persisted and never
     /// written to the shared document — each peer supplies its own.
     passwords: HashMap<Uuid, String>,
+    /// The saved connection that opens the bundled sample catalog instead
+    /// of a server: a capture's stand-in for a database it cannot reach.
+    sample: Option<Uuid>,
     /// Monotonic identity for a worker query. A cancellation and a reply must
     /// both match this value as well as the connection UUID.
     next_query_generation: u64,
@@ -143,6 +146,7 @@ impl Session {
             query_history: Vec::new(),
             data_gen: 0,
             passwords: HashMap::new(),
+            sample: None,
             next_query_generation: 0,
             active_query: None,
             active_query_sql: String::new(),
@@ -154,7 +158,9 @@ impl Session {
     /// Build a session with the bundled sample connection live and its schema
     /// introspected, plus two disconnected example remotes so the connection
     /// manager has something to show. Drives the real worker synchronously so
-    /// the `--shots` frame is fully populated on first paint.
+    /// the widget is fully populated on its first paint: the layout tests'
+    /// fixture.
+    #[cfg(test)]
     pub fn with_sample() -> Self {
         let mut s = Self::new();
 
@@ -170,12 +176,12 @@ impl Session {
 
         // Two example remotes, disconnected (no password, gated on a real
         // server). They demonstrate the sidebar's multi-engine roster.
-        let mut pg = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+        let mut pg = ConnectionProfile::new("Production analytics", crate::model::Engine::Postgres);
         pg.host = "db.internal".into();
         pg.database = "analytics".into();
         pg.user = "reader".into();
         s.connections.push(pg);
-        let mut my = ConnectionProfile::new("Shop · staging", Engine::MySql);
+        let mut my = ConnectionProfile::new("Staging shop", crate::model::Engine::MySql);
         my.host = "mysql.staging".into();
         my.database = "shop".into();
         my.user = "app".into();
@@ -195,8 +201,8 @@ impl Session {
         }
     }
 
-    /// Block until every outstanding worker request has replied. Used by the
-    /// demo/`--shots` build and the headless tests to await the real engine.
+    /// Block until every outstanding worker request has replied. Used by a
+    /// capture and the headless tests to await the real engine.
     pub fn block_until_idle(&mut self) {
         let replies = self.worker.block_until_idle();
         for reply in replies {
@@ -235,10 +241,6 @@ impl Session {
                 offset,
                 result,
             } => self.apply_browse_reply(connection_id, schema, table, offset, result),
-            DbReply::Disconnected => {
-                self.connected = false;
-                self.mark_connected(false);
-            }
         }
     }
 
@@ -383,6 +385,22 @@ impl Session {
         }
     }
 
+    /// Whether the session holds a password for connection `id`.
+    pub fn knows_password(&self, id: Uuid) -> bool {
+        self.passwords.contains_key(&id)
+    }
+
+    /// Open the saved connection `id` on the bundled sample catalog.
+    pub fn open_sample_as(&mut self, id: Uuid) {
+        self.sample = Some(id);
+    }
+
+    /// Where the connection that opens the sample catalog is listed.
+    pub fn sample_index(&self) -> Option<usize> {
+        let sample = self.sample?;
+        self.connections.iter().position(|p| p.id == sample)
+    }
+
     /// The active profile with its in-memory password refilled, ready to hand
     /// to the worker.
     fn active_profile_with_password(&self) -> Option<ConnectionProfile> {
@@ -390,6 +408,7 @@ impl Session {
         if let Some(pw) = self.passwords.get(&p.id) {
             p.password = pw.clone();
         }
+        p.is_sample |= self.sample == Some(p.id);
         Some(p)
     }
 
@@ -412,13 +431,20 @@ impl Session {
         self.worker.request(DbRequest::Connect(Box::new(profile)));
     }
 
-    /// Switch the active connection and (re)open its engine on the worker.
-    pub fn select_connection(&mut self, idx: usize) {
-        if idx >= self.connections.len() || idx == self.active {
-            return;
+    /// Make the connection called `name` the active one and leave it
+    /// unopened, as a connect that failed with `message` does.
+    pub fn fail_connecting(&mut self, name: &str, message: &str) {
+        if let Some(index) = self.connections.iter().position(|c| c.name == name) {
+            self.active = index;
         }
-        self.active = idx;
-        self.connect_active();
+        self.connected = false;
+        self.active_query = None;
+        self.query_result = None;
+        self.query_gen += 1;
+        self.data_result = None;
+        self.data_gen += 1;
+        self.set_schema(DatabaseSchema::default());
+        self.status = RunStatus::Error(message.to_owned());
     }
 
     /// Reconcile the connection list from the shared document. Preserves which
@@ -432,6 +458,7 @@ impl Session {
             if let Some(pw) = self.passwords.get(&p.id) {
                 p.password = pw.clone();
             }
+            p.is_sample |= self.sample == Some(p.id);
         }
         let active_id = self.connections.get(self.active).map(|c| c.id);
         // A removed profile must also evict its session-only secret. This is
@@ -456,7 +483,7 @@ impl Session {
     }
 
     /// Add a profile as live view state and connect it, blocking until the
-    /// engine has opened. Used by the demo and the headless integration tests
+    /// engine has opened. Used by the headless integration tests
     /// (the live app adds connections through the action model instead).
     pub fn add_connection_blocking(&mut self, mut profile: ConnectionProfile) -> Uuid {
         let id = profile.id;
@@ -602,11 +629,12 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Engine;
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// Sessions seed only in demo, start empty live, open `SQLite` for real, load tables and report unreachable servers honestly.
+    /// Sessions start empty, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
     fn session_opens_connections_and_loads_tables_honestly() {
         // --- phase: session_seeds_sample_and_runs_default_query ---

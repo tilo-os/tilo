@@ -1,5 +1,6 @@
-//! What the coverage tests share: the fixture catalogue and a generic search
-//! for one user-equivalent edit in an app the caller knows nothing about.
+//! What the coverage tests share: the catalogue and a generic search for one
+//! edit, through the operations a record publishes, in an app the caller
+//! knows nothing about.
 
 #![allow(
     dead_code,
@@ -7,27 +8,19 @@
     reason = "each test binary uses part of this; a fixture failure is the assertion"
 )]
 
-use std::path::Path;
-use std::rc::Rc;
-use std::sync::OnceLock;
-
 use serde_json::json;
 use tilo_actions::door::{ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::{self, Answer, Revealed};
-use tilo_agent_participant::apps::is_semantic;
-use tilo_agent_participant::{
-    AppCatalogue, Control, ControlInput, PlanModel, StepAction, component_apps,
-};
-use ui::accesskit::Role;
+use tilo_agent_participant::{AppCatalogue, PlanModel, StepAction, component_apps};
 
-/// Apps whose state is device-local by design, so no input changes the
-/// shared record: the agent operates them like anyone, and nothing syncs.
+/// Apps whose state is device-local by design, so no operation changes the
+/// shared record: there is nothing for an agent to edit there.
 pub const LOCAL_STATE: &[(&str, &str)] = &[
     (
-        "so.tilo.clocks",
-        "alarms, timers and world clocks live in a device-local file",
+        "so.tilo.camera",
+        "the record holds only what this device's camera took and scanned; its preferences are settings",
     ),
     (
         "so.tilo.hex-editor",
@@ -38,12 +31,8 @@ pub const LOCAL_STATE: &[(&str, &str)] = &[
         "secrets live in the device's encrypted secret store",
     ),
     (
-        "so.tilo.pdf-viewer",
-        "opens a document the user picks; the record holds nothing until one is open",
-    ),
-    (
-        "so.tilo.speed-test",
-        "measurements and their history live in the app instance, not the record",
+        "so.tilo.totp",
+        "an account's seed lives in the device's secret store; adding one is the device's own",
     ),
 ];
 
@@ -53,64 +42,38 @@ pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 /// The text every edit writes.
 pub const WRITTEN: &str = "Written by an agent";
 
-/// Keep the apps a test binary mounts off the user's profile: their files
-/// under a temporary home, their secrets in memory. Otherwise TOTP and
-/// Passwords open the user's real vaults and wait on a Keychain prompt.
-pub fn isolate_device() {
-    static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
-    HOME.get_or_init(|| {
-        let home = tempfile::Builder::new()
-            .prefix("agent-participant-home")
-            .tempdir()
-            .unwrap();
-        for (var, dir) in [
-            ("HOME", ""),
-            ("XDG_DATA_HOME", ".local/share"),
-            ("XDG_CONFIG_HOME", ".config"),
-            ("XDG_STATE_HOME", ".local/state"),
-            ("XDG_CACHE_HOME", ".cache"),
-        ] {
-            // SAFETY: every test reaches this through `catalogue` before it
-            // mounts an app, and the `OnceLock` holds the others back, so no
-            // thread of this binary reads the environment meanwhile.
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the binary's environment is set once, before any app reads it"
-            )]
-            unsafe {
-                std::env::set_var(var, home.path().join(dir));
-            }
-        }
-        tilo_secrets::keep_in_memory_for_process();
-        home
-    });
-}
-
-/// Every web app, presented with the fixture fonts and theme, on an
-/// [isolated](isolate_device) device.
+/// Every web app.
 pub fn catalogue() -> AppCatalogue {
-    isolate_device();
-    AppCatalogue::new(
-        component_apps(),
-        Rc::new(|| {
-            let fonts = ui::font_catalog::FontCatalog::controlled_fixture(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-                "en-US",
-            );
-            ui::application::ComponentRunnerInputs {
-                theme: ui::Theme::dark(),
-                text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
-            }
-        }),
-    )
+    AppCatalogue::new(component_apps())
 }
 
-/// Something an agent can drive: a mounted app, or a participant's record.
+/// A record's document as JSON: a page's replica, or the copy an agent's
+/// confined record holds.
+pub trait Body {
+    /// The document, as `AutoSerde` writes it.
+    fn body(&self) -> String;
+}
+
+fn json(doc: &automerge::AutoCommit) -> String {
+    serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
+}
+
+impl Body for tilo_agent_participant::Replica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
+impl Body for tilo_agent_participant::ConfinedReplica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
+/// Something an agent can drive: a replica, or a participant's record.
 pub trait Driveable {
-    /// Every published action, declared and projected.
+    /// Every operation the record publishes.
     fn survey(&mut self) -> Vec<ActionDescriptor>;
-    /// Every on-screen control.
-    fn controls(&mut self) -> Vec<Control>;
     /// The record's document, for noticing that it changed.
     fn body(&mut self) -> String;
     /// Do one step.
@@ -120,9 +83,7 @@ pub trait Driveable {
 /// How an edit was made.
 #[derive(Clone, Debug)]
 pub struct Edit {
-    /// `declared`, `control` (projected action) or `input` (direct).
-    pub path: &'static str,
-    /// The action or control input, as the step log names it.
+    /// The operation, as the step log names it.
     pub label: String,
     /// The step, replayable.
     pub action: StepAction,
@@ -143,6 +104,16 @@ pub fn sample_arguments(
     for param in descriptor.params.iter().filter(|param| param.required) {
         let value = if let Some(choice) = param.choices.first() {
             serde_json::Value::from(choice.as_ref())
+        } else if let Some(example) = param
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.get("examples"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|examples| examples.first())
+        {
+            // A caller reads constrained input from the published contract,
+            // just as a person follows the palette's parameter guidance.
+            example.clone()
         } else {
             match param.ty {
                 ParamType::Text => WRITTEN.into(),
@@ -164,184 +135,32 @@ pub fn basic(descriptor: &ActionDescriptor) -> bool {
         && descriptor.kind != OperationKind::Effect
 }
 
-fn destructive(label: &str) -> bool {
-    let label = label.to_lowercase();
-    [
-        "delete",
-        "remove",
-        "close",
-        "quit",
-        "clear",
-        "reset",
-        "discard",
-        "lock",
-        "export",
-        "import",
-        "restore",
-        "back up",
-        "open file",
-        "cancel",
-    ]
-    .iter()
-    .any(|word| label.contains(word))
-}
-
-fn submits(label: &str) -> bool {
-    let label = label.to_lowercase();
-    [
-        "add", "save", "create", "done", "ok", "submit", "apply", "new", "insert",
-    ]
-    .iter()
-    .any(|word| {
-        label
-            .split(|c: char| !c.is_alphanumeric())
-            .any(|w| w == *word)
-    })
-}
-
-/// Whether filling this field edits anything: searching and filtering only
-/// change the view.
-fn fillable(name: &str) -> bool {
-    let name = name.to_lowercase();
-    !["search", "filter", "find"]
-        .iter()
-        .any(|word| name.contains(word))
-}
-
-/// What a person would type into a field named `name`: a well-formed value
-/// of the kind its name asks for.
-pub fn sample_value(name: &str, role: Role) -> String {
-    let name = name.to_lowercase();
-    let any = |words: &[&str]| words.iter().any(|word| name.contains(word));
-    if role == Role::PasswordInput || any(&["secret", "key", "password", "token"]) {
-        "JBSWY3DPEHPK3PXP".into()
-    } else if any(&[
-        "second", "minute", "hour", "period", "digit", "count", "number", "size",
-    ]) {
-        "30".into()
-    } else if any(&["address", "url", "link", "website"]) {
-        "https://example.com".into()
-    } else if any(&["email", "e-mail"]) {
-        "agent@example.com".into()
-    } else {
-        WRITTEN.into()
-    }
-}
-
-const TEXT_ROLES: &[Role] = &[Role::TextInput, Role::MultilineTextInput, Role::Document];
-
-/// The attempts a person unfamiliar with the app would make, in order: the
-/// app's own document actions, then filling its fields, then typing into
-/// its text surfaces, then its other declared actions, then its buttons.
+/// The attempts a caller unfamiliar with the app would make, in order: the
+/// record's document operations that need no confirmation, with a value of
+/// each declared type.
 pub fn candidates(app: &mut impl Driveable) -> Vec<Edit> {
-    let survey = app.survey();
-    let (projected, declared): (Vec<_>, Vec<_>) = survey.into_iter().partition(is_semantic);
-    let controls = app.controls();
-    let invoke = |path, descriptor: &ActionDescriptor| {
-        let arguments = sample_arguments(descriptor)?;
-        Some(Edit {
-            path,
-            label: format!(
-                "{}#{}",
-                descriptor.address.resource, descriptor.address.action
-            ),
-            action: StepAction::Invoke {
-                address: descriptor.address.clone(),
-                arguments,
-            },
+    app.survey()
+        .iter()
+        .filter(|d| d.kind == OperationKind::Document && basic(d))
+        .filter_map(|descriptor| {
+            let arguments = sample_arguments(descriptor)?;
+            Some(Edit {
+                label: format!(
+                    "{}#{}",
+                    descriptor.address.resource, descriptor.address.action
+                ),
+                action: StepAction::Invoke {
+                    address: descriptor.address.clone(),
+                    arguments,
+                },
+            })
         })
-    };
-    let operate = |control: &Control, input: ControlInput, verb: &str| Edit {
-        path: "input",
-        label: format!(
-            "{verb} {:?} ({:?})",
-            control.name.as_deref().unwrap_or_default(),
-            control.role
-        ),
-        action: StepAction::Operate {
-            control: control.id.clone(),
-            input,
-        },
-    };
-    let mut out = Vec::new();
-    out.extend(
-        declared
-            .iter()
-            .filter(|d| d.kind == OperationKind::Document && basic(d))
-            .filter_map(|d| invoke("declared", d)),
-    );
-    out.extend(
-        projected
-            .iter()
-            .filter(|d| d.address.action == "set-value" && basic_or_effect(d))
-            .filter(|d| fillable(&d.resource_label))
-            .filter_map(|d| {
-                let mut edit = invoke("control", d)?;
-                if let StepAction::Invoke { arguments, .. } = &mut edit.action {
-                    arguments.insert(
-                        PROMPTED_PARAM.into(),
-                        sample_value(&d.resource_label, Role::TextInput).into(),
-                    );
-                }
-                Some(edit)
-            }),
-    );
-    let live = |control: &&Control| !control.disabled;
-    let empty_field = |control: &&Control| {
-        control.value.as_deref().unwrap_or_default().is_empty()
-            && fillable(control.name.as_deref().unwrap_or_default())
-    };
-    let sample =
-        |control: &Control| sample_value(control.name.as_deref().unwrap_or_default(), control.role);
-    out.extend(
-        controls
-            .iter()
-            .filter(live)
-            .filter(empty_field)
-            .filter(|c| c.verbs.iter().any(|verb| verb == "set-value"))
-            .map(|c| operate(c, ControlInput::SetValue(sample(c)), "set-value")),
-    );
-    out.extend(
-        controls
-            .iter()
-            .filter(live)
-            .filter(empty_field)
-            .filter(|c| TEXT_ROLES.contains(&c.role))
-            .map(|c| operate(c, ControlInput::TypeText(sample(c)), "type")),
-    );
-    out.extend(
-        declared
-            .iter()
-            .filter(|d| d.kind != OperationKind::Document && basic(d))
-            .filter(|d| !destructive(&d.action_label))
-            .filter_map(|d| invoke("declared", d)),
-    );
-    let pressable = controls.iter().filter(live).filter(|c| {
-        matches!(
-            c.role,
-            Role::Button | Role::CheckBox | Role::Switch | Role::Tab | Role::ListItem
-        ) && !destructive(c.name.as_deref().unwrap_or_default())
-    });
-    let (submit, other): (Vec<&Control>, Vec<&Control>) =
-        pressable.partition(|c| submits(c.name.as_deref().unwrap_or_default()));
-    out.extend(
-        submit
-            .into_iter()
-            .chain(other)
-            .map(|c| operate(c, ControlInput::Press, "press")),
-    );
-    out
-}
-
-fn basic_or_effect(descriptor: &ActionDescriptor) -> bool {
-    matches!(descriptor.contract.availability, Availability::Available)
-        && matches!(descriptor.contract.confirmation, ConfirmationPolicy::None)
+        .collect()
 }
 
 /// Try [`candidates`] until one changes the record, surveying again after
-/// every attempt: an attempt that changes only the view (a dialog opens, a
-/// search narrows a list) puts new controls on screen. Returns the edit and
-/// every attempt before it.
+/// every attempt: an edit can change what the record publishes. Returns the
+/// edit and every attempt before it.
 pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<String>) {
     let mut tried = std::collections::HashSet::new();
     let mut refused = Vec::new();
@@ -368,6 +187,26 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
 /// quoted phrase. Deterministic, and bound by the same rule as a model: it
 /// reveals before it plans.
 pub struct KeywordModel;
+
+/// Scratchpad's note field edit: the body replaced by `text`, as the door
+/// takes it (`field-edit` with the edit as JSON).
+pub fn scratchpad_body(
+    text: &str,
+) -> (
+    tilo_actions::door::ActionAddress,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let edit = scratchpad::Note::paths().body.replace(text.to_owned());
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        ui::tilo_resource::EDIT_PARAM.into(),
+        serde_json::to_value(&edit).expect("a field edit is JSON"),
+    );
+    (
+        tilo_actions::door::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
+        arguments,
+    )
+}
 
 impl PlanModel for KeywordModel {
     fn choose(
@@ -420,4 +259,20 @@ impl PlanModel for KeywordModel {
             most_steps,
         )
     }
+}
+
+/// The document bodies among what a host retains, as `(readable, sealed)`:
+/// a readable one opens without any content key, a sealed one needs a key
+/// the host does not have. Governance and other messages are neither.
+pub fn retained_documents(bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>) -> (usize, usize) {
+    let mut ciphers = tilo_browser_peer::document::Ciphers::new();
+    let (mut readable, mut sealed) = (0_usize, 0_usize);
+    for (author, body) in bodies {
+        match tilo_browser_peer::document::open_frame(&body, author, &mut ciphers) {
+            Ok(Some(_)) => readable = readable.saturating_add(1),
+            Ok(None) => {}
+            Err(_) => sealed = sealed.saturating_add(1),
+        }
+    }
+    (readable, sealed)
 }

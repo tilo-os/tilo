@@ -3,7 +3,6 @@ use super::composition_parts::{Parts, retained_parts};
 use super::layout_info::ManualLayout;
 use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
 use crate::{PresenceCtx, Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
-use automerge::{AutoCommit, ObjId};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{
@@ -44,20 +43,51 @@ impl ManualInvalidation {
     pub fn invalidate(&self) {
         self.0.requested.set(self.0.requested.get().wrapping_add(1));
     }
-    fn is_pending(&self) -> bool {
+    pub(crate) fn is_pending(&self) -> bool {
         self.0.applied.get() != Some(self.0.requested.get())
+    }
+    /// Acknowledge the solved revision once its geometry has been applied
+    /// (what [`Manual`] does in `apply_layout`), for another widget that
+    /// places its children through a [`ManualPolicy`].
+    pub(crate) fn acknowledge_applied(&self) {
+        self.0.applied.set(self.0.solved.get());
     }
 }
 
-type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
+pub(crate) type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
 /// An owned descriptor. Hosts consume this through admitted Widget dispatch.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ManualPolicy {
     policy: Rc<Policy>,
+    /// The size the region was built with. The policy's answer can replace
+    /// it in the region's style; a new solve starts again from it on the axes
+    /// the region takes from its parent ([`reset_region`]).
+    region: Size<Dimension>,
     children: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
     invalidation: ManualInvalidation,
+}
+
+impl ManualPolicy {
+    /// A policy for a toolkit widget that places its own retained children
+    /// exactly (`NavShell`): `region` is the size the region's own node was
+    /// built with, `children` the child nodes it built, in placement-index
+    /// order, with the styles they were built with.
+    pub(crate) fn for_children(
+        policy: Rc<Policy>,
+        region: Size<Dimension>,
+        children: Vec<(NodeId, Style)>,
+        invalidation: ManualInvalidation,
+    ) -> Self {
+        Self {
+            policy,
+            region,
+            children,
+            info: Rc::new(Cell::new(None)),
+            invalidation,
+        }
+    }
 }
 
 /// A manual region whose children keep their standard rendering and interaction.
@@ -67,6 +97,7 @@ pub struct ManualPolicy {
 pub struct Manual {
     parts: Parts,
     policy: Rc<Policy>,
+    region: Size<Dimension>,
     baseline: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
     invalidation: ManualInvalidation,
@@ -78,6 +109,7 @@ impl Manual {
         Self {
             parts: Parts::default(),
             policy: Rc::new(policy),
+            region: Self::region_size(),
             baseline: Vec::new(),
             info: Rc::new(Cell::new(None)),
             invalidation: ManualInvalidation::default(),
@@ -95,6 +127,13 @@ impl Manual {
     }
     pub fn effective_layout(&self) -> Option<ManualLayout> {
         self.info.get()
+    }
+    /// The region fills its parent's width; its height is the policy's.
+    fn region_size() -> Size<Dimension> {
+        Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::auto(),
+        }
     }
 }
 impl Widget for Manual {
@@ -125,6 +164,7 @@ impl Widget for Manual {
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
         Some(ManualPolicy {
             policy: self.policy.clone(),
+            region: self.region,
             children: self.baseline.clone(),
             info: self.info.clone(),
             invalidation: self.invalidation.clone(),
@@ -138,10 +178,7 @@ impl Widget for Manual {
     ) -> NodeId {
         let node = self.parts.build(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
+                size: self.region,
                 ..Style::default()
             },
             tree,
@@ -168,18 +205,11 @@ impl Widget for Manual {
     ) {
         self.parts.draw(scene, transform, text, theme, presence);
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &crate::permissions::PermissionContext,
-    ) {
-        // Authored allocations may deliberately be smaller than their children.
-        // Keep negative as well as positive child extents in the culling box.
-        let paint_rect = self.info.get().map_or(self.parts.rect, |info| {
+
+    /// Authored allocations may deliberately be smaller than their children,
+    /// so negative as well as positive child extents count.
+    fn paint_bounds(&self) -> Rect {
+        self.info.get().map_or(self.parts.rect, |info| {
             let [x, y, width, height] = info.content_bounds;
             self.parts.rect.union(Rect::from_origin_size(
                 (
@@ -188,10 +218,7 @@ impl Widget for Manual {
                 ),
                 (f64::from(width), f64::from(height)),
             ))
-        });
-        if !presence.should_cull(paint_rect) {
-            self.draw(scene, transform, text, theme, presence);
-        }
+        })
     }
 }
 
@@ -251,6 +278,17 @@ impl ManualContext<'_> {
     /// # Errors
     /// Rejects invalid indices/proposals and propagates bounded layout errors.
     pub fn measure(
+        &mut self,
+        index: usize,
+        proposal: Size<MeasureConstraint>,
+    ) -> Result<ChildMeasurement, WidgetLayoutError> {
+        self.measure_child(index, proposal)
+    }
+
+    /// Measure a retained child using layout constraints, without changing geometry.
+    /// # Errors
+    /// Rejects invalid indices/proposals and propagates bounded layout errors.
+    pub fn measure_child(
         &mut self,
         index: usize,
         proposal: Size<MeasureConstraint>,
@@ -336,6 +374,64 @@ fn propose(
     }
 }
 
+/// Give a region back the size its parent allocates it before a new solve.
+///
+/// On an axis the region was built to take from its parent (a length or a
+/// percentage), a policy that answers a size of its own leaves that size in
+/// the region's style. The next solve would then hand the policy its own
+/// answer as the allocation, and a retained tree could never grow the region
+/// with a wider parent. Only a region whose allocation can have changed (it,
+/// or an ancestor, is dirty) is reset; a clean one keeps its cached solve. An
+/// axis the region sizes itself (`auto`) keeps the policy's answer.
+pub(super) fn reset_region(
+    descriptor: &ManualPolicy,
+    tree: &mut TaffyTree<()>,
+    node: NodeId,
+) -> Result<(), taffy::TaffyError> {
+    let mut style = tree.style(node)?.clone();
+    let authored = descriptor.region;
+    let reset = |authored: Dimension, current: &mut Dimension| {
+        if !authored.is_auto() {
+            *current = authored;
+        }
+    };
+    reset(authored.width, &mut style.size.width);
+    reset(authored.height, &mut style.size.height);
+    if style.size == tree.style(node)?.size {
+        return Ok(());
+    }
+    let mut current = Some(node);
+    while let Some(id) = current {
+        if tree.dirty(id)? {
+            set_style(tree, node, style)?;
+            return Ok(());
+        }
+        current = tree.parent(id);
+    }
+    Ok(())
+}
+
+/// The region's size on one axis after its policy answered `answer` for an
+/// `allocated` extent, with `current` the size in its style now. An axis that
+/// takes its size from the parent keeps doing so while the policy accepts
+/// the allocation, so a resize re-solves it without a pass to undo a fixed
+/// size. A size the policy chose and still answers stays put, or the region
+/// would flip between it and the parent's allocation.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact f32 logical allocations must match, not merely fall within a tolerance"
+)]
+fn region_axis(authored: Dimension, current: Dimension, answer: f32, allocated: f32) -> Dimension {
+    let chosen = Dimension::length(answer);
+    if current == chosen {
+        current
+    } else if !authored.is_auto() && answer == allocated {
+        authored
+    } else {
+        chosen
+    }
+}
+
 /// Called with no widget references alive and with the owner's execution lease.
 #[allow(
     clippy::float_cmp,
@@ -394,8 +490,18 @@ pub(super) unsafe fn run_policy(
     }
     let mut style = tree.style(node)?.clone();
     style.size = Size {
-        width: Dimension::length(size.width),
-        height: Dimension::length(size.height),
+        width: region_axis(
+            descriptor.region.width,
+            style.size.width,
+            size.width,
+            layout.size.width,
+        ),
+        height: region_axis(
+            descriptor.region.height,
+            style.size.height,
+            size.height,
+            layout.size.height,
+        ),
     };
     changed |= set_style(tree, node, style)?;
     let mut overflow_bounds = Rect::ZERO;

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::collapsible_if,
-    reason = "migration stack lint debt is scoped to this target"
-)]
-
 //! `cli` — SDK for Tilo CLI apps.
 //!
 //! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`
@@ -39,21 +34,8 @@
 //! [`output()`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -111,18 +93,6 @@ pub fn package_id() -> String {
     std::env::var("TILO_PACKAGE_ID").unwrap_or_else(|_| "tilo-standalone".to_string())
 }
 
-/// Print to stdout if it's a terminal, else write unstyled — small enough
-/// to skip the `output` module for simple hello-world code paths.
-///
-/// # Errors
-///
-/// Returns the underlying I/O error if the write to stdout fails.
-pub fn println_terminal_aware(text: &str) -> io::Result<()> {
-    let mut out = io::stdout().lock();
-    let _ = out.is_terminal(); // ensure the trait is imported at call sites
-    writeln!(out, "{text}")
-}
-
 /// Like `fs::create_dir_all`, but the error names the offending path.
 ///
 /// # Errors
@@ -141,7 +111,7 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
 pub fn data_home() -> PathBuf {
     // An empty or relative XDG_DATA_HOME is invalid by the spec, not a path
     // to resolve against the working directory.
-    if let Some(xdg) = xdg_paths::env_dir("XDG_DATA_HOME") {
+    if let Some(xdg) = tilo_paths::env_dir("XDG_DATA_HOME") {
         return xdg;
     }
     #[cfg(windows)]
@@ -153,13 +123,13 @@ pub fn data_home() -> PathBuf {
             return Path::new(&profile).join("AppData/Local");
         }
     }
-    if let Some(home) = xdg_paths::home() {
+    if let Some(home) = tilo_paths::home() {
         return home.join(".local/share");
     }
     // Temporary storage is not persistent and is used when the platform's
     // home/data environment is unavailable. The page has neither: a bare
     // relative path fails every file operation there instead of panicking.
-    xdg_paths::temp_dir().unwrap_or_default()
+    tilo_paths::temp_dir().unwrap_or_default()
 }
 
 /// The XDG data dir fallback for state outside Tilo; public so an app can

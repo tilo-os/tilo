@@ -1,24 +1,16 @@
 //! End-to-end: author a rich document (heading, bold run, bullet list, and a
 //! 2x2 table) in the word processor, save it as `.docx`, reopen, and verify the
-//! structure (block kinds, text, inline marks) round-tripped through the `qdoc`
+//! structure (block kinds, text, inline marks) round-tripped through the `tilo-doc`
 //! `DocxCodec` + the editor's file I/O — exactly as the integrated app does.
 //! Mirrors `e2e_odt.rs` for the Microsoft Word format.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::path::{Path, PathBuf};
 
-use qdoc::AttrVal;
-use ui::Widget;
-use word_processor::{WordProcessorWidget, WpFormat, open_document, save_document};
+use tilo_doc::AttrVal;
+use word_processor::WpFormat;
+use word_processor::actions::{MarkVal, RegionKind, RichTextAction, Span};
+
+use crate::support::{apply, last_block, launched, open, save_as, snapshot};
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -28,6 +20,10 @@ fn temp_path(name: &str) -> PathBuf {
 
 /// `from_path` maps the docx extension, and a rich document round-trips through docx.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept as a scoped block"
+)]
 fn docx_files_are_recognised_and_rich_documents_round_trip() {
     // Phase: from_path_maps_docx_extension.
     {
@@ -46,44 +42,81 @@ fn docx_files_are_recognised_and_rich_documents_round_trip() {
     {
         let path = temp_path("Bericht – 日本語.docx");
 
-        // --- Author the document through the editor's real editing model. ---
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-
+        // --- Author the document through the app's own actions. ---
+        let mut app = open();
         // 1. A heading.
-        wp.model_mut().insert_str(&mut state.doc, "Heading");
-        wp.model_mut()
-            .set_paragraph_style(&mut state.doc, "heading", Some(1), None);
-
-        // 2. A paragraph with a bold run (select the whole text, toggle `strong`).
-        wp.model_mut().enter(&mut state.doc);
-        wp.model_mut().insert_str(&mut state.doc, "bold");
-        wp.model_mut().move_home();
-        wp.model_mut().set_anchor();
-        wp.model_mut().move_end(&state.doc);
-        wp.model_mut().toggle_mark(&mut state.doc, "strong");
-        wp.model_mut().clear_anchor();
-
+        apply(
+            &mut app,
+            &RichTextAction::AppendParagraph {
+                text: "Heading".into(),
+            },
+        );
+        let heading = last_block(&app);
+        apply(
+            &mut app,
+            &RichTextAction::SetParagraphStyle {
+                region: RegionKind::Body,
+                blocks: vec![heading.clone()],
+                kind: "heading".into(),
+                level: Some(1),
+                ordered: None,
+            },
+        );
+        // 2. A paragraph with a bold run.
+        apply(
+            &mut app,
+            &RichTextAction::InsertParagraph {
+                after: heading,
+                text: "bold".into(),
+            },
+        );
+        let bold = last_block(&app);
+        apply(
+            &mut app,
+            &RichTextAction::SetMark {
+                region: RegionKind::Body,
+                spans: vec![Span {
+                    block: bold.clone(),
+                    start: 0,
+                    end: 4,
+                }],
+                name: "strong".into(),
+                value: Some(MarkVal::Bool(true)),
+                also_clear: Vec::new(),
+            },
+        );
         // 3. A bullet (unordered) list item.
-        wp.model_mut().enter(&mut state.doc);
-        wp.model_mut().insert_str(&mut state.doc, "Bullet");
-        wp.model_mut()
-            .set_paragraph_style(&mut state.doc, "list_item", None, Some(false));
+        apply(
+            &mut app,
+            &RichTextAction::InsertParagraph {
+                after: bold,
+                text: "Bullet".into(),
+            },
+        );
+        let bullet = last_block(&app);
+        apply(
+            &mut app,
+            &RichTextAction::SetParagraphStyle {
+                region: RegionKind::Body,
+                blocks: vec![bullet.clone()],
+                kind: "list_item".into(),
+                level: None,
+                ordered: Some(false),
+            },
+        );
+        // 4. A 2x2 table whose first cell holds "X".
+        apply(
+            &mut app,
+            &RichTextAction::InsertFilledTable {
+                after: bullet,
+                cells: vec![vec!["X".into(), String::new()], vec![String::new(); 2]],
+            },
+        );
 
-        // 4. A 2x2 table; the caret lands in the first cell, type into it.
-        wp.model_mut().insert_table(&mut state.doc, 2, 2);
-        wp.model_mut().insert_str(&mut state.doc, "X");
-
-        // --- Save as `.docx` via the editor's export path. ---
-        save_document(&state, &path, WpFormat::Docx, &tilo_content::NoContent).unwrap();
-
-        // --- Reopen into a fresh ui::State and inspect the canonical structure. ---
-        let (state2, _wp2, fmt) =
-            open_document(&path, tilo_content::ContentStore::memory()).unwrap();
-        assert_eq!(fmt, WpFormat::Docx);
-        let c = qdoc::model::open(&state2.doc, &state2.root).unwrap();
-        let snap = qdoc::model::materialize(&state2.doc, &c);
+        // --- Save as `.docx` with the app's Save As, then open the file. ---
+        save_as(&mut app, &path);
+        let reopened = launched(&path);
+        let snap = snapshot(&reopened);
 
         // Heading survived with its level.
         let heading = snap

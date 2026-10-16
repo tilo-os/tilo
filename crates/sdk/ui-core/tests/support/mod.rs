@@ -10,7 +10,6 @@
 )]
 
 pub mod evidence;
-pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]
 pub mod typed_collab;
@@ -186,27 +185,21 @@ pub fn pump(relay: &mut MemoryRelay) {
                 }
             }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
-                // This harness has no authenticated shell/network boundary;
-                // mirror production's fail-closed response to the requester
-                // instead of pretending a route or consent exists.
-                if let Some(inbox) = inboxes.get_mut(&from) {
-                    inbox.push_back(CollabEvent::WorkspaceControl {
-                        session_id,
-                        event: runtime_collab::WorkspaceControlEvent::Closed(
-                            runtime_collab::WorkspaceControlCloseReason::Denied(
-                                "memory relay has no workspace-control transport".into(),
-                            ),
-                        ),
-                    });
-                }
+                refuse_workspace_control(&mut inboxes, &from, session_id);
+            }
+            CollabRequest::LocalFileClipboard { request_id, .. } => {
+                refuse_file_clipboard(&mut inboxes, &from, request_id);
             }
             CollabRequest::WorkspaceControlInput { .. }
+            | CollabRequest::OfferContent { .. }
+            | CollabRequest::WantContent { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
             | CollabRequest::NearbyTransferCommand { .. }
             | CollabRequest::NativeMediaCommand { .. }
             | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
+            | CollabRequest::PublishActionSurface { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
             | CollabRequest::ClearContinuation { .. }
@@ -222,9 +215,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. }
-            | CollabRequest::SubscribeEnrolledTasks { .. }
-            | CollabRequest::AcceptEnrolledTask { .. }
-            | CollabRequest::ReportEnrolledTask { .. }
+            | CollabRequest::LaunchInstalledApplication { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
             | CollabRequest::ManagedInvocationAttempt { .. }
@@ -233,6 +224,29 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // fan out through another application's document channel.
             }
         }
+    }
+}
+
+fn refuse_workspace_control(inboxes: &mut PeerInboxes, from: &str, session_id: u64) {
+    // This harness has no authenticated shell/network boundary or consent.
+    if let Some(inbox) = inboxes.get_mut(from) {
+        inbox.push_back(CollabEvent::WorkspaceControl {
+            session_id,
+            event: runtime_collab::WorkspaceControlEvent::Closed(
+                runtime_collab::WorkspaceControlCloseReason::Denied(
+                    "memory relay has no workspace-control transport".into(),
+                ),
+            ),
+        });
+    }
+}
+
+fn refuse_file_clipboard(inboxes: &mut PeerInboxes, from: &str, request_id: u64) {
+    if let Some(inbox) = inboxes.get_mut(from) {
+        inbox.push_back(CollabEvent::LocalFileClipboardResult {
+            request_id,
+            result: Err("memory relay has no launcher-attested Files service".into()),
+        });
     }
 }
 
@@ -256,7 +270,7 @@ fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str)
         collab_types::ArtifactId::new(),
         collab_types::Ed25519PublicKey::from_bytes([0; 32]),
         collab_types::AttestationId::new(),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         0,
     );

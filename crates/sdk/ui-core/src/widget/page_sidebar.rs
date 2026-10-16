@@ -12,18 +12,17 @@
 //! API is [`PageSidebar::begin_frame`] / `render` / pointer-
 //! event methods; the [`Widget`] impl is a thin shim for the e2e harness.
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::drag::{DragController, ListMetrics};
@@ -58,15 +57,6 @@ pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
     }
     let item = v.remove(from);
     v.insert(to, item);
-}
-
-/// Insert a clone of the item at `index` immediately after it. A no-op when
-/// `index` is out of range.
-pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
-    let Some(copy) = v.get(index).cloned() else {
-        return;
-    };
-    v.insert(index.saturating_add(1), copy);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,26 +187,8 @@ impl Default for RailMetrics {
 /// numbers, add button, menu rows): `scale.sm`, with the theme's text scale
 /// divided once by the renderer's text scale because the renderer applies
 /// it again.
-fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
-    renderer_type_size(tr, theme.tokens.typography.scale.sm)
-}
-
-/// Widens a row/action count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a page
-/// rail never approaches `u32::MAX` rows.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(base: Affine, x: f64, y: f64) -> Affine {
-    base * Affine::translate((x, y))
+fn label_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 /// Offsets a rect vertically. `Rect`'s `Add<Vec2>` is pure `f64` geometry
@@ -265,7 +237,19 @@ pub struct PageSidebar {
     last_pointer: Point,
     menu: Option<Menu>,
     pending: Vec<PageSidebarEvent>,
+    /// Pages that carry a mark (annotations, comments).
+    marked: Vec<usize>,
+    /// A reader's rail: pages select, never move, copy or go.
+    read_only: bool,
+    /// Something droppable (a file, a page from elsewhere) is over the rail.
+    drop_armed: bool,
+    /// The dragged page is over a drop target of the host's own (a delete
+    /// zone) that shows the drop itself, so no ghost is painted.
+    ghost_hidden: bool,
 }
+
+/// The hairline that seats a page thumbnail on the rail.
+const PAGE_EDGE_ALPHA: u8 = 26;
 
 impl PageSidebar {
     /// A rail whose thumbnails have aspect ratio `page_h / page_w`
@@ -273,7 +257,7 @@ impl PageSidebar {
     pub fn new(aspect: f64) -> Self {
         Self {
             aspect: aspect.max(0.05),
-            header: "PAGES".to_string(),
+            header: "Pages".to_string(),
             add_label: String::new(),
             show_add: false,
             draw_panel: true,
@@ -293,7 +277,49 @@ impl PageSidebar {
             last_pointer: Point::ZERO,
             menu: None,
             pending: Vec::new(),
+            marked: Vec::new(),
+            read_only: false,
+            drop_armed: false,
+            ghost_hidden: false,
         }
+    }
+
+    /// A reader's rail (a PDF, a received deck): a page is selected by a
+    /// click, and there is no drag to reorder, no page menu and no add.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self.show_add = false;
+        self
+    }
+
+    /// Whether the rail is a reader's ([`Self::read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Show that a drop over the rail would land (a file dragged in from
+    /// outside): the list is ringed in your colour while armed.
+    pub fn set_drop_target_armed(&mut self, armed: bool) {
+        self.drop_armed = armed;
+    }
+
+    /// Hide the dragged page's ghost while it is over a drop target of the
+    /// host's own (a delete zone) that shows the drop itself; the drag
+    /// goes on, and the ghost returns once it leaves.
+    pub fn set_ghost_hidden(&mut self, hidden: bool) {
+        self.ghost_hidden = hidden;
+    }
+
+    /// Whether the rail shows itself as a drop target.
+    pub fn is_drop_target_armed(&self) -> bool {
+        self.drop_armed
+    }
+
+    /// The pages that carry a mark (annotations, comments): a dot inside
+    /// the thumbnail's corner.
+    pub fn set_marked(&mut self, pages: Vec<usize>) {
+        self.marked = pages;
     }
 
     #[must_use]
@@ -306,7 +332,7 @@ impl PageSidebar {
     #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
-        self.show_add = true;
+        self.show_add = !self.read_only;
         self
     }
 
@@ -402,7 +428,16 @@ impl PageSidebar {
             0.0
         };
         let top = rect.y0 + header_h;
-        let bottom = (rect.y1 - add_h).max(top);
+        // The add button keeps a margin above it too, so the last thumbnail
+        // never runs under it.
+        let bottom = (rect.y1
+            - add_h
+            - if self.show_add {
+                self.m.add_margin
+            } else {
+                0.0
+            })
+        .max(top);
         self.list_vp = Rect::new(rect.x0, top, rect.x1, bottom);
 
         let usable_w = self.list_vp.width() - 2.0 * self.m.pad - self.m.num_gutter - SCROLLBAR_W;
@@ -413,7 +448,7 @@ impl PageSidebar {
         let content_h = if count == 0 {
             0.0
         } else {
-            count_f64(count) * self.thumb_h + (count_f64(count) - 1.0) * self.m.gap
+            f64_of_usize(count) * self.thumb_h + (f64_of_usize(count) - 1.0) * self.m.gap
         };
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         self.max_scroll = (content_h - view_h).max(0.0);
@@ -446,7 +481,7 @@ impl PageSidebar {
     /// The un-shifted screen rect of thumbnail `i` this frame.
     fn thumb_rect(&self, i: usize) -> Rect {
         let x0 = self.list_vp.x0 + self.m.pad + self.m.num_gutter;
-        let top = self.list_top - self.scroll + count_f64(i) * (self.thumb_h + self.m.gap);
+        let top = self.list_top - self.scroll + f64_of_usize(i) * (self.thumb_h + self.m.gap);
         Rect::new(x0, top, x0 + self.thumb_w, top + self.thumb_h)
     }
 
@@ -460,7 +495,7 @@ impl PageSidebar {
         if self.count == 0 {
             return;
         }
-        let top = count_f64(i) * (self.thumb_h + self.m.gap);
+        let top = f64_of_usize(i) * (self.thumb_h + self.m.gap);
         let bottom = top + self.thumb_h;
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         if top < self.scroll {
@@ -506,8 +541,10 @@ impl PageSidebar {
         if let Some(i) = self.thumb_at(p) {
             self.press_idx = Some(i);
             self.pending.push(PageSidebarEvent::Select(i));
-            let grab = p.y - self.list_metrics().slot_lead(i);
-            self.drag.begin(i, i, grab, p);
+            if !self.read_only {
+                let grab = p.y - self.list_metrics().slot_lead(i);
+                self.drag.begin(i, i, grab, p);
+            }
             return true;
         }
 
@@ -524,7 +561,9 @@ impl PageSidebar {
             return self.list_vp.contains(p);
         };
         self.pending.push(PageSidebarEvent::Select(i));
-        self.open_menu(i, p);
+        if !self.read_only {
+            self.open_menu(i, p);
+        }
         true
     }
 
@@ -571,11 +610,8 @@ impl PageSidebar {
     /// Escape: cancel a live drag or close the menu. Returns true if either
     /// was in progress.
     pub fn on_escape(&mut self) -> bool {
-        let mut changed = self.drag.cancel();
-        if self.menu.take().is_some() {
-            changed = true;
-        }
-        changed
+        let cancelled = self.drag.cancel();
+        self.menu.take().is_some() || cancelled
     }
 
     fn open_menu(&mut self, index: usize, at: Point) {
@@ -589,7 +625,7 @@ impl PageSidebar {
         actions.push(MenuAction::Delete);
 
         // Height: one separator sits before Delete.
-        let h = count_f64(actions.len()) * self.m.menu_row_h
+        let h = f64_of_usize(actions.len()) * self.m.menu_row_h
             + self.m.menu_sep_h
             + 2.0 * self.m.menu_pad;
         let x0 =
@@ -656,35 +692,41 @@ impl PageSidebar {
     ) where
         F: FnMut(&mut Scene, &mut TextRenderer, Affine, usize, Rect),
     {
+        // A rail that paints its own panel is the window's sidebar region:
+        // the framework's tier, and everything on it drawn for that ground.
+        let region_theme;
+        let theme = if self.draw_panel {
+            crate::surface::region(
+                scene,
+                base,
+                self.rect,
+                crate::surface::Region::Sidebar,
+                theme,
+            );
+            region_theme = theme.in_region(crate::surface::Region::Sidebar);
+            &region_theme
+        } else {
+            theme
+        };
         let c = &theme.tokens.colors;
 
         if self.draw_panel {
-            scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
-            // The rail's edge derives from its own surface (HIG §9.5) and
-            // sits on its last pixel column so it never bleeds onto the page.
-            let x = self.rect.x1 - 0.5;
-            let divider = Line::new((x, self.rect.y0), (x, self.rect.y1));
-            scene.stroke(
-                &Stroke::new(1.0),
-                base,
-                crate::surface::edge_on(c.surfaces.raised),
+            // The header is a section label, sentence case, centred on its
+            // own measured line in the header band.
+            let style = label_style(theme);
+            let (_, lh) = tr.measure_style(
+                &self.header,
                 None,
-                &divider,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
-            // The header is a section label: `scale.sm`, semibold, on the
-            // rail's padding and centred on its own measured line in the
-            // header band rather than nine pixels down.
-            let size = label_size(theme, tr);
-            let (_, lh) = tr.measure_weighted(&self.header, size, None, TextWeight::Semibold);
             let hy = self.rect.y0 + (self.m.header_h - f64::from(lh)) / 2.0;
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.header,
-                size,
                 c.text_dim,
-                translated(base, self.rect.x0 + self.m.pad, hy),
+                base.pre_translate((self.rect.x0 + self.m.pad, hy).into()),
                 None,
-                TextWeight::Semibold,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
         }
 
@@ -714,7 +756,8 @@ impl PageSidebar {
         }
         scene.pop_layer();
 
-        if let (Some(from), Some(ghost)) = (
+        if let (false, Some(from), Some(ghost)) = (
+            self.ghost_hidden,
             drag_from,
             self.drag.ghost_rect_sized(
                 self.list_vp.x0 + self.m.pad + self.m.num_gutter,
@@ -731,13 +774,15 @@ impl PageSidebar {
             // A dragged page is genuinely lifted, so it casts the ramp's
             // dragged-object shadow, shaped to its own corners (HIG §9.3),
             // rather than a black wash nudged down four pixels.
-            let radius = f64::from(theme.tokens.radii.md);
-            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.e4);
+            let radius = f64::from(theme.tokens.radii.control);
+            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
             thumb(scene, tr, base, from, ghost);
+            // The page you are moving carries your colour, as every drop
+            // and insertion indicator does.
             scene.stroke(
                 &Stroke::new(2.0),
                 base,
-                theme.accent_primary,
+                theme.tokens.colors.intent.you,
                 None,
                 &RoundedRect::from_rect(ghost, radius),
             );
@@ -745,6 +790,20 @@ impl PageSidebar {
         }
 
         self.draw_scrollbar(scene, base, theme);
+
+        if self.drop_armed {
+            // Armed for a drop: the list is ringed in your colour, as every
+            // drop and insertion indicator is.
+            let inset = f64::from(theme.tokens.spacing.s1);
+            let radius = f64::from(theme.tokens.radii.control);
+            scene.stroke(
+                &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0),
+                base,
+                theme.tokens.colors.intent.you,
+                None,
+                &RoundedRect::from_rect(self.list_vp.inset(-inset), radius),
+            );
+        }
 
         if self.show_add {
             self.draw_add_button(scene, base, tr, theme);
@@ -807,49 +866,85 @@ impl PageSidebar {
     {
         let c = &theme.tokens.colors;
         let is_current = i == self.current;
+        let radius = f64::from(theme.tokens.radii.control);
+
+        // The current page is the selection lift (HIG §9.3): one plate
+        // behind its number and thumbnail, never a coloured ring.
+        if is_current {
+            let inset = f64::from(theme.tokens.spacing.s1);
+            let plate = Rect::new(
+                self.list_vp.x0 + inset,
+                rect.y0 - inset,
+                rect.x1 + inset,
+                rect.y1 + inset,
+            );
+            crate::chrome::paint_row_selection(
+                scene,
+                base,
+                plate,
+                crate::chrome::SelectionState::active(true),
+                c.surfaces.content,
+                theme,
+            );
+        }
 
         thumb(scene, tr, base, i, rect);
 
-        // The current page wears the focus-ring weight; the others a
-        // hairline. Both follow the thumbnail's `radii.md` corners.
-        let (ring, w) = if is_current {
-            (theme.accent_primary, 2.0)
-        } else {
-            (c.text_primary.with_alpha_factor(0.12), 1.0)
-        };
+        // Every page is seated on the rail by a hairline derived from the
+        // ground, following the thumbnail's corners.
         scene.stroke(
-            &Stroke::new(w),
+            &Stroke::new(1.0),
             base,
-            ring,
+            crate::tokens::colors::Colors::hairline_on(c.surfaces.content, PAGE_EDGE_ALPHA),
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &crate::surface::edge_outline(rect, radius),
         );
+        // A marked page (annotated, commented) carries a dot inside its own
+        // corner, in your colour.
+        if self.marked.contains(&i) {
+            let d = f64::from(theme.tokens.spacing.s2);
+            let inset = f64::from(theme.tokens.spacing.s1) + d / 2.0;
+            let centre = Point::new(rect.x1 - inset, rect.y0 + inset);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.surfaces.content,
+                None,
+                &vello::kurbo::Circle::new(centre, d / 2.0 + 1.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.intent.you,
+                None,
+                &vello::kurbo::Circle::new(centre, d / 2.0),
+            );
+        }
 
         // Right-aligned in the left gutter, one `s2` short of the
         // thumbnail, vertically centred on the measured line.
         let label = format!("{}", i.saturating_add(1));
-        let size = label_size(theme, tr);
+        let style = label_style(theme);
         let weight = if is_current {
             TextWeight::Semibold
         } else {
             TextWeight::Regular
         };
-        let (lw, lh) = tr.measure_weighted(&label, size, None, weight);
+        let (lw, lh) = tr.measure_style(&label, None, &style.clone().with_weight(weight));
         let lx = rect.x0 - f64::from(theme.tokens.spacing.s2) - f64::from(lw);
         let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
-            theme.accent_primary
+            c.text_primary
         } else {
             c.text_dim
         };
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &label,
-            size,
             col,
-            translated(base, lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly),
+            base.pre_translate((lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly).into()),
             None,
-            weight,
+            &style.clone().with_weight(weight),
         );
     }
 
@@ -866,24 +961,32 @@ impl PageSidebar {
         // A Neutral control on the rail: its own surface with a derived
         // edge (HIG §9.5); hover is the shared hover face, not an accent wash.
         let bg = if hovered {
-            theme.bg_hover
+            c.lift_on(c.surfaces.raised, 0.5)
         } else {
-            c.surfaces.base
+            c.surfaces.raised
         };
-        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.md), bg);
-        let label = format!("+  {}", self.add_label);
-        let size = label_size(theme, tr);
-        let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
-        let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
-        let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
-        tr.draw_text_weighted(
+        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
+        let style = label_style(theme).with_weight(TextWeight::Semibold);
+        let (tw, th) = tr.measure_style(&self.add_label, None, &style);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let cluster = icon + gap + f64::from(tw);
+        let x0 =
+            (r.x0 + (r.width() - cluster) / 2.0).max(r.x0 + f64::from(theme.tokens.spacing.s2));
+        crate::icons::Icon::Plus.draw(
             scene,
-            &label,
-            size,
+            base,
+            Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
             c.text_primary,
-            translated(base, tx.max(r.x0 + f64::from(theme.tokens.spacing.s2)), ty),
+        );
+        let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
+        tr.draw_style(
+            scene,
+            &self.add_label,
+            c.text_primary,
+            base.pre_translate((x0 + icon + gap, ty).into()),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
 
@@ -892,12 +995,18 @@ impl PageSidebar {
             return;
         };
         let c = &theme.tokens.colors;
-        // A popover over content: `radii.lg`, the floating-panel shadow
-        // shaped to its corners, hairline edge; rows are `radii.sm` details
+        // A popover over content: `radii.control`, the floating-panel shadow
+        // shaped to its corners, hairline edge; rows are `radii.detail` details
         // inside it, labels on the standard padding.
-        let radius = f64::from(theme.tokens.radii.lg);
+        let radius = f64::from(theme.tokens.radii.control);
         let rr = RoundedRect::from_rect(menu.rect, radius);
-        crate::surface::shadow(scene, base, menu.rect, radius, &theme.tokens.elevation.e4);
+        crate::surface::shadow(
+            scene,
+            base,
+            menu.rect,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         // Panel role (HIG §9.1/§9.5): the panel ground with its derived
         // border; the hovered row is the hover lift, never an accent wash.
         scene.fill(
@@ -914,7 +1023,7 @@ impl PageSidebar {
             None,
             &crate::surface::edge_outline(menu.rect, radius),
         );
-        let size = label_size(theme, tr);
+        let style = label_style(theme);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
                 let tier = crate::chrome::selection_tier(
@@ -926,7 +1035,7 @@ impl PageSidebar {
                     base,
                     tier.fill,
                     None,
-                    &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.sm)),
+                    &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.detail)),
                 );
             }
             let (label, col) = match act {
@@ -935,15 +1044,15 @@ impl PageSidebar {
                 MenuAction::MoveDown => ("Move down", c.text_primary),
                 MenuAction::Delete => ("Delete", c.semantic.danger),
             };
-            let (_, th) = tr.measure(label, size, None);
+            let (_, th) = tr.measure_style(label, None, &style);
             let ty = row.y0 + (row.height() - f64::from(th)) / 2.0;
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 label,
-                size,
                 col,
-                translated(base, row.x0 + f64::from(theme.padding_standard), ty),
+                base.pre_translate((row.x0 + f64::from(theme.padding_standard), ty).into()),
                 None,
+                &style,
             );
         }
     }
@@ -956,19 +1065,7 @@ impl Widget for PageSidebar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "PageSidebar"
@@ -1007,15 +1104,6 @@ mod tests {
             assert_eq!(v, vec![0, 1]);
             move_item(&mut v, 5, 0);
             assert_eq!(v, vec![0, 1]);
-        }
-
-        // Case `duplicate_after_inserts_clone`.
-        {
-            let mut v = vec!['a', 'b', 'c'];
-            duplicate_after(&mut v, 1);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
-            duplicate_after(&mut v, 99);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
         }
 
         // Case `themed_metrics_read_the_spacing_scale_the_constants_restate`.

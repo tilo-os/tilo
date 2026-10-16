@@ -7,10 +7,11 @@
 //! presence) asks for a grant; a root-holding laptop approves the agent and
 //! signs its delegation in the same step; the browser spawns the agent with
 //! a plain-words task planned by the scripted model. The agent edits Notes
-//! and Sheets, the browser receives the edits and sees the agent's cursor
-//! move between the controls it uses. The host then restarts: the agent
+//! and Sheets, the browser receives the edits and sees the agent's presence
+//! move between the records it works in. The host then restarts: the agent
 //! resumes and takes new work; a stopped agent stays stopped; a revoked
-//! grant ends its agent.
+//! grant ends its agent. An action that asks first is put to the person's
+//! approving device for that one invocation, and runs only on its answer.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -30,10 +31,17 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
 mod common;
+
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -47,9 +55,9 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_agent_participant::{AgentHost, HostedApp, ModelChoice, Seed};
+use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
+use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
@@ -67,6 +75,7 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
+const CALCULATOR: &str = "so.tilo.calculator";
 
 struct Hosted {
     relay: Relay,
@@ -103,7 +112,6 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         tilo_relay::agents::AgentOptions {
             state_dir: state.join("agents"),
             model,
-            host_profile: false,
             catalogue: Some(Arc::new(common::catalogue)),
         },
     )
@@ -118,6 +126,9 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -125,7 +136,20 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
 }
 
 impl Hosted {
+    /// Stop the host, after checking it carried nothing in the clear.
     async fn stop(self) {
+        let retained = self
+            .relay
+            .room_records()
+            .retained(workspace())
+            .await
+            .unwrap();
+        let (readable, _) = common::retained_documents(
+            retained
+                .into_iter()
+                .map(|retained| (retained.author, retained.body)),
+        );
+        assert_eq!(readable, 0, "nothing reaches the host in the clear");
         drop(self.web);
         self.agents.shutdown();
         self.relay.shutdown().await;
@@ -185,7 +209,7 @@ fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::ta
                     approver
                         .decide(
                             pending.request_digest,
-                            ApproverDecision::IssueAgent { cert, delegation }
+                            ApproverDecision::IssueDelegate { cert, delegation }
                         )
                         .await
                         .unwrap(),
@@ -260,6 +284,7 @@ impl Browser {
     ) -> Result<serde_json::Value, String> {
         let invocation = InvocationId::new();
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: AGENTS_PROVIDER.into(),
@@ -269,6 +294,8 @@ impl Browser {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
+            appearance: None,
         }))
         .encode()
         .unwrap();
@@ -324,6 +351,24 @@ impl Browser {
         .unwrap()
     }
 
+    /// Wait until everything this page published is durable on the host.
+    async fn durable(&self) {
+        let receipt = self.peer.barrier().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match receipt.try_recv() {
+                Ok(result) => return result.unwrap(),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("the barrier ended: {error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the page's edits never became durable"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Wait until `done` holds for the supervisor's status.
     async fn until(&mut self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -352,25 +397,22 @@ impl Browser {
                 );
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
-                let page = match HostedApp::open(
+                let page = match Replica::open(
                     &catalogue,
                     app,
                     ROOM,
                     "ada",
-                    false,
+                    tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
-                        record: ui::record::RecordId::parse(&route.record).unwrap(),
+                        record: route_record(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 ) {
                     Ok(page) => page,
                     Err(error) => return format!("(does not open yet: {error})"),
                 };
-                let body = page
-                    .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-                    .unwrap();
-                page.close();
-                body
+                page.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
+                    .unwrap()
             })
             .collect()
     }
@@ -424,6 +466,7 @@ impl Browser {
             .unwrap();
         let namespace = tilo_moq::live::namespace_path(&grant.room, agent).unwrap();
         let (frames, rx) = tokio::sync::mpsc::unbounded_channel();
+        let peer = self.peer.clone();
         let task = tokio::spawn(async move {
             let mut track = loop {
                 if let Ok(Some(broadcast)) =
@@ -438,7 +481,24 @@ impl Browser {
                 }
             };
             while let Ok(Some(datagram)) = track.recv_datagram().await {
-                if let Ok(LiveFrame::Presence(presence)) = LiveFrame::decode(&datagram.payload)
+                // Live frames arrive sealed: the page opens them with its keys.
+                let (tx, opened) = tokio::sync::oneshot::channel();
+                if peer
+                    .open_live_then(
+                        workspace(),
+                        datagram.payload.to_vec(),
+                        Box::new(move |frame| {
+                            let _ = tx.send(frame);
+                        }),
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+                let Ok(Some(frame)) = opened.await else {
+                    continue;
+                };
+                if let Ok(LiveFrame::Presence(presence)) = LiveFrame::decode(&frame)
                     && frames.send(presence).is_err()
                 {
                     break;
@@ -492,7 +552,6 @@ fn activity(presence: &PresenceFrame) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -500,6 +559,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let state = tempfile::tempdir().unwrap();
 
     let hosted = start(&root, &host, state.path()).await;
+
+    let mut steward = steward::Steward::start(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -585,16 +646,12 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .iter()
         .map(|step| step.action.as_str())
         .collect();
-    assert_eq!(steps, ["open", "new-page"]);
+    assert_eq!(steps, ["open", "new-note"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
-    assert!(
-        hosted.agents.profile_dir(&grant).is_dir(),
-        "the agent's apps have a profile of their own"
-    );
 
-    // 3. The browser sees the agent's cursor on the control it used, with
-    // what it is doing, then moving to the next app's control.
+    // 3. The browser sees the agent on the record it works in, with what
+    // it is doing, then moving to the next app's record.
     let mut presence = browser.watch(&hosted.web, &info.device).await;
     let on_notes = presence
         .until("its Notes activity", |presence| {
@@ -605,7 +662,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert_eq!(participant.kind, ParticipantKind::Agent);
     assert_eq!(participant.label, "Writer");
     assert_eq!(on_notes.focus.as_ref().unwrap().app, NOTES);
-    let notes_pointer = on_notes.pointer.expect("a declared action points too");
     browser
         .call(
             &agent_resource(&grant),
@@ -616,15 +672,10 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .unwrap();
     let on_sheets = presence
         .until("its Sheets activity", |presence| {
-            activity(presence).contains("New sheet")
+            activity(presence).contains("Add a sheet")
         })
         .await;
     assert_eq!(on_sheets.focus.as_ref().unwrap().app, SHEETS);
-    let sheets_pointer = on_sheets.pointer.expect("a declared action points too");
-    assert_ne!(
-        notes_pointer, sheets_pointer,
-        "the cursor moved between controls"
-    );
     browser.until_edited(SHEETS, agent_key, "Budget").await;
     drop(presence);
 
@@ -638,6 +689,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 
     let hosted = start(&root, &host, state.path()).await;
+
+    steward.reconnect(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let resumed = browser
@@ -694,6 +747,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 
     let hosted = start(&root, &host, state.path()).await;
+
+    steward.reconnect(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let after = browser.status().await;
@@ -772,34 +827,51 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 }
 
+/// The record a document route names. A room-record app (Notes, Chat)
+/// publishes its package-primary record under the empty record id.
+fn route_record(record: &str) -> ui::record::RecordId {
+    if record.is_empty() {
+        ui::record::RecordId::package_primary()
+    } else {
+        ui::record::RecordId::parse(record).unwrap()
+    }
+}
+
 /// The sheets of a workbook, in order.
-fn sheet_names(app: &HostedApp) -> Vec<String> {
-    let body: serde_json::Value = app
-        .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap();
-    body["wb"]["sheets"]
-        .as_array()
-        .map(|sheets| {
-            sheets
-                .iter()
-                .map(|sheet| sheet["name"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+fn sheet_names(app: &Replica) -> Vec<String> {
+    app.read(|doc| {
+        <sheets::Workbook as ui::tilo_resource::Resource>::read(doc)
+            .map(|workbook| {
+                workbook
+                    .sheets
+                    .values()
+                    .map(|sheet| sheet.name.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// A person's workbook, open in a browser session: it publishes what the
 /// person does and merges what everyone else committed.
 struct Page {
-    app: HostedApp,
+    app: Replica,
     route: DocumentRoute,
     merged: usize,
 }
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page =
-            HostedApp::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+        let mut page = Replica::open(
+            &common::catalogue(),
+            app,
+            ROOM,
+            "ada",
+            tilo_agent_participant::ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
@@ -828,14 +900,14 @@ impl Page {
                 .get(&creator.route)
                 .filter(|c| !c.is_empty())
             {
-                let mut app = HostedApp::open(
+                let mut app = Replica::open(
                     &common::catalogue(),
                     SHEETS,
                     ROOM,
                     "bea",
-                    false,
+                    tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
-                        record: ui::record::RecordId::parse(&creator.route.record).unwrap(),
+                        record: route_record(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 )
@@ -880,11 +952,15 @@ impl Page {
             if sheet_names(&self.app) == want {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the page shows {:?}, not {want:?}",
-                sheet_names(&self.app)
-            );
+            if Instant::now() >= deadline {
+                let status = browser.status().await;
+                panic!(
+                    "the page shows {:?}, not {want:?}: agents {:#?}, browser channels {}",
+                    sheet_names(&self.app),
+                    status.agents,
+                    browser.peer.status().channels
+                );
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -895,19 +971,21 @@ impl Page {
 /// once each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
-    // The person opens a workbook before any agent exists.
+    // The person opens a workbook before any agent exists, and it is in the
+    // room (sealed and durable on the host) before the agent arrives.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
+    browser.durable().await;
 
     let requested = browser
         .call(
@@ -990,14 +1068,14 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .get(&page.route)
             .filter(|c| !c.is_empty())
         {
-            let replayed = HostedApp::open(
+            let replayed = Replica::open(
                 &common::catalogue(),
                 SHEETS,
                 ROOM,
                 "ada",
-                false,
+                tilo_agent_participant::ReplicaActor::Owner,
                 Seed::Existing {
-                    record: ui::record::RecordId::parse(&page.route.record).unwrap(),
+                    record: route_record(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             );
@@ -1023,7 +1101,6 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
 /// leave the creator behind a change it never received.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_creator_and_a_joined_page_both_see_every_task_live() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -1031,6 +1108,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
@@ -1152,17 +1230,18 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
         tilo_agent_participant::ApiKey::File(key_file.into()),
     )
     .unwrap();
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start_with(&root, &host, state.path(), model).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
+    browser.durable().await;
 
     let requested = browser
         .call(
@@ -1255,5 +1334,224 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             .contains("out of AI credits"),
         "{failed:?}"
     );
+    hosted.stop().await;
+}
+
+/// The person's own device: a root holder's approver session that answers
+/// the questions the host's agents put to their person, as the test says,
+/// and the endpoint it lives on.
+async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpoint, Approver) {
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let approver = Approver::connect(
+        &endpoint,
+        relay.node_addr(),
+        laptop.cert.clone(),
+        &laptop.key,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    (endpoint, approver)
+}
+
+/// The one question an agent is waiting on, once it is asked.
+async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmation {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut asked = device.list_confirmations().await.unwrap();
+        if let Some(question) = asked.pop() {
+            assert!(asked.is_empty(), "one question per invocation: {asked:?}");
+            return question;
+        }
+        assert!(Instant::now() < deadline, "the agent never asked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Whether agent `grant` has `tasks` tasks, the last of them in `state`.
+fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsStatus) -> bool {
+    move |status| {
+        status.agents.iter().any(|agent| {
+            agent.id == grant
+                && agent.tasks.len() == tasks
+                && agent.tasks.last().is_some_and(|task| task.state == state)
+        })
+    }
+}
+
+/// Work out one sum, then clear the calculator's history: an action whose
+/// contract asks a person first.
+fn clear_history() -> String {
+    serde_json::json!([
+        {
+            "app": CALCULATOR,
+            "resource": "calculator.document",
+            "action": "commit-history",
+            "arguments": {"expr": "1+1", "result": "2"},
+        },
+        {
+            "app": CALCULATOR,
+            "resource": "calculator.document",
+            "action": "clear-history",
+        },
+    ])
+    .to_string()
+}
+
+/// An agent the host runs never confirms by its own word: an action that
+/// asks first is put to the person's approving device as the host's
+/// question for that one invocation, while the agent shows it is waiting.
+/// Allowed once it runs, and only that once; denied it does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+
+    let requested = browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            REQUEST_GRANT_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "label": "Careful",
+                    "rooms": [ROOM],
+                    "apps": [CALCULATOR],
+                    "expiresInSecs": 3600,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let grant = requested["grant"].as_str().unwrap().to_owned();
+    browser
+        .until("the grant to be approved", |status| {
+            status
+                .grants
+                .iter()
+                .any(|g| g.id == grant && g.state == GrantState::Approved)
+        })
+        .await;
+    browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            SPAWN_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({ "grant": grant, "task": clear_history(), "room": ROOM })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // The person's device is asked about this one invocation, in the words
+    // of the record that offers it, while the agent shows it is waiting.
+    let question = asked(&mut device).await;
+    assert_eq!(question.agent_id, grant);
+    assert_eq!(question.agent_label, "Careful");
+    assert_eq!(question.room, ROOM);
+    // The action as the calculator offers it, not the agent's own words.
+    assert_eq!(question.action_label, "Remove every history entry");
+    assert_eq!(question.resource_label, "Calculator");
+    assert_eq!(question.risk, "destructive");
+    assert!(
+        question.question().starts_with("Careful wants to ")
+            && question.question().ends_with(", for you"),
+        "{}",
+        question.question()
+    );
+    let waiting = browser
+        .until("the agent to wait for its person", |status| {
+            status.agents.iter().any(|agent| {
+                agent.id == grant
+                    && agent
+                        .activity
+                        .as_deref()
+                        .is_some_and(|activity| activity.starts_with("Waiting for confirmation"))
+            })
+        })
+        .await;
+    let agent = waiting
+        .agents
+        .iter()
+        .find(|agent| agent.id == grant)
+        .unwrap();
+    assert_eq!(agent.tasks.last().unwrap().state, TaskState::Running);
+
+    // Allowed once: the step runs, and the answer is spent.
+    assert_eq!(
+        device
+            .answer(question.id, ConfirmationAnswer::AllowOnce)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    browser
+        .until(
+            "the allowed task to complete",
+            last_task_is(&grant, TaskState::Completed, 1),
+        )
+        .await;
+    assert!(matches!(
+        device
+            .answer(question.id, ConfirmationAnswer::AllowOnce)
+            .await
+            .unwrap(),
+        ApproverReply::Refused { .. }
+    ));
+
+    // The next time is a new question; denied, nothing runs.
+    browser
+        .call(
+            &agent_resource(&grant),
+            MESSAGE_ACTION,
+            InvokeArgument::Text(clear_history()),
+        )
+        .await
+        .unwrap();
+    let again = asked(&mut device).await;
+    assert_ne!(again.id, question.id, "every invocation is asked anew");
+    assert_eq!(
+        device
+            .answer(again.id, ConfirmationAnswer::Deny)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let status = browser
+        .until(
+            "the denied task to fail",
+            last_task_is(&grant, TaskState::Failed, 2),
+        )
+        .await;
+    let denied = status
+        .agents
+        .iter()
+        .find(|agent| agent.id == grant)
+        .and_then(|agent| agent.tasks.last().cloned())
+        .unwrap();
+    assert!(
+        denied
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("confirmation_required")),
+        "{denied:?}"
+    );
+    device.close();
     hosted.stop().await;
 }

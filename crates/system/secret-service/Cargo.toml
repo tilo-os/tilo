@@ -1,0 +1,58 @@
+[package]
+name = "tilo-secret-service"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The per-user freedesktop Secret Service (org.freedesktop.secrets), sealed under the device identity"
+
+[lib]
+name = "tilo_secret_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-secret-service"
+path = "src/main.rs"
+
+[dependencies]
+tilo-paths.workspace = true
+# The vault's at-rest envelope, the store key derivation and the Secret
+# Service session encryption all live in tilo-seal.
+tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
+# The device identity whose key the store key derives from.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+# Owner-only files, written atomically.
+tilo-files = { path = "../../platform/tilo-files" }
+serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zeroize.workspace = true
+hex.workspace = true
+libc.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process"] }
+zbus = { workspace = true, features = ["tokio"] }
+futures-util.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+# tests/identity_custody.rs: where the production identity and vault code
+# keep their keys when this service answers, is locked, or is absent.
+runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-secret-vault = { path = "../secret-vault" }
+# The client half of the device-identity proof a non-dumpable caller makes.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+ed25519-dalek.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

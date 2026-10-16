@@ -7,37 +7,58 @@ use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, document, room};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
-use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
+    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
+pub use tilo_workspace_join::{DocumentRow, GovernedMember};
 use web_time::{Duration, SystemTime};
 mod backend;
 mod bounded;
 pub use bounded::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDeliveryPolicy,
-    PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess,
+    PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError,
+    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess, committed_document_revision,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
 use backend::{LegacyNative, PeerCore, PeerDocument};
+mod bans;
+mod facades;
+mod governance;
+pub use facades::{
+    PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
+    PeerOutboxMut, PeerWorkspace, PeerWorkspaceMut,
+};
+mod bot_members;
+mod delegates;
+pub use bot_members::InstalledBot;
+pub use delegates::{GovernedAgent, GovernedDelegateRow};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
-pub use local_outbox::LocalRecoveryReservation;
+mod topology_namespace;
+mod workspace_effects;
+mod workspace_membership;
+mod workspace_tasks;
+pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;
+mod room_name;
 pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
+mod sealed_history;
 pub use media_governance::VerifiedSecurityMetadataOnly;
-pub use sealed_compaction::SealCheckpoint;
+pub use sealed_compaction::{SealCheckpoint, SealDelta};
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -58,6 +79,72 @@ fn now_secs(now: SystemTime) -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+/// A current member's authority in the room: who they are, their role, the
+/// room's policy as admitted, and whether their device is held to the
+/// foreign-device bound.
+#[derive(Clone, Debug)]
+pub struct MemberAuthority {
+    pub role: Role,
+    pub person: String,
+    pub policy: RoomPolicy,
+    pub foreign: bool,
+    /// The bound on a delegate's device, an agent's or a bot's: its
+    /// person's grants within its own, never above an Editor's.
+    pub delegate: Option<tilo_action_policy::Bound>,
+}
+impl MemberAuthority {
+    /// The member's standing in the room, held to the foreign-device bound
+    /// on a foreign device: what a receiver decides their ops with.
+    #[must_use]
+    pub fn standing(self) -> tilo_action_policy::Standing {
+        let mut standing = tilo_action_policy::Standing::person(self.policy, self.person);
+        if self.foreign {
+            standing = standing.on_foreign_device();
+        }
+        if let Some(bound) = self.delegate {
+            standing = standing.with_bound(bound);
+        }
+        standing
+    }
+
+    /// The member's authority, held to `foreign_bound` on a foreign device.
+    #[must_use]
+    pub fn authority<'a>(&'a self, foreign_bound: &'a [Grant]) -> Authority<'a> {
+        let authority = self
+            .policy
+            .person_on_device(&self.person, self.foreign, foreign_bound);
+        match &self.delegate {
+            Some(bound) => authority.bounded_by(bound.party(&self.policy.grants)),
+            None => authority,
+        }
+    }
+    /// Whether the member may perform an action of `kind` at `node` at `now`.
+    #[must_use]
+    pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        self.authority(&bound)
+            .decide(node, kind, &tilo_action_policy::Context::at_time(now))
+            .answer
+            == Answer::Allow
+    }
+}
+/// Whether `agent` is admitted to the room: it holds a live grant on the room
+/// itself.
+pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime) -> bool {
+    let cx = tilo_action_policy::Context::at_time(now);
+    let room = policy.node();
+    policy.grants.iter().any(|grant| {
+        matches!(&grant.subject, Subject::Agent(held) if held == agent)
+            && grant.node == room
+            && grant.answer != Answer::Deny
+            && grant.is_live(&cx)
+    })
+}
+/// The id of the grant that makes a member an administrator.
+fn administrator_grant_id(user_public_key: [u8; 32]) -> GrantId {
+    tilo_action_policy::roles::administrator_grant_id(&hex::encode(user_public_key))
+}
+/// The decision context of a policy question asked at `now`.
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, key);
@@ -75,29 +162,28 @@ pub struct SeedState {
     pub room_changes: Vec<Vec<u8>>,
     pub documents: Vec<SeedDocument>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DocumentRow {
-    pub app_id: String,
-    pub record_id: String,
-    pub heads: Vec<String>,
+/// What [`StatePeer::plaintext_changes_since`] found: the change bytes and
+/// the heads of the document they complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaintextChanges {
+    pub heads: Vec<automerge::ChangeHash>,
+    pub bytes: Vec<u8>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedAccess {
     pub member_devices: Vec<[u8; 32]>,
     pub member_user_roots: Vec<[u8; 32]>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedMember {
-    pub user_public_key: [u8; 32],
-    pub role: crate::join::MemberRole,
-    pub display_name: Option<String>,
-    pub active_device_keys: Vec<[u8; 32]>,
-    pub removed: bool,
-    /// Made an administrator by the governance writer: `role` is then
-    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) with the
-    /// owner's authority over the workspace.
-    #[serde(default)]
-    pub administrator: bool,
+/// Who a Read Deny keeps out of a room's record channels; see
+/// [`PeerGovernance::withheld_record_readers`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordReaders {
+    /// Each channel whose record the steward can name, and the member
+    /// devices that may not read that record (possibly none).
+    pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
+    /// The member devices kept out of every channel whose record the steward
+    /// cannot name: those a Deny over a pattern of records could keep out.
+    pub unrouted: BTreeSet<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(
@@ -143,7 +229,7 @@ struct CheckpointBytes {
     decoded: std::sync::OnceLock<Result<std::sync::Arc<DecodedCheckpoint>, String>>,
 }
 struct DecodedCheckpoint {
-    doc: automerge::Automerge,
+    doc: AutoCommit,
     heads: Vec<String>,
     payload_hash: [u8; 32],
 }
@@ -162,7 +248,7 @@ impl AcceptedCheckpoint {
     fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
         #[cfg(test)]
         CHECKPOINT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
-        let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
+        let mut doc = AutoCommit::load(&self.0.bytes).map_err(err)?;
         let heads = doc.get_heads().iter().map(ToString::to_string).collect();
         let payload_hash = crate::document::snapshot_hash(&self.0.bytes).map_err(err)?;
         Ok(std::sync::Arc::new(DecodedCheckpoint {
@@ -240,6 +326,77 @@ const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub struct StatePeer {
     core: PeerCore<LegacyNative>,
+    /// The app surfaces received changes are decided against by their
+    /// claims; without a source, a change is decided as an edit of its
+    /// record. Set by the host, never persisted.
+    surfaces: collab_types::Surfaces,
+    /// The app surface each app's changes this peer signs are decided
+    /// against, by app id: what the host launched the app with.
+    app_surfaces: AppSurfaces,
+}
+
+fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
+    static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)>> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(std::sync::Mutex::default)
+}
+
+fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
+    defaults()
+        .lock()
+        .map(|defaults| defaults.clone())
+        .unwrap_or_default()
+}
+
+/// The app surfaces this process decides received changes against
+/// ([`decide_with_surfaces`]).
+#[must_use]
+pub fn default_surfaces() -> collab_types::Surfaces {
+    process_default().0
+}
+
+/// Decide the changes every peer of this process receives against the app
+/// surfaces `surfaces` finds, and name in the changes it signs the surface
+/// `of` returns for each app: what a host sets once, before it opens or
+/// restores its rooms. A peer made before keeps what it had.
+pub fn decide_with_surfaces(
+    surfaces: collab_types::Surfaces,
+    of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+) {
+    collab_types::Surfaces::set_process(surfaces.clone());
+    if let Ok(mut defaults) = defaults().lock() {
+        *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
+    }
+}
+
+/// The surface hash of an app's package, by app id.
+#[derive(Clone, Default)]
+struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
+
+type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
+
+/// The kind a record document's identity names (`tilo:record.kind`).
+/// The record as this peer holds it, when it has units beside itself to
+/// tell a change's writes apart by.
+fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<AutoCommit> {
+    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc))
+}
+
+/// The surface a record document's identity names (`tilo:record.surface`).
+fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "surface").ok()?? {
+        (automerge::Value::Scalar(hash), _) => hex::decode(hash.as_str()?).ok()?.try_into().ok(),
+        _ => None,
+    }
+}
+
+fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "kind").ok()?? {
+        (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),
+        _ => None,
+    }
 }
 
 fn check_governed_snapshot(
@@ -300,6 +457,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -309,17 +468,12 @@ impl StatePeer {
     ///
     /// Returns an error if `key` is not the governance writer, the certificate is invalid,
     /// revoked or conflicts with a recorded one, or governance cannot be updated.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the certificate"
-    )]
     pub fn admit_certificate(
         &mut self,
         cert: DeviceCert,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        use automerge::ReadDoc;
         if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
             return Err("governance writer is not pinned authority".into());
         }
@@ -336,28 +490,42 @@ impl StatePeer {
         {
             return Err("certificate conflict".into());
         }
-        let mut doc = self
+        let doc = self
             .core
             .room_doc
             .clone()
             .ok_or("room governance missing")?;
-        let identity = GovernedIdentity {
-            device_cert: cert.clone(),
-            revocations: vec![],
-            admission: None,
-            admissions: vec![],
-            workspace_delegations: vec![],
-        };
         let id = hex::encode(cert.device_public_key);
-        let encoded = serde_json::to_vec(&identity).map_err(err)?;
         if room::governance_of(Some(&doc))
-            .3
+            .identities
             .get(&id)
             .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
             .is_some_and(|old| old.device_cert == cert)
         {
             return Ok(false);
         }
+        let identity = GovernedIdentity {
+            device_cert: cert,
+            revocations: vec![],
+            admission: None,
+            admissions: vec![],
+            workspace_delegations: vec![],
+            delegate: None,
+        };
+        self.put_identity(doc, &identity, key, now)
+    }
+    /// Write `identity`'s governed row and roster name into `doc`, this
+    /// room's governance, as the pinned authority `key`, and take the change
+    /// in as every member will.
+    fn put_identity(
+        &mut self,
+        mut doc: CachedDocument,
+        identity: &GovernedIdentity,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let id = hex::encode(identity.device_cert.device_public_key);
+        let encoded = serde_json::to_vec(identity).map_err(err)?;
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
@@ -373,7 +541,7 @@ impl StatePeer {
         ));
         doc.put(&identities, &id, automerge::ScalarValue::Bytes(encoded))
             .map_err(err)?;
-        doc.put(&names, &id, cert.device_label.as_str())
+        doc.put(&names, &id, identity.device_cert.device_label.as_str())
             .map_err(err)?;
         doc.commit();
         room::media::refresh_authorization(
@@ -394,217 +562,12 @@ impl StatePeer {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
-    /// Publish same-root, root-signed revocations into pinned governance.
-    /// Independent collaborator roots retain their own signed revocation scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, an entry is not signed by
-    /// the authority root, or governance cannot be updated.
-    pub fn publish_governed_revocations(
-        &mut self,
-        entries: &[tilo_user_identity::RevocationEntry],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        self.require_governance_writer(key, now)?;
-        let mut verified = self.core.revocations.clone();
-        for entry in entries {
-            if entry.user_public_key != self.core.authority.user_public_key {
-                return Err("governed revocation root mismatch".into());
-            }
-            verified.insert(entry.clone()).map_err(err)?;
-        }
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let before = doc.get_heads();
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("governed identities missing")?
-            .1;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        let mut changed = false;
-        for (id, bytes) in room::governance_of(Some(&doc)).3 {
-            let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
-            if identity.device_cert.user_public_key != self.core.authority.user_public_key {
-                continue;
-            }
-            let mut list = RevocationList::new();
-            for entry in &identity.revocations {
-                list.insert(entry.clone()).map_err(err)?;
-            }
-            for entry in verified.iter() {
-                if entry.revoked_device_public_key == identity.device_cert.device_public_key
-                    || identity.device_cert == self.core.authority
-                {
-                    list.insert(entry.clone()).map_err(err)?;
-                }
-            }
-            let mut projected = list.iter().cloned().collect::<Vec<_>>();
-            projected.sort_by_key(|entry| entry.revoked_device_public_key);
-            identity.revocations = projected;
-            let encoded = serde_json::to_vec(&identity).map_err(err)?;
-            if encoded != bytes {
-                doc.put(&identities, id, automerge::ScalarValue::Bytes(encoded))
-                    .map_err(err)?;
-                changed = true;
-            }
-        }
-        if changed {
-            doc.commit();
-            self.apply_governance_doc(doc, &before, key, now)?;
-        } else {
-            self.core.revocations = verified;
-        }
-        Ok(())
-    }
-    /// Record a verified workspace delegation in pinned governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the delegation does not
-    /// verify, its service is absent from the governed roster, or governance is missing.
-    pub fn install_workspace_delegation(
-        &mut self,
-        delegation: crate::join::WorkspaceDelegation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        if self
-            .core
-            .certificates
-            .get(&delegation.delegate.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(&delegation.delegate)
-        {
-            return Err("delegated workspace service is absent from governed roster".into());
-        }
-        let cached = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?;
-        let mut document = (**cached).clone();
-        match crate::governance::install_workspace_delegation(
-            &mut document,
-            &self.core.authority,
-            delegation,
-            key,
-            now,
-        )? {
-            crate::governance::GovernanceOutcome::Unchanged => Ok(false),
-            crate::governance::GovernanceOutcome::Applied { changes } => {
-                let room = self.core.room.clone();
-                let outcome = self.receive_from(
-                    // The shared governance transaction has already verified
-                    // either the owner or its persisted room delegation.
-                    TransportOrigin::RelayDelta(self.core.authority.device_public_key),
-                    NeighbourMsg::SyncResp { changes, room },
-                    now,
-                )?;
-                Ok(outcome.changed || outcome.metadata_changed)
-            }
-        }
-    }
-    /// Atomically records a verified single-use invitation redemption, its
-    /// independent root-certified device, and its room role.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the redemption conflicts
-    /// with recorded governance, or governance cannot be updated.
-    pub fn admit_invited_member(
-        &mut self,
-        redemption: &crate::join::VerifiedRedemption,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let grant = redemption.join().grant();
-        if grant.room != self.core.room || grant.authority != self.core.authority {
-            return Err("invitation is not for this pinned room authority".into());
-        }
-        if grant.issuer == self.core.authority {
-            self.require_governance_writer(key, now)?;
-        } else {
-            if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
-                return Err("governance writer is not invitation issuer".into());
-            }
-            if self.certificate(&grant.issuer.device_public_key, now)? != &grant.issuer {
-                return Err("delegated invitation issuer certificate mismatch".into());
-            }
-        }
-        let cert = redemption.certificate();
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
-            return Err("device revoked".into());
-        }
-        if let Some(old) = self.core.certificates.get(&cert.device_public_key)
-            && old.as_ref() != cert
-        {
-            return Err("certificate conflict".into());
-        }
-        let cached = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?;
-        let mut document = (**cached).clone();
-        match crate::governance::admit_invited_member(&mut document, redemption, key, now)? {
-            crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
-            crate::governance::AdmissionOutcome::Applied { changes } => {
-                let room = self.core.room.clone();
-                let outcome = self.receive_from(
-                    TransportOrigin::RelayDelta(self.core.authority.device_public_key),
-                    NeighbourMsg::SyncResp { changes, room },
-                    now,
-                )?;
-                Ok(outcome.changed || outcome.metadata_changed)
-            }
-        }
-    }
 
-    /// Change a governed collaborator's room role.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the user is the owner or
-    /// absent from governed admission history, or governance cannot be updated.
-    pub fn set_member_role(
+    fn set_member(
         &mut self,
         user_public_key: [u8; 32],
-        role: crate::join::MemberRole,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member_verb(user_public_key, member_verb(role), key, now)
-    }
-
-    /// Make a governed collaborator an administrator of the workspace, with
-    /// the owner's authority over it (never its governance key).
-    /// [`Self::set_member_role`] demotes them again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_member_role`].
-    pub fn set_member_administrator(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member_verb(user_public_key, Verb::Admin, key, now)
-    }
-
-    fn set_member_verb(
-        &mut self,
-        user_public_key: [u8; 32],
-        verb: Verb,
+        role: Role,
+        administrator: bool,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -625,359 +588,35 @@ impl StatePeer {
         }) {
             return Err("member is absent from governed admission history".into());
         }
-        let before_role = room::role_of(
-            policy.owner.as_deref(),
-            &policy.caps,
-            &hex::encode(user_public_key),
-            now_secs(now),
-        );
+        let person = hex::encode(user_public_key);
+        let admin_id = administrator_grant_id(user_public_key);
+        let before_role = policy.members.get(&person).copied();
+        let before_admin = policy.grants.iter().any(|grant| grant.id == admin_id);
         let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
+        let members = governed_map(&doc, "members")?;
+        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        put_member_verb(&mut doc, &caps, user_public_key, verb)?;
-        doc.commit();
-        let changed = self.apply_governance_doc(doc, &before, key, now)?;
-        let after_role = match verb {
-            Verb::Admin => Role::Owner,
-            Verb::Write => Role::Editor,
-            Verb::Comment => Role::Commenter,
-            Verb::Read | Verb::Invite => Role::Viewer,
-        };
-        Ok(changed && before_role != Some(after_role))
-    }
-
-    /// Remove workspace capabilities the governance writer decided to take
-    /// back, by id. Memberships are removed through member governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, an id names a
-    /// membership, or governance cannot be updated.
-    pub fn remove_governed_capabilities(
-        &mut self,
-        ids: &[String],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        for id in ids {
-            if id.starts_with("room-member-v1:") {
-                return Err(format!("capability {id:?} is a membership"));
-            }
-            if doc.get(&caps, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&caps, id.as_str()).map_err(err)?;
-            }
-        }
-        doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-
-    /// Write workspace capabilities the governance writer decided, such as
-    /// those an assigned permission profile expands to, keyed by their ids.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, a capability
-    /// has no id or would replace a membership, or governance cannot be updated.
-    pub fn put_governed_capabilities(
-        &mut self,
-        capabilities: &[CapOverride],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        for capability in capabilities {
-            if capability.id.trim().is_empty() || capability.id.starts_with("room-member-v1:") {
-                return Err(format!(
-                    "capability {:?} cannot be written as workspace policy",
-                    capability.id
-                ));
-            }
+        put_member(&mut doc, &members, user_public_key, role)?;
+        if administrator {
+            let grant = tilo_action_policy::roles::administrator_grant(
+                &self.core.room,
+                &person,
+                Subject::Person(hex::encode(self.core.authority.user_public_key)),
+            );
             doc.put(
-                &caps,
-                capability.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
+                &grants,
+                admin_id.as_str(),
+                automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
             )
             .map_err(err)?;
+        } else if doc.get(&grants, admin_id.as_str()).map_err(err)?.is_some() {
+            doc.delete(&grants, admin_id.as_str()).map_err(err)?;
         }
         doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-
-    /// Remove a governed collaborator and revoke their devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the user is the structural
-    /// owner or not a member, or governance cannot be updated.
-    pub fn remove_member(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        if user_public_key == self.core.authority.user_public_key {
-            return Err("workspace owner cannot be removed".into());
-        }
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let (_, capabilities) = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?;
-        let person = hex::encode(user_public_key);
-        let matching = doc
-            .keys(&capabilities)
-            .filter(|id| {
-                doc.get(&capabilities, id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(value, _)| {
-                        let automerge::Value::Scalar(value) = value else {
-                            return false;
-                        };
-                        let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
-                            return false;
-                        };
-                        serde_json::from_slice::<CapOverride>(bytes).is_ok_and(|cap| {
-                            subject_is_person(&cap.subject, user_public_key, &person)
-                                && matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-                        })
-                    })
-            })
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            return Ok(false);
-        }
-        let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        for id in matching {
-            doc.delete(&capabilities, id).map_err(err)?;
-        }
-        doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-
-    /// Current governed access derived from the admitted room document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
-    pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
-        let policy = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?
-            .policy();
-        let mut member_devices = Vec::new();
-        let mut member_user_roots = Vec::new();
-        for bytes in policy.identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            let cert = identity.device_cert;
-            if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
-                || self.core.revocations.is_revoked(&cert.device_public_key)
-            {
-                continue;
-            }
-            let person = hex::encode(cert.user_public_key);
-            if room::role_of(
-                policy.owner.as_deref(),
-                &policy.caps,
-                &person,
-                now_secs(now),
-            )
-            .is_some_and(|role| role != Role::Denied)
-            {
-                member_devices.push(cert.device_public_key);
-                member_user_roots.push(cert.user_public_key);
-            }
-        }
-        member_devices.sort_unstable();
-        member_devices.dedup();
-        member_user_roots.sort_unstable();
-        member_user_roots.dedup();
-        Ok(GovernedAccess {
-            member_devices,
-            member_user_roots,
-        })
-    }
-
-    /// Authority-authored collaborator projection. The structural owner is
-    /// exposed separately by [`StatePeer::owner_user_public_key`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
-    pub fn governed_members(&self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
-        let doc = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?;
-        let policy = doc.policy();
-        let names = room::governance_of(Some(doc)).2;
-        let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
-        for (id, bytes) in &policy.identities {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            let Some(receipt) = identity
-                .admission
-                .as_ref()
-                .or_else(|| identity.admissions.last())
-            else {
-                continue;
-            };
-            let root = identity.device_cert.user_public_key;
-            let person = hex::encode(root);
-            let role = room::role_of(
-                policy.owner.as_deref(),
-                &policy.caps,
-                &person,
-                now_secs(now),
-            );
-            let administrator = role == Some(Role::Owner);
-            let active_role = if administrator {
-                Some(crate::join::MemberRole::Editor)
-            } else {
-                role.and_then(member_role_from_role)
-            };
-            let row = rows.entry(root).or_insert_with(|| GovernedMember {
-                user_public_key: root,
-                role: active_role.unwrap_or(receipt.role),
-                display_name: names.get(id).cloned(),
-                active_device_keys: Vec::new(),
-                removed: active_role.is_none(),
-                administrator,
-            });
-            if let Some(role) = active_role {
-                row.role = role;
-                row.removed = false;
-                let cert = &identity.device_cert;
-                if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                    && !self.core.revocations.is_revoked(&cert.device_public_key)
-                {
-                    row.active_device_keys.push(cert.device_public_key);
-                }
-            }
-            if row.display_name.is_none() {
-                row.display_name = names.get(id).cloned();
-            }
-        }
-        let mut rows = rows.into_values().collect::<Vec<_>>();
-        for row in &mut rows {
-            row.active_device_keys.sort_unstable();
-            row.active_device_keys.dedup();
-        }
-        Ok(rows)
-    }
-
-    pub fn owner_user_public_key(&self) -> [u8; 32] {
-        self.core.authority.user_public_key
-    }
-
-    /// Issue a membership refresh challenge for a governed device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device is not a current governed member at `now` or the
-    /// challenge cannot be signed.
-    pub fn membership_challenge(
-        &self,
-        workspace_id: u64,
-        device_cert: &DeviceCert,
-        request_id: [u8; 32],
-        nonce: [u8; 32],
-        expires_at_ns: u64,
-        now: SystemTime,
-    ) -> Result<crate::join::MembershipChallenge, String> {
-        if self
-            .core
-            .certificates
-            .get(&device_cert.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(device_cert)
-        {
-            return Err("membership certificate is absent from governed state".into());
-        }
-        self.certificate(&device_cert.device_public_key, now)?;
-        let role = match self.permissions(device_cert.device_public_key, now) {
-            Ok((role, _, _)) => role,
-            Err(error)
-                if error.contains("no room membership")
-                    && self.has_governed_admission(device_cert) =>
-            {
-                return Err("member has been removed".into());
-            }
-            Err(error) => return Err(error),
-        };
-        if matches!(role, Role::Denied) {
-            return Err("member has been removed".into());
-        }
-        crate::join::MembershipChallenge::new(
-            &self.core.room,
-            workspace_id,
-            &self.core.authority,
-            device_cert,
-            request_id,
-            nonce,
-            expires_at_ns,
-            now_ns(now),
-        )
-    }
-
-    /// Check a verified membership refresh against current governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the refreshed device is no longer a governed member.
-    pub fn verify_member_refresh(
-        &self,
-        membership: &crate::join::VerifiedMembership,
-        now: SystemTime,
-    ) -> Result<crate::join::MemberRole, String> {
-        let role = self.current_membership_role(membership, now)?;
-        member_role_from_role(role)
-            .ok_or_else(|| "structural owner does not use collaborator refresh".into())
+        let changed = self.apply_governance_doc(doc, &before, key, now)?;
+        Ok(changed && (before_role != Some(role) || before_admin != administrator))
     }
 
     fn has_governed_admission(&self, cert: &DeviceCert) -> bool {
@@ -1093,36 +732,35 @@ impl StatePeer {
     pub fn room(&self) -> &str {
         &self.core.room
     }
-    /// The room role, capability overrides and owner of the device `source`.
+    /// The current authority of the device `source`: its person, role, the
+    /// room's policy and whether it is held to the foreign-device bound.
     ///
     /// # Errors
     ///
-    /// Returns an error if `source` has no current certified identity or governance is
-    /// missing.
+    /// Returns an error if `source` has no current certified identity, is not a
+    /// current member, or governance is missing.
     pub fn permissions(
         &self,
         source: [u8; 32],
         now: SystemTime,
-    ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
-        let role = self.role(&source, now)?;
+    ) -> Result<MemberAuthority, String> {
+        let (role, agent) = backend::member::legacy(&self.core, &source, now).map_err(err)?;
         let cert = self.certificate(&source, now)?;
-        let mut caps = self
+        let policy = self
             .core
             .room_doc
             .as_ref()
             .ok_or("room missing")?
             .policy()
-            .caps
-            .clone();
+            .room_policy(&self.core.room);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(
-            cert,
-            &self.core.authority,
-            person.id(),
-            &mut caps,
-            now,
-        );
-        Ok((role, caps, person.id().to_owned()))
+        Ok(MemberAuthority {
+            role,
+            person: person.id().to_owned(),
+            policy,
+            foreign: backend::member::foreign(cert, &self.core.authority),
+            delegate: agent,
+        })
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
@@ -1142,9 +780,15 @@ impl StatePeer {
         record: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let (role, caps, person) = self.permissions(device, now)?;
-        if !backend::access::document_read(role, &caps, &person, &self.core.room, app, record, now)
-        {
+        let member = self.permissions(device, now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        if !backend::access::document_read(
+            &member.authority(&bound),
+            &self.core.room,
+            app,
+            record,
+            now,
+        ) {
             return Err(format!("record read forbidden: {app}/{record}"));
         }
         Ok(())
@@ -1288,13 +932,19 @@ impl StatePeer {
         let Ok(checkpoint) = snapshot.decoded() else {
             return false;
         };
-        let mut proof = checkpoint.doc.clone();
-        let before = proof.get_heads();
         // A sequence floor is not causal coverage: an out-of-order incremental
         // may have been validated while its dependencies were unavailable.
-        proof.load_incremental(&bytes).is_ok()
-            && proof.get_missing_deps(&[]).is_empty()
-            && proof.get_heads() == before
+        // Contained: applied in the isolate to a copy of the checkpoint, the
+        // peer's bytes leave its heads where they were and nothing waiting.
+        let mut proof = checkpoint.doc.clone();
+        matches!(
+            tilo_automerge_isolate::apply(
+                &mut proof,
+                &bytes,
+                tilo_automerge_isolate::Dependencies::RequireComplete
+            ),
+            Ok(tilo_automerge_isolate::Applied::Changed(false))
+        )
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.core
@@ -1323,6 +973,126 @@ impl StatePeer {
             })
             .map(|entry| entry.doc.base_heads())
     }
+
+    /// Whether `record`'s governed checkpoint is still arriving: the room
+    /// already carries its coverage, but the checkpoint body it names has
+    /// not been admitted, so the document's accepted checkpoint is an older
+    /// one. A restoring read refuses this room until the body arrives; it is
+    /// a cut in flight, not a damaged replica.
+    #[must_use]
+    pub fn checkpoint_pending(&self, app: &str, record: &str) -> bool {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return false;
+        };
+        let snapshot = document
+            .covered_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.0.bytes.as_slice());
+        let room = self
+            .core
+            .room_doc
+            .as_deref()
+            .map(crate::room::read::LegacyRead);
+        matches!(
+            crate::coverage::read::governed_snapshot_matches(
+                room.as_ref(),
+                app,
+                record,
+                snapshot,
+                &crate::coverage::read::LegacyCoverage,
+            ),
+            Err(crate::coverage::read::CoverageMatchError::NoMatch)
+        )
+    }
+
+    /// Heads of a plaintext, causally complete document. Missing, encrypted,
+    /// and incomplete routes return `None` so a caller falls through to a
+    /// restoring read and keeps that refusal.
+    pub fn plaintext_complete_heads(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        let entry = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty() {
+            return None;
+        }
+        Some(entry.doc.base_heads())
+    }
+
+    /// The changes a replica holding exactly the heads `since` lacks of a
+    /// plaintext, causally complete document, as Automerge change bytes, and
+    /// the heads they lead to. Built from the changes since `since` alone,
+    /// never from a copy or a save of the whole document. `None` when a
+    /// whole read must decide instead: the route is missing, encrypted or
+    /// incomplete, a `since` head is not in the document, nothing follows
+    /// `since`, or the changes are larger than `maximum` bytes.
+    #[must_use]
+    pub fn plaintext_changes_since(
+        &self,
+        app: &str,
+        record: &str,
+        since: &[automerge::ChangeHash],
+        maximum: usize,
+    ) -> Option<PlaintextChanges> {
+        let entry = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if entry.encryption_required
+            || since.is_empty()
+            || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty()
+            || !ReadDoc::get_missing_deps(&*entry.doc, since).is_empty()
+        {
+            return None;
+        }
+        let document = entry.doc.committed_document();
+        let bytes = document.save_after(since);
+        if bytes.is_empty() || bytes.len() > maximum {
+            return None;
+        }
+        Some(PlaintextChanges {
+            heads: document.get_heads(),
+            bytes,
+        })
+    }
+    /// The `(app, record)` of every record this peer holds readable, not
+    /// sealed for a channel's members.
+    pub fn plaintext_routes(&self) -> Vec<(String, String)> {
+        self.core
+            .documents
+            .iter()
+            .filter(|(_, entry)| !entry.encryption_required)
+            .map(|(route, _)| (route.app.clone(), route.record.clone()))
+            .collect()
+    }
+    /// Whether this state holds `record` of `app`, without saving it as
+    /// [`Self::document`] does.
+    #[must_use]
+    pub fn holds_document(&self, app: &str, record: &str) -> bool {
+        self.core.documents.contains_key(&Route {
+            app: app.into(),
+            record: record.into(),
+        })
+    }
+    /// The `(app, record)` of every encrypted record this state holds: only
+    /// its channel's key holders read it.
+    #[must_use]
+    pub fn sealed_routes(&self) -> Vec<(String, String)> {
+        self.core
+            .documents
+            .iter()
+            .filter(|(_, entry)| entry.encryption_required)
+            .map(|(route, _)| (route.app.clone(), route.record.clone()))
+            .collect()
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents
@@ -1330,53 +1100,81 @@ impl StatePeer {
                 app: app.into(),
                 record: record.into(),
             })
-            .map(|entry| entry.doc.clone().save())
+            .map(|entry| entry.doc.saved())
     }
     fn certificate(&self, source: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         self.core.certificate_typed(source, now).map_err(err)
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-        backend::member::legacy(&self.core, source, now).map_err(err)
+        backend::member::legacy(&self.core, source, now)
+            .map(|(role, _)| role)
+            .map_err(err)
     }
+
+    /// Decide received changes by their claims against the app surfaces
+    /// `surfaces` finds.
+    pub fn set_surfaces(&mut self, surfaces: collab_types::Surfaces) {
+        self.surfaces = surfaces;
+    }
+
+    /// The bot actor `source` may show other names as: a bot device that
+    /// acts in the room now (live delegation, live installation, installer
+    /// still a member) and whose installation allows `Personas`.
+    fn appearance_author(&self, source: &[u8; 32], now: SystemTime) -> Option<String> {
+        self.permissions(*source, now).ok()?;
+        let doc = self.core.room_doc.as_ref()?;
+        let bytes = doc.policy().identities.get(&hex::encode(source))?.clone();
+        let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
+        let installation = identity.delegate?.installation?;
+        (installation.appearance == crate::installation::AppearancePolicy::Personas)
+            .then(|| format!("bot:{}", installation.id))
+    }
+
+    /// The authority of `source` for the change `envelope` makes on `record`
+    /// of `app_id`, refused when the change is not granted; `None` while
+    /// the app surface it is decided against is not here.
     fn authorize_document(
         &self,
         source: &[u8; 32],
         app_id: &str,
+        record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Role, String> {
-        let role = self.role(source, authorization_time)?;
-        let cert = self.certificate(source, authorization_time)?;
-        let (_, _, mut caps) = room::extract_governed_fields(
-            self.core.room_doc.as_deref().ok_or("missing governance")?,
-        );
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(
-            cert,
-            &self.core.authority,
-            person.id(),
-            &mut caps,
-            authorization_time,
-        );
-        let actor = Actor::person(Some(role), person.id())
-            .with_principal(Principal::App(app_id.to_owned()))
-            .in_room(self.core.room.clone());
-        let resource = ResourceRef::Artifact {
-            app: Some(app_id.to_owned()),
-            kind: ArtifactKind::Note,
-            instance: envelope.artifact,
+    ) -> Result<Option<MemberAuthority>, String> {
+        let member = self.permissions(*source, authorization_time)?;
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
         };
-        if decide_capability(
-            &actor,
-            &resource,
-            collab_types::caps::verb_for_opclass(envelope.op_class),
-            &caps,
-            Some(now_secs(authorization_time)),
-        ) != CapDecision::Allow
-        {
-            return Err("document capability forbidden".into());
+        // The record as this peer holds it, read only when changes are
+        // decided against app surfaces: which of the app's resources it is,
+        // and which units a change writes.
+        let document = self
+            .surfaces
+            .enforced()
+            .then(|| self.core.documents.get(&route))
+            .flatten();
+        let kind = document.and_then(|document| record_kind(&*document.doc));
+        let pinned = document.and_then(|document| record_surface(&*document.doc));
+        let held = document.and_then(|document| held_units(&document.doc));
+        let decided = collab_types::decide_op_pinned(
+            envelope,
+            &collab_types::Record {
+                room: &self.core.room,
+                app: app_id,
+                record,
+            },
+            kind.as_deref(),
+            held,
+            pinned,
+            &self.surfaces,
+            &|node, kind| member.allows(node, kind, authorization_time),
+        );
+        match decided {
+            Ok(collab_types::Receipt::Admit) => Ok(Some(member)),
+            Ok(collab_types::Receipt::Hold) => Ok(None),
+            Err(refusal) => Err(format!("document change forbidden: {refusal}")),
         }
-        Ok(role)
     }
 
     /// Select native schema v5 only as part of an outer owner's reviewed rollout.
@@ -1411,11 +1209,51 @@ impl StatePeer {
         if let TransportOrigin::RetainedNativePublication { publisher } = origin {
             return self.receive_native_publication(publisher, message, now, true);
         }
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && let Some(report) = self.lookup_exact_document_report(origin, &message, now)?
+        {
+            return Ok(report);
+        }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let mut candidate = self.clone();
         let report = candidate.receive_with_context(source, message, now, retained_replay, true)?;
         *self = candidate;
         Ok(report)
+    }
+
+    /// Authenticate an already recorded document without copying mutable state.
+    /// The report observes the existing admission, never a new commit barrier.
+    ///
+    /// # Errors
+    /// Current publisher authority, transport, route or signature is invalid.
+    pub fn lookup_exact_document_report(
+        &self,
+        origin: TransportOrigin,
+        message: &NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<Option<AdmissionReport>, AdmissionError> {
+        if !self.core.admission_v5 {
+            return Err(AdmissionError::WriterSelectionRequired);
+        }
+        if let Some(publisher) = self.core.native_cut_publisher {
+            self.validate_native_publisher(publisher, now)?;
+        }
+        let (source, _) = self.resolve_origin(origin, message, now)?;
+        if self.core.room_doc.is_none() || !self.core.certificates.contains_key(&source) {
+            return Ok(None);
+        }
+        self.lookup_exact_document(origin, message, now)
+            .map(|exact| {
+                exact.map(|admitted| {
+                    AdmissionReport::new(
+                        InputDisposition::Duplicate(admitted),
+                        ReceiveOutcome {
+                            duplicate: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+            })
     }
 
     /// A read-only exact retry lookup. Current authority and signature/route still
@@ -1459,7 +1297,12 @@ impl StatePeer {
         if room != self.core.room || op.author.as_bytes() != &source {
             return Err("transport author or document room mismatch".into());
         }
-        self.authorize_document(&source, app, op, now)?;
+        if self
+            .authorize_document(&source, app, record, op, now)?
+            .is_none()
+        {
+            return Err("document change held: its app surface is not here yet".into());
+        }
         collab_types::validate_whole_document_payload_route(app, room, record, op).map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
         let admission = DocumentAdmission::from_op(room, app, record, op)?;
@@ -1541,10 +1384,6 @@ impl StatePeer {
             .map(|report| report.summary)
             .map_err(err)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the single admission dispatch over every neighbour message kind"
-    )]
     fn receive_with_context(
         &mut self,
         source: [u8; 32],
@@ -1558,174 +1397,12 @@ impl StatePeer {
         }
         match message {
             NeighbourMsg::IdentityHello { cert, revocations } => {
-                if cert.device_public_key != source {
-                    return Err("transport certificate mismatch".into());
-                }
-                if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref()) {
-                    let admitted = self
-                        .core
-                        .room_doc
-                        .as_deref()
-                        .and_then(|doc| {
-                            room::governance_of(Some(doc))
-                                .3
-                                .get(&hex::encode(source))
-                                .cloned()
-                        })
-                        .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(&bytes).ok());
-                    if admitted
-                        .as_ref()
-                        .is_none_or(|identity| identity.device_cert != *cert)
-                    {
-                        return Err("identity is absent from admitted roster".into());
-                    }
-                }
-                let verified = VerifiedCertificate::new((*cert).clone(), now_ns(now))?;
-                let mut metadata_changed =
-                    self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref());
-                for entry in revocations {
-                    if entry.user_public_key != cert.user_public_key {
-                        return Err("revocation root mismatch".into());
-                    }
-                    if self
-                        .core
-                        .certificates
-                        .get(&entry.revoked_device_public_key)
-                        .is_some_and(|target| target.user_public_key != entry.user_public_key)
-                    {
-                        return Err("revocation cannot cross identity roots".into());
-                    }
-                    metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
-                }
-                if self.core.revocations.is_revoked(&source) {
-                    return Err("device revoked".into());
-                }
-                self.core.certificates.insert(source, verified);
-                Ok(AdmissionReport::metadata(ReceiveOutcome {
-                    metadata_changed,
-                    ..Default::default()
-                }))
+                self.receive_identity_hello(source, &cert, revocations, now)
             }
             NeighbourMsg::SyncResp {
                 changes,
                 room: received,
-            } => {
-                if received != self.core.room {
-                    return Err("room topic mismatch".into());
-                }
-                self.certificate(&source, now)?;
-                if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
-                    let role = self.role(&source, now)?;
-                    let certificate = self.certificate(&source, now)?;
-                    let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(
-                        certificate.user_public_key,
-                    ));
-                    let (_, _, caps) = room::extract_governed_fields(
-                        self.core
-                            .room_doc
-                            .as_deref()
-                            .ok_or("room governance missing")?,
-                    );
-                    let actor =
-                        Actor::person(Some(role), person.id()).in_room(self.core.room.clone());
-                    if decide_capability(
-                        &actor,
-                        &ResourceRef::Room(self.core.room.clone()),
-                        collab_types::caps::Verb::Write,
-                        &caps,
-                        Some(now_secs(now)),
-                    ) != CapDecision::Allow
-                    {
-                        return Err("room write forbidden".into());
-                    }
-                }
-                let candidate =
-                    room::candidate(self.core.room_doc.as_deref(), &changes).map_err(err)?;
-                if room::declared_room_mismatches(
-                    &candidate,
-                    uuid::Uuid::parse_str(&self.core.room).map_err(err)?,
-                ) {
-                    return Err("declared room mismatch".into());
-                }
-                let pinned = hex::encode(self.core.authority.device_public_key);
-                let from = hex::encode(source);
-                if !room::governance_change_allowed(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    false,
-                    Some(&pinned),
-                    &from,
-                ) {
-                    return Err("governance writer is not pinned authority".into());
-                }
-                crate::topology::validate(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    &from,
-                    &pinned,
-                )?;
-                if !room::immutable_receipts(self.core.room_doc.as_deref(), &candidate) {
-                    return Err("effect receipt is immutable".into());
-                }
-                let mut receipts = self.core.receipts.clone();
-                for (key, value) in room::receipt_values(&candidate) {
-                    let bytes = serde_json::to_vec(&value).map_err(err)?;
-                    if receipts.get(&key).is_some_and(|prior| prior != &bytes) {
-                        return Err("effect receipt is immutable".into());
-                    }
-                    receipts.insert(key, bytes);
-                }
-                crate::coverage::monotonic(self.core.room_doc.as_deref(), &candidate)?;
-                crate::durability::monotonic(self.core.room_doc.as_deref(), &candidate)?;
-                let changed = self
-                    .core
-                    .room_doc
-                    .as_deref()
-                    .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
-                let media = room::media::validate_transition(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    room::media::TransitionMode::Admission,
-                )
-                .map_err(err)?;
-                if let Some(policy) = &media {
-                    self.validate_media_bindings(policy, false)?;
-                }
-                let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
-                self.core.receipts = receipts;
-                self.core.room_doc = Some(candidate.into());
-                let pending = std::mem::take(&mut self.core.pending);
-                self.core.pending_bytes = 0;
-                let mut applied = changed;
-                let mut rejected = 0usize;
-                let mut settled = Vec::new();
-                for (author, message, replayed) in pending {
-                    match self.receive_with_context(author, message, now, replayed, strict_report) {
-                        Ok(outcome) => {
-                            applied |= outcome.changed;
-                            metadata_changed |= outcome.metadata_changed;
-                            rejected = rejected.saturating_add(outcome.rejected);
-                            settled.extend(outcome.settled);
-                        }
-                        Err(error) => {
-                            if self.core.native_cut_publisher.is_some() {
-                                return Err(error);
-                            }
-                            rejected = rejected.saturating_add(1);
-                        }
-                    }
-                }
-                let mut report = AdmissionReport::metadata(ReceiveOutcome {
-                    changed: applied,
-                    metadata_changed,
-                    incomplete: self.incomplete_reason(),
-                    deferred: !self.core.pending.is_empty(),
-                    rejected,
-                    ..Default::default()
-                });
-                report.settled = settled;
-                Ok(report)
-            }
+            } => self.receive_room_changes(source, &received, &changes, now, strict_report),
             message @ NeighbourMsg::AppDocument { .. } => {
                 if self.core.room_doc.is_none() || !self.core.certificates.contains_key(&source) {
                     let prerequisite = if self.core.room_doc.is_none() {
@@ -1742,6 +1419,140 @@ impl StatePeer {
                 ReceiveOutcome::default(),
             )),
         }
+    }
+    /// Admit the transport device's own certificate and the revocations its
+    /// identity root signed.
+    fn receive_identity_hello(
+        &mut self,
+        source: [u8; 32],
+        cert: &DeviceCert,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if cert.device_public_key != source {
+            return Err("transport certificate mismatch".into());
+        }
+        if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert) {
+            let admitted = self.core.room_doc.as_ref().and_then(|doc| {
+                doc.identities()
+                    .get(&hex::encode(source))
+                    .and_then(|identity| identity.as_ref().ok())
+            });
+            if admitted.is_none_or(|identity| identity.device_cert != *cert) {
+                return Err("identity is absent from admitted roster".into());
+            }
+        }
+        let verified = VerifiedCertificate::new(cert.clone(), now_ns(now))?;
+        let mut metadata_changed =
+            self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert);
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key {
+                return Err("revocation root mismatch".into());
+            }
+            if self
+                .core
+                .certificates
+                .get(&entry.revoked_device_public_key)
+                .is_some_and(|target| target.user_public_key != entry.user_public_key)
+            {
+                return Err("revocation cannot cross identity roots".into());
+            }
+            metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
+        }
+        if self.core.revocations.is_revoked(&source) {
+            return Err("device revoked".into());
+        }
+        self.core.certificates.insert(source, verified);
+        Ok(AdmissionReport::metadata(ReceiveOutcome {
+            metadata_changed,
+            ..Default::default()
+        }))
+    }
+    /// Admit governance changes to the room document, then retry every input
+    /// deferred until governance arrived.
+    fn receive_room_changes(
+        &mut self,
+        source: [u8; 32],
+        received: &str,
+        room_changes: &[Vec<u8>],
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if received != self.core.room {
+            return Err("room topic mismatch".into());
+        }
+        let cert = self.certificate(&source, now)?;
+        let person = cert.user_public_key;
+        let foreign = backend::member::foreign(cert, &self.core.authority);
+        // Bootstrap: the invite's authority device supplies the first
+        // governance before any roster exists to resolve it against.
+        if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
+            self.role(&source, now)?;
+        }
+        let pinned = hex::encode(self.core.authority.device_public_key);
+        let from = hex::encode(source);
+        // The one room admission the shell's workspace tree runs too.
+        let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+            room::RoomAdmission {
+                before: self.core.room_doc.as_deref(),
+                room: &self.core.room,
+                source: room::Writer {
+                    key: &from,
+                    standing: room::Standing::Member { person, foreign },
+                },
+                authority: room::AuthorityPin::Device(&pinned),
+                contents: room::ContentOwnership::Registry,
+                caps_now: now_secs(now),
+            },
+            room_changes,
+        )
+        .map_err(err)?;
+        // Receipts this peer admitted earlier stay immutable even once
+        // the room document omits them.
+        let mut receipts = self.core.receipts.clone();
+        room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
+        let changed = self
+            .core
+            .room_doc
+            .as_deref()
+            .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+        if let Some(policy) = &media {
+            self.validate_media_bindings(policy, false)?;
+        }
+        let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
+        self.core.receipts = receipts;
+        self.core.room_doc = Some(candidate.into());
+        let pending = std::mem::take(&mut self.core.pending);
+        self.core.pending_bytes = 0;
+        let mut applied = changed;
+        let mut rejected = 0usize;
+        let mut settled = Vec::new();
+        for (author, message, replayed) in pending {
+            match self.receive_with_context(author, message, now, replayed, strict_report) {
+                Ok(outcome) => {
+                    applied |= outcome.changed;
+                    metadata_changed |= outcome.metadata_changed;
+                    rejected = rejected.saturating_add(outcome.rejected);
+                    settled.extend(outcome.settled);
+                }
+                Err(error) => {
+                    if self.core.native_cut_publisher.is_some() {
+                        return Err(error);
+                    }
+                    rejected = rejected.saturating_add(1);
+                }
+            }
+        }
+        let mut report = AdmissionReport::metadata(ReceiveOutcome {
+            changed: applied,
+            metadata_changed,
+            incomplete: self.incomplete_reason(),
+            deferred: !self.core.pending.is_empty(),
+            rejected,
+            ..Default::default()
+        });
+        report.settled = settled;
+        Ok(report)
     }
     /// True only when governance covers this exact route with a checkpoint by
     /// the same author at a strictly greater sequence than `sequence`. Any other
@@ -1956,7 +1767,22 @@ impl StatePeer {
         } else {
             now
         };
-        let role = self.authorize_document(&source, &app_id, &envelope, authorization_time)?;
+        let Some(member) =
+            self.authorize_document(&source, &app_id, &record_id, &envelope, authorization_time)?
+        else {
+            return self.defer(
+                source,
+                NeighbourMsg::AppDocument {
+                    peer,
+                    app_id,
+                    cluster_id,
+                    record_id,
+                    envelope,
+                },
+                retained_replay,
+                MissingPrerequisite::AppSurface,
+            );
+        };
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -1975,12 +1801,12 @@ impl StatePeer {
             .get(&route)
             .cloned()
             .unwrap_or_else(|| Document {
-                doc: AutoCommit::new(),
+                doc: AutoCommit::new().into(),
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
-                sealed: Vec::new(),
+                sealed: backend::SealedLog::default(),
             });
         candidate
             .channel
@@ -1990,10 +1816,19 @@ impl StatePeer {
             .channel
             .artifact_apps
             .insert(envelope.artifact, app_id);
+        candidate
+            .channel
+            .artifact_records
+            .insert(envelope.artifact, route.record.clone());
+        candidate.channel.room.clone_from(&self.core.room);
         let mut validated_channel = candidate.channel.clone();
+        validated_channel.grants.clone_from(&member.policy.grants);
+        validated_channel.surfaces.clone_from(&self.surfaces);
+        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
+        let author = member.authority(&foreign_bound);
         match collab_types::validate_admitted_inbound_op(
             &envelope,
-            role,
+            &author,
             &mut validated_channel,
             authorization_time,
             if historical_validation {
@@ -2029,7 +1864,7 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
-        if envelope.op_class == OpClass::Compaction
+        if envelope.kind == OpKind::Compaction
             && !matches!(
                 payload,
                 collab_types::WholeDocumentPayload::Encrypted { .. }
@@ -2042,6 +1877,10 @@ impl StatePeer {
                 // Every check on the sealed envelope, its author's signature over
                 // the ciphertext included, passed above: only now is it opened,
                 // and the plaintext takes the normal admission path below.
+                // Keep the same signed ciphertext provenance as a keyless
+                // replica. Bounds are checked before opening, and this candidate
+                // is installed only after the plaintext is fully admitted.
+                Self::retain_sealed(&mut candidate, (*envelope).clone())?;
                 let plaintext = open(&envelope)?;
                 candidate.encryption_required = true;
                 DocumentMutation::decode(&plaintext).map_err(err)?
@@ -2087,6 +1926,12 @@ impl StatePeer {
             },
         };
         candidate.channel = validated_channel;
+        if let DocumentMutation::Incremental(bytes) = &mutation {
+            let changes = collab_types::parse_changes(bytes).map_err(err)?;
+            let shows = self.appearance_author(&source, authorization_time);
+            collab_types::check_appearances(&changes, shows.as_deref())
+                .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
         {
@@ -2220,7 +2065,7 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &candidate.doc,
+                &*candidate.doc,
             )
             .map_err(err)?;
         }
@@ -2261,24 +2106,7 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =
             DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
-        let history = if envelope.op_class == OpClass::Compaction {
-            sealed_compaction::supersede(
-                &candidate.sealed,
-                &candidate.channel.last_seq_per_author,
-                &envelope,
-            )?
-        } else {
-            let mut history = std::mem::take(&mut candidate.sealed);
-            history.push(envelope);
-            history
-        };
-        let held: usize = history.iter().map(|op| op.payload.len()).sum();
-        if history.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
-            return Err(
-                "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
-                    .into(),
-            );
-        }
+        Self::retain_sealed(&mut candidate, envelope)?;
         let primary = if self.core.admission_v5 {
             self.core.exact_admissions.insert(&admitted)?;
             InputDisposition::Accepted(admitted)
@@ -2287,7 +2115,6 @@ impl StatePeer {
         };
         candidate.channel = validated;
         candidate.encryption_required = true;
-        candidate.sealed = history;
         self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
@@ -2298,58 +2125,42 @@ impl StatePeer {
             },
         ))
     }
+    fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
+        let full = || -> AdmissionError {
+            "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
+                .into()
+        };
+        if envelope.kind == OpKind::Compaction {
+            let history: backend::SealedLog = sealed_compaction::supersede(
+                &candidate.sealed.to_vec(),
+                &candidate.channel.last_seq_per_author,
+                &envelope,
+            )?
+            .into();
+            if history.len() > MAX_SEALED_OPS || history.bytes() > MAX_SEALED_BYTES {
+                return Err(full());
+            }
+            candidate.sealed = history;
+        } else {
+            if candidate.sealed.len() >= MAX_SEALED_OPS
+                || candidate
+                    .sealed
+                    .bytes()
+                    .saturating_add(envelope.payload.len())
+                    > MAX_SEALED_BYTES
+            {
+                return Err(full());
+            }
+            candidate.sealed.push(envelope);
+        }
+        Ok(())
+    }
     /// Reinstall `route`'s stored sealed history, checking every write as it
     /// was admitted: sealed for this exact route, signed by its author, with
     /// exact admission evidence and within the record's watermark and bounds.
     /// A compaction is only ever first and covers none of the later writes.
     fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
-        let held: usize = ops.iter().map(|op| op.payload.len()).sum();
-        if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
-            return Err("sealed record history outside its bounds".into());
-        }
-        let document = self
-            .core
-            .documents
-            .get(route)
-            .ok_or("sealed history for a record this state does not hold")?;
-        if !document.encryption_required || !document.sealed.is_empty() {
-            return Err("sealed history for a record that is not encrypted".into());
-        }
-        for op in &ops {
-            collab_types::verify_op(op).map_err(err)?;
-            let payload = collab_types::validate_whole_document_payload_route(
-                &route.app,
-                &self.core.room,
-                &route.record,
-                op,
-            )
-            .map_err(err)?;
-            if !matches!(
-                payload,
-                collab_types::WholeDocumentPayload::Encrypted { .. }
-            ) {
-                return Err("sealed history holds a cleartext write".into());
-            }
-            let admitted =
-                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, op)
-                    .map_err(err)?;
-            if self.core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
-                return Err("sealed history lacks exact admission evidence".into());
-            }
-            if document
-                .channel
-                .last_seq_per_author
-                .get(&op.author)
-                .is_none_or(|floor| *floor < op.seq)
-            {
-                return Err("sealed history is ahead of the record's watermark".into());
-            }
-        }
-        sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
-        if let Some(document) = self.core.documents.get_mut(route) {
-            document.sealed = ops;
-        }
-        Ok(())
+        sealed_history::restore(&mut self.core, route, ops)
     }
     pub fn room_message(&self) -> NeighbourMsg {
         let changes = self
@@ -2511,10 +2322,11 @@ impl StatePeer {
             collab_types::document_artifact_id(app, &self.core.room, record),
             author,
             collab_types::document_attestation_id(app, &self.core.room, record),
-            OpClass::Splice,
+            OpKind::Change,
             now,
             seq,
-        );
+        )
+        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
@@ -2628,7 +2440,7 @@ impl StatePeer {
                 self.prepare_signed_mutation(
                     &route.app,
                     &route.record,
-                    DocumentMutation::Snapshot(entry.doc.clone().save()),
+                    DocumentMutation::Snapshot(entry.doc.saved()),
                     key,
                     now,
                 )
@@ -2927,7 +2739,7 @@ impl StatePeer {
                     || old_receipts.get(&route_key) != receipts.get(&route_key)
             });
             if changed {
-                dirty.push((route.clone(), document.doc.clone().save()));
+                dirty.push((route.clone(), document.doc.saved()));
             }
         }
         let snapshots = if dirty.is_empty() {
@@ -2987,19 +2799,10 @@ impl StatePeer {
         let Some(room) = self.core.room_doc.as_deref() else {
             return Ok(None);
         };
-        let receipts = crate::durability::entries(room)?;
-        let Some(receipt) = receipts.get(&crate::coverage::route_key(app, record)) else {
+        let Some(receipt) = self.durable_receipt(app, record)? else {
             return Ok(None);
         };
         let coverage = &receipt.coverage;
-        if coverage.room != self.core.room
-            || coverage.app != app
-            || coverage.record != record
-            || coverage.author != self.core.authority.device_public_key
-            || self.core.revocations.is_revoked(&coverage.author)
-        {
-            return Err("durable receipt authority/route mismatch".into());
-        }
         let Some(document) = self.core.documents.get(&Route {
             app: app.into(),
             record: record.into(),
@@ -3027,7 +2830,32 @@ impl StatePeer {
         {
             return Ok(None);
         }
-        Ok(Some((receipt.clone(), accepted)))
+        Ok(Some((receipt, accepted)))
+    }
+    /// The pinned governor's durable receipt for a route, as governance holds it.
+    fn durable_receipt(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<crate::durability::DurableReceipt>, String> {
+        let Some(room) = self.core.room_doc.as_deref() else {
+            return Ok(None);
+        };
+        let Some(receipt) =
+            crate::durability::entries(room)?.remove(&crate::coverage::route_key(app, record))
+        else {
+            return Ok(None);
+        };
+        let coverage = &receipt.coverage;
+        if coverage.room != self.core.room
+            || coverage.app != app
+            || coverage.record != record
+            || coverage.author != self.core.authority.device_public_key
+            || self.core.revocations.is_revoked(&coverage.author)
+        {
+            return Err("durable receipt authority/route mismatch".into());
+        }
+        Ok(Some(receipt))
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.
@@ -3080,7 +2908,7 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
-                bytes: entry.doc.clone().save(),
+                bytes: entry.doc.saved(),
                 watermarks: entry
                     .channel
                     .last_seq_per_author
@@ -3124,7 +2952,7 @@ impl StatePeer {
             .documents
             .iter()
             .filter(|(_, entry)| !entry.sealed.is_empty())
-            .map(|(route, entry)| (route.clone(), entry.sealed.clone()))
+            .map(|(route, entry)| (route.clone(), entry.sealed.to_vec()))
             .collect();
         if self.core.admission_v5 && !sealed.is_empty() {
             let exact = self.core.exact_admissions.encode().map_err(err)?;
@@ -3241,6 +3069,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -3278,12 +3108,14 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes)
+                        .map(CachedDocument::from)
+                        .map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
-                    sealed: Vec::new(),
+                    sealed: backend::SealedLog::default(),
                 },
             );
         }
@@ -3330,7 +3162,7 @@ impl StatePeer {
         Ok(peer)
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct GovernedIdentity {
     pub(crate) device_cert: DeviceCert,
     #[serde(default)]
@@ -3341,10 +3173,23 @@ pub(crate) struct GovernedIdentity {
     pub(crate) admissions: Vec<RedemptionReceipt>,
     #[serde(default)]
     pub(crate) workspace_delegations: Vec<crate::join::WorkspaceDelegation>,
+    /// Present when the device is a delegate of its person: an agent, or an
+    /// installed bot ([`delegates`]). Absent from every other identity's
+    /// bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delegate: Option<GovernedDelegateRow>,
 }
 impl GovernedIdentity {
     pub(crate) fn has_admission(&self) -> bool {
-        self.admission.is_some() || !self.admissions.is_empty()
+        // The governor admits a bot device itself, so its installation is
+        // its admission; an agent row is not, which keeps other people's
+        // agents out.
+        self.admission.is_some()
+            || !self.admissions.is_empty()
+            || self
+                .delegate
+                .as_ref()
+                .is_some_and(|row| row.installation.is_some())
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3361,83 +3206,34 @@ fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
         Role::Commenter => Some(crate::join::MemberRole::Commenter),
         Role::Editor => Some(crate::join::MemberRole::Editor),
-        Role::Owner | Role::Denied => None,
+        Role::Moderator => Some(crate::join::MemberRole::Moderator),
+        Role::Owner => None,
     }
 }
 
-fn member_verb(role: crate::join::MemberRole) -> Verb {
-    match role {
-        crate::join::MemberRole::Viewer => Verb::Read,
-        crate::join::MemberRole::Commenter => Verb::Comment,
-        crate::join::MemberRole::Editor => Verb::Write,
-    }
+/// The map at `key` of a governed room document.
+fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
+    doc.get(ROOT, key)
+        .map_err(err)?
+        .map(|(_, id)| id)
+        .ok_or_else(|| format!("governed {key} missing"))
 }
 
-fn member_capability_id(user_public_key: [u8; 32]) -> String {
-    format!("room-member-v1:{}", hex::encode(user_public_key))
-}
-
-pub(crate) fn put_member_capability(
+/// Record `user_public_key`'s role in the room's `members` map.
+pub(crate) fn put_member(
     doc: &mut AutoCommit,
-    capabilities: &automerge::ObjId,
+    members: &automerge::ObjId,
     user_public_key: [u8; 32],
-    role: crate::join::MemberRole,
+    role: Role,
 ) -> Result<(), String> {
-    put_member_verb(doc, capabilities, user_public_key, member_verb(role))
-}
-
-fn put_member_verb(
-    doc: &mut AutoCommit,
-    capabilities: &automerge::ObjId,
-    user_public_key: [u8; 32],
-    verb: Verb,
-) -> Result<(), String> {
-    let id = member_capability_id(user_public_key);
-    let person = hex::encode(user_public_key);
-    let shadowing = doc
-        .keys(capabilities)
-        .filter(|key| {
-            doc.get(capabilities, key)
-                .ok()
-                .flatten()
-                .is_some_and(|(value, _)| {
-                    let automerge::Value::Scalar(value) = value else {
-                        return false;
-                    };
-                    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        return false;
-                    };
-                    serde_json::from_slice::<CapOverride>(bytes).is_ok_and(|cap| {
-                        subject_is_person(&cap.subject, user_public_key, &person)
-                            && matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    for key in shadowing {
-        doc.delete(capabilities, key).map_err(err)?;
-    }
-    let cap = CapOverride::grant(
-        Subject::User(Ed25519PublicKey::from_bytes(user_public_key)),
-        Scope::Workspace,
-        verb,
-    )
-    .with_id(id.clone());
     doc.put(
-        capabilities,
-        id,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&cap).map_err(err)?),
+        members,
+        hex::encode(user_public_key),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).map_err(err)?),
     )
     .map_err(err)
 }
 
-fn subject_is_person(subject: &Subject, root: [u8; 32], canonical: &str) -> bool {
-    match subject {
-        Subject::User(key) => key.as_bytes() == &root,
-        Subject::Principal(Principal::Person(person)) => person == canonical,
-        _ => false,
-    }
-}
 /// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
 ///
 /// # Errors
@@ -3457,8 +3253,18 @@ pub fn seed_room(
         .map_err(err)?;
     let owner = Principal::person_from_key(Ed25519PublicKey::from_bytes(authority.user_public_key));
     doc.put(ROOT, "owner", owner.id()).map_err(err)?;
-    doc.put_object(ROOT, "capabilities", ObjType::Map)
+    doc.put_object(ROOT, "members", ObjType::Map).map_err(err)?;
+    let grants = doc.put_object(ROOT, "grants", ObjType::Map).map_err(err)?;
+    for grant in
+        tilo_action_policy::roles::room_role_grants(room, &Subject::Person(owner.id().to_owned()))
+    {
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
+        )
         .map_err(err)?;
+    }
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;
@@ -3475,6 +3281,7 @@ pub fn seed_room(
             admission: None,
             admissions: vec![],
             workspace_delegations: vec![],
+            delegate: None,
         };
         doc.put(
             &identities,
@@ -3583,9 +3390,12 @@ mod delivery_admission_resource_tests {
     }
     #[test]
     fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
-        let literal = include_bytes!("../tests/fixtures/delivery-admission/native-v5.postcard");
+        let literal = include_str!("../tests/fixtures/delivery-admission/native-v5.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect::<Vec<_>>();
         let (peer, _, _, _, now) = crate::admission_tests::seeded();
-        let value: DurableV5<'_> = postcard::from_bytes(literal).unwrap();
+        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
         let bomb = postcard::to_allocvec(&DurableV5 {
             version: 5,
             base: value.base,
@@ -3603,7 +3413,7 @@ mod delivery_admission_resource_tests {
             )
             .is_err()
         );
-        let value: DurableV5<'_> = postcard::from_bytes(literal).unwrap();
+        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
         let mut index = ExactAdmissions::decode(value.exact).unwrap();
         let first = index
             .iter()
@@ -3641,6 +3451,16 @@ mod delivery_admission_resource_tests {
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
 
+#[cfg(test)]
+#[path = "state/bot_members_tests.rs"]
+pub(crate) mod bot_members_tests;
+
+#[cfg(test)]
+#[path = "state/administrators_tests.rs"]
+mod administrators_tests;
+#[cfg(test)]
+#[path = "state/governance_cache_tests.rs"]
+mod governance_cache_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;

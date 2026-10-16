@@ -1,7 +1,7 @@
 name: Build / buildroot snapshots
 
-# The only CI boundary allowed to resolve kernel build dependencies, the Fedora
-# kernel SRPM and WPE build dependencies from Fedora. Each buildroot is built
+# The only CI boundary allowed to resolve kernel build dependencies and the
+# Fedora kernel SRPM from Fedora. Each buildroot is built
 # natively per architecture, signed with the release KMS key, and both digest
 # pins are proposed through a protected-main pull request. build-kernel.yml and
 # the OS image build FROM those refs and have no package repository to fall back
@@ -13,21 +13,14 @@ on:
       buildroot:
         description: Buildroots to refresh
         type: choice
-        options: [all, kernel, wpe, wpe-stage]
+        options: [all, kernel]
         default: all
   push:
     branches: [main]
     paths:
       - os/Containerfile.kernel-buildroot
-      - os/Containerfile.wpe-buildroot
-      - os/Containerfile.wpe
-      - os/dev/build-wpe.sh
-      - os/dev/wpe-stage-key.sh
-      - os/wpe-buildroot-snapshot.env
       - os/base-snapshot.env
-      - os/external-assets/github-assets.tsv
       - os/dev/assert-native-arch.sh
-      - os/dev/cache-github-assets.sh
       - os/dev/install-cached-cosign.sh
       - os/dev/configure-cosign-kms.sh
       - os/dev/require-cosign-authority.sh
@@ -52,7 +45,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
       kinds: ${{ steps.plan.outputs.kinds }}
       builds: ${{ steps.plan.outputs.builds }}
@@ -67,15 +60,13 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           case "$CHOICE" in
-            all) kinds='["kernel","wpe","wpe-stage"]' ;;
-            kernel|wpe|wpe-stage) kinds="[\"$CHOICE\"]" ;;
+            all|kernel) kinds='["kernel"]' ;;
             *) kinds="$(os/dev/buildroot-snapshot.sh changed "$BEFORE" "$GITHUB_SHA")" ;;
           esac
           echo "kinds=$kinds" >> "$GITHUB_OUTPUT"
-          # Compiling the WPE engine needs the large native runners.
-          builds="$(jq -c '[.[] as $kind | ($kind == "wpe-stage") as $large
-                             | {kind: $kind, arch: "x86_64", platform: "linux/amd64", runner: (if $large then "runner-large" else "runner" end)},
-                               {kind: $kind, arch: "aarch64", platform: "linux/arm64", runner: (if $large then "runner-large-arm64" else "runner-arm64" end)}]' <<< "$kinds")"
+          builds="$(jq -c '[.[] as $kind
+                             | {kind: $kind, arch: "x86_64", platform: "linux/amd64", runner: "runner"},
+                               {kind: $kind, arch: "aarch64", platform: "linux/arm64", runner: "runner-arm64"}]' <<< "$kinds")"
           echo "builds=$builds" >> "$GITHUB_OUTPUT"
 
   # Fail in seconds, before the native builds, when the signing authority is
@@ -83,7 +74,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.kinds != '[]'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -126,7 +117,6 @@ jobs:
       - uses: ./.forgejo/actions/setup-buildx
       - name: Resolve, build and publish the native buildroot
         id: buildroot
-        if: matrix.kind != 'wpe-stage'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
@@ -139,55 +129,8 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           tags: registry.tilo.so/tilo/tilo-${{ matrix.kind }}-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # The WPE engine, compiled once per change of its inputs on the pinned
-      # WPE buildroot, and labelled with those inputs.
-      - name: Materialize checksum-verified engine sources
-        if: matrix.kind == 'wpe-stage'
-        uses: ./.forgejo/actions/cache-github-assets
-        with:
-          key: github-assets-all-v1
-      - name: Resolve the engine inputs
-        if: matrix.kind == 'wpe-stage'
-        run: |
-          set -euo pipefail
-          case '${{ matrix.arch }}' in
-            x86_64) name=WPE_BUILDROOT_X86_64_REF ;;
-            aarch64) name=WPE_BUILDROOT_AARCH64_REF ;;
-          esac
-          echo "WPE_BUILDROOT_REF=$(sed -n "s/^$name=//p" os/wpe-buildroot-snapshot.env)" >> "$GITHUB_ENV"
-          echo "TILO_WPE_KEY=$(os/dev/wpe-stage-key.sh '${{ matrix.arch }}')" >> "$GITHUB_ENV"
-          # WebKit compile jobs peak near 3 GiB; at 2 GiB per job both
-          # engine builds lost their Docker daemon mid-compile (run 47120).
-          # The builder gets the slot's memory less 4 GiB, and at 3 GiB per job
-          # of all of it the aarch64 build still ran out (run 49373): 3.5 GiB
-          # per job of the builder's share.
-          jobs=$(( ($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 - 4096) / 3584 ))
-          (( jobs > $(nproc) )) && jobs=$(nproc)
-          (( jobs < 1 )) && jobs=1
-          echo "TILO_WPE_JOBS=$jobs" >> "$GITHUB_ENV"
-      - name: Compile and publish the native WPE engine stage
-        id: wpe-stage
-        if: matrix.kind == 'wpe-stage'
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: .
-          file: os/Containerfile.wpe
-          target: wpe-stage
-          build-contexts: |
-            github-assets=os/external-assets/cache
-          platforms: ${{ matrix.platform }}
-          push: true
-          provenance: false
-          no-cache: true
-          build-args: |
-            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            WPE_BUILD_JOBS=${{ env.TILO_WPE_JOBS }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.tilo.wpe.inputs=${{ env.TILO_WPE_KEY }}
-          tags: registry.tilo.so/tilo/tilo-wpe-stage:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Audit the immutable buildroot
-        run: os/dev/buildroot-snapshot.sh audit ${{ matrix.kind }} ${{ matrix.arch }} "${{ steps.buildroot.outputs.digest || steps.wpe-stage.outputs.digest }}"
+        run: os/dev/buildroot-snapshot.sh audit ${{ matrix.kind }} ${{ matrix.arch }} "${{ steps.buildroot.outputs.digest }}"
       - name: Sign with the non-exportable release key
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -197,7 +140,7 @@ jobs:
           cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_BUILDROOT_REF"
       - name: Verify the signature and record the immutable reference
         run: os/dev/buildroot-snapshot.sh record ${{ matrix.kind }} ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
@@ -227,11 +170,11 @@ jobs:
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: x86_64
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-x86_64
           path: refs/x86_64
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-aarch64
           path: refs/aarch64

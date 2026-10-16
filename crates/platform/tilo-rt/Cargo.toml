@@ -16,6 +16,9 @@ path = "src/lib.rs"
 # Kept to tokio and rayon: every app, daemon and CLI links this, so it must not
 # pull a UI stack or a network stack into a process that has neither.
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
+tilo-wake = { version = "0.1.0", path = "../tilo-wake" }
 rayon = "1.12.0"
 thiserror.workspace = true
 # Background deadlines are measured on the platform clock.

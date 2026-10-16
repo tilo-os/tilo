@@ -1,25 +1,76 @@
-use super::*;
+use super::{Arc, Mutex, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id};
 use crate::{
     network::invite::enrollment_driver,
     shell::{
-        native_workspace_owner::NativeWorkspaceOwner, peer_sync_overlay::PeerSyncResponse,
-        state::WorkspaceId,
+        native_workspace_owner::NativeWorkspaceOwner,
+        peer_sync_overlay::PeerSyncResponse,
+        state::{WorkspaceId, WorkspaceTreeHandle},
     },
 };
+use std::{
+    sync::MutexGuard,
+    time::{Duration, Instant},
+};
+
+/// A failed background open of the native owner is tried again no sooner
+/// than this: a second writer of the state file can hold it for long.
+const REOPEN_AFTER: Duration = Duration::from_secs(1);
+
 #[derive(Default)]
 pub(super) struct State {
     owner: Mutex<Option<NativeWorkspaceOwner>>,
-    attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
+    /// The open [`ShellNetwork::opened_native_owner`] runs off the frame loop.
+    background: Arc<Mutex<Background>>,
+    pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
 }
+
+#[derive(Default)]
+struct Background {
+    running: bool,
+    /// When the last background open failed.
+    failed_at: Option<Instant>,
+    /// The owner the last background open produced, until it is retained.
+    opened: Option<NativeWorkspaceOwner>,
+}
+
+type Retained<'a> = MutexGuard<'a, Option<NativeWorkspaceOwner>>;
+
+/// Where the native owner stands, for a caller that must not wait for it.
+pub(crate) enum NativeOwnerStatus {
+    /// Open and retained.
+    Open(NativeWorkspaceOwner),
+    /// Being opened off the caller's thread; the loop is woken once it is.
+    Opening,
+    /// Neither open nor opening: the tree has no state file, or the last
+    /// open failed and is not tried again yet.
+    Unavailable,
+}
+
+impl NativeOwnerStatus {
+    pub(crate) fn open(self) -> Option<NativeWorkspaceOwner> {
+        match self {
+            Self::Open(owner) => Some(owner),
+            Self::Opening | Self::Unavailable => None,
+        }
+    }
+}
+
 impl ShellNetwork {
-    pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
-        let tree = self
+    fn native_tree(&self) -> Result<WorkspaceTreeHandle, String> {
+        Ok(self
             .replica
             .lock()
             .map_err(|_| "native replica unavailable")?
             .tree
-            .clone();
-        let mut retained = self
+            .clone())
+    }
+
+    /// The native owner, opened here if it is not yet: binding its writer
+    /// and publishing its reopened generation, which can wait for the disk.
+    /// The frame loop asks [`Self::native_owner_status`] instead.
+    pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
+        let tree = self.native_tree()?;
+        let retained = self
             .native_enrollment
             .owner
             .lock()
@@ -27,10 +78,123 @@ impl ShellNetwork {
         if let Some(owner) = retained.as_ref() {
             return Ok(owner.clone());
         }
-        let rooms = tree.read().rooms();
-        let owner = crate::shell::native_workspace_owner::open(tree)?;
+        // An owner the background open finished is this writer's: opening
+        // again would only look it up.
+        let finished = self
+            .native_enrollment
+            .background
+            .lock()
+            .ok()
+            .and_then(|mut background| background.opened.take());
+        let owner = match finished {
+            Some(owner) => owner,
+            None => crate::shell::native_workspace_owner::open(tree.clone())?,
+        };
+        Ok(self.retain_native_owner(retained, &tree, owner))
+    }
+
+    /// The native owner if it is already open, for the frame loop, which
+    /// must never wait for the state file ([`Self::native_owner_status`]).
+    pub(crate) fn opened_native_owner(&self) -> Option<NativeWorkspaceOwner> {
+        self.native_owner_status().open()
+    }
+
+    /// Where the native owner stands, never waiting for the state file:
+    /// opening an owner takes its writer's lease, syncs its directory chain
+    /// on first use and publishes it, seconds on a loaded disk. An owner
+    /// already attached to the tree's writer is retained here. When none
+    /// is, one is opened on a thread of its own (again at most every
+    /// [`REOPEN_AFTER`] after a failure), the loop is woken once that open
+    /// ends, and this answers [`NativeOwnerStatus::Opening`].
+    pub(crate) fn native_owner_status(&self) -> NativeOwnerStatus {
+        // The replica before the owner, in the order `native_owner` takes them.
+        let Ok(tree) = self.native_tree() else {
+            return NativeOwnerStatus::Unavailable;
+        };
+        // Held only by a caller opening the owner itself.
+        let retained = match self.native_enrollment.owner.try_lock() {
+            Ok(retained) => retained,
+            Err(std::sync::TryLockError::WouldBlock) => return NativeOwnerStatus::Opening,
+            Err(std::sync::TryLockError::Poisoned(_)) => return NativeOwnerStatus::Unavailable,
+        };
+        if let Some(owner) = retained.as_ref() {
+            return NativeOwnerStatus::Open(owner.clone());
+        }
+        let Ok(mut background) = self.native_enrollment.background.lock() else {
+            return NativeOwnerStatus::Unavailable;
+        };
+        let opened = background
+            .opened
+            .take()
+            .or_else(|| crate::shell::native_workspace_owner::attached(&tree));
+        if let Some(owner) = opened {
+            drop(background);
+            return NativeOwnerStatus::Open(self.retain_native_owner(retained, &tree, owner));
+        }
+        drop(retained);
+        if background.running {
+            return NativeOwnerStatus::Opening;
+        }
+        // Without a state file no open can succeed: say so now, rather than
+        // once a thread found out.
+        if tree.read().persist_path.is_none()
+            || background
+                .failed_at
+                .is_some_and(|failed| failed.elapsed() < REOPEN_AFTER)
+        {
+            return NativeOwnerStatus::Unavailable;
+        }
+        background.running = true;
+        drop(background);
+        let slot = Arc::clone(&self.native_enrollment.background);
+        let finished = Arc::clone(&slot);
+        let wake = Arc::clone(&self.event_wake);
+        let spawned = std::thread::Builder::new()
+            .name("native-owner-open".into())
+            .spawn(move || {
+                let opened = crate::shell::native_workspace_owner::open(tree);
+                let Ok(mut background) = finished.lock() else {
+                    return;
+                };
+                background.running = false;
+                match opened {
+                    Ok(owner) => {
+                        background.opened = Some(owner);
+                        background.failed_at = None;
+                    }
+                    Err(error) => {
+                        background.failed_at = Some(Instant::now());
+                        tracing::debug!(%error, "native owner unavailable");
+                    }
+                }
+                drop(background);
+                // Either way the loop has news: inbound events it held back
+                // for the open go on now, with the owner or without one.
+                if let Some(wake) = wake.get() {
+                    wake();
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "cannot start opening the native owner");
+            if let Ok(mut background) = slot.lock() {
+                background.running = false;
+                background.failed_at = Some(Instant::now());
+            }
+            return NativeOwnerStatus::Unavailable;
+        }
+        NativeOwnerStatus::Opening
+    }
+
+    /// Keep `owner` for every later lookup, and connect the rooms it holds.
+    fn retain_native_owner(
+        &self,
+        mut retained: Retained<'_>,
+        tree: &WorkspaceTreeHandle,
+        owner: NativeWorkspaceOwner,
+    ) -> NativeWorkspaceOwner {
         *retained = Some(owner.clone());
         drop(retained);
+        let rooms = tree.read().rooms();
         for room in rooms {
             if owner.with_current(room, |_| Ok(())).is_ok()
                 && let Err(error) = self.connect_native_room(owner.clone(), room)
@@ -38,7 +202,7 @@ impl ShellNetwork {
                 tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
         }
-        Ok(owner)
+        owner
     }
     pub(crate) fn runtime_handle(&self) -> Result<tokio::runtime::Handle, String> {
         self.runtime

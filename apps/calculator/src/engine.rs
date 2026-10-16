@@ -140,6 +140,15 @@ fn take_while_into(out: &mut String, chars: &mut Peekable<Chars<'_>>, keep: impl
 // Parser (precedence climbing)
 // ---------------------------------------------------------------------------
 
+/// Reserved operands cannot be function names: `pi(2)` and `x(x+1)` are
+/// implicit products, while an identifier such as `sin` introduces a call.
+fn is_value_name(name: &str) -> bool {
+    matches!(
+        name,
+        "pi" | "tau" | "e" | "x" | "y" | "ans" | "m" | "mem" | "inf" | "nan"
+    )
+}
+
 /// The token stream still to be parsed. Consuming from the front of a slice
 /// (rather than advancing an index into a `Vec`) keeps "how much is left" and
 /// "what comes next" the same question, so neither can run past the end.
@@ -213,7 +222,7 @@ impl Parser<'_> {
                 }
             }
             Tok::Ident(name) => {
-                if matches!(self.peek(), Some(Tok::LParen)) {
+                if matches!(self.peek(), Some(Tok::LParen)) && !is_value_name(&name) {
                     self.next(); // consume '('
                     let mut args = Vec::new();
                     if !matches!(self.peek(), Some(Tok::RParen)) {
@@ -358,7 +367,14 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
         },
         "root" => {
             let (degree, radicand) = pair("root(n, x)")?;
-            radicand.powf(1.0 / degree)
+            // Fractional powf rejects a negative base even when an odd
+            // integer root has a real solution. Evaluate its magnitude first.
+            if radicand < 0.0 && degree.is_finite() && degree.fract() == 0.0 && degree % 2.0 != 0.0
+            {
+                -(-radicand).powf(1.0 / degree)
+            } else {
+                radicand.powf(1.0 / degree)
+            }
         }
         "pow" => {
             let (base, exp) = pair("pow(a, b)")?;
@@ -459,11 +475,8 @@ pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String
 fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
     match e {
         Expr::Num(_) => Ok(()),
-        Expr::Var(name) => match name.as_str() {
-            "pi" | "tau" | "e" | "ans" | "m" | "mem" | "inf" | "nan" | "x" => Ok(()),
-            "y" if two_var => Ok(()),
-            other => Err(format!("unknown name `{other}`")),
-        },
+        Expr::Var(name) if is_value_name(name) && (two_var || name != "y") => Ok(()),
+        Expr::Var(name) => Err(format!("unknown name `{name}`")),
         Expr::Neg(a) | Expr::Fact(a) | Expr::Percent(a) => validate(a, two_var),
         Expr::Bin(_, a, b) => {
             validate(a, two_var)?;
@@ -510,7 +523,9 @@ pub fn gamma(x: f64) -> f64 {
         for (i, coef) in (1u32..).zip(tail) {
             a += coef / (x + f64::from(i));
         }
-        (TAU).sqrt() * t.powf(x + 0.5) * (-t).exp() * a
+        // Combine the power and exponential in log space: the power alone
+        // overflows well before gamma's result exceeds f64's finite range.
+        ((x + 0.5) * t.ln() - t + (TAU.sqrt() * a).ln()).exp()
     }
 }
 
@@ -580,7 +595,42 @@ pub fn prettify(expr: &str) -> String {
     s = s.replace("pi", "π");
     s = s.replace('*', "×");
     s = s.replace('/', "÷");
-    s
+    superscript_powers(&s)
+}
+
+/// `x^2` → `x²`: a `^` followed by a plain integer exponent (optionally
+/// negative) becomes superscript digits. A power with a bracketed or symbolic
+/// exponent keeps its `^`, since it has no single-glyph form.
+fn superscript_powers(expr: &str) -> String {
+    const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    let mut out = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '^' {
+            out.push(c);
+            continue;
+        }
+        let mut exponent = String::new();
+        if chars.peek() == Some(&'-') {
+            exponent.push('⁻');
+            chars.next();
+        }
+        let mut digits = 0;
+        while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
+            exponent.extend(DIGITS.get(d as usize));
+            digits += 1;
+            chars.next();
+        }
+        if digits == 0 {
+            out.push('^');
+            if exponent.starts_with('⁻') {
+                out.push('-');
+            }
+        } else {
+            out.push_str(&exponent);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -610,10 +660,6 @@ mod tests {
         Near(f64),
     }
 
-    #[allow(
-        clippy::float_cmp,
-        reason = "Exact cases are small integers, exact in f64 — an approximate\n                  compare would stop proving what they prove"
-    )]
     fn check(case: &str, got: f64, want: f64, cmp: Cmp) {
         match cmp {
             Cmp::Exact => assert_eq!(got, want, "case {case}"),
@@ -707,6 +753,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn values_followed_by_parentheses_use_implicit_multiplication() {
+        let ctx = Ctx {
+            x: 2.0,
+            y: 3.0,
+            ans: 4.0,
+            mem: 5.0,
+            ..Default::default()
+        };
+        for (source, expected, cmp) in [
+            ("pi(2)", 2.0 * PI, Cmp::Near(1e-12)),
+            ("π(2)", 2.0 * PI, Cmp::Near(1e-12)),
+            ("tau(2)", 2.0 * TAU, Cmp::Near(1e-12)),
+            ("e(2)", 2.0 * E, Cmp::Near(1e-12)),
+            ("x(x+1)", 6.0, Cmp::Exact),
+            ("y(2)", 6.0, Cmp::Exact),
+            ("ans(2)", 8.0, Cmp::Exact),
+            ("m(2)", 10.0, Cmp::Exact),
+            ("mem(2)", 10.0, Cmp::Exact),
+        ] {
+            check(source, evaluate(source, &ctx).unwrap(), expected, cmp);
+        }
+        assert!(ev("inf(2)").is_infinite());
+        assert!(ev("nan(2)").is_nan());
+        let curve = compile("x(x+1)", false, false).unwrap();
+        check("parenthetic curve", curve.eval1(2.0), 6.0, Cmp::Exact);
+        let surface = compile("x(y+1)", false, true).unwrap();
+        check(
+            "parenthetic surface",
+            surface.eval2(2.0, 3.0),
+            8.0,
+            Cmp::Exact,
+        );
+        assert!(compile("y(x+1)", false, false).is_err());
+    }
+
+    #[test]
+    fn negative_radicands_have_real_odd_integer_roots() {
+        for (source, expected) in [
+            ("root(3,-8)", -2.0),
+            ("root(5,-32)", -2.0),
+            ("root(-3,-8)", -0.5),
+            ("root(1,-8)", -8.0),
+        ] {
+            check(source, ev(source), expected, Cmp::Near(1e-12));
+        }
+        for source in ["root(2,-8)", "root(2.5,-8)"] {
+            assert!(ev(source).is_nan(), "{source} has no real root");
+        }
+        let curve = compile("root(3,x)", false, false).unwrap();
+        check("odd-root graph", curve.eval1(-8.0), -2.0, Cmp::Near(1e-12));
+        let surface = compile("root(3,x+y)", false, true).unwrap();
+        check(
+            "odd-root surface",
+            surface.eval2(-3.0, -5.0),
+            -2.0,
+            Cmp::Near(1e-12),
+        );
+    }
+
+    #[test]
+    fn gamma_preserves_representable_large_results() {
+        for n in [140u32, 150, 170, 171] {
+            let source = format!("gamma({n})");
+            let expected = factorial(f64::from(n - 1));
+            let got = ev(&source);
+            assert!(got.is_finite(), "{source} overflowed: {got}");
+            assert!(
+                (got / expected - 1.0).abs() < 1e-12,
+                "{source}: got {got}, expected {expected}",
+            );
+        }
+        // Half-integer recurrence is independent of the Lanczos formula and
+        // also exercises the generalized factorial path outside integer inputs.
+        let expected = (0..150u32).fold(PI.sqrt(), |value, n| value * (f64::from(n) + 0.5));
+        for source in ["gamma(150.5)", "149.5!", "fact(149.5)"] {
+            let got = ev(source);
+            assert!(
+                (got / expected - 1.0).abs() < 1e-12,
+                "{source}: got {got}, expected {expected}",
+            );
+        }
+        check("gamma(0.5)", ev("gamma(0.5)"), PI.sqrt(), Cmp::Near(1e-12));
+        check(
+            "gamma(-0.5)",
+            ev("gamma(-0.5)"),
+            -2.0 * PI.sqrt(),
+            Cmp::Near(1e-12),
+        );
+        let curve = compile("gamma(x)", false, false).unwrap();
+        assert!(curve.eval1(150.0).is_finite());
+        assert!(ev("gamma(172)").is_infinite());
+        assert!(ev("171!").is_infinite());
+    }
+
     /// What the result line shows a person: error messages and rejections for
     /// malformed input, and the display formatting of numbers.
     #[test]
@@ -739,5 +880,29 @@ mod tests {
         ] {
             assert_eq!(format_number(x), want, "formatting case {x}");
         }
+    }
+}
+
+#[cfg(test)]
+mod prettify_tests {
+    use super::prettify;
+
+    /// A power with a plain integer exponent reads as a superscript; one with
+    /// a bracketed or symbolic exponent keeps its caret.
+    #[test]
+    fn integer_powers_become_superscripts() {
+        assert_eq!(prettify("2^10"), "2¹⁰");
+        assert_eq!(prettify("x^2+1"), "x²+1");
+        assert_eq!(prettify("2^-3"), "2⁻³");
+        assert_eq!(prettify("2^(1/2)"), "2^(1÷2)");
+        assert_eq!(prettify("2^x"), "2^x");
+        assert_eq!(prettify("5^"), "5^");
+        assert_eq!(prettify("2^-x"), "2^-x");
+    }
+
+    #[test]
+    fn operators_and_functions_take_their_pretty_forms() {
+        assert_eq!(prettify("12*(4+3)"), "12×(4+3)");
+        assert_eq!(prettify("sqrt(2)/pi"), "√(2)÷π");
     }
 }

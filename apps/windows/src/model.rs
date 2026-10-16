@@ -1,7 +1,9 @@
 //! Compatibility vocabulary shared by the UI and future `tilo-compatd` client.
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// How an application is run.
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Route {
     Wine,
     Proton,
@@ -35,9 +37,11 @@ impl Route {
     pub const fn security_summary(self) -> &'static str {
         match self {
             Self::Wine | Self::Proton => {
-                "Private capsule; only granted files and devices are visible."
+                "It runs in a private capsule that sees only the files and devices you allow."
             }
-            Self::Vm => "Single managed VM; files arrive through its exchange portal.",
+            Self::Vm => {
+                "It shares Windows with your other Windows apps. Files reach it only when you open them with it."
+            }
         }
     }
 }
@@ -53,9 +57,9 @@ impl Confidence {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Verified => "Verified",
-            Self::Community => "Community recipe",
+            Self::Community => "Community tested",
             Self::Heuristic => "Best match",
-            Self::Fallback => "Fallback",
+            Self::Fallback => "Untested",
         }
     }
 }
@@ -78,8 +82,8 @@ impl AppStatus {
             Self::NeedsAttention => "Needs attention",
             Self::Installing => "Installing",
             Self::Uninstalling => "Uninstalling",
-            Self::Failed => "Setup failed",
-            Self::Uninstalled => "Uninstalled · data retained",
+            Self::Failed => "Setup didn't finish",
+            Self::Uninstalled => "Uninstalled, data kept",
         }
     }
 }
@@ -104,7 +108,6 @@ pub struct WindowsApp {
     pub recommended_route: Route,
     pub runner: String,
     pub capsule: String,
-    pub prefix: String,
     pub catalogue_source: String,
     pub confidence: Confidence,
     pub reason: String,
@@ -139,19 +142,6 @@ pub struct WindowsApp {
 impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
-    }
-    pub fn access_summary(&self) -> String {
-        let enabled: Vec<&str> = self
-            .grants
-            .iter()
-            .filter(|grant| grant.enabled)
-            .map(|grant| grant.label.as_str())
-            .collect();
-        if enabled.is_empty() {
-            "No host access".to_string()
-        } else {
-            enabled.join(", ")
-        }
     }
 }
 

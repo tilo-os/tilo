@@ -13,12 +13,14 @@ path = "src/lib.rs"
 [dependencies]
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
 collab-types = { path = "../../collab/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }
 launcher = { path = "../../packaging/launcher" }
 wire-frame = { path = "../../system/wire-frame" }
 hex.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

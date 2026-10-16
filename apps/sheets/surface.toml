@@ -1,0 +1,213 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "sheets.workbook"
+label = "Workbook"
+version = 1
+fields = [
+  { path = "sheets", type = "Collection<Sheet>", stored = "collection" },
+  { path = "sheets.*.name", type = "Atom", label = true },
+  { path = "sheets.*.source", type = "Option<Atom>", readonly = true },
+  { path = "sheets.*.color", type = "Option<u32>" },
+  { path = "sheets.*.cells", type = "Grid<Cell>" },
+  { path = "sheets.*.charts", type = "Collection<Chart>", stored = "collection" },
+  { path = "sheets.*.charts.*.title", type = "Atom", label = true },
+  { path = "sheets.*.charts.*.kind", type = "ChartKind" },
+  { path = "sheets.*.charts.*.area", type = "Area", stored = "record" },
+  { path = "sheets.*.charts.*.area.top", type = "Id" },
+  { path = "sheets.*.charts.*.area.left", type = "Id" },
+  { path = "sheets.*.charts.*.area.bottom", type = "Id" },
+  { path = "sheets.*.charts.*.area.right", type = "Id" },
+  { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
+  { path = "comments.*.sheet", type = "Id", readonly = true },
+  { path = "comments.*.area", type = "Area", readonly = true, stored = "record" },
+  { path = "comments.*.area.top", type = "Id" },
+  { path = "comments.*.area.left", type = "Id" },
+  { path = "comments.*.area.bottom", type = "Id" },
+  { path = "comments.*.area.right", type = "Id" },
+  { path = "comments.*.author", type = "Atom", readonly = true },
+  { path = "comments.*.body", type = "String" },
+  { path = "comments.*.resolved", type = "bool" },
+  { path = "comments.*.replies", type = "Collection<Reply>", stored = "collection" },
+  { path = "comments.*.replies.*.author", type = "Atom", readonly = true },
+  { path = "comments.*.replies.*.body", type = "String" },
+  { path = "settings", type = "DocSettings", stored = "record" },
+  { path = "settings.currency", type = "Option<Currency>" },
+  { path = "settings.date_format", type = "Option<DateStyle>" },
+  { path = "settings.time_format", type = "Option<TimeStyle>" },
+]
+
+[[resources.verbs]]
+id = "new-sheet"
+kind = "undoable"
+params = [
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "after", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "duplicate-sheet"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-sheet"
+destructive = true
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-cells"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "string" } },
+  { name = "rows", required = true, schema = { type = "array", items = { type = "array", items = {} } } },
+]
+
+[[resources.verbs]]
+id = "write-cells"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "cells", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { bold = { type = ["boolean", "null"] }, cell = { type = "string" }, format = { type = ["string", "null"] }, input = { type = ["string", "null"] } }, required = ["cell"] } } },
+]
+
+[[resources.verbs]]
+id = "format-cells"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "range", required = true, schema = { type = "string" } },
+  { name = "format", required = false, schema = { type = ["string", "null"] } },
+  { name = "bold", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "sort-rows"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "range", required = true, schema = { type = "string" } },
+  { name = "by", required = true, schema = { type = "string" } },
+  { name = "descending", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "insert-rows"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "count", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "delete-rows"
+destructive = true
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "rows", required = true, schema = { type = "array", items = { type = "integer", maximum = 4294967295, minimum = 0 } } },
+]
+
+[[resources.verbs]]
+id = "insert-columns"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "string" } },
+  { name = "count", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "delete-columns"
+destructive = true
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "columns", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "import-sheets"
+kind = "undoable"
+params = [
+  { name = "sheets", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, cells = { type = "array", items = { type = "object", additionalProperties = false, properties = { bold = { type = ["boolean", "null"] }, cell = { type = "string" }, format = { type = ["string", "null"] }, input = { type = ["string", "null"] } }, required = ["cell"] } } }, required = ["name", "cells"] } } },
+  { name = "source", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "add-chart"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "range", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { type = "string", enum = ["column", "line"] } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "edit-chart"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "chart", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["column", "line"] }] } },
+  { name = "range", required = false, schema = { type = ["string", "null"], pattern = "^[A-Za-z]+[0-9]+(:[A-Za-z]+[0-9]+)?$" } },
+]
+
+[[resources.verbs]]
+id = "delete-chart"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "chart", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "range", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reply"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "edit-comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-comment"
+destructive = true
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+]
+

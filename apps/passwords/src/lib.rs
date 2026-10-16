@@ -5,19 +5,37 @@
 //! is for organizing, reviewing and revoking them.
 
 use accounts::{
-    CredentialGrant, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem, SecretStore,
+    CredentialGrant, CredentialOwner, SecretCustody, SecretId, SecretItem, SecretStore,
 };
 use std::collections::HashMap;
-use ui::widget::Widget;
 
-mod actions;
-mod showcase;
+pub mod actions;
+mod demo;
+mod list_pane;
+mod pages;
+pub mod resource;
+mod search;
 mod transfer;
-pub use showcase::{PasswordsSurface, ShowcaseMode};
+mod vault;
+mod window;
+pub use crate::vault::Screen;
+pub use actions::PasswordsEffect;
+pub use resource::{Passwords, PasswordsShell};
+pub use window::PasswordsSurface;
 
+/// The items of this device's vault, or none for a window that must not
+/// open it (a past version: the vault keeps no history).
 pub struct PasswordsModel {
-    store: SecretStore,
+    store: Option<Vault>,
 }
+enum Vault {
+    Local(SecretStore),
+    Shared(CredentialOwner),
+}
+
+const CLOSED: &str = "the vault is not open in this window";
+
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -27,95 +45,158 @@ pub struct VaultHealth {
     pub older_than_year: usize,
 }
 
-pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
-    let candidates: Vec<&SecretItem> = items
-        .iter()
-        .filter(|item| !item.password.is_empty())
-        .collect();
+/// Whether an item holds a password a person chose: a login or a Wi-Fi
+/// key, not an issued API key or licence code.
+fn is_password(item: &SecretItem) -> bool {
+    matches!(
+        item.kind,
+        accounts::SecretItemKind::Login | accounts::SecretItemKind::Wifi
+    ) && !item.password.is_empty()
+}
+
+/// Per-item facts of the password review: which passwords are shared, weak
+/// or old. Only facts the local vault can prove; no breach claims.
+pub(crate) fn findings(items: &[SecretItem]) -> Vec<vault::Finding> {
+    let candidates: Vec<&SecretItem> = items.iter().filter(|item| is_password(item)).collect();
     let mut frequencies = HashMap::<&str, usize>::new();
     for password in candidates.iter().map(|item| item.password.as_str()) {
         let count = frequencies.entry(password).or_default();
         *count = count.saturating_add(1);
     }
-    let reused = candidates
-        .iter()
-        .filter(|item| {
-            frequencies
-                .get(item.password.as_str())
-                .copied()
-                .unwrap_or(0)
-                > 1
-        })
-        .count();
-    let weak = candidates
-        .iter()
-        .filter(|item| {
-            let password = item.password.as_str();
-            password.len() < 12
-                || !password.chars().any(char::is_uppercase)
-                || !password.chars().any(char::is_lowercase)
-                || !password.chars().any(|character| character.is_ascii_digit())
-        })
-        .count();
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
+    let now = vault::now_unix();
     let one_year = 365 * 24 * 60 * 60;
+    candidates
+        .iter()
+        .map(|item| {
+            let password = item.password.as_str();
+            vault::Finding {
+                id: item.id.clone(),
+                reused: frequencies.get(password).copied().unwrap_or(0) > 1,
+                weak: password.len() < 12
+                    || !password.chars().any(char::is_uppercase)
+                    || !password.chars().any(char::is_lowercase)
+                    || !password.chars().any(|character| character.is_ascii_digit()),
+                old: now.saturating_sub(item.updated_unix) > one_year,
+            }
+        })
+        .filter(|finding| finding.reused || finding.weak || finding.old)
+        .collect()
+}
+
+pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
+    let found = findings(items);
     VaultHealth {
-        total: candidates.len(),
-        reused,
-        weak,
-        older_than_year: candidates
-            .iter()
-            .filter(|item| now.saturating_sub(item.updated_unix) > one_year)
-            .count(),
+        total: items.iter().filter(|item| is_password(item)).count(),
+        reused: found.iter().filter(|finding| finding.reused).count(),
+        weak: found.iter().filter(|finding| finding.weak).count(),
+        older_than_year: found.iter().filter(|finding| finding.old).count(),
     }
 }
 
 impl PasswordsModel {
     pub fn open() -> Self {
         Self {
-            store: SecretStore::open(),
+            store: Some(Vault::Local(SecretStore::open())),
         }
     }
     pub fn open_in(root: &std::path::Path) -> Self {
         Self {
-            store: SecretStore::open_in(root),
+            store: Some(Vault::Local(SecretStore::open_in(root))),
         }
     }
-    pub fn recovery_error(&self) -> Option<&str> {
-        self.store.recovery_error()
+    /// The matching native host's original vault and current permission broker.
+    pub fn shared(owner: CredentialOwner) -> Self {
+        Self {
+            store: Some(Vault::Shared(owner)),
+        }
+    }
+    /// A window that shows no items and opens nothing.
+    pub fn closed() -> Self {
+        Self { store: None }
+    }
+    fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, String> {
+        match self.store.as_ref().ok_or_else(|| CLOSED.to_owned())? {
+            Vault::Local(store) => Ok(read(store)),
+            Vault::Shared(owner) => owner
+                .read(read)
+                .map_err(|error| format!("could not access vault: {error:?}")),
+        }
+    }
+    fn edit<T>(&mut self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, String> {
+        match self.store.as_mut().ok_or_else(|| CLOSED.to_owned())? {
+            Vault::Local(store) => Ok(edit(store)),
+            Vault::Shared(owner) => owner
+                .edit(edit)
+                .map_err(|error| format!("could not access vault: {error:?}")),
+        }
+    }
+    pub fn recovery_error(&self) -> Option<String> {
+        self.store.as_ref()?;
+        self.read(|store| store.recovery_error().map(str::to_owned))
+            .unwrap_or_else(Some)
     }
     pub fn items(&self) -> Vec<SecretItem> {
-        self.store.list()
+        self.read(SecretStore::list).unwrap_or_default()
     }
-    /// Durable application access shown in the vault's management UI.
+    /// Current application access shown in the vault's management UI.
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
-        self.store.grants()
+        match &self.store {
+            Some(Vault::Shared(owner)) => owner.grants().unwrap_or_default(),
+            _ => self.read(SecretStore::grants).unwrap_or_default(),
+        }
+    }
+    /// Private review metadata from the matching original owner only.
+    pub fn app_proposals(&self) -> Vec<accounts::CredentialProposal> {
+        match &self.store {
+            Some(Vault::Shared(owner)) => owner.proposals().unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+    pub fn proposal_wake_after(&self) -> Option<std::time::Duration> {
+        match &self.store {
+            Some(Vault::Shared(owner)) => owner.proposal_wake_after(),
+            _ => None,
+        }
+    }
+    /// # Errors
+    /// Refuses missing original custody, stale proposals or retired admission.
+    pub fn decide_app_proposal(
+        &self,
+        id: &str,
+        decision: accounts::AccessDecision,
+    ) -> Result<(), String> {
+        let Some(Vault::Shared(owner)) = &self.store else {
+            return Err(CATALOG.t("passwords-request-expired"));
+        };
+        owner
+            .decide_proposal(id, decision)
+            .map(drop)
+            .map_err(|_| CATALOG.t("passwords-request-expired"))
+    }
+    /// The host's data-free invalidation counter, without blocking native I/O.
+    pub fn revision(&self) -> Option<u64> {
+        match &self.store {
+            Some(Vault::Shared(owner)) => owner.revision(),
+            _ => None,
+        }
     }
     /// Where the encryption key for this vault is currently held. A
     /// `LocalFile` result is still encrypted storage, but it is not a system
     /// keyring and the UI must not present it as one.
     pub fn custody(&self) -> SecretCustody {
-        self.store.custody()
+        self.read(SecretStore::custody)
+            .unwrap_or_else(|_| SecretCustody::for_session())
     }
     /// Revoke one exact app/account/origin relationship.
     ///
     /// # Errors
     /// Returns an error if the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
-        self.store
-            .revoke_grant(grant)
-            .map_err(|error| format!("could not revoke app access: {error:?}"))
-    }
-    /// Revoke all durable vault access for an application.
-    ///
-    /// # Errors
-    /// Returns an error if the vault cannot durably store the revocations.
-    pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
-        self.store
-            .revoke_app_grants(app_id)
-            .map_err(|error| format!("could not revoke app access: {error:?}"))
+        match &mut self.store {
+            Some(Vault::Shared(owner)) => owner.revoke_grant(grant),
+            _ => self.edit(|store| store.revoke_grant(grant))?,
+        }
+        .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
     pub fn search(&self, query: &str) -> Vec<SecretItem> {
         let query = query.trim().to_lowercase();
@@ -149,46 +230,13 @@ impl PasswordsModel {
     pub fn health(&self) -> VaultHealth {
         analyze_health(&self.items())
     }
-    /// Save a login, generating a password when `password` is empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns a people-facing error when the origin is invalid, password
-    /// generation fails, or the secret store cannot persist the item.
-    pub fn save_login(
-        &mut self,
-        title: &str,
-        username: &str,
-        password: &str,
-        origin: Option<&str>,
-    ) -> Result<SecretId, String> {
-        let password = if password.is_empty() {
-            GeneratedPasswordPolicy::default()
-                .generate()
-                .map_err(|e| format!("password generation failed: {e:?}"))?
-                .to_string()
-        } else {
-            password.to_string()
-        };
-        let mut item = SecretItem::login(title, username, password);
-        if let Some(origin) = origin {
-            item.add_origin(origin)
-                .map_err(|e| format!("invalid sign-in address: {e:?}"))?;
-        }
-        let id = item.id.clone();
-        self.store
-            .put(&mut item)
-            .map_err(|e| format!("could not save login: {e:?}"))?;
-        Ok(id)
-    }
     /// Persist any supported secret item.
     ///
     /// # Errors
     /// Returns an error when serialization or durable credential storage fails.
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
         let id = item.id.clone();
-        self.store
-            .put(item)
+        self.edit(|store| store.put(item))?
             .map_err(|error| format!("could not save item: {error:?}"))?;
         Ok(id)
     }
@@ -198,8 +246,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the secret store cannot complete the removal.
     pub fn remove(&mut self, id: &SecretId) -> Result<bool, String> {
-        self.store
-            .remove(id)
+        self.edit(|store| store.remove(id))?
             .map_err(|e| format!("could not remove login: {e:?}"))
     }
     /// Persist an edited login.
@@ -208,8 +255,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the secret store cannot persist the update.
     pub fn update(&mut self, item: &mut SecretItem) -> Result<(), String> {
-        self.store
-            .put(item)
+        self.edit(|store| store.put(item))?
             .map_err(|error| format!("could not update login: {error:?}"))
     }
     /// Reveal a password into zeroizing memory for an explicit user action.
@@ -218,8 +264,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the item is missing or the store cannot reveal it.
     pub fn reveal(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
-        self.store
-            .reveal_password(id)
+        self.read(|store| store.reveal_password(id))?
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
     /// Return the primary copyable value for the item's type.
@@ -228,8 +273,7 @@ impl PasswordsModel {
     /// Returns an error if the item no longer exists.
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         let item = self
-            .store
-            .get(id)
+            .read(|store| store.get(id))?
             .ok_or_else(|| "item no longer exists".to_string())?;
         let value = if item.kind == accounts::SecretItemKind::SecureNote {
             item.notes
@@ -240,42 +284,26 @@ impl PasswordsModel {
     }
 }
 
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::live())
-}
-
-/// The app as every host mounts it: the live root.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.passwords", app_root).as_definition("Passwords")
-}
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo(ShowcaseMode::Vault))
-}
-
-pub fn app_root_showcase(mode: ShowcaseMode) -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo(mode))
-}
-
-pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo_long_list())
+    ui::built_in_definition!(PasswordsShell)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn every_secret_kind_persists_round_trips_and_generates_missing_passwords() {
-        eprintln!("phase empty_password_is_generated_and_crud_round_trips");
+    fn every_secret_kind_persists_and_round_trips() {
+        eprintln!("phase a login's crud round trips");
         {
             let root =
                 std::env::temp_dir().join(format!("tilo-passwords-test-{}", std::process::id()));
             let mut model = PasswordsModel::open_in(&root);
-            let id = model
-                .save_login("Example", "ada", "", Some("https://example.com/login"))
-                .unwrap();
+            let mut item = SecretItem::login("Example", "ada", "original secret");
+            item.add_origin("https://example.com/login").unwrap();
+            let id = model.save_item(&mut item).unwrap();
             let item = model.items().pop().unwrap();
             assert_eq!(item.id, id);
-            assert!(item.password.len() >= 20);
             assert!(item.origins.contains("https://example.com"));
             assert_eq!(model.search("EXAMP").len(), 1);
             let mut edited = item;

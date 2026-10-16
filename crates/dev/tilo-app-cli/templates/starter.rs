@@ -9,17 +9,13 @@ pub struct Greeting {
     pub name: String,
 }
 
-/// The app's public surface. Every `#[action]` is a typed, undoable edit that
-/// the controls below, the action palette, agents, scripts and tests invoke
-/// the same way. A capability without an action exists only for the pointer.
+/// The app's public surface. Every field is edited at its typed path
+/// (`Greeting::paths().name`); every `#[action]` verb is an operation beyond
+/// setting a field. The controls below, the action palette, agents, scripts
+/// and tests make the same edits and invoke the same verbs. A capability
+/// without one exists only for the pointer.
 #[resource(kind = "generated.greeting", label = "Greeting")]
 impl Greeting {
-    /// Change the name to greet.
-    #[action]
-    pub fn set_name(&mut self, #[param("Name to greet")] name: String) {
-        self.name = name;
-    }
-
     /// Forget the name.
     #[action]
     pub fn clear(&mut self) {
@@ -44,11 +40,14 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Greeting>) -> Element {
-        crate::install_catalog();
         // Every string is a Fluent message id from locales/en-US.ftl.
         let name = cx
-            .input(|greeting| greeting.name.clone(), Greeting::SET_NAME)
+            .input(cx.paths().name)
             .with_id("name-input")
             .with_placeholder("starter-name-placeholder");
         // Read from the resource, so it follows every edit: this window's, a

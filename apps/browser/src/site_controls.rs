@@ -1,6 +1,5 @@
 //! Exact-origin site protection and information, owned by browser chrome.
 use std::collections::BTreeSet;
-use std::path::Path;
 
 pub(crate) fn origin(input: &str) -> Option<String> {
     if input.len() > 8192 {
@@ -9,48 +8,17 @@ pub(crate) fn origin(input: &str) -> Option<String> {
     let url = url::Url::parse(input).ok()?;
     matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
 }
-#[derive(Default, Debug, PartialEq)]
-pub(crate) struct Exceptions(BTreeSet<String>);
-impl Exceptions {
-    fn set(&mut self, url: &str, disabled: bool) {
-        if let Some(origin) = origin(url) {
-            if disabled {
-                if self.0.len() < 1024 {
-                    self.0.insert(origin);
-                }
-            } else {
-                self.0.remove(&origin);
-            }
-        }
-    }
-    #[cfg(test)]
-    fn contains(&self, url: &str) -> bool {
-        origin(url).is_some_and(|o| self.0.contains(&o))
-    }
-    fn save(&self, path: &Path) -> std::io::Result<()> {
-        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
-    }
-    fn load(path: &Path) -> Self {
-        if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
-            return Self::default();
-        }
-        let values: Vec<String> = std::fs::read(path)
-            .ok()
-            .and_then(|v| serde_json::from_slice(&v).ok())
-            .unwrap_or_default();
-        let mut rules = Self::default();
-        for value in values.into_iter().take(1024) {
-            rules.set(&value, true);
-        }
-        rules
-    }
-}
 use ui::time::{Duration, Instant};
 use ui::{
     LocalState,
+    icons::Icon,
+    text_render::TextKind,
     tokens::TextRole,
     webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent},
-    widget::{Button, Column, Container, Row, ScrollAxis, Scrollable, Text, Widget},
+    widget::{
+        Button, ButtonRole, Column, Container, Property, PropertyList, Row, ScrollAxis, Scrollable,
+        Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
+    },
 };
 #[derive(Clone, Debug)]
 enum Pending {
@@ -63,16 +31,8 @@ enum Pending {
     },
     Refresh,
 }
-/// The labels of the certificate facts, in panel order. One list for the
-/// rows and for sizing their label column from the widest of them.
-const FACT_LABELS: [&str; 4] = ["Certificate", "Issuer", "Connection", "Certificate expires"];
-
 pub(crate) struct SiteControls {
     pub open: bool,
-    /// The theme's text scale at the last layout pass, so the panel's
-    /// labelled buttons keep their explicit 1× widths and grow with the
-    /// text — see `browser_widget::labelled_width`.
-    pub text_scale: f32,
     information: bool,
     committed: Option<String>,
     status: Option<SiteStatus>,
@@ -84,14 +44,17 @@ pub(crate) struct SiteControls {
     next_poll: Instant,
     notice: String,
     filters: crate::native_blocker::Status,
-    persistent: bool,
-    runtime_exceptions: std::sync::Arc<std::sync::Mutex<Exceptions>>,
+    /// The origins protection is off for, as the browser document holds
+    /// them; the engine follows them.
+    exceptions: BTreeSet<String>,
+    /// Protection changes the engine accepted for an origin, which the
+    /// browser records in its document.
+    decisions: Vec<(String, bool)>,
 }
 impl Default for SiteControls {
     fn default() -> Self {
         Self {
             open: false,
-            text_scale: 1.0,
             information: false,
             committed: None,
             status: None,
@@ -103,35 +66,47 @@ impl Default for SiteControls {
             next_poll: ui::time::now(),
             notice: String::new(),
             filters: crate::native_blocker::status(),
-            persistent: false,
-            runtime_exceptions: std::sync::Arc::default(),
+            exceptions: BTreeSet::new(),
+            decisions: Vec::new(),
         }
     }
 }
 impl SiteControls {
-    pub fn share_runtime_state(&mut self, other: &Self) {
-        self.runtime_exceptions = other.runtime_exceptions.clone();
-    }
-
-    pub fn initialize(&mut self, engine: &SharedEngine, persistent: bool) {
-        self.persistent = persistent;
-        if engine.supports_native_filtering() {
-            if persistent {
-                let exceptions = crate::storage::config_dir()
-                    .map(|p| Exceptions::load(&p.join("site-exceptions.json")))
-                    .unwrap_or_default();
-                if let Ok(mut runtime) = self.runtime_exceptions.lock() {
-                    *runtime = exceptions;
-                }
-            }
-            let exceptions = self
-                .runtime_exceptions
-                .lock()
-                .map(|rules| rules.0.iter().cloned().collect())
-                .unwrap_or_default();
-            engine.send(WebViewCommand::SetSiteExceptions(exceptions));
+    /// Follow the site exceptions the document holds. A started engine is
+    /// told when they change; a new one takes them in [`Self::initialize`].
+    pub fn present_exceptions(
+        &mut self,
+        engine: &SharedEngine,
+        exceptions: &BTreeSet<String>,
+        started: bool,
+    ) {
+        if &self.exceptions == exceptions {
+            return;
+        }
+        self.exceptions.clone_from(exceptions);
+        if started {
+            self.send_exceptions(engine);
         }
     }
+
+    pub fn initialize(&self, engine: &SharedEngine) {
+        self.send_exceptions(engine);
+    }
+
+    fn send_exceptions(&self, engine: &SharedEngine) {
+        if engine.supports_native_filtering() {
+            engine.send(WebViewCommand::SetSiteExceptions(
+                self.exceptions.iter().cloned().collect(),
+            ));
+        }
+    }
+
+    /// The protection changes accepted since the last call: `(origin,
+    /// enabled)`, for the document.
+    pub fn take_decisions(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.decisions)
+    }
+
     pub fn navigation(&mut self, url: &str) {
         self.committed = origin(url);
         self.open = false;
@@ -197,17 +172,13 @@ impl SiteControls {
                     self.notice = message;
                 }
                 if success && matches!(action.as_str(), "enable" | "disable") {
-                    if let Ok(mut exceptions) = self.runtime_exceptions.lock() {
-                        exceptions.set(&origin, action == "disable");
-                        if self.persistent
-                            && let Some(path) =
-                                crate::storage::config_dir().map(|p| p.join("site-exceptions.json"))
-                            && exceptions.save(&path).is_err()
-                        {
-                            self.notice =
-                                "Changed for this session; could not save the preference".into();
-                        }
+                    let enabled = action == "enable";
+                    if enabled {
+                        self.exceptions.remove(&origin);
+                    } else {
+                        self.exceptions.insert(origin.clone());
                     }
+                    self.decisions.push((origin.clone(), enabled));
                     // This belongs to the accepted action, not the popover's
                     // replaceable button-intent slot. Dismissal must not lose it.
                     self.pending_reload = Some((origin, generation));
@@ -314,133 +285,80 @@ impl SiteControls {
         dirty
     }
     fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
+        Button::new(id, label).on_effect(self.command(pending))
+    }
+    fn command(&self, pending: Pending) -> impl FnMut() + 'static {
         let state = self.pending.clone();
-        Button::new(id, label, None)
-            .with_size(
-                crate::browser_widget::labelled_width(160.0, self.text_scale),
-                32.0,
-            )
-            .on_effect(move || state.set(Some(pending.clone())))
+        move || state.set(Some(pending.clone()))
     }
-    /// Every label the facts column can carry — the certificate facts and
-    /// the current origin's permission names — so the column can be sized
-    /// from the widest of them at the current text scale.
-    pub(crate) fn fact_labels(&self) -> Vec<String> {
-        let mut labels: Vec<String> = FACT_LABELS
-            .iter()
-            .map(|label| (*label).to_string())
-            .collect();
-        if let Some(status) = &self.status {
-            labels.extend(status.permissions.iter().map(|(name, _)| name.clone()));
-        }
-        labels
+    /// The closure that opens the panel on its information (`true`) or its
+    /// protection (`false`) page.
+    pub fn open_command(&self, information: bool) -> impl FnMut() + 'static {
+        self.command(Pending::Open(information))
     }
-    pub fn launcher(&self, information: bool) -> Button {
-        self.button(
-            if information {
-                "browser.site.info"
-            } else {
-                "browser.site.shield"
-            },
-            if information { "Site" } else { "" },
-            Pending::Open(information),
+    pub fn launcher(&self) -> Button {
+        Button::icon_only("browser.site.info", Icon::Info, "Site information")
+            .tooltip("Connection, permissions and stored data")
+            .on_effect(self.open_command(true))
+    }
+    /// The panel's own page switcher: protection, or the connection and the
+    /// data the site holds.
+    fn pages(&self) -> ToggleGroup {
+        let pending = self.pending.clone();
+        ToggleGroup::new(
+            vec![
+                Segment::new("Protection"),
+                Segment::new("Connection and data"),
+            ],
+            usize::from(self.information),
         )
-        // Two launchers side by side with one glyph read as one control
-        // drawn twice; information gets its own mark and the shield stays
-        // with protection.
-        .with_icon(if information {
-            ui::icons::Icon::Info
-        } else {
-            ui::icons::Icon::Shield
-        })
-        .with_accessible_name(if information {
-            "Site information"
-        } else {
-            "Ads and trackers protection"
-        })
-        // The toolbar's control height: this sits between the navigation
-        // buttons and the address field.
-        .with_size(
-            56.0,
-            crate::browser_widget::toolbar_control_height(self.text_scale),
-        )
-        .tooltip(if information {
-            "Connection, permissions and stored data"
-        } else {
-            "Protection for the top-level origin"
+        .on_view("browser.site.pages", move |index| {
+            pending.set(Some(Pending::Open(index == 1)));
         })
     }
     #[allow(
         clippy::too_many_lines,
-        reason = "the two bounded site-panel sections share their action context"
+        reason = "the two bounded site-panel pages share their action context"
     )]
-    /// `label_w` is the facts' label column — the certificate and permission
-    /// facts are label / value rows sharing one column edge, so the values
-    /// read down the panel as a column rather than as sentences that each
-    /// happen to start with a name.
-    pub fn panel(&self, width: f32, height: f32, label_w: f32) -> Box<dyn Widget> {
-        // Body copy at the theme's body step; the 13px here was off the type
-        // scale.
+    /// The panel's content, `width` wide. It is as tall as it needs to be up
+    /// to `max_height`, then scrolls.
+    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
         let line =
             |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
-        let fact = |name: &str, value: &str| -> Box<dyn Widget> {
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_width(label_w)
-                            .with_child(Box::new(
-                                Text::new(name).with_role(TextRole::Label).dimmed(),
-                            )),
-                    ))
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_flex_grow()
-                            .with_child(Box::new(Text::new(value).with_role(TextRole::Body))),
-                    )),
-            )
+        let note = |text: &str| {
+            Box::new(Text::new(text).with_role(TextRole::Caption).dimmed()) as Box<dyn Widget>
         };
+        let facts = |rows: Vec<Property>| Box::new(PropertyList::new(rows)) as Box<dyn Widget>;
         let title = if self.information {
             "Site information"
         } else {
             "Ads and trackers"
         };
-        // The theme's standard gap between rows, as every other stacked panel
-        // in the fleet uses; the 10px here was off the spacing scale.
         let mut column = Column::new()
+            .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()
+                    .no_wrap()
                     .push(Box::new(Text::new(title).with_role(TextRole::Title)))
-                    .push(Box::new(
-                        self.button("browser.site.close", "Done", Pending::Close)
-                            .with_size(
-                                crate::browser_widget::labelled_width(64.0, self.text_scale),
-                                32.0,
-                            ),
-                    )),
-            ))
-            .push(line(
-                self.committed
-                    .as_deref()
-                    .unwrap_or("No HTTP or HTTPS origin"),
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(self.button(
+                        "browser.site.close",
+                        "Done",
+                        Pending::Close,
+                    ))),
             ))
             .push(Box::new(
-                Row::new()
-                    .push(Box::new(self.button(
-                        "browser.site.protection",
-                        "Protection",
-                        Pending::Open(false),
-                    )))
-                    .push(Box::new(self.button(
-                        "browser.site.connection",
-                        "Connection & data",
-                        Pending::Open(true),
-                    ))),
-            ));
+                Text::new(
+                    self.committed
+                        .as_deref()
+                        .unwrap_or("No HTTP or HTTPS origin"),
+                )
+                .with_role(TextRole::Caption)
+                .with_kind(TextKind::Url)
+                .dimmed(),
+            ))
+            .push(Box::new(self.pages()));
         if let Some(status) = &self.status {
             let action = |kind: &str| Pending::Action {
                 origin: status.origin.clone(),
@@ -454,53 +372,101 @@ impl SiteControls {
                     "insecure" => "HTTP connection is not encrypted",
                     _ => "Connection security is not verified",
                 };
-                column = column.push(line(connection));
+                column = column.push(Box::new(
+                    Text::new(connection).with_role(TextRole::Subheading),
+                ));
+                let mut rows = Vec::new();
                 if !status.subject.is_empty() {
-                    let [certificate, issuer, connection, expires] = FACT_LABELS;
-                    column = column
-                        .push(fact(certificate, &status.subject))
-                        .push(fact(issuer, &status.issuer))
-                        .push(fact(
-                            connection,
-                            &format!(
-                                "{} · certificate status {}",
-                                tls_version(status.tls_version),
-                                status.certificate_status
-                            ),
-                        ))
-                        .push(fact(expires, &certificate_date(status.expires)));
+                    rows.push(
+                        Property::new("Certificate", status.subject.clone())
+                            .with_kind(TextKind::Identifier),
+                    );
+                    rows.push(Property::new("Issuer", status.issuer.clone()));
+                    rows.push(Property::new("Connection", tls_version(status.tls_version)));
+                    if status.certificate_status != 0 {
+                        rows.push(
+                            Property::new(
+                                "Certificate problem",
+                                format!("Status code {}", status.certificate_status),
+                            )
+                            .with_kind(TextKind::Numeric),
+                        );
+                    }
+                    rows.push(
+                        Property::new("Expires", certificate_date(status.expires))
+                            .with_kind(TextKind::Numeric),
+                    );
                 }
                 for (name, value) in &status.permissions {
-                    column = column.push(fact(name, value));
+                    rows.push(Property::new(
+                        permission_label(name),
+                        permission_state(value),
+                    ));
                 }
-                column=column.push(Box::new(self.button("browser.site.revoke","Block permissions",action("revoke")).with_enabled(self.action.is_none())))
-                    .push(line("Blocks camera, microphone, location and notifications for this origin. Reload to end existing media sessions."))
-                    .push(Box::new(self.button("browser.site.clear","Clear site data",action("clear")).with_enabled(self.action.is_none())))
-                    .push(line("Clears this origin’s storage and matching cookies. Cookies may also be used on other ports and subdomains. Reload to reset data still in this page."));
+                if !rows.is_empty() {
+                    column = column.push(facts(rows));
+                }
+                column = column
+                    .push(Box::new(
+                        self.button("browser.site.revoke", "Block permissions", action("revoke"))
+                            .role(ButtonRole::Destructive)
+                            .with_enabled(self.action.is_none()),
+                    ))
+                    .push(note(
+                        "Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.",
+                    ))
+                    .push(Box::new(
+                        self.button("browser.site.clear", "Clear site data", action("clear"))
+                            .role(ButtonRole::Destructive)
+                            .with_enabled(self.action.is_none()),
+                    ))
+                    .push(note(
+                        "Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.",
+                    ));
             } else {
-                column=column.push(line(if !status.global_enabled{"Global protection is off in Settings"}else if status.excepted{"Protection is off for this origin"}else{"Protection is on for this origin"}))
-                    .push(line(&format!("{} requests blocked or replaced in this document",status.blocked)))
-                    .push(line("This exact origin includes its embedded frames. Requests without a known top-level page stay protected and are not counted here."))
-                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable and reload"}else{"Disable and reload"},action(if status.excepted{"enable"}else{"disable"})).with_size(crate::browser_widget::labelled_width(210.0,self.text_scale),32.0).with_enabled(self.action.is_none() && self.pending_reload.is_none())))
-                    .push(line("The page reloads after protection changes."))
+                let state = if !status.global_enabled {
+                    "Protection is off in Settings"
+                } else if status.excepted {
+                    "Protection is off for this site"
+                } else {
+                    "Protection is on for this site"
+                };
+                column = column
+                    .push(Box::new(Text::new(state).with_role(TextRole::Subheading)))
+                    .push(line(&format!(
+                        "{} requests blocked or replaced in this page",
+                        status.blocked
+                    )))
+                    .push(Box::new(
+                        self.button(
+                            "browser.site.toggle",
+                            if status.excepted {
+                                "Turn on and reload"
+                            } else {
+                                "Turn off and reload"
+                            },
+                            action(if status.excepted { "enable" } else { "disable" }),
+                        )
+                        .with_enabled(self.action.is_none() && self.pending_reload.is_none()),
+                    ))
                     .push(line(&self.filters.message));
                 if let Some(updated) = self.filters.updated {
-                    column = column.push(line(&format!(
-                        "Last successful download: {} UTC",
+                    column = column.push(note(&format!(
+                        "Filters last updated {} UTC",
                         unix_date(updated)
                     )));
                 }
                 column = column.push(Box::new(
                     self.button(
                         "browser.site.filters.retry",
-                        "Update / retry",
+                        "Update filters",
                         Pending::Refresh,
                     )
                     .with_enabled(!self.filters.busy),
                 ));
             }
         } else if self.committed.is_some() {
-            column = column.push(line("Reading native site information…"));
+            column = column.push(line("Reading site information…"));
         }
         if !self.notice.is_empty() {
             column = column.push(line(&self.notice));
@@ -509,17 +475,35 @@ impl SiteControls {
             Container::new()
                 .with_focus_trap()
                 .with_no_padding()
-                .with_background()
                 .with_width(width)
-                .with_height(height)
                 .with_child(Box::new(
                     Scrollable::new(ScrollAxis::Vertical)
                         .with_focus_reveal()
-                        .with_height(height)
+                        .with_max_height(max_height)
                         .with_child(Box::new(column)),
                 )),
         )
     }
+}
+/// How the engine's permission names and states read in the panel.
+fn permission_label(name: &str) -> String {
+    match name {
+        "camera" => "Camera",
+        "microphone" => "Microphone",
+        "location" => "Location",
+        "notifications" => "Notifications",
+        other => other,
+    }
+    .to_owned()
+}
+fn permission_state(state: &str) -> String {
+    match state {
+        "ask" => "Ask",
+        "blocked" => "Blocked",
+        "allowed" | "granted" => "Allowed",
+        other => other,
+    }
+    .to_owned()
 }
 // Calendar conversion without a timezone or page-controlled formatter.
 fn unix_date(seconds: u64) -> String {
@@ -552,6 +536,7 @@ fn certificate_date(base_micros: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
 
     struct NativeRecordingEngine(std::sync::Arc<ui::webview::test_engine::TestEngine>);
     impl ui::webview::WebViewEngine for NativeRecordingEngine {
@@ -570,10 +555,6 @@ mod tests {
     }
     /// Origin canonicalisation, exceptions, private sharing and certificate text.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn site_origins_exceptions_and_certificates_are_canonical() {
         // Phase `canonical_origin_rejects_nonweb_and_preserves_ports`.
         {
@@ -596,44 +577,21 @@ mod tests {
             }
         }
 
-        // Phase `exceptions_roundtrip_exact_origins_and_reenable`.
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("sites.json");
-            let mut rules = Exceptions::default();
-            rules.set("https://EXAMPLE.com:443/path", true);
-            rules.save(&path).unwrap();
-            let mut loaded = Exceptions::load(&path);
-            assert!(loaded.contains("https://example.com/other"));
-            assert!(!loaded.contains("http://example.com/"));
-            assert!(!loaded.contains("https://example.com:444/"));
-            loaded.set("https://example.com/", false);
-            assert!(!loaded.contains("https://example.com/"));
-        }
-
-        // Phase `private_tabs_share_runtime_exceptions_without_disk_persistence`.
+        // Phase `an_accepted_change_is_a_decision_and_the_engine_follows_the_document`.
         {
             let recorder = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
-            let normal = tempfile::tempdir().unwrap();
-            let normal_file = normal.path().join("site-exceptions.json");
-            let mut normal_exceptions = Exceptions::default();
-            normal_exceptions.set("https://normal.test", true);
-            normal_exceptions.save(&normal_file).unwrap();
-            let normal_before = std::fs::read(&normal_file).unwrap();
-            let mut first = SiteControls::default();
-            let mut second = SiteControls::default();
-            first.initialize(&engine, false);
-            second.share_runtime_state(&first);
-            first.committed = Some("https://private.test".into());
-            first.action = Some((
+            let mut controls = SiteControls::default();
+            controls.initialize(&engine);
+            controls.committed = Some("https://private.test".into());
+            controls.action = Some((
                 7,
                 "https://private.test".into(),
                 3,
                 "disable".into(),
                 ui::time::now(),
             ));
-            assert!(first.apply(WebViewEvent::SiteResult {
+            assert!(controls.apply(WebViewEvent::SiteResult {
                 request_id: 7,
                 origin: "https://private.test".into(),
                 generation: 3,
@@ -641,18 +599,18 @@ mod tests {
                 success: true,
                 message: "disabled".into(),
             }));
-            assert!(
-                second
-                    .runtime_exceptions
-                    .lock()
-                    .unwrap()
-                    .contains("https://private.test/child")
+            assert_eq!(
+                controls.take_decisions(),
+                vec![("https://private.test".to_string(), false)]
             );
-            second.initialize(&engine, false);
+            assert!(controls.take_decisions().is_empty());
+
+            let mut second = SiteControls::default();
+            let held = BTreeSet::from(["https://private.test".to_string()]);
+            second.present_exceptions(&engine, &held, true);
             assert!(recorder.commands().iter().any(|command| {
                 matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
             }));
-            assert_eq!(std::fs::read(normal_file).unwrap(), normal_before);
         }
 
         // Phase `certificate_dates_and_protocol_versions_are_human_readable`.
@@ -697,18 +655,11 @@ mod tests {
 
         // Phase `site_panel_has_a_visible_scroll_viewport_and_actionable_children`.
         {
-            fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                w.children().iter().find_map(|c| find(*c, id))
-            }
-
             let mut controls = SiteControls::default();
             controls.open = true;
             controls.committed = Some("https://example.test".into());
             let theme = ui::theme::Theme::dark();
-            let mut panel = controls.panel(480.0, 444.0, 2.0 * theme.tokens.spacing.s16);
+            let mut panel = controls.panel(448.0, 444.0);
             let mut tree = taffy::TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
             let mut text = ui::text_render::TextRenderer::new();
@@ -733,54 +684,33 @@ mod tests {
                 "scroll viewport: {:?}",
                 scroll.get_rect()
             );
-            let done = find(panel.as_ref(), "browser.site.close").unwrap();
+            let done = ui::widget::find_test_id(panel.as_ref(), "browser.site.close")
+                .unwrap()
+                .get_rect();
             assert!(done.height() > 0.0);
             assert!(scroll.get_rect().contains(done.center()));
             let mut doc = automerge::AutoCommit::new();
-            let mut handled;
             let mut focus = None;
             for event in [
-                winit::event::WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(done.center().x, done.center().y),
-                },
-                winit::event::WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: winit::event::ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                },
-                winit::event::WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: winit::event::ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                },
+                ui::synthetic_input::cursor_moved(done.center().x, done.center().y),
+                ui::synthetic_input::mouse_press(),
+                ui::synthetic_input::mouse_release(),
             ] {
-                handled = false;
-                panel.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                focus = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(focus)
+                    .send(&mut *panel, &event)
+                    .focus_target;
             }
             let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
                 .expect("pointer emits the Done operation");
             assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
             let result = panel
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.close").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.site.close").unwrap(),
                     &mut doc,
                     &automerge::ROOT,
                 )
@@ -881,12 +811,8 @@ mod tests {
                     let mut controls = protection_toggle(kind);
                     assert!(controls.apply(toggle_reply(kind, true)));
                     assert_eq!(
-                        controls
-                            .runtime_exceptions
-                            .lock()
-                            .unwrap()
-                            .contains("https://one.test"),
-                        kind == "disable"
+                        controls.take_decisions(),
+                        vec![("https://one.test".to_string(), kind == "enable")]
                     );
                     assert!(
                         !controls.apply(toggle_reply(kind, true)),

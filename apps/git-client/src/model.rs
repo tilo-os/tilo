@@ -12,8 +12,11 @@
 //! screenshot renders a populated state with no repository
 //! present. Nothing in this file performs IO.
 
+use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema};
+
 /// Where a changed file sits relative to the index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeArea {
     /// Difference between HEAD and the index — `git add`ed, ready to commit.
     Staged,
@@ -25,7 +28,7 @@ pub enum ChangeArea {
 
 /// The kind of change a file underwent, used for the leading status glyph
 /// and its colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeKind {
     Added,
     Modified,
@@ -43,14 +46,26 @@ impl ChangeKind {
             ChangeKind::Modified => "M",
             ChangeKind::Deleted => "D",
             ChangeKind::Renamed => "R",
-            ChangeKind::Untracked => "?",
-            ChangeKind::Conflicted => "!",
+            ChangeKind::Untracked => "U",
+            ChangeKind::Conflicted => "C",
+        }
+    }
+
+    /// What the badge stands for, in words (for assistive technology).
+    pub fn label(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Modified => "modified",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Untracked => "untracked",
+            ChangeKind::Conflicted => "conflicted",
         }
     }
 }
 
 /// One entry in the changes lists.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct FileChange {
     pub path: String,
     /// For renames: the previous path. `None` otherwise.
@@ -194,7 +209,7 @@ impl FileDiff {
 /// A node in the commit graph. `lane` is the horizontal column the node's
 /// dot sits in; `parents` index into the commit list (by id) for drawing
 /// the connecting edges.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Commit {
     pub id: String,
     pub summary: String,
@@ -219,13 +234,13 @@ pub struct Commit {
 }
 
 /// A decorating ref drawn as a coloured pill next to a commit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct RefLabel {
     pub name: String,
     pub kind: RefKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum RefKind {
     Head,
     LocalBranch,
@@ -234,7 +249,7 @@ pub enum RefKind {
 }
 
 /// One local or remote branch in the branches panel.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Branch {
     pub name: String,
     pub is_head: bool,
@@ -248,28 +263,37 @@ pub struct Branch {
     pub tip: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Tag {
     pub name: String,
     pub target: String,
     pub message: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Stash {
     pub index: usize,
     pub message: String,
     pub branch: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Remote {
     pub name: String,
     pub url: String,
 }
 
+/// One working directory belonging to this repository, read from disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Worktree {
+    pub name: String,
+    pub path: String,
+    pub head: String,
+    pub current: bool,
+}
+
 /// The complete render state. Cloneable and self-contained.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RepoModel {
     /// Friendly repository name (last path segment of the workdir).
     pub name: String,
@@ -287,6 +311,12 @@ pub struct RepoModel {
     pub tags: Vec<Tag>,
     pub stashes: Vec<Stash>,
     pub remotes: Vec<Remote>,
+    /// Device-local linked working directories, never part of the CRDT projection.
+    #[serde(skip)]
+    pub worktrees: Vec<Worktree>,
+    /// Failure to observe registered working directories, shown rather than treated as empty.
+    #[serde(skip)]
+    pub worktree_error: Option<String>,
 
     /// Number of graph lanes in use (for sizing the graph gutter).
     pub graph_width: usize,

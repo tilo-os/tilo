@@ -6,18 +6,24 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
+description = "Builds the sandbox every Tilo app runs in (bwrap, seccomp, Landlock, netgate)."
 
 # Tilo application launcher. Reads a package manifest, constructs a
 # bubblewrap-based sandbox per its declarations (bubblewrap + Landlock
 # + seccomp), passes well-known service sockets in via SCM_RIGHTS, and
 # execs the entrypoint binary inside the sandbox.
 #
-# This crate carries a minimal in-tree `MinimalManifest` decoder while the
-# canonical package schema is consumed through the `pkg` dependency below.
+# It decodes no manifest of its own: `tilo_app_package::view` is the one
+# decoder, and code that only reads manifests depends on that, not on this
+# crate.
 
 [[bin]]
 name = "tilo-launcher"
 path = "src/main.rs"
+
+[[bin]]
+name = "tilo-signal-provider"
+path = "src/bin/tilo-signal-provider.rs"
 
 [[bin]]
 name = "managed-tree-fixture"
@@ -31,17 +37,29 @@ name = "launcher"
 path = "src/lib.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
-# system store's in `package-store`) in a release build. Debug builds always
-# honour them; shipped images never enable this.
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
 managed-tree-test = []
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Kernel-authenticated custody of the executing native service peer.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+# Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
+bounded-command = { path = "../../system/bounded-command" }
+blake3.workspace = true
+tempfile.workspace = true
+tilo-paths.workspace = true
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
+# Launch phase marks, handed to the app so its startup file covers the time
+# before its own `main` (run.rs, `splice_startup_marks`).
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's
@@ -54,18 +72,19 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
 runtime-bundle = { path = "../runtime-bundle" }
-# The canonical manifest schema. The launcher still carries its own
-# `MinimalManifest` decoder, but security-relevant enums that both
-# sides must agree on (portal policy) come from here rather than
-# being duplicated.
+# The canonical manifest schema and its one decoder (`view`), so the
+# sandbox reads exactly what the registry and the installer read.
 tilo-app-package = { path = "../tilo-app-package" }
-# Which packages are installed and where: the one registry, read-only.
-package-store = { path = "../package-store" }
+# Which packages are installed and where: the one registry, read-only, and
+# the lease a launch holds on its payload tree until its sandbox exits.
+package-store = { path = "../package-store", features = ["lease"] }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
+# The received-file admission protocol spoken to the filesystem service.
+fs-protocol = { path = "../../system/fs-protocol" }
 wire-frame = { path = "../../system/wire-frame" }
 uuid.workspace = true
 # Host applications: the `.desktop` entries already installed on the
@@ -82,10 +101,14 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The egress gate and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
+# Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),
+# which the launcher's filtered accessibility proxy forwards.
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-policy = { path = "../../collab/action-policy" }
 # Tests whose subject is the environment itself (session variables, service
 # and store lookups) scope their changes through it and restore them.
 tilo-test-env = { path = "../../dev/test-env" }
@@ -93,9 +116,14 @@ tilo-test-env = { path = "../../dev/test-env" }
 package-store = { path = "../package-store", features = ["store"] }
 hex.workspace = true
 ed25519-dalek.workspace = true
-tempfile.workspace = true
+# A threshold identity record in the store a launch must only read.
+threshold-identity = { path = "../../collab/threshold-identity" }
+getrandom.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
+# The collection `tilo-install` runs after an update, interleaved with a
+# launch by the lease tests.
+install = { path = "../install" }
 
 [[test]]
 name = "it"
@@ -106,3 +134,12 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true
+rustix = { workspace = true, features = ["event", "net", "process", "std"] }
+# `gpu.rs` asks each installed Vulkan ICD directly which render node its
+# devices are on (`VK_EXT_physical_device_drm`), loading the library itself
+# so every answer belongs to exactly one manifest.
+ash = { version = "0.38", default-features = false, features = ["std"] }
+libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

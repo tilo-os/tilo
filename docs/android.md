@@ -1,5 +1,7 @@
 # Android
 
+For running Android APKs on Tilo, see [Android compatibility qualification](android-compatibility.md).
+
 A Tilo app can run as a standalone Android app: the same code, the same
 toolkit and the same widgets, drawn with wgpu on Vulkan in a `NativeActivity`.
 Every app `tilo-app new` scaffolds builds for Android with no Android code of
@@ -187,7 +189,7 @@ and winit event loop as on Linux. Preparing the process means:
 
 - stdout and stderr are piped into logcat;
 - `HOME`, `TMPDIR` and the XDG base directories point into the app's private
-  storage (`launch/android_env.rs`), so `xdg-paths` and every store built on
+  storage (`launch/android_env.rs`), so `tilo-paths` and every store built on
   it resolve there unchanged;
 - `LANG` follows the device locale;
 - `TILO_RUNTIME_STANDALONE=1`, since there is no runtime host to re-exec under.

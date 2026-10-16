@@ -4,20 +4,15 @@
 //! together in one pass (no live compositor; plain crate APIs only).
 //!
 //! Complements the per-widget unit tests in `tests/shell_chrome_test.rs`,
-//! `crates/sdk/ui-core/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
+//! and `crates/sdk/ui-core/src/widget/tabs.rs`.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
-use shell::shell::notes_app::{BODY_KEY, NotesApp};
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
@@ -67,43 +62,6 @@ fn bootstrap_root_builds_and_seeds_the_demo_tabs_in_order() {
                 tab.title,
             );
         }
-    }
-
-    // Phase `editor_app_is_bootstrapped_as_fifth_demo_tab`.
-    {
-        // The runtime demo workspace (`cargo run -p tilo-desktop`) carries five
-        // tabs in one group: Terminal, Files, Notes, Editor, Browser; Editor must
-        // be a live AppWidget, not a Stub.
-        use shell::shell::Shell;
-        use shell::shell::tile::TileContent as RuntimeTile;
-
-        let shell = Shell::new_with_default_demo_workspace();
-        let tree = shell.workspace_tree();
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == tree.active)
-            .expect("active workspace");
-        let strip = ws.strips.first().expect("at least one strip");
-        let group = strip.window_groups.first().expect("at least one group");
-        let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            vec!["Terminal", "Files", "Notes", "Editor", "Browser"]
-        );
-
-        // Identified by title rather than index so the assertion survives a
-        // future reshuffling of the tab order.
-        let editor_tab = group
-            .tabs
-            .iter()
-            .find(|t| t.title == "Editor")
-            .expect("Editor tab");
-        assert!(
-            matches!(editor_tab.tile, RuntimeTile::App(_)),
-            "expected Editor to be a live App, got {:?}",
-            editor_tab.tile
-        );
     }
 }
 
@@ -404,71 +362,6 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
 }
 
 #[test]
-fn notes_and_editor_apps_round_trip_through_the_crdt() {
-    // Phase `notes_app_roundtrips_through_crdt`.
-    {
-        use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let tile = doc
-            .put_object(&root, "tile", ObjType::Map)
-            .expect("tile obj");
-
-        let mut a = NotesApp::with_seed("hello");
-        a.sync(&mut doc, &tile);
-        assert_eq!(
-            doc.text(&doc.get(&tile, BODY_KEY).unwrap().unwrap().1)
-                .unwrap(),
-            "hello"
-        );
-
-        // A second Notes widget on the same tile picks up the existing body on
-        // sync — the CRDT-backed "join the session" path.
-        let mut b = NotesApp::new();
-        b.sync(&mut doc, &tile);
-        // `NotesApp::text` is private, so the read-through is proved by an insert
-        // growing the CRDT from the attached state, not the widget's own buffer.
-        let (Value::Object(ObjType::Text), body) = doc.get(&tile, BODY_KEY).unwrap().unwrap()
-        else {
-            panic!("expected Text body");
-        };
-        let text = doc.text(&body).expect("read body");
-        assert_eq!(text, "hello");
-    }
-
-    // Phase `editor_app_persists_edits_through_crdt`.
-    {
-        use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
-        use shell::shell::editor_app::{BODY_KEY as EDITOR_BODY_KEY, EditorApp};
-        use ui::widget::Widget;
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let tile = doc
-            .put_object(&root, "tile", ObjType::Map)
-            .expect("tile obj");
-
-        let mut a = EditorApp::with_seed("let x = 1;\n");
-        a.sync(&mut doc, &tile);
-        let (Value::Object(ObjType::Text), body) =
-            doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap()
-        else {
-            panic!("expected Text body under editor_body");
-        };
-        assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
-
-        // A second Editor on the same doc picks up the existing body, as Notes does.
-        let mut b = EditorApp::new();
-        b.sync(&mut doc, &tile);
-        assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
     // Phase `sync_tab_presence_seeds_per_tab_peer_registrations`.
     {
@@ -565,50 +458,6 @@ fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
             "no-override peer must still use palette fallback",
         );
     }
-
-    // Phase `an_editor_body_has_no_peer_caret_without_peers`.
-    // An Editor tab with no peers has no peer caret — presence on the body
-    // comes from peers or not at all. The key is built the way `EditorApp`
-    // builds it (tab record + body field), so a false publish fails this.
-    {
-        use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
-        use shell::shell::tab_documents::scratch_tab_record;
-        use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let editor_tab = {
-            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            let id = group.tabs[0].id ^ 0xed;
-            group.tabs.push(shell::shell::state::Tab {
-                id,
-                title: "Editor".into(),
-                tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Editor".into()),
-                    label: "Editor".into(),
-                },
-            });
-            id
-        };
-
-        // The seeding the shell actually does at startup: per-tab presence from
-        // the workspace's real roster, nothing else.
-        let mut ctx = PresenceCtx::empty();
-        shell::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
-
-        let key = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
-                PathSegment::Field("editor_body".into()),
-            ],
-        };
-
-        let peers = ctx.peers_on(&key);
-        assert!(
-            peers.is_empty(),
-            "nothing may publish presence into an editor body on the strength \
-             of the tab merely existing; found {peers:?}"
-        );
-    }
 }
 
 #[test]
@@ -653,8 +502,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let (mut bar, chrome, taffy, node, hit) = topbar_with_overview_btn_hit();
 
@@ -666,16 +513,13 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let mut focus: Option<NodeId> = None;
         let modifiers = winit::event::Modifiers::default();
 
-        let cm = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(hit.x, hit.y),
-        };
+        let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
         bar.handle_event(
             &cm,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -683,17 +527,13 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
                 taffy: &taffy,
             },
         );
-        let mi = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let mi = ui::synthetic_input::mouse_press();
         bar.handle_event(
             &mi,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -717,7 +557,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled2,
                 focus_target: &mut focus,
@@ -738,8 +578,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let (mut bar, chrome, taffy, node, _) = topbar_with_overview_btn_hit();
         let mut state = AutoCommit::new();
@@ -748,14 +586,11 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let modifiers = winit::event::Modifiers::default();
         let mut handled = false;
         bar.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(1599.0, 1.0),
-            },
+            &ui::synthetic_input::cursor_moved(1599.0, 1.0),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -764,15 +599,11 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             },
         );
         bar.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_press(),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -804,7 +635,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         }
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -826,10 +657,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[root_node],
@@ -895,7 +723,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -925,10 +753,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[node],
@@ -990,7 +815,7 @@ fn topbar_with_overview_btn_hit() -> (
     vello::kurbo::Point,
 ) {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -1014,10 +839,7 @@ fn topbar_with_overview_btn_hit() -> (
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],
@@ -1065,20 +887,14 @@ fn click_full_root(
     modifiers: winit::event::Modifiers,
     hit: vello::kurbo::Point,
 ) {
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
-
-    let cm = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(hit.x, hit.y),
-    };
+    let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
     let mut handled = false;
     root.handle_event(
         &cm,
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state,
+            state: ui::widget::Edits::lend(state),
             path: root_path,
             handled: &mut handled,
             focus_target: focus,
@@ -1087,18 +903,14 @@ fn click_full_root(
         },
     );
 
-    let mi = WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let mi = ui::synthetic_input::mouse_press();
     let mut handled = false;
     root.handle_event(
         &mi,
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state,
+            state: ui::widget::Edits::lend(state),
             path: root_path,
             handled: &mut handled,
             focus_target: focus,

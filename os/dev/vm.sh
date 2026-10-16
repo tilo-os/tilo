@@ -7,6 +7,10 @@
 #                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
+#                                              TILO_VM_LAN_PORT/_PEER/_MAC add a NIC on an
+#                                              L2 segment shared with one peer VM
+#                                              TILO_VM_HOSTFWD adds forwards to the NIC,
+#                                              e.g. hostfwd=tcp:127.0.0.1:3341-:3340
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
@@ -24,7 +28,7 @@
 # enrolling keys in the guest (`/usr/libexec/tilo-secureboot enroll`) sticks —
 # enrolment is an explicit step, never something the template arrives with.
 # TILO_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
-#   ./os/dev/vm.sh wait                        block until the greeter is up
+#   ./os/dev/vm.sh wait                        block until the greeter accepts input
 #   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
 #                                              whether it can measure
 #   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
@@ -46,6 +50,10 @@
 #   ./os/dev/vm.sh status                       is it running?
 #   ./os/dev/vm.sh stop                         power off
 #   ./os/dev/vm.sh capture-boot [DIR]          boot->greeter->login->desktop demo
+#   ./os/dev/vm.sh greeter-acceptance [DIR]    judge the sign-in screen's scanned-out
+#                                             frames: idle, pointer, typing latency,
+#                                             a wrong passcode (os/dev/greeter-acceptance.py)
+#   ./os/dev/vm.sh check-frame NAME [DIR]       capture the display and require it whole
 #
 # DISPLAY MODES (important):
 #   --2d (default): virtio VGA (x86) or virtio-gpu-pci (ARM), with no host
@@ -96,8 +104,19 @@ char_key() {
     '#') echo shift-3;; '*') echo shift-8;; '&') echo shift-7;;
     '(') echo shift-9;; ')') echo shift-0;; '!') echo shift-1;;
     '"') echo shift-apostrophe;; "'") echo apostrophe;;
+    '?') echo shift-slash;;
+    # A capital is its letter's key with Shift held, as on a real keyboard.
+    [[:upper:]]) echo "shift-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')";;
     *) echo "$1";;
   esac
+}
+
+# A qcow2 virtio disk with a serial (the guest's /dev/disk/by-id name). The
+# serial belongs to the virtio block device: QEMU rejects serial= on -drive.
+virtio_disk() {
+  local file="$1" id="$2" serial="${3:-}"
+  printf -- '-drive file=%s,format=qcow2,if=none,id=%s -device virtio-blk-pci,drive=%s%s' \
+    "$file" "$id" "$id" "${serial:+,serial=$serial}"
 }
 
 vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 2>/dev/null"; }
@@ -123,12 +142,10 @@ cmd_boot() {
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
   [[ "$disk_serial" =~ ^[A-Za-z0-9._-]{0,20}$ ]] || die "boot: --serial must be up to 20 of [A-Za-z0-9._-]"
-  local serial_arg=""
-  [ -z "$disk_serial" ] || serial_arg=",serial=$disk_serial"
   local attach_arg=""
   if [ -n "$attach" ]; then
     inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
-    attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=tilo-install-target"
+    attach_arg="$(virtio_disk "$attach" tilo-install-target tilo-install-target)"
     msg "attaching $attach as /dev/vdb"
   fi
   if [ -n "$validation" ]; then
@@ -142,14 +159,15 @@ cmd_boot() {
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
   display="$(display_qemu_args "$mode")"
   msg "boot ($mode, $TILO_VM_ARCH, ${TILO_XRES}x${TILO_YRES}) disk=$disk"
 
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) \
+    $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
@@ -198,8 +216,8 @@ cmd_boot_installer() {
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$work_disk,format=qcow2,if=virtio,serial=tilo-installer-medium \
-    -drive file=$target,format=qcow2,if=virtio,serial=tilo-install-target \
+    $(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium) \
+    $(virtio_disk "$target" tilo-install-target tilo-install-target) \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) $proof_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
@@ -233,7 +251,7 @@ cmd_boot_target() {
   fi
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio,serial=tilo-install-target \
+    $(virtio_disk "$disk" tilo-install-target tilo-install-target) \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
@@ -244,20 +262,42 @@ cmd_boot_target() {
   msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
+# greetd starting is not the greeter being usable: greetd then starts cage,
+# cage the greeter, and only once the greeter's window is mapped and focused do
+# typed keys reach it. Keys sent earlier are dropped, so the barrier is the
+# greeter's own report over its console that sign-in accepts input.
+greeter_accepts_input() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check greeter /accepts_input --timeout "${1:-5}" 2>/dev/null
+}
+
+# The live installer medium's greetd runs the installer instead, which is
+# driven through its console actions.
+installer_answers() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check installer --timeout "${1:-5}" 2>/dev/null
+}
+
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
-  local i early_reported=0
+  local i early_reported=0 greetd=0 start=$SECONDS
   for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
-    if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
-      msg "greeter up (~$((i*2))s)"; return 0
-    fi
+    # The console is authoritative, including on a quiet production boot with
+    # no development SSH service. Neither a serial log nor SSH is a prerequisite
+    # for observing the actual application's readiness.
+    if greeter_accepts_input 1; then
+      msg "greeter accepts input (~$((SECONDS - start))s)"; return 0
+    elif installer_answers 1; then
+      msg "installer up (~$((SECONDS - start))s)"; return 0
+    elif [ "$greetd" = 0 ] && tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
+      msg "greetd up (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     # A guest may reach greetd without writing kernel/userspace status to the
     # selected serial port. The installed validation disk supplies SSH access;
     # use it as an independent readiness signal when available.
-    if (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
+    elif [ "$greetd" = 0 ] && (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
        && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
        && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
-      msg "greeter up via SSH (~$((i*2))s)"; return 0
+      msg "greetd up via SSH (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     fi
     if [ "$early_reported" = 0 ] && grep -aq 'TILO_VALIDATION_DIAGNOSTICS_END early' "$TILO_SERIAL" 2>/dev/null; then
       warn "validation-only guest service diagnostics:"
@@ -284,6 +324,11 @@ cmd_wait() {
       warn "validation SSH diagnostic output:"
       printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
     fi
+  fi
+  if [ "$greetd" = 1 ]; then
+    warn "greetd is up, but the greeter never reported that sign-in accepts input; its console says:"
+    python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+      check greeter /accepts_input --timeout 5 >&2 || true
   fi
   boot_diagnose "$TILO_SERIAL" || true
   if [ -s "$TILO_SERIAL" ]; then
@@ -381,10 +426,47 @@ cmd_click() {
   hmp "mouse_button 0" >/dev/null
 }
 
+# The greeter answers its console once its event loop runs; typed keys still
+# only reach the form once the compositor maps and focuses the window. Prefer
+# the greeter's own accepts_input report over a blank-screen heuristic.
+greeter_console() {
+  python3 "$(dirname "${BASH_SOURCE[0]}")/installer-console.py" --socket "$TILO_CONSOLE" "$@"
+}
+
+wait_greeter_input() {
+  greeter_console wait greeter --timeout 180 \
+    || die "tilo-greeter never answered on its console ($TILO_CONSOLE)"
+  local attempts="${TILO_GREETER_INPUT_ATTEMPTS:-120}" i
+  for i in $(seq 1 "$attempts"); do
+    greeter_accepts_input && return 0
+    vm_running || die "qemu exited before the greeter accepted input"
+    sleep 1
+  done
+  greeter_console check greeter /accepts_input --timeout 5 >&2 || true
+  die "the greeter did not accept input; nothing was typed"
+}
+
+# After Enter the greeter either leaves sign-in or exits into the session.
+check_login_submitted() {
+  local i phase
+  for i in $(seq 1 30); do
+    phase="$(greeter_console state 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("phase", ""))' 2>/dev/null)" \
+      || phase=""
+    [ "$phase" = sign-in ] || return 0
+    sleep 1
+  done
+  # A session that dies at once sends greetd back to the greeter. Its own
+  # log, in the user's state directory, is the only record of why.
+  gssh 'f="$HOME/.local/state/tilo/session-logs/latest.log"; [ -f "$f" ] && { echo "--- $f"; tail -n 80 "$f"; }; journalctl -b --no-pager -o short-monotonic -n 40 _UID="$(id -u)"' >&2 2>/dev/null || true
+  die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
+}
+
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
   local u="${1:-$TILO_USER}" p="${2:-$TILO_PASS}"
+  wait_greeter_input
   if [ "$passcode_only" -eq 1 ]; then
     p="${1:-$TILO_PASS}"
     msg "logging in with the installed user's passcode"
@@ -393,6 +475,7 @@ cmd_login() {
     cmd_type "$p"
     cmd_keys ret
     msg "passcode sent"
+    check_login_submitted
     return
   fi
   msg "logging in as $u"
@@ -408,6 +491,33 @@ cmd_login() {
   cmd_type "$p"
   cmd_keys ret
   msg "credentials sent"
+  check_login_submitted
+}
+
+# The sign-in screen as a person meets it, judged from what QEMU scans out.
+# Leaves the form focused on an empty passcode field, ready for `login`.
+cmd_greeter_acceptance() {
+  local dir="${1:-$TILO_RUN/greeter}"
+  wait_greeter_input
+  mkdir -p "$dir"
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --monitor "$TILO_MON" \
+    --console "$TILO_CONSOLE" --out "$dir" --width "$TILO_XRES" --height "$TILO_YRES"
+}
+
+# One capture of whatever is on screen now, saved as NAME.png and required to
+# be fully painted.
+cmd_check_frame() {
+  local name="${1:?usage: check-frame NAME [DIR]}" dir="${2:-$TILO_RUN/greeter}"
+  mkdir -p "$dir"
+  local ppm="$dir/$name.ppm" reply
+  rm -f "$ppm"
+  reply="$(hmp "screendump $ppm" 2>&1 || true)"
+  if printf '%s' "$reply" | grep -qi 'no surface'; then
+    die "QEMU has no 2D surface to capture for $name"
+  fi
+  local i
+  for i in $(seq 1 50); do [ -s "$ppm" ] && break; sleep 0.1; done
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --check-image "$ppm" --png "$dir/$name.png"
 }
 
 cmd_serial() {
@@ -426,7 +536,9 @@ cmd_wait_greeter_return() {
   local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
   msg "waiting for Tilo logout to return to the greeter ..."
   for i in $(seq 1 "$attempts"); do
-    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+    # The compositor's portal backend name, not its /proc entry, which turns
+    # non-dumpable once it holds identity keys.
+    if gssh "! busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
       msg "greeter returned after logout (~$i s)"
       return 0
     fi
@@ -535,6 +647,8 @@ case "$sub" in
   status) cmd_status;;
   stop) cmd_stop;;
   capture-boot) cmd_capture_boot "$@";;
+  greeter-acceptance) cmd_greeter_acceptance "$@";;
+  check-frame) cmd_check_frame "$@";;
   -h|--help|"") sed -n '2,51p' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

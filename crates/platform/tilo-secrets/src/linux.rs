@@ -7,9 +7,15 @@
 //! `application = <app id>` and `purpose = <key>`. Locked collections and
 //! items are unlocked through the service's own prompt; dismissing it is
 //! [`SecretError::Denied`].
+//!
+//! Every call runs on one bus thread of this module's own. zbus' blocking API
+//! drives each call on a runtime of its own, which panics on a thread that
+//! already drives a tokio runtime, and callers include services answering on
+//! their runtime's thread. They wait on the bus thread instead, for as long
+//! as the person takes to answer a prompt.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
@@ -39,13 +45,96 @@ fn session() -> Result<std::sync::MutexGuard<'static, Option<Session>>, SecretEr
         .lock()
         .map_err(|_| SecretError::Failed("secret session poisoned".into()))?;
     if guard.is_none() {
-        let connection = Connection::session().map_err(unavailable)?;
-        let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
-            .call("OpenSession", &("plain", Value::from("")))
-            .map_err(unavailable)?;
-        *guard = Some(Session { connection, path });
+        *guard = Some(open_session()?);
     }
     Ok(guard)
+}
+
+fn open_session() -> Result<Session, SecretError> {
+    let connection = Connection::session().map_err(unavailable)?;
+    // A process the store cannot examine proves who it is first; one it can
+    // examine does nothing here. A failed proof is not an error of its own:
+    // the store then refuses the calls, as it would have without it.
+    let _proved = crate::device_proof::prove_blocking(&connection);
+    let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
+        .call("OpenSession", &("plain", Value::from("")))
+        .map_err(unavailable)?;
+    Ok(Session { connection, path })
+}
+
+/// Why one attempt at a call failed: the service no longer knows this
+/// process's session (it restarted since the session was opened), it
+/// refused a process that identifies itself by proof (a restarted service
+/// has forgotten the proof too), or anything else.
+enum Attempt {
+    StaleSession,
+    Refused(SecretError),
+    Failed(SecretError),
+}
+
+impl From<SecretError> for Attempt {
+    fn from(error: SecretError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// [`failed`] for a call that names this process's session: a service that
+/// restarted since the session was opened answers `NoSession`.
+fn session_call_failed(error: zbus::Error) -> Attempt {
+    if let zbus::Error::MethodError(name, _, _) = &error {
+        if name.as_str() == "org.freedesktop.Secret.Error.NoSession" {
+            return Attempt::StaleSession;
+        }
+        if name.as_str() == "org.freedesktop.Secret.Error.AccessDenied"
+            && crate::device_proof::in_use()
+        {
+            return Attempt::Refused(failed(error));
+        }
+    }
+    Attempt::Failed(failed(error))
+}
+
+/// Run `call` with the process's session. A session the service has
+/// forgotten (it restarted, through D-Bus activation or its unit's
+/// `Restart=`) is reopened and the call made once more, so a long-lived
+/// client's first call after a restart does not fail. A process that
+/// proves who it is gets the same second attempt after a refusal, on a
+/// connection that proved again.
+fn with_session<T>(call: impl Fn(&Session) -> Result<T, Attempt>) -> Result<T, SecretError> {
+    let mut guard = session()?;
+    let result = call_reopening(&mut guard, call);
+    reset_on_disconnect(&mut guard, &result);
+    drop(guard);
+    result
+}
+
+/// [`with_session`]'s call on `current`, reopening it once if the service
+/// forgot it.
+fn call_reopening<T>(
+    current: &mut Option<Session>,
+    call: impl Fn(&Session) -> Result<T, Attempt>,
+) -> Result<T, SecretError> {
+    let attempt = |current: &Option<Session>| match current {
+        Some(session) => call(session),
+        None => Err(Attempt::Failed(SecretError::Denied)),
+    };
+    let mut result = attempt(current);
+    if matches!(result, Err(Attempt::StaleSession | Attempt::Refused(_))) {
+        *current = None;
+        result = match open_session() {
+            Ok(session) => {
+                *current = Some(session);
+                attempt(current)
+            }
+            Err(error) => Err(Attempt::Failed(error)),
+        };
+    }
+    result.map_err(|attempt| match attempt {
+        Attempt::StaleSession => {
+            SecretError::Failed("the Secret Service forgot a session it had just opened".into())
+        }
+        Attempt::Refused(error) | Attempt::Failed(error) => error,
+    })
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "a `map_err` adapter")]
@@ -117,15 +206,59 @@ fn unlock(connection: &Connection, objects: Vec<OwnedObjectPath>) -> Result<(), 
 fn items(
     connection: &Connection,
     attributes: &HashMap<&str, &str>,
-) -> Result<Vec<OwnedObjectPath>, SecretError> {
+) -> Result<Vec<OwnedObjectPath>, Attempt> {
     let (mut unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service(connection)?
         .call("SearchItems", &(attributes,))
-        .map_err(failed)?;
+        .map_err(session_call_failed)?;
     if !locked.is_empty() {
         unlock(connection, locked.clone())?;
         unlocked.extend(locked);
     }
     Ok(unlocked)
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// The bus thread's queue and identity. `None` when the thread could not
+/// start.
+fn bus() -> Option<&'static (Mutex<mpsc::Sender<Job>>, std::thread::ThreadId)> {
+    static BUS: OnceLock<Option<(Mutex<mpsc::Sender<Job>>, std::thread::ThreadId)>> =
+        OnceLock::new();
+    BUS.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let thread = tilo_rt::spawn_thread("tilo-secrets-bus", move || {
+            while let Ok(job) = rx.recv() {
+                job();
+            }
+        })
+        .ok()?;
+        Some((Mutex::new(tx), thread.thread().id()))
+    })
+    .as_ref()
+}
+
+/// Run `call` on the bus thread and wait for its answer.
+fn on_bus<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, SecretError> + Send + 'static,
+) -> Result<T, SecretError> {
+    let (queue, thread) = bus().ok_or_else(|| {
+        SecretError::Unavailable("the secret store's bus thread did not start".into())
+    })?;
+    if std::thread::current().id() == *thread {
+        return call();
+    }
+    let (reply, answer) = mpsc::channel();
+    let job: Job = Box::new(move || {
+        let _ = reply.send(call());
+    });
+    queue
+        .lock()
+        .map_err(|_| SecretError::Failed("secret store queue poisoned".into()))?
+        .send(job)
+        .map_err(|_| SecretError::Unavailable("the secret store's bus thread ended".into()))?;
+    answer
+        .recv()
+        .unwrap_or_else(|_| Err(SecretError::Failed("the secret store call was lost".into())))
 }
 
 impl SecretBackend for SecretService {
@@ -134,112 +267,95 @@ impl SecretBackend for SecretService {
     }
 
     fn probe(&self) -> Result<(), SecretError> {
-        session().map(drop)
+        on_bus(|| session().map(drop))
     }
 
     fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
-        lookup(&attributes(app, key))
+        let (app, key) = (app.to_owned(), key.to_owned());
+        on_bus(move || lookup(&attributes(&app, &key)))
     }
 
     fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
-        let mut guard = session()?;
-        let result = (|| {
-            let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
-            let collection = proxy(
-                connection,
-                DEFAULT_COLLECTION,
-                "org.freedesktop.Secret.Collection",
-            )?;
-            if collection.get_property::<bool>("Locked").map_err(failed)? {
-                let default = OwnedObjectPath::try_from(DEFAULT_COLLECTION)
-                    .map_err(|error| SecretError::Failed(error.to_string()))?;
-                unlock(connection, vec![default])?;
-            }
-            let properties: HashMap<&str, Value<'_>> = HashMap::from([
-                ("org.freedesktop.Secret.Item.Label", Value::from(label)),
-                (
-                    "org.freedesktop.Secret.Item.Attributes",
-                    Value::from(attributes(app, key)),
-                ),
-            ]);
-            let secret = (
-                path,
-                Vec::<u8>::new(),
-                value.to_vec(),
-                "application/octet-stream",
-            );
-            let (_item, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
-                .call("CreateItem", &(properties, secret, true))
-                .map_err(failed)?;
-            if complete_prompt(connection, &prompt)? {
-                Ok(())
-            } else {
-                Err(SecretError::Denied)
-            }
-        })();
-        reset_on_disconnect(&mut guard, &result);
-        result
+        let (app, key, label) = (app.to_owned(), key.to_owned(), label.to_owned());
+        let value = zeroize::Zeroizing::new(value.to_vec());
+        on_bus(move || create(&app, &key, &value, &label))
     }
 
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError> {
-        remove(&attributes(app, key))
+        let (app, key) = (app.to_owned(), key.to_owned());
+        on_bus(move || remove(&attributes(&app, &key)))
     }
+}
 
-    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-        if attributes.is_empty() {
-            return Ok(None);
+/// Store `value` under `app` and `key` in the default collection.
+fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
+    with_session(|Session { connection, path }| {
+        let collection = proxy(
+            connection,
+            DEFAULT_COLLECTION,
+            "org.freedesktop.Secret.Collection",
+        )?;
+        if collection.get_property::<bool>("Locked").map_err(failed)? {
+            let default = OwnedObjectPath::try_from(DEFAULT_COLLECTION)
+                .map_err(|error| SecretError::Failed(error.to_string()))?;
+            unlock(connection, vec![default])?;
         }
-        lookup(&attributes.iter().copied().collect())
-    }
-
-    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-        if attributes.is_empty() {
-            return Ok(());
+        let properties: HashMap<&str, Value<'_>> = HashMap::from([
+            ("org.freedesktop.Secret.Item.Label", Value::from(label)),
+            (
+                "org.freedesktop.Secret.Item.Attributes",
+                Value::from(attributes(app, key)),
+            ),
+        ]);
+        let secret = (
+            path,
+            Vec::<u8>::new(),
+            value.to_vec(),
+            "application/octet-stream",
+        );
+        let (_item, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
+            .call("CreateItem", &(properties, secret, true))
+            .map_err(session_call_failed)?;
+        if complete_prompt(connection, &prompt)? {
+            Ok(())
+        } else {
+            Err(SecretError::Denied.into())
         }
-        remove(&attributes.iter().copied().collect())
-    }
+    })
 }
 
 /// The first item carrying `attributes`, in search order, as `secret-tool
 /// lookup` reads it.
 fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Secret>, SecretError> {
-    let mut guard = session()?;
-    let result = (|| {
-        let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
+    with_session(|Session { connection, path }| {
         let found = items(connection, attributes)?;
         if found.is_empty() {
             return Ok(None);
         }
         let secrets: HashMap<OwnedObjectPath, WireSecret> = service(connection)?
             .call("GetSecrets", &(found.clone(), path))
-            .map_err(failed)?;
+            .map_err(session_call_failed)?;
         Ok(found
             .iter()
             .find_map(|item| secrets.get(item))
             .map(|(_, _, value, _)| Secret::new(value.clone())))
-    })();
-    reset_on_disconnect(&mut guard, &result);
-    result
+    })
 }
 
 /// Delete every item carrying `attributes`.
 fn remove(attributes: &HashMap<&str, &str>) -> Result<(), SecretError> {
-    let mut guard = session()?;
-    let result = (|| {
-        let Session { connection, .. } = guard.as_ref().ok_or(SecretError::Denied)?;
+    with_session(|Session { connection, .. }| {
         for item in items(connection, attributes)? {
             let prompt: OwnedObjectPath =
                 proxy(connection, item.as_str(), "org.freedesktop.Secret.Item")?
                     .call("Delete", &())
                     .map_err(failed)?;
             if !complete_prompt(connection, &prompt)? {
-                return Err(SecretError::Denied);
+                return Err(SecretError::Denied.into());
             }
         }
         Ok(())
-    })();
-    reset_on_disconnect(&mut guard, &result);
-    result
+    })
 }
 
 /// Drop the session after a transport failure, so the next call reconnects
@@ -250,5 +366,39 @@ fn reset_on_disconnect<T>(session: &mut Option<Session>, result: &Result<T, Secr
         Err(SecretError::Unavailable(_) | SecretError::Failed(_))
     ) {
         *session = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service answering on its runtime's thread (the collaboration
+    /// broker presenting an app's presence) reached the secret store and
+    /// aborted the session: zbus' blocking call panicked inside the runtime.
+    #[test]
+    fn a_runtime_thread_gets_an_answer_rather_than_a_panic() {
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", scratch.path().join("no-bus").display()),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (probe, read) = runtime.block_on(async {
+            (
+                SecretService.probe(),
+                SecretService.get("so.tilo.test", "missing"),
+            )
+        });
+        assert!(
+            matches!(probe, Err(SecretError::Unavailable(_))),
+            "{probe:?}"
+        );
+        assert!(read.is_err(), "{read:?}");
+        drop(env);
     }
 }

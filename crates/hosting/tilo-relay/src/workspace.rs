@@ -11,8 +11,9 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
-use crate::store::{CommitRecord, LogEntry, WorkspaceStore};
+use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
+use tilo_lock::MutexRecover as _;
 
 /// Membership set for a workspace on this relay. Populated by the
 /// admin (`bind-workspace`) via the workspace-directory CRDT and
@@ -31,10 +32,26 @@ impl Membership {
         self.devices.contains(device)
     }
 
-    /// Replace the membership with a new set.
+    /// Replace the membership with a new set. A set that leaves out a device
+    /// of the old one wakes the sessions admitted under it to re-check
+    /// ([`crate::authority_epoch`]). One that only adds devices narrows
+    /// nobody's access and wakes nobody: a public room admitting a crowd
+    /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
-        self.devices = devices;
+        if self.devices != devices {
+            let narrowed = leaves_out(&self.devices, &devices);
+            self.devices = devices;
+            if narrowed {
+                crate::authority_epoch::bump();
+            }
+        }
     }
+}
+
+/// Whether `next` leaves out a device `previous` lists.
+fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
+    let kept: std::collections::HashSet<&[u8; 32]> = next.iter().collect();
+    previous.iter().any(|device| !kept.contains(device))
 }
 
 /// One live subscription — the outbound envelope channel a
@@ -57,6 +74,9 @@ pub struct Subscriber {
     pub disconnect: mpsc::Sender<()>,
 }
 
+/// The standing of each member device of a room, by device key.
+pub type Standings = std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>;
+
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
@@ -67,6 +87,11 @@ pub struct WorkspaceRuntime {
     /// The in-process authority governing this workspace's room, if any: it
     /// answers the room's calls.
     pub(crate) room_authority: Option<crate::rooms::RoomAuthority>,
+    /// The standing of each member device, as the room's governor projects
+    /// it: what the relay decides each change's claimed action against.
+    /// `None` until a governor projects one; the relay then decides changes
+    /// against their app surface alone.
+    pub(crate) standings: Option<Arc<Standings>>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -82,10 +107,16 @@ pub struct WorkspaceRuntime {
     /// Failed/pending replacements cap what an old external file may grant.
     pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
     pub(crate) membership_revision: u64,
-    /// Whether any connection already admitted by the relay's trust policy may
-    /// join this workspace. Enabled automatically for matching-user home hosts;
-    /// shared/multi-tenant hosts use an explicit membership list.
-    pub admit_authenticated: bool,
+    /// The daemon's watch on this room's membership files, attached on the
+    /// first fresh read once a watch covers the state root.
+    pub(crate) disk_generation: Option<crate::membership_watch::DiskGeneration>,
+    /// The watched generation `membership` was last loaded at. `None` until a
+    /// live watch vouched for a load, so every read goes to the disk.
+    pub(crate) loaded_generation: Option<u64>,
+    /// How the room admits devices beyond its exact membership: explicitly,
+    /// the relay owner's devices on a same-owner home host, or under native
+    /// governance. Read only through [`crate::room_access::decide`].
+    pub(crate) admission: crate::room_access::AdmissionMode,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
     /// User roots needed only to pass the relay-wide handshake for devices in
@@ -93,9 +124,10 @@ pub struct WorkspaceRuntime {
     /// `membership`; keeping this separate from `admitted_users` prevents an
     /// ungoverned sibling device under the same root from joining.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Whether native governance owns this room's admission. Once set, the
-    /// same-owner autobind path must not auto-enrol handshake-admitted devices.
-    pub governed_access: bool,
+    /// Who may watch this room read-only without being one of its members,
+    /// when its host lets visitors watch it. Read only through
+    /// [`crate::room_access::decide`].
+    pub(crate) spectators: Option<crate::room_access::Spectators>,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -120,15 +152,55 @@ pub struct WorkspaceRuntime {
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// The presence mailbox of each subscriber whose connection takes its
+    /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
+    /// right after the subscription it belongs to and dropped with it; a
+    /// subscriber without one gets each presence on its frame queue.
+    presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
+    /// Authors with a delta admitted here and not yet fanned out, and when
+    /// it arrived: the caret and typing that follow it wait up to
+    /// [`crate::presence_mailbox::DELTA_HOLD`] to go with it.
+    /// Published deltas leave at once; entries older than the hold are
+    /// dropped whenever one is noted, so it holds at most the authors typing
+    /// right now.
+    recent_deltas: HashMap<[u8; 32], tokio::time::Instant>,
     /// Subscribers that joined the live plane, with their rate budgets.
     live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
     commits: CommitLedger,
-    /// Held by a `Commit` from its ledger check until it is admitted and
-    /// recorded, so two copies of one commit cannot both be admitted.
-    pub(crate) commit_gate: Arc<AsyncMutex<()>>,
+    /// Commits being admitted, by author and operation id, each held from
+    /// its ledger check until it is admitted and recorded
+    /// ([`Self::claim_commit`]): two copies of one commit cannot both be
+    /// admitted, while different commits are admitted side by side. One
+    /// gate for the whole room held every commit through the previous one's
+    /// durability and publication, so a busy room committed one change at a
+    /// time.
+    commit_claims: CommitClaims,
+    /// Held from a commit's [`Self::remember_commit`] until its ledger write
+    /// is done, so ledger writes reach the file in the order they were
+    /// remembered.
+    pub(crate) commit_ledger_lane: Arc<AsyncMutex<()>>,
+}
+
+/// The commits a room is admitting, by author and operation id, each with
+/// the lock its copies wait on.
+type CommitClaims = Arc<std::sync::Mutex<HashMap<([u8; 32], [u8; 16]), Arc<AsyncMutex<()>>>>>;
+
+/// A commit's claim on its author and operation id
+/// ([`WorkspaceRuntime::claim_commit`]), released when dropped.
+pub(crate) struct CommitClaim {
+    claims: CommitClaims,
+    key: ([u8; 32], [u8; 16]),
+    // Dropped after the entry is gone, waking the copies that waited on it.
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for CommitClaim {
+    fn drop(&mut self) {
+        self.claims.lock_recover().remove(&self.key);
+    }
 }
 
 /// Admitted commits a workspace remembers. A browser resends its whole
@@ -229,6 +301,14 @@ impl LiveBudget {
 /// The first bytes of every Automerge chunk (document, change or bundle).
 const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
+/// Whether `bytes` can be an Automerge chunk. Automerge logs every chunk it
+/// cannot parse before returning the error, and the deltas a relay routes
+/// are mostly co-edit wrappers and sealed channel payloads, which never start
+/// with its magic: only bytes that do are worth handing to its parser.
+pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
+    bytes.starts_with(&AUTOMERGE_MAGIC)
+}
+
 impl WorkspaceRuntime {
     /// Build a runtime for a bound workspace. Loads the snapshot
     /// from disk if pinned + present.
@@ -244,7 +324,36 @@ impl WorkspaceRuntime {
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, false)
+        Self::open_with_payloads(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            crate::payloads::neighbour(),
+        )
+    }
+
+    /// [`Self::open`], its store classifying retained co-edit bodies with
+    /// `payloads`, the adapter the host was started with.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::open`].
+    pub fn open_with_payloads(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            payloads,
+            false,
+        )
     }
 
     /// Open a pinned workspace only when its durable snapshot already exists.
@@ -255,8 +364,9 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, true)
+        Self::open_inner(state_root, workspace_id, pinned, membership, payloads, true)
     }
 
     fn open_inner(
@@ -264,11 +374,16 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
         require_snapshot: bool,
     ) -> Result<Self, crate::store::StoreError> {
-        let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
-        let governed_access = governed_access_record.is_some();
+        let admission = if governed_access_record.is_some() {
+            crate::room_access::AdmissionMode::Governed
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        };
         let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
             access.member_user_roots.into_iter().collect()
         });
@@ -308,10 +423,12 @@ impl WorkspaceRuntime {
             authorization: Arc::new(AsyncMutex::new(())),
             membership_ceiling: None,
             membership_revision: 0,
-            admit_authenticated: false,
+            disk_generation: None,
+            loaded_generation: None,
+            admission,
             admitted_users: HashSet::new(),
             governed_user_roots,
-            governed_access,
+            spectators: None,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
@@ -320,13 +437,17 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
+            presence_mailboxes: HashMap::new(),
+            recent_deltas: HashMap::new(),
             sync_refresh: None,
             governor_tap: None,
             room_authority: None,
+            standings: None,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,
-            commit_gate: Arc::new(AsyncMutex::new(())),
+            commit_claims: Arc::default(),
+            commit_ledger_lane: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -335,9 +456,38 @@ impl WorkspaceRuntime {
         self.commits.by_op.get(&(*author, *op)).copied()
     }
 
+    /// Claim `author`'s commit `op` for admission. Called under the room's
+    /// lock right after [`Self::admitted_commit`] found no record of it, so a
+    /// copy of the commit either sees the claim or, once the claim is
+    /// released after [`Self::remember_commit`], the record. A copy that
+    /// finds the claim gets its lock to wait on, and checks both again.
+    pub(crate) fn claim_commit(
+        &self,
+        author: [u8; 32],
+        op: [u8; 16],
+    ) -> Result<CommitClaim, Arc<AsyncMutex<()>>> {
+        let key = (author, op);
+        let mut claims = self.commit_claims.lock_recover();
+        if let Some(held) = claims.get(&key) {
+            return Err(held.clone());
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        let Ok(held) = lock.clone().try_lock_owned() else {
+            // A lock no one else has seen is free.
+            return Err(lock);
+        };
+        claims.insert(key, lock);
+        drop(claims);
+        Ok(CommitClaim {
+            claims: self.commit_claims.clone(),
+            key,
+            _held: held,
+        })
+    }
+
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
-    /// workspace lock and in admission order (see `commit_gate`).
+    /// workspace lock and in remembering order (see `commit_ledger_lane`).
     pub fn remember_commit(&mut self, record: CommitRecord) -> CommitLedgerWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);
@@ -480,15 +630,35 @@ impl WorkspaceRuntime {
             .is_some_and(|current| current.tx.same_channel(&sub.tx))
         {
             self.action_targets.remove(&sub.device_public_key);
+            self.presence_mailboxes.remove(&sub.device_public_key);
             if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
                 session
                     .live
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
+            if self.subscribers.contains_key(&sub.device_public_key) {
+                // The displaced connection is no longer the device's current
+                // session; its next access audit ends it.
+                crate::authority_epoch::bump();
+            }
         }
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
         self.subscribers.insert(sub.device_public_key, sub);
+    }
+
+    /// Hand the presence fanned out to subscriber `device` to its
+    /// connection's `mailbox` rather than its frame queue. Call right after
+    /// [`Self::add_subscriber`] registered that connection; replacing or
+    /// removing the subscription drops the route.
+    pub fn route_presence(
+        &mut self,
+        device: [u8; 32],
+        mailbox: Arc<crate::presence_mailbox::PresenceMailbox>,
+    ) {
+        if self.subscribers.contains_key(&device) {
+            self.presence_mailboxes.insert(device, mailbox);
+        }
     }
 
     /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
@@ -516,6 +686,17 @@ impl WorkspaceRuntime {
         }
     }
 
+    /// Whether `membership` reflects the files on disk without reading them:
+    /// a live watch has seen no change to them since they were last loaded.
+    pub(crate) fn membership_is_current(&self) -> bool {
+        self.loaded_generation.is_some()
+            && self.loaded_generation
+                == self
+                    .disk_generation
+                    .as_ref()
+                    .and_then(crate::membership_watch::DiskGeneration::current)
+    }
+
     /// Remember an authenticated device before sharing this runtime, so deltas
     /// received while it is offline are queued across daemon restarts. Live
     /// sessions use the serialized async admission in `workspace_io`.
@@ -535,8 +716,13 @@ impl WorkspaceRuntime {
 
     /// Drop a subscription for `device`, and its live membership. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
-        self.subscribers.remove(device);
+        if self.subscribers.remove(device).is_some() {
+            // A connection whose subscription went is ended by its next
+            // access audit.
+            crate::authority_epoch::bump();
+        }
         self.action_targets.remove(device);
+        self.presence_mailboxes.remove(device);
         if let Some(session) = self.state_sessions.remove(device) {
             session
                 .live
@@ -609,10 +795,6 @@ impl WorkspaceRuntime {
     /// Returns an error if `envelope` can't be re-encoded for the
     /// durable queue, or if persisting it (pending, checkpoint, or
     /// retained tail) fails.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
@@ -644,15 +826,15 @@ impl WorkspaceRuntime {
                     "delta workspace or authenticated author mismatch",
                 )));
             }
-            crate::coedit::CoeditPayload::decode(delta)
+            crate::coedit::retention_metadata(delta)
         } else {
             None
         };
         match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
                 self.store.retain_checkpoint(channel, &raw)?;
             }
-            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Delta)) => {
                 self.store.retain_delta(channel, seq, &raw)?;
             }
             None => {}
@@ -673,7 +855,7 @@ impl WorkspaceRuntime {
         // (hello / SyncReq / rejected checkpoint). Peer relays always receive
         // it so they can federate; retention and offline queues are unchanged.
         let checkpoint_channel = match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(*channel),
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
         };
         let mut delivered = 0usize;
@@ -751,14 +933,6 @@ impl WorkspaceRuntime {
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
-        // 3. Audit log — best-effort; failure does not block routing.
-        let _ = self.store.append_log(&LogEntry {
-            workspace_id: self.store.workspace_id(),
-            received_at_ns: seq,
-            author_device_hex: hex::encode(author),
-            authored_at_ns: seq,
-            delta_len: raw_delta_bytes.len() as u64,
-        });
         // 4. Materialize into the pinned doc so the host holds
         //    authoritative current state (the source for anti-entropy
         //    resync), not just per-peer queues. Runs AFTER fan-out +
@@ -783,10 +957,7 @@ impl WorkspaceRuntime {
     ///   doc + snapshot untouched;
     /// - a delta that adds nothing new writes no snapshot.
     fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        // Automerge logs every chunk it cannot parse at error level before
-        // returning the error, and co-edit wrappers never start with its
-        // magic.
-        if !delta_bytes.starts_with(&AUTOMERGE_MAGIC) {
+        if !is_automerge_chunk(delta_bytes) {
             return false;
         }
         let Some(current) = self.doc.as_ref() else {
@@ -872,21 +1043,64 @@ impl WorkspaceRuntime {
         Ok(true)
     }
 
+    /// Note that `author` sent a delta at `now`, before it is admitted: the
+    /// caret and typing it sends next are held to go with it
+    /// ([`Self::fanout_presence`]) until it is published.
+    pub fn note_delta(&mut self, author: [u8; 32], now: tokio::time::Instant) {
+        let hold = crate::presence_mailbox::DELTA_HOLD;
+        self.recent_deltas
+            .retain(|_, at| now.saturating_duration_since(*at) < hold);
+        self.recent_deltas.insert(author, now);
+    }
+
+    /// `author`'s delta is being fanned out: what it sends from now on has
+    /// nothing to wait for.
+    pub fn delta_published(&mut self, author: &[u8; 32]) {
+        self.recent_deltas.remove(author);
+    }
+
     /// Route a presence envelope (no persistence, drop-on-empty).
-    /// Same echo-suppression rule as `fanout_delta`.
+    /// Same echo-suppression rule as `fanout_delta`. A subscriber whose
+    /// connection has a presence mailbox gets it there, coalesced under
+    /// `slot` with the author's later presence; the payload is shared by every
+    /// such subscriber, not copied. Presence from an author who sent a delta
+    /// within [`crate::presence_mailbox::DELTA_HOLD`] is posted held, to go
+    /// with that delta.
     pub fn fanout_presence(
         &mut self,
         author: &[u8; 32],
         from_role: PeerRole,
         envelope: &Envelope,
+        slot: Option<neighbour_wire::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut shared: Option<Arc<[u8]>> = None;
+        let now = tokio::time::Instant::now();
+        let held = self.recent_deltas.get(author).is_some_and(|at| {
+            now.saturating_duration_since(*at) < crate::presence_mailbox::DELTA_HOLD
+        });
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+                continue;
+            }
+            if let (
+                Some(mailbox),
+                Envelope::Presence {
+                    workspace_id,
+                    payload,
+                },
+            ) = (self.presence_mailboxes.get(peer), envelope)
+            {
+                let payload = shared
+                    .get_or_insert_with(|| Arc::from(payload.as_slice()))
+                    .clone();
+                if mailbox.post(*workspace_id, *author, slot, payload, now, held) {
+                    delivered = delivered.saturating_add(1);
+                }
                 continue;
             }
             match sub.tx.try_send(envelope.clone()) {
@@ -916,7 +1130,23 @@ impl WorkspaceRuntime {
         }
         let _ = sub.disconnect.try_send(());
         self.subscribers.remove(target);
+        crate::authority_epoch::bump();
         false
+    }
+
+    /// Deliver a directed live envelope to the subscriber `target` only, or
+    /// drop it when that subscriber's queue is full: like presence, a busy
+    /// reader loses the envelope, never its connection.
+    pub fn route_lossy(&self, target: &[u8; 32], envelope: Envelope) -> bool {
+        self.subscribers
+            .get(target)
+            .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
+    }
+
+    /// The outbound queue of the live subscriber `target`, for a caller
+    /// that waits for room in it rather than dropping what does not fit.
+    pub fn subscriber_queue(&self, target: &[u8; 32]) -> Option<mpsc::Sender<Envelope>> {
+        self.subscribers.get(target).map(|sub| sub.tx.clone())
     }
 }
 
@@ -935,6 +1165,17 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    /// Only a membership that leaves a device out narrows anyone's access,
+    /// and so wakes the sessions admitted under it.
+    #[test]
+    fn only_a_membership_that_leaves_a_device_out_narrows() {
+        assert!(!leaves_out(&[[1; 32]], &[[1; 32], [2; 32]]));
+        assert!(!leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [1; 32]]));
+        assert!(!leaves_out(&[], &[[3; 32]]));
+        assert!(leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [3; 32]]));
+        assert!(leaves_out(&[[1; 32]], &[]));
+    }
 
     /// An auto-bound workspace is pinned, and every delta a session sends is
     /// a co-edit wrapper: routing one must not reach Automerge's parser,
@@ -1823,5 +2064,106 @@ mod tests {
         .unwrap();
         assert!(!rt.subscribers.contains_key(&dead_peer));
         assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
+    }
+
+    /// A keystroke's caret and typing follow its delta from the same author;
+    /// they are held to go with it, and nobody else's are.
+    #[test]
+    fn presence_after_an_authors_delta_is_held_for_it() {
+        use crate::presence_mailbox::{BATCH_WINDOW, DELTA_HOLD, PresenceMailbox};
+        use tokio::time::Instant;
+
+        const AUTHOR: [u8; 32] = [1; 32];
+        const RECIPIENT: [u8; 32] = [2; 32];
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: RECIPIENT,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        let mailbox = Arc::new(PresenceMailbox::default());
+        rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
+        let caret = Some(neighbour_wire::PresenceSlot {
+            id: 1,
+            motion: false,
+        });
+        let presence = Envelope::Presence {
+            workspace_id: 9,
+            payload: b"caret".to_vec(),
+        };
+
+        // No delta: the caret goes after the batch window.
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+
+        // Right after the author's delta: held for it.
+        let before = Instant::now();
+        rt.note_delta(AUTHOR, before);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert!(
+            mailbox
+                .next_due()
+                .is_some_and(|due| due >= before + DELTA_HOLD)
+        );
+        assert_eq!(
+            mailbox.take(Instant::now(), true).len(),
+            1,
+            "it rides with the delta"
+        );
+
+        // Once the delta is published, nothing waits for it.
+        rt.note_delta(AUTHOR, Instant::now());
+        rt.delta_published(&AUTHOR);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+
+        // Another author's delta holds nothing of this author's.
+        rt.note_delta([3; 32], Instant::now());
+        let other = Instant::now() - DELTA_HOLD;
+        rt.note_delta(AUTHOR, other);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+    }
+
+    /// A commit's claim is its own: a copy of it waits for the claim and
+    /// then finds it recorded, while another commit is claimed at once.
+    #[tokio::test]
+    async fn a_commit_claim_holds_off_its_copies_only() {
+        const AUTHOR: [u8; 32] = [1; 32];
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let claim = rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap();
+        let other = rt.claim_commit(AUTHOR, [2; 16]).ok().unwrap();
+        let elsewhere = rt.claim_commit([2; 32], [1; 16]).ok().unwrap();
+        let Err(copy) = rt.claim_commit(AUTHOR, [1; 16]) else {
+            panic!("a copy of a claimed commit was claimed again");
+        };
+        assert!(
+            copy.try_lock().is_err(),
+            "a copy must wait while the commit is admitted"
+        );
+        let waiting = tokio::spawn(async move { drop(copy.lock().await) });
+        drop(claim);
+        waiting.await.unwrap();
+        // Released: the copy (or a later resend) claims it again, now that
+        // the ledger is the one to answer it.
+        drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
+        drop((other, elsewhere));
     }
 }

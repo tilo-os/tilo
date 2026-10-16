@@ -22,7 +22,7 @@
 //! while a code is displayed, or when nobody answers within the agent's
 //! timeout — never by being silently accepted.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
 use std::time::Duration;
@@ -32,6 +32,7 @@ use tilo_bluez::BluezClient;
 #[cfg(target_os = "linux")]
 use tilo_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
 use tilo_bluez::{PairingReply, PairingReplySender, PairingRequest};
+use tilo_lock::MutexRecover as _;
 use tracing::{info, warn};
 
 /// How long after the agent gives up on a question the dialog comes down.
@@ -83,7 +84,7 @@ impl PairingPromptHandle {
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, PairingState> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     /// Wake `wake` whenever a question appears, changes or goes away.

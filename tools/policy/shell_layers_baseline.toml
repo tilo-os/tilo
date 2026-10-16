@@ -1,0 +1,237 @@
+# Layering of the `shell` crate split, checked by tools/policy/check_shell_layers.py
+# (docs/policies.md, Shell layers). Every list only shrinks: an entry the code no longer needs
+# fails as stale, and a new edge or dependency fails until it is removed or
+# argued for in review. `check_shell_layers.py --write-baseline` drops stale
+# entries; it never adds one.
+
+# Service modules (paths relative to crates/session/shell) and the compositor,
+# chrome or renderer paths they still reach.
+[modules]
+
+# The workspace model asks the launcher for installed apps and action authority, and
+# doc_open for file labels. These go when those answers are handed to the model, ahead
+# of moving it into its own crate.
+"src/shell/state.rs" = [
+    "crate::shell::doc_open",
+    "crate::shell::launcher",
+]
+
+# Persistence reads launch keys from the launcher's process-wide table. This goes when
+# the model records a window's launch key itself.
+"src/shell/persist.rs" = [
+    "crate::shell::launcher",
+]
+
+# The network bridge writes trusted-identity projections and pending placements into the
+# launcher and answers invitations with an overlay type. These go when the launcher and
+# the overlay read the bridge's events instead.
+"src/shell/network.rs" = [
+    "crate::shell::launcher",
+    "crate::shell::overlay_host",
+]
+
+# Peer transport. wayland.rs is a Wayland server built on smithay; it belongs beside the
+# compositor, and this goes when it moves there.
+"src/network/wayland.rs" = [
+    "smithay",
+]
+
+# Peer presence measures tiles with vello's re-exported geometry types. This goes when
+# it takes kurbo or its own rectangle type.
+"src/shell/peer_presence.rs" = [
+    "vello",
+]
+
+# Crates carved out of the shell. They must not reach the shell, the toolkit,
+# the drawn desktop or a renderer through any workspace dependency.
+[extracted]
+crates = [
+    "tilo-callstream",
+    "tilo-network-secret-agent",
+    "tilo-polkit-agent",
+    "tilo-relay-shell",
+    "tilo-tray-host",
+]
+
+# What an extracted crate may reach anyway, and why.
+[extracted.allow]
+
+# Workspace crates with a non-dev dependency on the shell, and why.
+[shell_dependants]
+
+# The shell's direct normal and build dependencies (package names). Remove a line
+# when a dependency goes; a new one is an [shell_dependencies.added] entry with
+# its reason, or belongs in a smaller crate.
+[shell_dependencies]
+grandfathered = [
+    "accesskit_unix",
+    "accounts",
+    "agent-provider-config",
+    "ash",
+    "base64",
+    "blake3",
+    "bounded-command",
+    "browser",
+    "bytes",
+    "capnp",
+    "capnp-rpc",
+    "channel-crypto",
+    "chat",
+    "chrono",
+    "code-editor",
+    "collab-types",
+    "compat-service",
+    "console-control",
+    "desktop-policy",
+    "durable-store",
+    "ed25519-dalek",
+    "emoji",
+    "file-explorer",
+    "fnv",
+    "fs-protocol",
+    "futures-util",
+    "gbm",
+    "getrandom",
+    "greetd-client",
+    "hex",
+    "image",
+    "iroh",
+    "iroh-base",
+    "iroh-gossip",
+    "iroh-mdns-address-lookup",
+    "launcher",
+    "legacy-agent-protocol",
+    "libc",
+    "messages",
+    "mime_guess",
+    "neighbour-wire",
+    "notes",
+    "notify",
+    "os-actions",
+    "package-store",
+    "parking_lot",
+    "passwords",
+    "percent-encoding",
+    "pipewire",
+    "pollster",
+    "postcard",
+    "qcms",
+    "quick-xml",
+    "rand_core",
+    "rcgen",
+    "registry-types",
+    "reis",
+    "resvg",
+    "runtime-collab",
+    "runtime-fs",
+    "runtime-identity",
+    "runtime-portal",
+    "rustix",
+    "rustls",
+    "serde",
+    "serde_json",
+    "settings-store",
+    "sha2",
+    "signal-hook-registry",
+    "smithay",
+    "smithay-client-toolkit",
+    "sysinfo",
+    "taffy",
+    "tar",
+    "tempfile",
+    "terminal",
+    "thiserror",
+    "threshold-identity",
+    "tilo-accessibility-settings",
+    "tilo-action-broker",
+    "tilo-action-policy",
+    "tilo-actions",
+    "tilo-advisory-lock",
+    "tilo-app",
+    "tilo-app-state",
+    "tilo-automation",
+    "tilo-automerge",
+    "tilo-automerge-fork",
+    "tilo-automerge-isolate",
+    "tilo-bluez",
+    "tilo-callstream",
+    "tilo-cli-kit",
+    "tilo-clock",
+    "tilo-contact-directory",
+    "tilo-content",
+    "tilo-control",
+    "tilo-cpu-raster",
+    "tilo-delivery-protocol",
+    "tilo-desktop",
+    "tilo-desktop-entry",
+    "tilo-desktop-model",
+    "tilo-desktop-search",
+    "tilo-dialogs",
+    "tilo-doc",
+    "tilo-doc-codecs",
+    "tilo-endpoint-reachability",
+    "tilo-files",
+    "tilo-identity-ceremony",
+    "tilo-identity-host",
+    "tilo-installed-apps",
+    "tilo-joined-room",
+    "tilo-lockdown-policy",
+    "tilo-media",
+    "tilo-messaging",
+    "tilo-messaging-protocol",
+    "tilo-moq",
+    "tilo-net",
+    "tilo-nm",
+    "tilo-paths",
+    "tilo-peer-state",
+    "tilo-polkit-agent",
+    "tilo-power-mgmt",
+    "tilo-projector",
+    "tilo-reference",
+    "tilo-relay-client",
+    "tilo-relay-protocol",
+    "tilo-relay-session",
+    "tilo-resource",
+    "tilo-rt",
+    "tilo-runtime",
+    "tilo-seal",
+    "tilo-search",
+    "tilo-secret-service",
+    "tilo-secret-vault",
+    "tilo-secrets",
+    "tilo-startup-metrics",
+    "tilo-thumbnail",
+    "tilo-tts",
+    "tilo-ui",
+    "tilo-unlock-protocol",
+    "tilo-user-identity",
+    "tilo-vello",
+    "tilo-vello-encoding",
+    "tilo-winit",
+    "tokio",
+    "toml",
+    "tracing",
+    "tracing-subscriber",
+    "url",
+    "ush",
+    "uuid",
+    "walkdir",
+    "wayland-client",
+    "wayland-protocols",
+    "wayland-protocols-misc",
+    "wayland-scanner",
+    "windows-vm",
+    "wire-frame",
+    "word-processor",
+    "x11rb",
+    "xattr",
+    "xkeysym",
+    "zbus",
+    "zeroize",
+]
+
+[shell_dependencies.added]
+"tilo-owner-commit" = "The owner commit vocabulary carved out of tilo-peer-state, which the shell already depends on; the shell's native workspace owner implements its service and reaches the same code it did before, now in a smaller crate"
+"tilo-network-secret-agent" = "The NetworkManager secret agent carved out of the shell; the shell supplies only the sheet it asks in, the catalogue its keys resolve in and the roaming Wi-Fi store"
+"tilo-tray-host" = "The status-notifier tray host carved out of the shell; the shell serves its watcher, paints its items and supplies the named-icon rasteriser."
+"tilo-lock" = "A dependency-free std helper that recovers a poisoned lock's guard; it replaces the shell's inline `.unwrap_or_else(PoisonError::into_inner)` at every lock and adds no code of its own"

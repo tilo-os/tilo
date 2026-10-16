@@ -11,7 +11,7 @@ let page = FormPage::new("Account", Form::new()
         .field(Field::new("Email", TextInput::local().with_id("email"))
             .with_help("Used for account recovery")
             .with_error("Enter a valid email address")))
-    .with_actions(Actions::new(Button::new("save", "Save", None).primary())));
+    .with_actions(Actions::new(Button::new("save", "Save", None).role(ButtonRole::Primary))));
 ```
 
 Labels align within each section. The framework measures the actual localized labels and control minima; when the pair cannot fit, labels move above controls. Expandable controls that report no intrinsic width receive a comfortable minimum based on the theme's active type size. Help and validation wrap with the control. Sections and actions retain their declared order. `FormSection::content(Element)` accepts ordinary labelled checkboxes or a manually composed region.
@@ -71,7 +71,7 @@ The equivalent primitive fixture has the same content, controls, order, themed p
 | 13 | Between sections/actions | gap 32 |
 | 14 | Title/description spacing | gap 8 |
 | 15 | Heading group/form separation | gap 32 |
-| 16 | Complete page surface | filling Container with themed `bg_app` |
+| 16 | Complete page surface | the window ground (`surfaces.content`) under a filling Container |
 
 `account`/`automatic` supply none of those 16 composition settings: **zero caller layout pixel values and zero viewport branches**. The guided source adds **two selected decisions**, compact density and labels above. Both paths use shared Actions, so its internal button sizing/alignment is not counted as a primitive-only decision.
 

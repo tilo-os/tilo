@@ -1,0 +1,48 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "weather.locations"
+label = "Weather"
+version = 1
+fields = [
+  { path = "places", type = "Collection<Place>", stored = "collection" },
+  { path = "places.*.name", type = "String", label = true },
+  { path = "places.*.region", type = "String" },
+  { path = "places.*.country", type = "String" },
+  { path = "places.*.country_code", type = "Atom" },
+  { path = "places.*.latitude", type = "f64" },
+  { path = "places.*.longitude", type = "f64" },
+  { path = "places.*.timezone", type = "Atom" },
+  { path = "default_place", type = "Atom" },
+]
+
+[[resources.verbs]]
+id = "save-location"
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, country = { type = "string" }, country_code = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, region = { type = ["string", "null"] }, timezone = { type = ["string", "null"] } }, required = ["name", "country", "latitude", "longitude"] } },
+  { name = "make_default", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "use-as-default"
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-to-top"
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "string" } },
+]
+

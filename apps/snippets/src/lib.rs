@@ -4,11 +4,12 @@
 //! title, language, tags and a body that may contain `${placeholder}`
 //! variables; the detail pane shows a syntax-highlighted preview, and the
 //! expand-with-variables flow fills the placeholders before copying to the
-//! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
-//! devices and collaborators converge on one shared set of snippets.
+//! clipboard. The library is a typed model (see [`model`]) stored in a CRDT
+//! document, so it syncs across devices and collaborators converge on one
+//! shared set of snippets.
 //!
-//! The single integration point is [`app_root`], used by both the live
-//! event loop and the `--shots` offscreen renderer in `main.rs`.
+//! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
+//! resource: every host mounts it through [`definition`].
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -21,82 +22,44 @@
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
-pub mod actions;
 pub mod app;
-pub mod doc;
+mod detail_pane;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
+mod list_pane;
 pub mod model;
-pub mod search_provider;
+pub mod resource;
 pub mod seed;
 
 pub use app::SnippetsApp;
-pub use model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
+pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
+pub use resource::{SnippetsShell, SnippetsView};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SnippetsApp::new())
-}
-
-/// Snippets' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.snippets", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .component_locales(LOCALES)
-        .as_definition("Snippets")
+    ui::built_in_definition!(SnippetsShell)
 }
 
-/// Like [`app_root`] but with a named interaction scenario staged for a
-/// single headless screenshot (the live `--shots` renderer paints one frame
-/// and can't reach toggled states through input). Recognised scenarios:
-///
-/// * `"narrow"` — pair with a sub-breakpoint `--viewport` to show the
-///   primary sidebar as an open overlay flap over the content + scrim.
-/// * `"detail"` — pair with a very-narrow `--viewport` to show the
-///   single-pane push stack on the detail with its Back affordance.
-///
-/// An empty / unknown name yields the same frame as [`app_root`].
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    // The `empty` scenario captures the honest live zero-state (a fresh
-    // install has no snippets); every other scenario stages the seeded demo
-    // library so the capture shows the manager doing real work.
-    let mut app = if scenario == "empty" {
-        SnippetsApp::new()
-    } else {
-        SnippetsApp::new_demo()
-    };
-    app.seed_shot_scenario(scenario);
-    Box::new(app)
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
+
+/// A message of the app's catalogs in the person's language.
+pub(crate) fn tr(key: &str) -> String {
+    CATALOG.t(key)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+/// A message with named text arguments.
+pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
+        .collect();
+    CATALOG.t_args(key, &args)
+}
 
-pub mod framework_history;
+/// A message with a plural count.
+pub(crate) fn tr_count(key: &str, count: usize) -> String {
+    CATALOG.t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
+}

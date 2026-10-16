@@ -1,0 +1,72 @@
+{
+  "method": "paired donor-cluster percentile bootstrap, gesture-weighted",
+  "seed": 483217,
+  "repetitions": 10000,
+  "sessions": 555,
+  "baseline_alignment": "classic",
+  "candidate_alignment": "elastic",
+  "candidate_prior_hundredths": 100,
+  "fixture_sha256": "8234c8ffff0b426c76ae26a28e3194ab68049491e6abde16cd16bc573d28bd37",
+  "metrics": {
+    "literal_top1": {
+      "eligible": 43448,
+      "baseline_accuracy": 0.6551279690664703,
+      "candidate_accuracy": 0.7312879764315964,
+      "paired_gain": 0.07616000736512613,
+      "gain_95_percent_interval": [
+        0.07058594605112738,
+        0.08146547844090377
+      ]
+    },
+    "literal_top3": {
+      "eligible": 43448,
+      "baseline_accuracy": 0.750138096114896,
+      "candidate_accuracy": 0.7874010311176579,
+      "paired_gain": 0.03726293500276192,
+      "gain_95_percent_interval": [
+        0.03375434473980516,
+        0.040783845618223416
+      ]
+    },
+    "literal_top8": {
+      "eligible": 43448,
+      "baseline_accuracy": 0.7835803719388694,
+      "candidate_accuracy": 0.799553489228503,
+      "paired_gain": 0.015973117289633586,
+      "gain_95_percent_interval": [
+        0.014054946350666194,
+        0.017949662369551873
+      ]
+    },
+    "lexical_top1": {
+      "eligible": 43431,
+      "baseline_accuracy": 0.7417282586171168,
+      "candidate_accuracy": 0.834841472680804,
+      "paired_gain": 0.09311321406368722,
+      "gain_95_percent_interval": [
+        0.08655113957430778,
+        0.09930024973419381
+      ]
+    },
+    "lexical_top3": {
+      "eligible": 43431,
+      "baseline_accuracy": 0.8554949229812806,
+      "candidate_accuracy": 0.9032258064516129,
+      "paired_gain": 0.047730883470332254,
+      "gain_95_percent_interval": [
+        0.04341780295955005,
+        0.05197224421366367
+      ]
+    },
+    "lexical_top8": {
+      "eligible": 43431,
+      "baseline_accuracy": 0.8971241739771131,
+      "candidate_accuracy": 0.9182841748981142,
+      "paired_gain": 0.021160000921001128,
+      "gain_95_percent_interval": [
+        0.018729497295859564,
+        0.023654670713494242
+      ]
+    }
+  }
+}

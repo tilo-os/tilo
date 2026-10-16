@@ -20,8 +20,10 @@ fn errno(e: &io::Error) -> String {
 }
 
 fn enter_userns() -> io::Result<()> {
-    // SAFETY: getuid/getgid cannot fail.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (
+        rustix::process::getuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+    );
     // SAFETY: plain syscall; the process is still single-threaded.
     if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
         return Err(io::Error::last_os_error());

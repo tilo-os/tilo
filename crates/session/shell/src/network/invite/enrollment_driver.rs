@@ -11,6 +11,7 @@ use std::{
     },
     time::Duration,
 };
+use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
 const MAX_PENDING: usize = 8;
@@ -43,11 +44,7 @@ impl Attempt {
     }
     pub(crate) fn cancel(&self) -> Result<(), String> {
         // Serialize cancellation with the final synchronous installation barrier.
-        let _turn = self
-            .shared
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _turn = self.shared.result.lock_recover();
         self.shared.cancelled.store(true, Ordering::SeqCst);
         self.shared.cancel.send_replace(true);
         // Also retire a completed actor attempt: there may no longer be a task
@@ -126,6 +123,11 @@ pub(crate) struct Registry {
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Registry {
+    /// Whether an enrollment is still talking to its host.
+    pub(crate) fn is_busy(&self) -> bool {
+        self.tasks.iter().any(|task| !task.is_finished())
+    }
+
     pub(crate) fn handle(
         &mut self,
         command: Command,
@@ -157,7 +159,7 @@ impl Registry {
                     biased;
                     _ = receiver.changed() => Err("native enrollment cancelled".into()),
                     value = tokio::time::timeout(Duration::from_secs(60), tilo_joined_room::enroll::prepare_and_complete(
-                        tilo_relay::workspace_join::WorkspaceJoinClient::new(endpoint), identity, attempt.identity_topic,
+                        tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint), identity, attempt.identity_topic,
                         Some(attempt.local), invitation, attempt.owner.clone())) => value.unwrap_or_else(|_| Err("native enrollment deadline elapsed; proof retained for exact retry".into())),
                 }
             };

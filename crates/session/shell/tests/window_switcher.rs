@@ -13,14 +13,13 @@ use shell::shell::state::{
     AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Tabs 1..=4 in single-tab groups 10..=40 along one strip. 1 and 3 are
 /// both terminals; 2 is a browser and 4 a file manager.
@@ -39,6 +38,7 @@ fn desktop() -> (WorkspaceTree, StripId) {
         tabs: vec![tab],
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     };
     let mut tree = WorkspaceTree::bootstrap_default();
     let strip = StripId::new();
@@ -85,44 +85,18 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::from(mods),
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.node,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.node)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// `mods` is the modifier state with this key applied, as the
     /// compositor hands it on: Alt's own release arrives with Alt up.
     fn key(&mut self, key: Key, state: ElementState, mods: ModifiersState) -> bool {
-        let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = key;
-        key_event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        key_event.location = KeyLocation::Standard;
-        key_event.state = state;
-        key_event.repeat = false;
-        key_event.text = None;
-        self.event(
-            &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: key_event,
-                is_synthetic: false,
-            },
-            mods,
-        )
+        let key_event = ui::synthetic_input::key_event(key, None, state);
+        self.event(&ui::synthetic_input::keyboard_input(key_event), mods)
     }
 
     fn hold_alt(&mut self) {
@@ -195,10 +169,7 @@ fn lay_out(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],
@@ -402,10 +373,7 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         .expect("every window fits on screen");
     let at = card.center();
     h.event(
-        &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(at.x, at.y),
-        },
+        &ui::synthetic_input::cursor_moved(at.x, at.y),
         ModifiersState::ALT,
     );
     assert_eq!(
@@ -416,24 +384,10 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         Some(4),
         "hovering a window selects it"
     );
-    assert!(h.event(
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        ModifiersState::ALT,
-    ));
+    assert!(h.event(&ui::synthetic_input::mouse_press(), ModifiersState::ALT,));
     let focused = h.focused();
     let active = h.host.window_switcher_active();
-    let release_absorbed = h.event(
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-        ModifiersState::ALT,
-    );
+    let release_absorbed = h.event(&ui::synthetic_input::mouse_release(), ModifiersState::ALT);
     drop(h);
     assert_eq!(focused, 4);
     assert!(!active);
@@ -441,4 +395,59 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         release_absorbed,
         "the release of the click that chose a window never reaches that window"
     );
+}
+
+#[test]
+fn closing_another_window_while_alt_is_held_keeps_the_intended_selection() {
+    let mut h = Harness::new();
+    h.focus(3);
+    h.focus(1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.host
+        .window_switcher_mut()
+        .elapse(Duration::from_millis(200));
+    assert!(h.host.close_tab_in_group(20, Some(2)));
+    h.event(
+        &ui::synthetic_input::cursor_moved(0.0, 0.0),
+        ModifiersState::ALT,
+    );
+    let (titles, selected) = listed(&h.switcher_on_screen().expect("surviving session"));
+    assert!(!titles.iter().any(|title| title == "Browser 2"));
+    assert_eq!(selected.as_deref(), Some("Terminal 3"));
+    h.release_alt();
+    let focused = h.focused();
+    drop(h);
+    assert_eq!(focused, 3);
+}
+
+#[test]
+fn closing_the_armed_window_cancels_before_a_later_alt_release() {
+    let mut h = Harness::new();
+    h.focus(4);
+    h.focus(1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.host
+        .window_switcher_mut()
+        .elapse(Duration::from_millis(200));
+    assert!(h.host.close_tab_in_group(40, Some(4)));
+    h.event(
+        &ui::synthetic_input::cursor_moved(0.0, 0.0),
+        ModifiersState::ALT,
+    );
+    assert!(!h.host.window_switcher_active());
+    assert!(h.switcher_on_screen().is_none());
+    h.key(
+        Key::Named(NamedKey::Alt),
+        ElementState::Released,
+        ModifiersState::empty(),
+    );
+    assert_eq!(h.focused(), 1);
+    h.hold_alt();
+    h.tab_with_alt();
+    h.release_alt();
+    let focused = h.focused();
+    drop(h);
+    assert_ne!(focused, 4, "reopening cannot rearm a closed window");
 }

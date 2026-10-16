@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -96,6 +98,84 @@ class ScopedTestsTests(unittest.TestCase):
             self.assertEqual([suite.get("name") for suite in merged.iter("testsuite")],
                              ["affected", "tilo-ui::it"])
             self.assertEqual(merged.get("tests"), "3")
+
+
+class ShardReportPreservationTests(unittest.TestCase):
+    workflow = Path(__file__).parents[2] / ".forgejo/workflows/check.yml"
+    phases = (("affected tests", "affected"),
+              ("visual goldens", "visual-goldens"),
+              ("scoped reader tests", "scoped"))
+
+    def report_step(self, phase: str) -> str:
+        source = self.workflow.read_text()
+        name = f"      - name: Report {phase} of shard ${{{{ matrix.shard }}}}\n"
+        block = source.split(name, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("if: always()", block, "failed phases must retain their evidence")
+        command = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines()
+                            if line.startswith("          "))
+        command = re.sub(r"\$\{\{.*?\}\}", "fixture", command)
+        return command.replace("python3 tools/ci/nextest_report.py",
+                               f"{shlex.quote(sys.executable)} {shlex.quote(str(MODULE_PATH.parent / 'nextest_report.py'))}")
+
+    def preserve(self, root: Path, phase: str) -> None:
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", self.report_step(phase)],
+                                cwd=root, env=os.environ | {"GITHUB_STEP_SUMMARY": str(root / "summary.md")},
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_later_golden_and_scoped_phases_keep_ordinary_results_and_failures(self):
+        source = self.workflow.read_text()
+        order = ("Test shard", "Report affected tests of shard", "Visual goldens of shard",
+                 "Report visual goldens of shard", "Scoped reader tests of shard",
+                 "Report scoped reader tests of shard", "Save test results of shard")
+        positions = [source.index(f"      - name: {name} ${{{{ matrix.shard }}}}") for name in order]
+        self.assertEqual(positions, sorted(positions), "each report is retained before a later test overwrites it")
+        ordinary = source.split("      - name: Test shard", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("continue-on-error", ordinary, "ordinary test failures still fail the job")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / scoped.JUNIT
+            current.parent.mkdir(parents=True)
+            # Stand in for nextest's successive writes to the fixed ci-profile
+            # path, and execute the actual workflow's preservation commands.
+            for index, (phase, filename) in enumerate(self.phases):
+                body = junit(filename, index + 1)
+                if index == 0:
+                    body = body.replace('time="0.1"/>',
+                                        'time="0.1"><failure message="ordinary failure"/></testcase>')
+                current.write_text(body)
+                self.preserve(root, phase)
+                self.assertFalse(current.exists(), "the next phase starts with a fresh report path")
+            archived = root / "target/ci/junit"
+            self.assertEqual(sorted(path.name for path in archived.glob("*.xml")),
+                             ["affected.xml", "scoped.xml", "visual-goldens.xml"])
+            roots = [ET.parse(archived / f"{filename}.xml").getroot()
+                     for _, filename in self.phases]
+            self.assertEqual([len(list(report.iter("testcase"))) for report in roots], [1, 2, 3])
+            self.assertEqual(len(list(roots[0].iter("failure"))), 1,
+                             "a later successful run must not erase the ordinary failure")
+            summary = (root / "summary.md").read_text()
+            for phase in ("affected", "visual goldens", "scoped reader tests"):
+                self.assertIn(phase, summary)
+            artifact = self.workflow.read_text().split("      - name: Save test results of shard", 1)[1]
+            self.assertIn("path: target/ci/junit", artifact.split("\n  check:", 1)[0])
+
+    def test_skipped_golden_does_not_relabel_the_ordinary_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / scoped.JUNIT
+            current.parent.mkdir(parents=True)
+            body = junit("ordinary", 2)
+            current.write_text(body)
+            self.preserve(root, "affected tests")
+            # A mismatched renderer or a phase that failed to compile writes no
+            # report. Its always() preservation step must not reuse old results.
+            self.preserve(root, "visual goldens")
+            self.preserve(root, "scoped reader tests")
+            archived = root / "target/ci/junit"
+            self.assertEqual((archived / "affected.xml").read_text(), body)
+            self.assertFalse((archived / "visual-goldens.xml").exists())
+            self.assertFalse((archived / "scoped.xml").exists())
 
 
 if __name__ == "__main__":

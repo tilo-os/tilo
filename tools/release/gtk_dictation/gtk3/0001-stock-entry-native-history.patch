@@ -1,0 +1,573 @@
+--- a/gtk/gtkentry.c
++++ b/gtk/gtkentry.c
+@@ -38,6 +38,7 @@
+ #include "gtkdndprivate.h"
+ #include "gtkentry.h"
+ #include "gtkentrybuffer.h"
++#include "gtktexthistoryprivate.h"
+ #include "gtkiconhelperprivate.h"
+ #include "gtkemojichooser.h"
+ #include "gtkemojicompletion.h"
+@@ -184,6 +185,11 @@
+ {
+   EntryIconInfo         *icons[MAX_ICONS];
+
++  GtkTextHistory        *history;
++  guint                  history_depth;
++  gboolean               history_opt_in;
++  gchar                 *history_owner;
++
+   GtkEntryBuffer        *buffer;
+   GtkIMContext          *im_context;
+   GtkWidget             *popup_menu;
+@@ -329,6 +335,8 @@
+   PREEDIT_CHANGED,
+   INSERT_EMOJI,
+   TOGGLE_DIRECTION,
++  HISTORY_UNDO,
++  HISTORY_REDO,
+   LAST_SIGNAL
+ };
+
+@@ -385,6 +393,12 @@
+   PROP_TABS,
+   PROP_SHOW_EMOJI_ICON,
+   PROP_ENABLE_EMOJI_COMPLETION,
++  PROP_HISTORY_OWNER,
++  PROP_HISTORY_REGISTERED,
++  PROP_HISTORY_AVAILABLE,
++  PROP_ENABLE_UNDO,
++  PROP_CAN_UNDO,
++  PROP_CAN_REDO,
+   PROP_EDITING_CANCELED,
+   NUM_PROPERTIES = PROP_EDITING_CANCELED
+ };
+@@ -758,6 +772,118 @@
+ 				G_TYPE_BOOLEAN, TRUE);
+ }
+
++/* Private review candidate: history is explicitly opted into by its owner.
++ * Derived widgets/buffers keep their own history. Foreign buffer writes retire
++ * this entry's stack; a shared buffer never lends another entry its selection.
++ */
++static void
++entry_history_clear (GtkEntry *entry)
++{
++  if (entry->priv->history)
++    gtk_text_history_set_enabled (entry->priv->history, FALSE);
++}
++
++/* Registration is an explicit owner contract, never inferred from focus.
++ * The owner agrees that the stock buffer is its history authority. A custom
++ * undo/redo handler requires its own adapter and is refused here.
++ */
++static gboolean
++entry_history_registered (GtkEntry *entry)
++{
++  return entry->priv->history_owner != NULL &&
++    G_OBJECT_TYPE (entry) == GTK_TYPE_ENTRY &&
++    G_OBJECT_TYPE (get_buffer (entry)) == GTK_TYPE_ENTRY_BUFFER &&
++    !g_signal_has_handler_pending (entry, signals[HISTORY_UNDO], 0, TRUE) &&
++    !g_signal_has_handler_pending (entry, signals[HISTORY_REDO], 0, TRUE);
++}
++
++static gboolean
++entry_history_available (GtkEntry *entry)
++{
++  GtkInputPurpose purpose = gtk_entry_get_input_purpose (entry);
++  return entry_history_registered (entry) && entry->priv->history_opt_in &&
++    entry->priv->editable && entry->priv->visible &&
++    gtk_widget_is_sensitive (GTK_WIDGET (entry)) &&
++    gtk_widget_is_visible (GTK_WIDGET (entry)) &&
++    gtk_widget_has_focus (GTK_WIDGET (entry)) &&
++    purpose != GTK_INPUT_PURPOSE_PASSWORD && purpose != GTK_INPUT_PURPOSE_PIN;
++}
++
++static void
++entry_history_refresh (GtkEntry *entry)
++{
++  GtkEntryPrivate *priv = entry->priv;
++  GtkInputPurpose purpose = gtk_entry_get_input_purpose (entry);
++  gboolean enabled = entry_history_registered (entry) &&
++    priv->history_opt_in && priv->editable && priv->visible &&
++    purpose != GTK_INPUT_PURPOSE_PASSWORD && purpose != GTK_INPUT_PURPOSE_PIN;
++  if (priv->history_depth == 0)
++    gtk_text_history_set_enabled (priv->history, enabled);
++}
++
++static void
++entry_history_state (gpointer data, gboolean modified,
++                     gboolean can_undo, gboolean can_redo)
++{
++  (void) modified; (void) can_undo; (void) can_redo;
++  g_object_notify (G_OBJECT (data), "can-undo");
++  g_object_notify (G_OBJECT (data), "can-redo");
++}
++
++static void
++entry_history_insert (gpointer data, guint begin, guint end,
++                      const char *text, guint len)
++{
++  GtkEntry *entry = data;
++  gint position = begin;
++  (void) end;
++  gtk_editable_insert_text (GTK_EDITABLE (entry), text, len, &position);
++}
++
++static void
++entry_history_delete (gpointer data, guint begin, guint end,
++                      const char *expected, guint len)
++{
++  GtkEntry *entry = data;
++  gchar *actual = gtk_editable_get_chars (GTK_EDITABLE (entry), begin, end);
++  if (strlen (actual) == len && memcmp (actual, expected, len) == 0)
++    gtk_editable_delete_text (GTK_EDITABLE (entry), begin, end);
++  else
++    entry_history_clear (entry);
++  g_free (actual);
++}
++
++static void
++entry_history_select (gpointer data, int insert, int bound)
++{
++  gtk_editable_select_region (GTK_EDITABLE (data), bound, insert);
++}
++
++static const GtkTextHistoryFuncs entry_history_funcs = {
++  entry_history_state, entry_history_insert,
++  entry_history_delete, entry_history_select
++};
++
++static gboolean
++entry_history_undo (GtkEntry *entry)
++{
++  entry_history_refresh (entry);
++  if (!entry_history_available (entry))
++    return FALSE;
++  gtk_text_history_undo (entry->priv->history);
++  return TRUE;
++}
++
++static gboolean
++entry_history_redo (GtkEntry *entry)
++{
++  entry_history_refresh (entry);
++  if (!entry_history_available (entry))
++    return FALSE;
++  gtk_text_history_redo (entry->priv->history);
++  return TRUE;
++}
++
+ static void
+ gtk_entry_class_init (GtkEntryClass *class)
+ {
+@@ -1547,7 +1673,33 @@
+                             FALSE,
+                             GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
+
++  entry_props[PROP_HISTORY_OWNER] = g_param_spec_string (
++    "history-owner", "History Owner", "Explicit owner of stock entry history", NULL,
++    G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++  entry_props[PROP_HISTORY_REGISTERED] = g_param_spec_boolean (
++    "history-registered", "History Registered", "Supported native owner registration", FALSE,
++    G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
++  entry_props[PROP_HISTORY_AVAILABLE] = g_param_spec_boolean (
++    "history-available", "History Available", "Focused editable native history admission", FALSE,
++    G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
++  entry_props[PROP_ENABLE_UNDO] = g_param_spec_boolean (
++    "enable-undo", "Enable Undo", "Opt into stock entry history", FALSE,
++    G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++  entry_props[PROP_CAN_UNDO] = g_param_spec_boolean (
++    "can-undo", "Can Undo", "Whether native history can undo", FALSE,
++    G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
++  entry_props[PROP_CAN_REDO] = g_param_spec_boolean (
++    "can-redo", "Can Redo", "Whether native history can redo", FALSE,
++    G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+   g_object_class_install_properties (gobject_class, NUM_PROPERTIES, entry_props);
++  signals[HISTORY_UNDO] = g_signal_new_class_handler (
++    "tilo-native-undo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
++    G_CALLBACK (entry_history_undo), NULL, NULL, NULL, G_TYPE_BOOLEAN, 0);
++  signals[HISTORY_REDO] = g_signal_new_class_handler (
++    "tilo-native-redo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
++    G_CALLBACK (entry_history_redo), NULL, NULL, NULL, G_TYPE_BOOLEAN, 0);
++
++
+
+   /**
+    * GtkEntry:icon-prelight:
+@@ -1949,6 +2101,8 @@
+    */
+
+   binding_set = gtk_binding_set_by_class (class);
++  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK, "tilo-native-undo", 0);
++  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK | GDK_SHIFT_MASK, "tilo-native-redo", 0);
+
+   /* Moving the insertion point */
+   add_move_binding (binding_set, GDK_KEY_Right, 0,
+@@ -2193,6 +2347,22 @@
+
+   switch (prop_id)
+     {
++    case PROP_HISTORY_OWNER:
++      entry_history_clear (entry);
++      g_free (priv->history_owner);
++      priv->history_owner = NULL;
++      if (g_value_get_string (value) && g_value_get_string (value)[0] &&
++          strlen (g_value_get_string (value)) <= 128)
++        priv->history_owner = g_value_dup_string (value);
++      entry_history_refresh (entry);
++      g_object_notify (object, "history-registered");
++      g_object_notify (object, "history-available");
++      break;
++    case PROP_ENABLE_UNDO:
++      priv->history_opt_in = g_value_get_boolean (value);
++      entry_history_clear (entry);
++      entry_history_refresh (entry);
++      break;
+     case PROP_BUFFER:
+       gtk_entry_set_buffer (entry, g_value_get_object (value));
+       break;
+@@ -2491,6 +2661,26 @@
+
+   switch (prop_id)
+     {
++    case PROP_HISTORY_OWNER:
++      g_value_set_string (value, priv->history_owner);
++      break;
++    case PROP_HISTORY_REGISTERED:
++      g_value_set_boolean (value, entry_history_registered (entry));
++      break;
++    case PROP_HISTORY_AVAILABLE:
++      g_value_set_boolean (value, entry_history_available (entry));
++      break;
++    case PROP_ENABLE_UNDO:
++      g_value_set_boolean (value, priv->history_opt_in);
++      break;
++    case PROP_CAN_UNDO:
++      g_value_set_boolean (value, entry_history_available (entry) &&
++                           gtk_text_history_get_can_undo (priv->history));
++      break;
++    case PROP_CAN_REDO:
++      g_value_set_boolean (value, entry_history_available (entry) &&
++                           gtk_text_history_get_can_redo (priv->history));
++      break;
+     case PROP_BUFFER:
+       g_value_set_object (value, gtk_entry_get_buffer (entry));
+       break;
+@@ -2799,6 +2989,8 @@
+   gtk_widget_set_can_focus (GTK_WIDGET (entry), TRUE);
+   gtk_widget_set_has_window (GTK_WIDGET (entry), FALSE);
+
++  priv->history = gtk_text_history_new (&entry_history_funcs, entry);
++  gtk_text_history_set_max_undo_levels (priv->history, 100);
+   priv->editable = TRUE;
+   priv->visible = TRUE;
+   priv->dnd_position = -1;
+@@ -3024,6 +3216,9 @@
+   GtkEntryPrivate *priv = entry->priv;
+   EntryIconInfo *icon_info = NULL;
+   gint i;
++
++  g_clear_object (&priv->history);
++  g_clear_pointer (&priv->history_owner, g_free);
+
+   if (priv->tick_id)
+     gtk_widget_remove_tick_callback (GTK_WIDGET (entry), priv->tick_id);
+@@ -5393,6 +5588,11 @@
+ {
+   guint n_inserted;
+   gint n_chars;
++  GtkEntry *entry = GTK_ENTRY (editable);
++  gint original_position = *position;
++  gint insert = entry->priv->current_pos, bound = entry->priv->selection_bound;
++  entry_history_refresh (entry);
++  entry->priv->history_depth++;
+
+   n_chars = g_utf8_strlen (new_text, new_text_length);
+
+@@ -5406,6 +5606,10 @@
+   n_inserted = gtk_entry_buffer_insert_text (get_buffer (GTK_ENTRY (editable)), *position, new_text, n_chars);
+
+   end_change (GTK_ENTRY (editable));
++  gtk_text_history_selection_changed (entry->priv->history, insert, bound);
++  gtk_text_history_text_inserted (entry->priv->history, original_position,
++    new_text, g_utf8_offset_to_pointer (new_text, n_inserted) - new_text);
++  entry->priv->history_depth--;
+
+   if (n_inserted != n_chars)
+       gtk_widget_error_bell (GTK_WIDGET (editable));
+@@ -5426,7 +5630,24 @@
+
+   begin_change (GTK_ENTRY (editable));
+
+-  gtk_entry_buffer_delete_text (get_buffer (GTK_ENTRY (editable)), start_pos, end_pos - start_pos);
++  {
++    GtkEntry *entry = GTK_ENTRY (editable);
++    GtkEntryBuffer *buffer = get_buffer (entry);
++    gint length = gtk_entry_buffer_get_length (buffer);
++    gint begin = CLAMP (start_pos, 0, length);
++    gint end = end_pos < 0 ? length : CLAMP (end_pos, begin, length);
++    gint insert = entry->priv->current_pos, bound = entry->priv->selection_bound;
++    gchar *deleted = gtk_editable_get_chars (editable, begin, end);
++    guint count;
++    entry_history_refresh (entry);
++    entry->priv->history_depth++;
++    count = gtk_entry_buffer_delete_text (buffer, begin, end - begin);
++    gtk_text_history_selection_changed (entry->priv->history, insert, bound);
++    gtk_text_history_text_deleted (entry->priv->history, begin, begin + count,
++      deleted, g_utf8_offset_to_pointer (deleted, count) - deleted);
++    entry->priv->history_depth--;
++    g_free (deleted);
++  }
+
+   end_change (GTK_ENTRY (editable));
+ }
+@@ -5441,6 +5662,8 @@
+                       GtkEntry       *entry)
+ {
+   GtkEntryPrivate *priv = entry->priv;
++  if (priv->history_depth == 0)
++    entry_history_clear (entry);
+   guint password_hint_timeout;
+   guint current_pos;
+   gint selection_bound;
+@@ -5491,6 +5714,8 @@
+                      GtkEntry       *entry)
+ {
+   GtkEntryPrivate *priv = entry->priv;
++  if (priv->history_depth == 0)
++    entry_history_clear (entry);
+   guint end_pos = position + n_chars;
+   gint selection_bound;
+   guint current_pos;
+@@ -6182,6 +6407,12 @@
+   gint tmp_pos;
+   guint text_length;
+
++  entry_history_refresh (entry);
++  gtk_text_history_barrier (priv->history);
++  gtk_text_history_selection_changed (priv->history, priv->current_pos, priv->selection_bound);
++  gtk_text_history_begin_user_action (priv->history);
++  priv->history_depth++;
++
+   priv->need_im_reset = FALSE;
+
+   if (gtk_editable_get_selection_bounds (editable, NULL, NULL))
+@@ -6199,6 +6430,9 @@
+   tmp_pos = priv->current_pos;
+   gtk_editable_insert_text (editable, str, strlen (str), &tmp_pos);
+   gtk_editable_set_position (editable, tmp_pos);
++  priv->history_depth--;
++  gtk_text_history_end_user_action (priv->history);
++  gtk_text_history_barrier (priv->history);
+ }
+
+ /* All changes to priv->current_pos and priv->selection_bound
+@@ -7631,6 +7865,7 @@
+       g_object_unref (priv->buffer);
+     }
+
++  entry_history_clear (entry);
+   priv->buffer = buffer;
+
+   if (priv->buffer)
+@@ -7728,11 +7963,14 @@
+   if (completion && completion->priv->changed_id > 0)
+     g_signal_handler_block (entry, completion->priv->changed_id);
+
++  entry_history_clear (entry);
++  entry->priv->history_depth++;
+   begin_change (entry);
+   gtk_editable_delete_text (GTK_EDITABLE (entry), 0, -1);
+   tmp_pos = 0;
+   gtk_editable_insert_text (GTK_EDITABLE (entry), text, strlen (text), &tmp_pos);
+   end_change (entry);
++  entry->priv->history_depth--;
+
+   if (completion && completion->priv->changed_id > 0)
+     g_signal_handler_unblock (entry, completion->priv->changed_id);
+@@ -7772,6 +8010,7 @@
+
+   if (priv->visible != visible)
+     {
++      entry_history_clear (entry);
+       priv->visible = visible;
+
+       g_object_notify_by_pspec (G_OBJECT (entry), entry_props[PROP_VISIBILITY]);
+@@ -10910,6 +11149,7 @@
+
+   if (gtk_entry_get_input_purpose (entry) != purpose)
+     {
++      entry_history_clear (entry);
+       g_object_set (G_OBJECT (entry->priv->im_context),
+                     "input-purpose", purpose,
+                     NULL);
+--- a/gtk/meson.build
++++ b/gtk/meson.build
+@@ -171,7 +171,7 @@
+   'gtkeditable.c',
+   'gtkemojichooser.c',
+   'gtkemojicompletion.c',
+-  'gtkentry.c',
++  'gtkentry.c', 'gtktexthistory.c',
+   'gtkentrybuffer.c',
+   'gtkentrycompletion.c',
+   'gtkeventbox.c',
+--- a/gtk/a11y/gtkentryaccessible.c
++++ b/gtk/a11y/gtkentryaccessible.c
+@@ -414,11 +414,21 @@
+ }
+
+ static AtkAttributeSet *
++entry_history_attribute (AtkAttributeSet *attributes, const gchar *name, gboolean value)
++{
++  AtkAttribute *attribute = g_new (AtkAttribute, 1);
++  attribute->name = g_strdup (name);
++  attribute->value = g_strdup (value ? "true" : "false");
++  return g_slist_append (attributes, attribute);
++}
++
++static AtkAttributeSet *
+ gtk_entry_accessible_get_attributes (AtkObject *accessible)
+ {
+   GtkWidget *widget;
+   AtkAttributeSet *attributes;
+   AtkAttribute *placeholder_text;
++  gboolean registered = FALSE, available = FALSE, undo = FALSE, redo = FALSE;
+   const gchar *text;
+
+   attributes = ATK_OBJECT_CLASS (gtk_entry_accessible_parent_class)->get_attributes (accessible);
+@@ -426,6 +436,13 @@
+   widget = gtk_accessible_get_widget (GTK_ACCESSIBLE (accessible));
+   if (widget == NULL)
+     return attributes;
++
++  g_object_get (widget, "history-registered", &registered,
++                "history-available", &available, "can-undo", &undo, "can-redo", &redo, NULL);
++  attributes = entry_history_attribute (attributes, "tilo-history-registered", registered);
++  attributes = entry_history_attribute (attributes, "tilo-history-available", available);
++  attributes = entry_history_attribute (attributes, "tilo-can-undo", undo);
++  attributes = entry_history_attribute (attributes, "tilo-can-redo", redo);
+
+   text = gtk_entry_get_placeholder_text (GTK_ENTRY (widget));
+   if (text == NULL)
+@@ -483,7 +500,13 @@
+   entry = GTK_ENTRY_ACCESSIBLE (atk_obj);
+   priv = entry->priv;
+
+-  if (g_strcmp0 (pspec->name, "cursor-position") == 0)
++  if (g_strcmp0 (pspec->name, "history-owner") == 0 ||
++      g_strcmp0 (pspec->name, "history-registered") == 0 ||
++      g_strcmp0 (pspec->name, "history-available") == 0 ||
++      g_strcmp0 (pspec->name, "can-undo") == 0 ||
++      g_strcmp0 (pspec->name, "can-redo") == 0)
++    g_signal_emit_by_name (atk_obj, "visible-data-changed");
++  else if (g_strcmp0 (pspec->name, "cursor-position") == 0)
+     {
+       if (check_for_selection_change (entry, gtk_entry))
+         g_signal_emit_by_name (atk_obj, "text-selection-changed");
+@@ -1481,6 +1504,16 @@
+   if (!gtk_widget_get_sensitive (widget) || !gtk_widget_get_visible (widget))
+     return FALSE;
+
++  if (i == 1 || i == 2)
++    {
++      gboolean available = FALSE, possible = FALSE, handled = FALSE;
++      g_object_get (widget, "history-available", &available,
++                    i == 1 ? "can-undo" : "can-redo", &possible, NULL);
++      if (!available || !possible)
++        return FALSE;
++      g_signal_emit_by_name (widget, i == 1 ? "tilo-native-undo" : "tilo-native-redo", &handled);
++      return handled;
++    }
+   if (i != 0)
+     return FALSE;
+
+@@ -1492,7 +1525,11 @@
+ static gint
+ gtk_entry_accessible_get_n_actions (AtkAction *action)
+ {
+-  return 1;
++  GtkWidget *widget = gtk_accessible_get_widget (GTK_ACCESSIBLE (action));
++  gboolean registered = FALSE;
++  if (widget != NULL)
++    g_object_get (widget, "history-registered", &registered, NULL);
++  return registered ? 3 : 1;
+ }
+
+ static const gchar *
+@@ -1507,6 +1544,11 @@
+   gpointer target_object;
+   guint key_val;
+
++  if (gtk_entry_accessible_get_n_actions (action) == 3)
++    {
++      if (i == 1) return "<Control>z";
++      if (i == 2) return "<Control><Shift>z";
++    }
+   if (i != 0)
+     return NULL;
+
+@@ -1546,6 +1588,11 @@
+ {
+   if (i == 0)
+     return "activate";
++  if (gtk_entry_accessible_get_n_actions (action) == 3)
++    {
++      if (i == 1) return "undo";
++      if (i == 2) return "redo";
++    }
+   return NULL;
+ }
+
+@@ -1555,6 +1602,11 @@
+ {
+   if (i == 0)
+     return C_("Action name", "Activate");
++  if (gtk_entry_accessible_get_n_actions (action) == 3)
++    {
++      if (i == 1) return C_("Action name", "Undo");
++      if (i == 2) return C_("Action name", "Redo");
++    }
+   return NULL;
+ }
+
+@@ -1564,6 +1616,11 @@
+ {
+   if (i == 0)
+     return C_("Action description", "Activates the entry");
++  if (gtk_entry_accessible_get_n_actions (action) == 3)
++    {
++      if (i == 1) return C_("Action description", "Undo the last native entry edit");
++      if (i == 2) return C_("Action description", "Redo the last native entry edit");
++    }
+   return NULL;
+ }
+
+--- a/gtk/gtktexthistoryprivate.h
++++ b/gtk/gtktexthistoryprivate.h
+@@ -78,5 +78,7 @@
+ void            gtk_text_history_set_enabled               (GtkTextHistory            *self,
+                                                             gboolean                   enabled);
+
++void gtk_text_history_barrier (GtkTextHistory *self);
++
+ G_END_DECLS
+
+--- a/gtk/gtktexthistory.c
++++ b/gtk/gtktexthistory.c
+@@ -1251,3 +1251,14 @@
+       gtk_text_history_truncate (self);
+     }
+ }
++
++/* Keep a complete IM commit separate from adjacent ordinary typing. */
++void
++gtk_text_history_barrier (GtkTextHistory *self)
++{
++  g_return_if_fail (GTK_IS_TEXT_HISTORY (self));
++  return_if_not_enabled (self);
++  return_if_applying (self);
++  return_if_irreversible (self);
++  gtk_text_history_push (self, action_new (ACTION_KIND_BARRIER));
++}

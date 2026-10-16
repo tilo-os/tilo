@@ -14,8 +14,10 @@
 //!   per-record fast fields ([`SearchIndex::search_scored`]);
 //! - body text follows every field match, ordered by BM25 over its
 //!   ICU-segmented words ([`WordTokenizer`]);
-//! - surfaces that search loosely remembered names opt into typo-tolerant
-//!   `FuzzyTermQuery` and words spread over fields ([`Matching`]).
+//! - surfaces that search loosely remembered names opt into typos in title
+//!   and keyword words and words spread over fields ([`Matching`]);
+//! - a small index without body text is answered by reading its records
+//!   instead of through tantivy, ranked and ordered alike.
 //!
 //! ```
 //! use tilo_search::{Document, FieldWeight, Page, SearchIndex};
@@ -30,18 +32,29 @@
 //! assert_eq!(hits[0].rank, Some(100));
 //! ```
 
+mod direct;
 #[cfg(feature = "disk")]
 mod disk;
+mod engine;
 pub mod fold;
 mod highlight;
 mod index;
 mod list;
 mod query;
 mod tokenizer;
+mod typo;
+mod usage;
 mod weight;
+mod words;
 
 #[cfg(feature = "disk")]
 pub use disk::{DiskHit, DiskIndex, DiskWriter};
+pub use engine::{
+    Engine, IndexError, MakeEngine, Records, ScoreFn, engine_generation, engine_ready,
+    prepare_engine, tantivy_engine,
+};
+#[cfg(feature = "lazy-engine")]
+pub use engine::{defer_engine, engine_load_failed, install_engine};
 pub use fold::{fold, fold_char};
 pub use highlight::locate;
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};
@@ -50,9 +63,12 @@ pub use query::Matching;
 /// The engine's error, for callers opening a [`DiskIndex`].
 pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
+pub use usage::Frecency;
 pub use weight::{
-    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, MAX_FIELD_RANK, MatchTier, Ranks, SPANNING_RANK,
+    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MAX_FIELD_RANK, MatchTier, Ranks,
+    SPANNING_RANK,
 };
+pub use words::initials;
 
 #[cfg(test)]
 mod tests;

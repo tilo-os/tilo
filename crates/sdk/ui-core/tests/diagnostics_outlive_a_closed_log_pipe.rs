@@ -12,12 +12,7 @@
 //! process dies) only a process can show.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -26,6 +21,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 
+use tilo_lock::MutexRecover as _;
 use tilo_ui::diag;
 
 /// Set on the child to select which write it should attempt.
@@ -164,9 +160,7 @@ fn diag_delivers_whole_lines_when_stderr_works() {
     {
         use std::io::Read;
 
-        let _guard = STDERR_SLOT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = STDERR_SLOT.lock_recover();
         let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
 
         with_stderr_pointed_at(writer.as_raw_fd(), || {
@@ -187,9 +181,7 @@ fn diag_delivers_whole_lines_when_stderr_works() {
     {
         use std::io::Read;
 
-        let _guard = STDERR_SLOT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = STDERR_SLOT.lock_recover();
         let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
         let writer_fd = writer.into_raw_fd();
 

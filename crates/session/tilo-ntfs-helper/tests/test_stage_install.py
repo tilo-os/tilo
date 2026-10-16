@@ -7,8 +7,11 @@ import tarfile
 import tempfile
 import tomllib
 import unittest
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from source_artifact import source_bytes
 
 
 class StandaloneBundle(unittest.TestCase):
@@ -31,13 +34,16 @@ class StandaloneBundle(unittest.TestCase):
             helper = base / 'source'
             protocol = base / 'tilo-ntfs-protocol'
             self.assertTrue((protocol / 'Cargo.toml').is_file(), 'parser-free dependency missing from standalone bundle')
-            for crate in [helper, protocol]:
+            wire = base / 'wire-frame'
+            self.assertTrue((wire / 'LICENSE').is_file())
+            for crate in [helper, protocol, wire]:
                 manifest = tomllib.loads((crate / 'Cargo.toml').read_text())
                 self.assertIn('workspace', manifest)
                 self.assertNotIn('lints', manifest)
                 for name, dependency in manifest['dependencies'].items():
-                    if name == 'tilo-ntfs-protocol':
-                        self.assertEqual((crate / dependency['path']).resolve(), protocol.resolve())
+                    if name in ('tilo-ntfs-protocol', 'wire-frame'):
+                        expected = protocol if name == 'tilo-ntfs-protocol' else wire
+                        self.assertEqual((crate / dependency['path']).resolve(), expected.resolve())
                     else:
                         version = dependency if isinstance(dependency, str) else dependency['version']
                         self.assertTrue(version.startswith('='), f'{name} is not pinned')
@@ -46,7 +52,7 @@ class StandaloneBundle(unittest.TestCase):
                                stdout=subprocess.DEVNULL)
             self.assertFalse((protocol / 'build.rs').exists())
             self.assertEqual((helper / 'vendor/ntfs-3g-source.tar.gz').read_bytes(),
-                             (ROOT / 'vendor/ntfs-3g-source.tar.gz').read_bytes())
+                             source_bytes())
             subprocess.run(['cargo', '+1.97.1', 'build', '--offline', '--manifest-path',
                             str(helper / 'Cargo.toml'), '--bin', 'tilo-ntfs-probe'], check=True)
 

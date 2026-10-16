@@ -51,6 +51,68 @@ impl NamespaceClaim {
     }
 }
 
+/// How a namespace was proven.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProofMethod {
+    DnsTxt,
+    WellKnown,
+    Forge,
+}
+
+/// One namespace the registry saw proven, and where.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedClaim {
+    pub namespace: String,
+    pub method: ProofMethod,
+    pub location: String,
+    pub checked_at_unix: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApplicationStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+/// The operator-local application review snapshot. Public status replies
+/// omit its contact address and note.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredApplication {
+    pub application: PublisherApplication,
+    pub verified: Vec<VerifiedClaim>,
+    pub status: ApplicationStatus,
+    pub received_at_unix: u64,
+    #[serde(default)]
+    pub decided_at_unix: Option<u64>,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl StoredApplication {
+    /// The exact stored snapshot an owner inspected, for guarded CLI or UI
+    /// decisions. A replacement, proof refresh or decision changes this id.
+    ///
+    /// # Errors
+    /// Returns an error if the snapshot cannot be serialized.
+    pub fn review_id(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+    }
+
+    /// The namespaces the application proved.
+    #[must_use]
+    pub fn namespaces(&self) -> Vec<String> {
+        self.verified
+            .iter()
+            .map(|claim| claim.namespace.clone())
+            .collect()
+    }
+}
+
 /// A signed request to be allowlisted for some namespaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublisherApplication {

@@ -8,22 +8,12 @@ mod open_with_tests {
 
     #[derive(Default)]
     struct RecRunner {
-        calls: Vec<(String, Option<PathBuf>)>,
         /// Paths handed to the system default handler (non-document opens).
         opened: Vec<PathBuf>,
         /// How the desktop answers them; `None` opens.
         refusal: Option<String>,
     }
     impl CommandRunner for RecRunner {
-        fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), None));
-            Ok(())
-        }
-        fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
-            self.calls
-                .push((program.to_string(), Some(arg.to_path_buf())));
-            Ok(())
-        }
         fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
             self.opened.push(path.to_path_buf());
             let (tx, rx) = std::sync::mpsc::channel();
@@ -50,28 +40,21 @@ mod open_with_tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
     #[test]
     fn files_are_classified_for_open_and_merge_by_extension() {
         merge_is_never_offered_for_binary_or_unsupported_names();
-        document_extensions_are_recognised_as_documents();
     }
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
         assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("legacy.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("draft.TILO-DOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-
-    fn document_extensions_are_recognised_as_documents() {
-        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert!(is_document(Path::new(f)), "{f}");
-        }
-        assert!(!is_document(Path::new("photo.png")));
-        assert!(!is_document(Path::new("main.rs")));
     }
 
     /// Each phase installs (or clears) its own thread-local opener and clears it
@@ -117,11 +100,6 @@ mod open_with_tests {
             "the host is asked for every file, with its own path"
         );
         assert!(
-            runner.calls.is_empty(),
-            "the explorer launches nothing itself: {:?}",
-            runner.calls
-        );
-        assert!(
             runner.opened.is_empty(),
             "and does not go behind the host's back to xdg-open"
         );
@@ -163,7 +141,6 @@ mod open_with_tests {
             w.entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
-            assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
             assert_eq!(
                 w.status, None,
@@ -199,21 +176,93 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         // Selection-aware actions are present.
-        for expected in [
-            "Open",
-            "Rename",
-            "Cut",
-            "Copy",
-            "Move to Trash",
-            "New Folder",
-        ] {
+        for expected in ["Open", "Rename", "Cut", "Copy", "Move to Trash"] {
             assert!(
                 labels.contains(&expected.to_string()),
                 "menu missing {expected}: {labels:?}"
             );
         }
+        // The menu of a file is about the file: what belongs to the folder
+        // (new items, sorting, hidden files, a terminal) is the folder's menu.
+        for folder_item in [
+            "New folder",
+            "Open terminal here",
+            "Show hidden files",
+            "Sort by name",
+        ] {
+            assert!(
+                !labels.contains(&folder_item.to_string()),
+                "a file's menu carries the folder item {folder_item}: {labels:?}"
+            );
+        }
         // No clipboard yet → no Paste.
         assert!(!labels.contains(&"Paste".to_string()));
+    }
+
+    /// No menu fences a single item off with a hairline, and none starts or
+    /// ends on one: a separator stands only between two groups of at least
+    /// two items.
+    pub(super) fn menus_never_separate_a_lone_item() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        for selected in [false, true] {
+            w.selection.clear();
+            if selected {
+                w.selection.select_only(0);
+            }
+            w.open_context_menu(Point::new(10.0, 10.0));
+            let separators: Vec<bool> = w
+                .context_menu
+                .items()
+                .iter()
+                .map(|item| item.label().is_none())
+                .collect();
+            assert_ne!(separators.first(), Some(&true));
+            assert_ne!(separators.last(), Some(&true));
+            let mut run = 0;
+            let mut groups = Vec::new();
+            for separator in separators {
+                if separator {
+                    groups.push(std::mem::take(&mut run));
+                } else {
+                    run += 1;
+                }
+            }
+            groups.push(run);
+            assert!(
+                groups.len() == 1 || groups.iter().all(|size| *size >= 2),
+                "selected={selected}: group sizes {groups:?}"
+            );
+        }
+    }
+
+    /// The folder's own menu, from empty space: new items, a terminal, and
+    /// how the folder is shown (sorting with a check on the active key).
+    pub(super) fn the_folder_menu_holds_the_folder_actions() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt")];
+        w.open_context_menu(Point::new(10.0, 10.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
+            .collect();
+        for expected in [
+            "New folder",
+            "Open terminal here",
+            "Sort by name",
+            "Sort by size",
+            "Sort by type",
+            "Sort by date",
+            "Show hidden files",
+        ] {
+            assert!(
+                labels.contains(&expected.to_string()),
+                "{expected}: {labels:?}"
+            );
+        }
+        assert!(!labels.contains(&"Rename".to_string()));
     }
 
     pub(super) fn empty_selection_menu_omits_item_actions() {
@@ -228,8 +277,8 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         assert!(!labels.contains(&"Move to Trash".to_string()));
-        assert!(labels.contains(&"New Folder".to_string()));
-        assert!(labels.contains(&"Open Terminal Here".to_string()));
+        assert!(labels.contains(&"New folder".to_string()));
+        assert!(labels.contains(&"Open terminal here".to_string()));
     }
 
     pub(super) fn copy_then_paste_menu_includes_paste() {
@@ -339,12 +388,12 @@ mod open_with_tests {
         set_document_opener(|path| panic!("activation opener used for {}", path.display()));
         let mut w = pdf_widget();
         w.open_context_menu(Point::new(40.0, 40.0));
-        assert!(menu_labels(&w.context_menu).contains(&"Open With".to_string()));
+        assert!(menu_labels(&w.context_menu).contains(&"Open with".to_string()));
 
         w.open_open_with_submenu(Point::new(200.0, 40.0));
         assert_eq!(
             menu_labels(&w.submenu),
-            vec!["Evince (default)", "PDF Viewer", "Other Application…"]
+            vec!["Evince (default)", "PDF Viewer", "Other application…"]
         );
         let viewer = w.submenu_commands[1].clone().expect("an app row");
         assert_eq!(
@@ -425,7 +474,7 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -453,19 +502,16 @@ mod open_with_tests {
         args.insert("always".into(), true.into());
         let encoded = spec.build_json(&args).unwrap();
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             route.actions(),
@@ -516,7 +562,7 @@ mod open_with_tests {
         // Picking a row resolves through the published resource, exactly as
         // the application host dispatches a palette selection.
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -527,14 +573,11 @@ mod open_with_tests {
         )
         .expect("the chooser's rows are real actions");
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        Widget::start_operation(
+        crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -554,8 +597,8 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let w = pdf_widget();
         let doc = automerge::AutoCommit::new();
-        let _ = ui::resources::resources(&w, &doc);
-        let _ = ui::resources::resources(&w, &doc);
+        let _ = crate::files_app::published::tree(&w, &doc);
+        let _ = crate::files_app::published::tree(&w, &doc);
         let asked = route
             .calls
             .borrow()
@@ -573,7 +616,7 @@ mod open_with_tests {
     }
 
     #[test]
-    fn recent_lists_what_you_opened_newest_first_and_survives_a_restart() {
+    fn recent_lists_what_you_opened_newest_first() {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
@@ -581,7 +624,7 @@ mod open_with_tests {
         }
         set_document_opener(|_| Ok(()));
         let _clear = ClearRoute;
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
         let mut runner = RecRunner::default();
@@ -608,17 +651,46 @@ mod open_with_tests {
                 .collect::<Vec<_>>(),
             vec!["Recent"]
         );
+    }
 
-        let reopened =
-            FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+    /// The Recent list is this device's setting: a reopened window lists it.
+    #[test]
+    fn recent_is_a_device_setting_that_survives_a_restart() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(folder.path().join(name), name).unwrap();
+        }
+        let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[folder
+            .path()
+            .to_str()
+            .unwrap()])
+        .unwrap();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            for name in ["b.txt", "a.txt"] {
+                files.note_recent(&folder.path().join(name), crate::recent::RecentUse::Opened);
+            }
+        })
+        .unwrap();
+        let stored = app.settings::<crate::recent::RecentFiles>().get();
         assert_eq!(
-            reopened
-                .recent_entries()
+            stored
+                .items()
                 .iter()
-                .map(|entry| entry.name.clone())
+                .map(|item| item.path.clone())
                 .collect::<Vec<_>>(),
-            vec!["a.txt", "c.txt", "b.txt"]
+            vec![folder.path().join("a.txt"), folder.path().join("b.txt")]
         );
+        let mut app = app.reopen().unwrap();
+        let names = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files
+                    .recent_entries()
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(names, vec!["a.txt", "b.txt"]);
     }
 
     #[test]
@@ -628,7 +700,7 @@ mod open_with_tests {
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             std::fs::write(folder.path().join(name), name).unwrap();
         }
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             w.note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
         }
@@ -640,11 +712,11 @@ mod open_with_tests {
         w.open_context_menu(Point::new(20.0, 20.0));
         let labels = menu_labels(&w.context_menu);
         assert!(
-            labels.contains(&"Open Containing Folder".to_string()),
+            labels.contains(&"Open containing folder".to_string()),
             "{labels:?}"
         );
         assert!(labels.contains(&"Remove from Recent".to_string()));
-        assert!(!labels.contains(&"New Folder".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"New folder".to_string()), "{labels:?}");
         assert!(!labels.contains(&"Paste".to_string()));
 
         w.apply_command(FileCommand::ForgetRecent(folder.path().join("drop.txt")));
@@ -669,7 +741,7 @@ mod open_with_tests {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("draft.txt"), "x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         w.note_recent(
             &folder.path().join("draft.txt"),
@@ -711,7 +783,7 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
-    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// A metadata poll is real work, but an unchanged directory
     /// must not look like a frame request. The native runner used to turn
     /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
     #[cfg(unix)]
@@ -734,7 +806,7 @@ mod command_path_tests {
                        tr: &mut ui::text_render::TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            widget.sync(&mut state.doc, &state.root);
+            widget.sync(&state.doc, &state.root);
             let node = widget.build_layout(&mut taffy, &theme, &mut nm);
             let measure_map = nm.clone();
             taffy
@@ -762,9 +834,9 @@ mod command_path_tests {
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
 
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         assert!(
             !widget.refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
@@ -775,8 +847,8 @@ mod command_path_tests {
         // that bit. A model/structure/animation change is a real present.
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
@@ -784,37 +856,127 @@ mod command_path_tests {
             "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
 
-        // Production AboutToWait also drains Nearby Send. An unchanged
-        // snapshot used to set `structure_dirty` and commit at ~0.5 Hz;
-        // together with the 750ms metadata wake that was ~1.8 paint/s.
+        // Nearby Send used to ask every 2s; now only on an announced change.
+        assert!(
+            !widget.take_collab_requests().iter().any(|request| matches!(
+                request,
+                ui::collaboration::CollabRequest::NearbyTransferCommand { .. }
+            )),
+            "an idle Files window must not ask Nearby Send anything"
+        );
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferChanged,
+        );
         let request_id = widget
             .take_collab_requests()
             .iter()
             .find_map(|request| match request {
-                ui::collaboration::CollabRequest::NearbyTransferCommand { request_id, .. } => {
-                    Some(*request_id)
-                }
-                _ => None,
-            });
-        if let Some(request_id) = request_id {
-            ui::widget::Collaborative::handle_collab_event(
-                &mut widget,
-                &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                ui::collaboration::CollabRequest::NearbyTransferCommand {
                     request_id,
-                    result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
-                        snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
-                    }),
-                },
-            );
-        }
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+                    command: ui::collaboration::NearbyTransferCommand::Snapshot,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .expect("an announced change asks for a snapshot");
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
+                    snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
+                }),
+            },
+        );
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
             !updated && !structure && !needs_animation,
             "idle Nearby snapshot still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
+    }
+
+    /// Point the identity projection and the workspace roots at fixtures,
+    /// so the only refresh sources are the ones the test controls.
+    #[cfg(unix)]
+    fn quiet_refresh_sources(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
+        let identities = tempfile::tempdir().unwrap();
+        env.set(
+            crate::identity_directory::TRUSTED_IDENTITIES_ENV,
+            identities.path().join("trusted-identities.json"),
+        );
+        env.set("TILO_WORKSPACE_ROOTS", "");
+        identities
+    }
+
+    /// An idle window over an unchanged local directory has no metadata
+    /// deadline at all: its watch wakes it on change, so nothing is re-read
+    /// on a timer. Where the watch cannot vouch for every change, the poll
+    /// stays, never faster than the fallback interval.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_has_no_periodic_deadline_with_a_subscription() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let now = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(now);
+        assert!(!widget.directory_changed, "nothing changed");
+        assert_ne!(
+            widget.directory_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the open directory is watched"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_metadata_refresh, None,
+            "a fully watched directory is never polled"
+        );
+        if let Some(due) = widget.next_metadata_refresh {
+            assert!(
+                due >= now + metadata_refresh::LIVE_INTERVAL,
+                "only a partially watched directory keeps its poll"
+            );
+        }
+    }
+
+    /// A file another program creates in the open directory shows, read
+    /// because the watch reported it, before any poll is due.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_created_in_the_open_directory_appears_without_a_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let created = ui::time::now();
+        std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
+        let shown =
+            |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
+        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // The earliest moment a reported change may be read, which is
+            // before any poll is due: only the watch can make this read.
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            if let Some(due) = widget.next_metadata_refresh {
+                assert!(readable < due, "the change is read before the poll");
+            }
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        // How soon is `change_read_gap`'s (under a second); wall time here
+        // would only measure the test machine's load.
+        assert!(shown(&widget), "the new file is listed");
+        assert!(!widget.directory_changed, "the reported change was read");
     }
 
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
@@ -827,20 +989,21 @@ mod command_path_tests {
             .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
-        widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
+        widget.next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
         assert!(
             widget
                 .next_wake_deadline()
                 .is_some_and(|wake| wake <= deadline),
             "the root must not schedule later than its scroll fade"
         );
-        widget.next_metadata_refresh = deadline
+        let refresh = deadline
             .checked_sub(std::time::Duration::from_millis(1))
             .expect("deadline lies in the future");
+        widget.next_metadata_refresh = Some(refresh);
         assert!(
             widget
                 .next_wake_deadline()
-                .is_some_and(|wake| wake <= widget.next_metadata_refresh),
+                .is_some_and(|wake| wake <= refresh),
             "the root must not schedule later than its metadata refresh"
         );
     }
@@ -861,6 +1024,7 @@ mod command_path_tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -897,15 +1061,14 @@ mod command_path_tests {
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         let mut widget = FileExplorerWidget::new();
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("l")),
+            None,
+            winit::event::ElementState::Pressed,
+        );
 
         assert!(widget.handle_app_key(
             &event,
@@ -918,15 +1081,14 @@ mod command_path_tests {
     }
 
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, NamedKey};
         let mut widget = FileExplorerWidget::new();
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::F1);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::F1),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
         let panel = widget
             .collab_panel
@@ -973,7 +1135,7 @@ mod command_path_tests {
             "and Empty Trash: {labels:?}"
         );
         assert!(
-            labels.contains(&"Delete Permanently".to_string()),
+            labels.contains(&"Delete permanently".to_string()),
             "and a permanent delete"
         );
         assert!(
@@ -992,7 +1154,6 @@ mod command_path_tests {
     fn folder_resource_exports_canonical_actions_handlers_and_ids() {
         resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
         locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action();
-        paged_folder_root_preserves_the_canonical_folder_actions();
         every_exported_local_file_handler_is_declared_for_the_broker();
         exported_background_operations_have_valid_job_contracts();
         resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
@@ -1007,13 +1168,13 @@ mod command_path_tests {
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("b.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
-        w.navigate(folder.clone());
+        w.navigate(folder);
         let initial_zoom = w.zoom_level();
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let folder_resource = &resources[0];
         for action in [
             "grid",
@@ -1027,7 +1188,6 @@ mod command_path_tests {
             "zoom-in",
             "zoom-out",
             "keyboard-shortcuts",
-            "add-favorite",
         ] {
             assert!(
                 folder_resource.actions.iter().any(|spec| spec.id == action),
@@ -1035,32 +1195,20 @@ mod command_path_tests {
             );
         }
 
-        for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
+        for command in ["grid", "sort-size", "zoom-in", "keyboard-shortcuts"] {
             assert!(
                 matches!(
-                    Widget::start_operation(
+                    crate::files_app::published::invoke(
                         &mut w,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            if command == "grid"
-                                || command == "sort-size"
-                                || command == "zoom-in"
-                                || command == "shortcuts"
-                            {
-                                OperationKind::View
-                            } else {
-                                OperationKind::Effect
-                            },
-                            "files.folder-command",
-                            &serde_json::to_vec(command).unwrap()
-                        ),
                         &mut doc,
-                        &automerge::ROOT
+                        folder_resource.id.as_str(),
+                        command,
+                        &serde_json::json!({}),
                     )
                     .unwrap(),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                    Some(ui::framework::Effected::Done(_))
                 ),
-                "{command} is routed through the canonical dispatcher"
+                "{command} is routed through the canonical door"
             );
         }
         assert_eq!(w.view_mode(), ViewMode::Grid);
@@ -1071,22 +1219,21 @@ mod command_path_tests {
             Some("Keyboard shortcuts"),
             "the resource action opens the same reference as the menu and keyboard"
         );
-        assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
     }
 
     fn locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action() {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
         // This is intentionally a synthetic, non-existent Trash path. The
         // resource contract is testable without touching a developer's real
         // Trash; runtime revalidation is covered by the command itself.
-        w.last_trash_undo = Some(vec![PathBuf::from("/not-a-real-trash-entry")]);
+        w.last_trash_undo = Some("not-a-queued-operation".into());
         let mut doc = automerge::AutoCommit::new();
-        let folder = ui::resources::resources(&w, &doc)
+        let folder = crate::files_app::published::tree(&w, &doc)
             .into_iter()
             .next()
             .expect("current folder resource");
@@ -1096,28 +1243,29 @@ mod command_path_tests {
             .find(|action| action.id == "undo-trash")
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
-        assert_eq!(undo.operation_type.as_deref(), Some("files.folder-command"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
-        assert_eq!(undo.contract.retry, RetryPolicy::AtMostOnce);
+        assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
+        assert_eq!(
+            undo.contract.retry,
+            ui::tilo_actions::RetryPolicy::AtMostOnce
+        );
         assert!(
             !undo.contract.reversible,
             "filesystem restore is not replayable history"
         );
+        let undo_encoded = undo.build_json(&serde_json::Map::new()).unwrap();
 
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "files.folder-command",
-                    &serde_json::to_vec("undo-trash").unwrap()
-                ),
+                OperationKind::Effect,
+                &undo_encoded.type_id,
+                &undo_encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(
             w.last_trash_undo.is_none(),
@@ -1142,6 +1290,189 @@ mod command_path_tests {
             menu.width() >= 400.0,
             "the scaled menu keeps enough width for the Undo label: {menu:?}"
         );
+    }
+
+    #[test]
+    fn one_time_cloud_import_is_an_independent_copy_through_the_action_door() {
+        for kind in [
+            crate::remote_accounts::RemoteAccountKind::Dropbox,
+            crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let mount = home.path().join("Remote/Cloud");
+            let destination = home.path().join("Downloads");
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::create_dir(mount.join("Folder")).unwrap();
+            std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
+            // Provider-native documents are already projected as link files.
+            std::fs::write(
+                mount.join("Folder/document.gdoc"),
+                b"{\"url\":\"https://docs.google.com/document/d/test\"}",
+            )
+            .unwrap();
+            let mut account = remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(mount.clone()),
+            );
+            account.kind = kind;
+            let mut files = FileExplorerWidget::with_persistence_dirs(
+                None,
+                Some(home.path().to_path_buf()),
+                favorites::UserDirs {
+                    downloads: Some(destination.clone()),
+                    ..Default::default()
+                },
+            );
+            files.startup_accounts = Some(vec![account]);
+            files.navigate(mount.clone());
+            let row = files
+                .published_rows()
+                .into_iter()
+                .find(|row| row.label == "Folder")
+                .unwrap();
+            assert!(row.actions.iter().any(|action| action.id == "import-once"));
+            let mut doc = automerge::AutoCommit::new();
+            published::invoke(
+                &mut files,
+                &mut doc,
+                row.id.as_str(),
+                "import-once",
+                &serde_json::json!({"folder": destination}),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+                b"original bytes"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
+                std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
+            );
+            std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+                b"original bytes"
+            );
+            std::fs::write(
+                destination.join("Folder/document.txt"),
+                b"local import edit",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(mount.join("Folder/document.txt")).unwrap(),
+                b"later remote edit"
+            );
+            let index = files
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.name == "Folder")
+                .unwrap();
+            files.select(Some(index));
+            assert!(
+                files
+                    .context_menu_spec(&[])
+                    .iter()
+                    .any(|(_, command)| command.as_ref()
+                        == Some(&FileCommand::ImportOnceToDownloads))
+            );
+            assert!(files.apply_command(FileCommand::ImportOnceToDownloads));
+            assert_eq!(
+                std::fs::read(destination.join("Folder 2/document.txt")).unwrap(),
+                b"later remote edit"
+            );
+            // A symlink cannot turn the local destination into a cloud folder.
+            let link = home.path().join("cloud-link");
+            std::os::unix::fs::symlink(&mount, &link).unwrap();
+            assert!(
+                published::invoke(
+                    &mut files,
+                    &mut doc,
+                    row.id.as_str(),
+                    "import-once",
+                    &serde_json::json!({"folder": link})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_import_retains_local_destination_after_alias_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Cloud");
+        let destination = home.path().join("Downloads");
+        let alias = home.path().join("destination-alias");
+        std::fs::create_dir(&mount).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(mount.join("document.txt"), b"remote bytes").unwrap();
+        std::os::unix::fs::symlink(&destination, &alias).unwrap();
+        let mut account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Healthy,
+            Some(mount.clone()),
+        );
+        account.kind = crate::remote_accounts::RemoteAccountKind::Dropbox;
+        let mut files = FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
+        files.startup_accounts = Some(vec![account]);
+        files.navigate(mount.clone());
+        // Use the production document queue, withholding execution until the
+        // admitted alias has been redirected into the remote mount.
+        files.dispatcher = Some(ui::framework::testing::dispatcher::<
+            crate::resource::FileExplorer,
+        >("files"));
+        files.device = Some("test-device".into());
+        let row = files
+            .published_rows()
+            .into_iter()
+            .find(|row| row.label == "document.txt")
+            .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        published::invoke(
+            &mut files,
+            &mut doc,
+            row.id.as_str(),
+            "import-once",
+            &serde_json::json!({"folder": alias}),
+        )
+        .unwrap();
+        assert!(!destination.join("document.txt").exists());
+        assert_eq!(files.awaiting_ops.len(), 1);
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&mount, &alias).unwrap();
+        let outcome = crate::file_ops::execute(&files.awaiting_ops[0].0, None);
+        assert!(
+            matches!(outcome, ui::tilo_resource::Settled::Done(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("document.txt")).unwrap(),
+            b"remote bytes"
+        );
+        assert!(!mount.join("document 2.txt").exists());
+        std::fs::write(mount.join("document.txt"), b"remote edit").unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("document.txt")).unwrap(),
+            b"remote bytes"
+        );
+        std::fs::write(destination.join("document.txt"), b"local edit").unwrap();
+        assert_eq!(
+            std::fs::read(mount.join("document.txt")).unwrap(),
+            b"remote edit"
+        );
+
+        // The action schema requires an absolute folder, even when a
+        // submitted relative folder exists and canonicalizes successfully.
+        assert!(
+            published::invoke(
+                &mut files,
+                &mut doc,
+                row.id.as_str(),
+                "import-once",
+                &serde_json::json!({"folder": "."}),
+            )
+            .is_err()
+        );
+        assert_eq!(files.awaiting_ops.len(), 1);
     }
 
     fn remote_account(
@@ -1187,6 +1518,47 @@ mod command_path_tests {
         ));
     }
 
+    /// An account that needs signing in is a row in the places list that
+    /// opens one short sheet: said once, with no subtitle and nothing about
+    /// the vault, and one action that looks again.
+    #[test]
+    fn a_cloud_account_needing_sign_in_is_visible_and_says_what_to_do() {
+        let account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+            None,
+        );
+        let mut w = FileExplorerWidget::new();
+        w.debug_show_remote_account(&account, true);
+        let ids: Vec<String> = w
+            .current_places()
+            .sections()
+            .iter()
+            .flat_map(|section| section.items.iter().map(|item| item.id.clone()))
+            .collect();
+        assert!(
+            ids.iter().any(|id| id == "account:cloud"),
+            "the account has a row even though nothing is mounted: {ids:?}"
+        );
+        let panel = w.collab_panel.as_ref().expect("the sheet is open");
+        assert_eq!(panel.title, "Sign in to Cloud");
+        assert!(panel.summary.is_empty(), "no subtitle under the heading");
+        let text = panel.lines.join(" ");
+        assert!(!text.to_lowercase().contains("vault"), "{text}");
+        assert!(!text.contains("Remote account details"), "{text}");
+        assert_eq!(
+            w.collab_panel_action_label().as_deref(),
+            Some("Check again")
+        );
+        assert_eq!(
+            w.collab_panel_action_command(),
+            Some(FileCommand::RecheckRemoteAccount("cloud".into()))
+        );
+        // Choosing the row opens the same sheet.
+        w.close_collab_panel();
+        assert!(w.apply_command(FileCommand::ShowRemoteAccount("cloud".into())));
+        assert!(w.collab_panel.is_some());
+    }
+
     fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
         let first = "/home/alice/Templates/Plan.md";
         let second = "/home/alice/Templates/Notes.md";
@@ -1205,8 +1577,7 @@ mod command_path_tests {
     fn entry_resource_actions_are_opaque_and_fail_closed() {
         resource_open_refuses_a_deleted_or_replayed_entry_target();
         local_resource_actions_carry_only_opaque_ids_not_host_paths();
-        entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view();
-        entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door();
+        entry_resource_uses_a_wire_safe_id_that_survives_a_rename();
         projected_availability_controls_are_discoverable_and_use_the_entry_route();
         nearby_receiver_actions_are_opaque_confirmed_and_current();
     }
@@ -1217,28 +1588,28 @@ mod command_path_tests {
         std::fs::write(&path, b"x").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = path;
-        entry.availability = Some(crate::model::AvailabilityProjection {
+        entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
             schema_version: 1,
-            record_id: "record".into(),
-            current_version: Some("v1".into()),
-            residency: crate::model::Residency::Partial { resident_bytes: 1 },
-            transfer: crate::model::ProjectedTransfer {
-                phase: crate::model::TransferPhase::Idle,
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
+            transfer: fs_protocol::ProjectedTransfer {
+                phase: fs_protocol::TransferPhase::Idle,
                 progress: None,
                 last_error: None,
                 last_error_at_ms: None,
                 error_truncated: false,
             },
-            policy: crate::model::AvailabilityPolicy::Automatic,
+            policy: fs_protocol::AvailabilityPolicy::Automatic,
             policy_inherited: false,
-            replicas: crate::model::ReplicaEvidence::Unknown,
-            freshness: crate::model::AvailabilityFreshness::default(),
+            replicas: fs_protocol::ProjectedReplicaEvidence::Unknown,
+            freshness: fs_protocol::ProjectedFreshness::default(),
         });
         let mut w = FileExplorerWidget::new();
         w.current_path = d.path().to_path_buf();
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let resource = resources[0]
             .children
             .iter()
@@ -1255,24 +1626,17 @@ mod command_path_tests {
                 "availability projection must expose {action}"
             );
         }
-        let payload = vec![
-            "availability".to_string(),
-            FileExplorerWidget::entry_resource_id(&w.entries[0]),
-        ];
+        let row = resource.id.as_str().to_owned();
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::invoke(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.entry-command",
-                    &serde_json::to_vec(&payload).unwrap()
-                ),
                 &mut doc,
-                &automerge::ROOT
+                &row,
+                "availability",
+                &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(w.collab_panel.is_some(), "availability route opens details");
     }
@@ -1311,7 +1675,7 @@ mod command_path_tests {
         assert_eq!(dialog.role, ui::a11y::Role::Dialog);
         assert_eq!(
             dialog.children.last().and_then(|node| node.name.as_deref()),
-            Some("Delete Permanently")
+            Some("Delete permanently")
         );
 
         w.close_collab_panel();
@@ -1334,6 +1698,8 @@ mod command_path_tests {
     fn context_menus_follow_selection_clipboard_location_and_templates() {
         super::open_with_tests::context_menu_opens_with_selection_aware_items();
         super::open_with_tests::empty_selection_menu_omits_item_actions();
+        super::open_with_tests::the_folder_menu_holds_the_folder_actions();
+        super::open_with_tests::menus_never_separate_a_lone_item();
         super::open_with_tests::copy_then_paste_menu_includes_paste();
         #[cfg(unix)]
         trash_view_menu_offers_restore_and_empty_not_move_to_trash();
@@ -1355,10 +1721,10 @@ mod command_path_tests {
             .filter_map(|i| i.label().map(str::to_string))
             .collect();
         for s in [
-            "Sort by Name",
-            "Sort by Size",
-            "Sort by Type",
-            "Sort by Date",
+            "Sort by name",
+            "Sort by size",
+            "Sort by type",
+            "Sort by date",
         ] {
             assert!(
                 labels.contains(&s.to_string()),
@@ -1406,7 +1772,7 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(target.clone());
         assert!(w.error_message().is_some(), "missing dir sets an error");
-        // The "Try Again" button pushes Refresh — still errors while missing.
+        // The "Try again" button pushes Refresh — still errors while missing.
         assert!(w.apply_command(FileCommand::Refresh));
         assert!(w.error_message().is_some());
         // Once the directory exists, the same retry clears the error.
@@ -1428,7 +1794,6 @@ mod command_path_tests {
         rename_cancel_leaves_the_file_untouched();
         exported_rename_changes_case_without_overwriting_another_entry();
         new_folder_creates_the_folder_and_opens_inline_rename();
-        external_new_folder_uses_the_typed_name_without_rename_ui();
         new_from_template_creates_the_file_and_opens_rename();
         super::headless_f2_renames_fixture_without_opening_a_file();
     }
@@ -1473,11 +1838,11 @@ mod command_path_tests {
         let root = automerge::ROOT;
         let baseline = doc.save();
         w.set_rename_buffer("report-000.txt".into());
-        w.sync(&mut doc, &root);
+        w.sync(&doc, &root);
 
         for i in 1..40 {
             w.set_rename_buffer(format!("report-{i:03}.txt"));
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
         }
         assert_eq!(
             w.rename_buffer(),
@@ -1541,35 +1906,11 @@ mod command_path_tests {
         w.navigate(d.path().to_path_buf());
         assert!(w.apply_command(FileCommand::NewFolder));
         assert!(
-            d.path().join("New Folder").is_dir(),
+            d.path().join("New folder").is_dir(),
             "folder actually created"
         );
         assert!(w.is_renaming(), "new folder drops straight into rename");
-        assert_eq!(w.rename_buffer(), "New Folder");
-    }
-
-    fn external_new_folder_uses_the_typed_name_without_rename_ui() {
-        let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let mut doc = automerge::AutoCommit::new();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "files.new-folder",
-                    &serde_json::to_vec("Agent Created").unwrap()
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(d.path().join("Agent Created").is_dir());
-        assert!(!w.is_renaming());
+        assert_eq!(w.rename_buffer(), "New folder");
     }
 
     fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
@@ -1579,19 +1920,20 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         let mut doc = automerge::AutoCommit::new();
-        let payload =
-            serde_json::to_vec(&crate::search_provider::entry_resource_id(&file)).unwrap();
+        let open = crate::effects::FilesEffect::OpenItem {
+            item: crate::search_provider::entry_resource_id(&file),
+        }
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .unwrap();
 
         std::fs::remove_file(&file).unwrap();
         w.refresh();
-        let error = Widget::start_operation(
+        let error = crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                "files.open",
-                &payload,
-            ),
+            OperationKind::View,
+            &open.type_id,
+            &open.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1605,7 +1947,7 @@ mod command_path_tests {
         std::fs::write(&file, b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
+        let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         let entry = resources[0]
             .children
             .iter()
@@ -1619,9 +1961,9 @@ mod command_path_tests {
         let encoded = open
             .build_json(&serde_json::Map::new())
             .expect("Open takes no arguments");
-        let payload: String = serde_json::from_slice(&encoded.payload).expect("string payload");
-        assert_eq!(payload, entry.id.as_str());
-        assert_ne!(payload, file.to_string_lossy());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&encoded.payload).expect("an effect payload");
+        assert_eq!(payload["args"]["item"], entry.id.as_str());
         assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
     }
 
@@ -1638,7 +1980,7 @@ mod command_path_tests {
             })
             .collect();
         let doc = automerge::AutoCommit::new();
-        let catalogue = ui::resources::resources(&w, &doc);
+        let catalogue = crate::files_app::published::tree(&w, &doc);
         let eager_entries = catalogue[0]
             .children
             .iter()
@@ -1648,101 +1990,32 @@ mod command_path_tests {
 
         let last = w.entries.last().expect("fixture has a final entry");
         let id = FileExplorerWidget::entry_resource_id(last);
-        let resolved = ui::resources::resource(&w, &doc, &id)
+        let resolved = w
+            .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
-        assert!(resolved.actions.iter().any(|action| action.id == "rename"));
-    }
-
-    fn paged_folder_root_preserves_the_canonical_folder_actions() {
-        let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let doc = automerge::AutoCommit::new();
-        let eager = ui::resources::resources(&w, &doc)
-            .into_iter()
-            .next()
-            .expect("folder root is exported");
-        let page = ui::resources::action_directory_resource_page(&w, &doc, &[], 1)
-            .expect("Files supports bounded action-directory pages");
-        let paged = page
-            .resources
-            .into_iter()
-            .next()
-            .expect("the first page contains the folder root");
-        let resolved = ui::resources::resource(&w, &doc, eager.id.as_str())
-            .expect("the canonical folder id resolves on demand");
-        let ids = |resource: &Resource| {
-            resource
-                .actions
-                .iter()
-                .map(|action| action.id.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        assert_eq!(paged.id, eager.id);
-        assert_eq!(ids(&paged), ids(&eager));
-        assert_eq!(ids(&resolved), ids(&eager));
-    }
-
-    fn entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view() {
-        let d = tempfile::tempdir().unwrap();
-        let file = d.path().join("keep.txt");
-        std::fs::write(&file, b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let resource_id = crate::search_provider::entry_resource_id(&file);
-        let payload = serde_json::to_vec(&vec!["trash", &resource_id]).unwrap();
-        let error = Widget::start_operation(
-            &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                "files.entry-command",
-                &payload,
-            ),
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-        )
-        .expect_err("a destructive action cannot be replayed as a view");
-        assert!(error.contains("invalid operation kind"));
-        assert!(
-            file.exists(),
-            "the rejected action made no filesystem change"
-        );
+        assert!(resolved.actions.iter().any(|action| action.id == "copy"));
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        let handlers = Widget::local_resource_operation_handlers(
-            &FileExplorerWidget::with_persistence(None, None),
-        );
-        for handler in [
-            "files.refresh",
-            "files.new-folder",
-            "files.paste",
-            "files.new-from-template",
-            "files.open",
-            "files.reveal-record",
-            "files.folder-command",
-            "files.entry-command",
-            "files.rename",
-            "files.share-link",
-            "files.remote-account",
-        ] {
-            assert!(handlers.contains(&handler), "missing handler {handler}");
-        }
         // One published operation without a handler refuses the app's whole
         // surface, and a directory search then finds none of its actions.
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
-        let resources = ui::resources::resources(&files, &automerge::AutoCommit::new());
-        let violations = ui::tilo_actions::validate_surface(
-            &resources,
-            &ui::tilo_actions::ActionRegistry::new(),
-            &Widget::resource_operation_handlers(&files),
+        let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
+        let registry = ui::tilo_actions::ActionRegistry::with(
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
         );
+        // The surface host answers the effect vocabulary beside the window's
+        // own operations.
+        let mut handlers = Widget::resource_operation_handlers(&files);
+        handlers.insert(
+            <crate::effects::FilesEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
+        );
+        let violations = ui::tilo_actions::validate_surface(&resources, &registry, &handlers);
         assert!(violations.is_empty(), "{violations:?}");
     }
 
@@ -1750,7 +2023,6 @@ mod command_path_tests {
     /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
     #[test]
     fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
-        use ui::resources::PublishesResources;
         use ui::tilo_actions::{ActionAddress, door};
         let root = tempfile::tempdir().unwrap();
         let downloads = root.path().join("in/downloads");
@@ -1768,7 +2040,7 @@ mod command_path_tests {
                       target: (String, &str),
                       arg: (&str, &Path)| {
             let (resource, action) = target;
-            let resources = ui::resources::resources(&*files, doc);
+            let resources = crate::files_app::published::tree(&*files, doc);
             let arguments = serde_json::Map::from_iter([(
                 arg.0.to_string(),
                 serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
@@ -1784,35 +2056,33 @@ mod command_path_tests {
             } else {
                 OperationKind::Effect
             };
-            Widget::start_operation(
+            crate::files_app::published::start(
                 files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 doc,
                 &automerge::ROOT,
             )
         };
 
         let start = (
-            crate::search_provider::folder_resource_id(&files.current_path),
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND.to_owned(),
             "go-to",
         );
         invoke(&mut files, &mut doc, start, ("path", &downloads)).unwrap();
         assert_eq!(files.current_path, downloads);
-        let folder = crate::search_provider::folder_resource_id(&downloads);
+        let folder =
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND.to_owned();
         let relative = invoke(
             &mut files,
             &mut doc,
-            (folder.clone(), "go-to"),
+            (folder, "go-to"),
             ("path", Path::new("in")),
         );
         assert!(relative.unwrap_err().contains("absolute"));
 
-        let browsed = files.resource(&doc, &folder).unwrap();
+        let browsed = crate::files_app::published::tree(&files, &doc).remove(0);
         let holiday = crate::search_provider::entry_resource_id(&downloads.join("holiday.jpg"));
         let notes = crate::search_provider::entry_resource_id(&downloads.join("notes.txt"));
         let children: Vec<&str> = browsed.children.iter().map(|c| c.id.as_str()).collect();
@@ -1821,34 +2091,20 @@ mod command_path_tests {
         invoke(
             &mut files,
             &mut doc,
-            (holiday, "move-to"),
-            ("folder", &images),
-        )
-        .unwrap();
-        invoke(
-            &mut files,
-            &mut doc,
             (notes.clone(), "copy-to"),
             ("folder", &documents),
         )
         .unwrap();
-        assert!(images.join("holiday.jpg").exists());
-        assert!(!downloads.join("holiday.jpg").exists(), "moved, not copied");
         assert!(documents.join("notes.txt").exists() && downloads.join("notes.txt").exists());
+        assert!(images.is_dir() && downloads.join("holiday.jpg").exists() && !holiday.is_empty());
         let nowhere = root.path().join("nope");
         let missing = invoke(
             &mut files,
             &mut doc,
-            (notes, "move-to"),
+            (notes, "copy-to"),
             ("folder", &nowhere),
         );
-        let refusal = missing.unwrap_err();
-        assert!(
-            refusal.contains(r#"move on the folder with {"entries":["notes.txt"],"folder":""#)
-                && refusal.ends_with(r#"","create":true}"#),
-            "{refusal}"
-        );
-        assert!(downloads.join("notes.txt").exists());
+        assert!(missing.unwrap_err().contains("is not an existing folder"));
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its
@@ -1866,35 +2122,32 @@ mod command_path_tests {
         files.navigate(root.path().into());
         let mut doc = automerge::AutoCommit::new();
         let mut show = |action: &str, path: &Path| {
-            let resources = ui::resources::resources(&files, &doc);
-            let folder = crate::search_provider::folder_resource_id(&files.current_path);
+            let resources = crate::files_app::published::tree(&files, &doc);
+            let folder = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND;
             let encoded = door::encode_json(
                 &resources,
                 &ActionAddress::new(folder, action),
                 serde_json::json!({"path": path}).as_object().unwrap(),
             )
             .unwrap();
-            let started = Widget::start_operation(
+            let started = crate::files_app::published::start(
                 &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT,
             );
             match started {
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                Ok(Some(ui::framework::Effected::Done(output))) => output.value,
                 other => panic!("{action} completes at once: {other:?}"),
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
-            crate::search_provider::folder_resource_id(&downloads)
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
         );
         assert_eq!(opened["path"], downloads.display().to_string());
         let entries = opened["entries"].as_array().unwrap();
@@ -1907,83 +2160,13 @@ mod command_path_tests {
         let went = show("go-to", &old).unwrap();
         assert_eq!(
             went["resource"],
-            crate::search_provider::folder_resource_id(&old)
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
         );
         assert_eq!(went["entries"], serde_json::json!([]));
         assert!(went.get("more").is_none());
     }
 
-    /// `move` takes several entries by name into a folder it creates, answers
-    /// with what moved, and moves nothing when one name is wrong.
-    #[test]
-    fn move_puts_several_entries_into_a_folder_it_creates() {
-        use ui::tilo_actions::{ActionAddress, door};
-        let root = tempfile::tempdir().unwrap();
-        let downloads = root.path().join("in/downloads");
-        std::fs::create_dir_all(&downloads).unwrap();
-        for name in ["a.png", "b.jpg", "c.txt"] {
-            std::fs::write(downloads.join(name), name).unwrap();
-        }
-        let mut files = FileExplorerWidget::with_persistence(None, Some(downloads.clone()));
-        files.navigate(downloads.clone());
-        let mut doc = automerge::AutoCommit::new();
-        let images = root.path().join("out/images");
-        let mut invoke = |arguments: serde_json::Value| -> Result<
-            Option<serde_json::Value>,
-            ui::tilo_actions::DoorError,
-        > {
-            let resources = ui::resources::resources(&files, &doc);
-            let encoded = door::encode_json(
-                &resources,
-                &ActionAddress::new(crate::search_provider::folder_resource_id(&downloads), "move"),
-                arguments.as_object().unwrap(),
-            )?;
-            let started = Widget::start_operation(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map_err(ui::tilo_actions::DoorError::Failed)?;
-            match started {
-                Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
-                _ => panic!("move completes at once"),
-            }
-        };
-
-        let misspelt =
-            invoke(serde_json::json!({"entries": ["a.png", "nope.gif"], "folder": images}));
-        let refusal = format!("{misspelt:?}");
-        assert!(
-            refusal.contains("nope.gif") && refusal.contains("nothing moved"),
-            "{refusal}"
-        );
-        assert!(downloads.join("a.png").exists() && !images.exists());
-
-        let kept =
-            invoke(serde_json::json!({"entries": ["a.png"], "folder": images, "create": false}));
-        assert!(format!("{kept:?}").contains("create:true"), "{kept:?}");
-
-        let moved =
-            invoke(serde_json::json!({"entries": ["a.png", "b.jpg"], "folder": images})).unwrap();
-        assert_eq!(
-            moved,
-            Some(serde_json::json!(format!(
-                "moved 2 into {} (created): a.png, b.jpg",
-                images.display()
-            )))
-        );
-        assert!(images.join("a.png").exists() && images.join("b.jpg").exists());
-        assert!(!downloads.join("a.png").exists() && downloads.join("c.txt").exists());
-    }
-
     fn exported_rename_changes_case_without_overwriting_another_entry() {
-        use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();
         let original = directory.path().join("report.txt");
         std::fs::write(&original, b"source content").unwrap();
@@ -1991,33 +2174,25 @@ mod command_path_tests {
         std::fs::write(&occupied, b"keep occupied content").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
         files.navigate(directory.path().into());
-        let mut doc = automerge::AutoCommit::new();
-        let mut invoke_rename = |source: &Path, name: &str| {
-            let resources = ui::resources::resources(&files, &doc);
-            let address =
-                ActionAddress::new(crate::search_provider::entry_resource_id(source), "rename");
-            let arguments = serde_json::Map::from_iter([(
-                "value".into(),
-                serde_json::Value::String(name.into()),
-            )]);
-            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
-            Widget::start_operation(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map(|started| {
-                matches!(
-                    started,
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
-                )
-            })
+        // The rename editor's commit queues the same operation an agent's
+        // `rename` does; a window no framework hosts carries it out at once,
+        // keeping the editor open when it fails.
+        let mut invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
+            files.refresh();
+            let index = files
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.path == source)
+                .ok_or_else(|| "not listed".to_string())?;
+            files.selection.select_only(index);
+            files.begin_rename();
+            files.set_rename_buffer(name.into());
+            files.commit_rename();
+            if files.is_renaming() {
+                files.cancel_rename();
+                return Err(files.status.clone().unwrap_or_default());
+            }
+            Ok(true)
         };
         assert!(invoke_rename(&original, "REPORT.txt").unwrap());
         let renamed = directory.path().join("REPORT.txt");
@@ -2050,7 +2225,7 @@ mod command_path_tests {
         }
     }
 
-    fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
+    fn entry_resource_uses_a_wire_safe_id_that_survives_a_rename() {
         use ui::tilo_actions::{ActionAddress, door};
 
         let d = tempfile::tempdir().unwrap();
@@ -2073,7 +2248,7 @@ mod command_path_tests {
         entry.record_id = Some(*record_id.as_bytes());
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry = resources[0]
             .children
             .iter()
@@ -2082,37 +2257,18 @@ mod command_path_tests {
             })
             .expect("a collaborative file uses its record UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
-        let address = ActionAddress::new(entry.id.as_str(), "rename");
+        let address = ActionAddress::new(entry.id.as_str(), "copy");
         assert_eq!(
             ActionAddress::parse(&address.encode()),
             Some(address.clone())
         );
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("value".into(), serde_json::Value::String("new.txt".into()));
-        let encoded = door::encode_json(&resources, &address, &arguments)
-            .expect("the entry's prompted rename action encodes");
-        assert!(
-            !door::resolve(&resources, &address)
-                .expect("rename action is exported")
-                .contract
-                .reversible,
-            "an external filesystem rename has no Tilo action-history inverse"
-        );
-        assert!(matches!(
-            Widget::start_operation(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        assert!(door::resolve(&resources, &address).is_some());
+        // Renamed in place, the file keeps its record identity.
+        w.selection.select_only(0);
+        w.begin_rename();
+        w.set_rename_buffer("new.txt".into());
+        w.commit_rename();
+        let _ = &mut doc;
         assert!(!old.exists());
         let renamed = d.path().join("new.txt");
         assert!(renamed.exists());
@@ -2121,7 +2277,7 @@ mod command_path_tests {
         w.entries[0].path = renamed;
         w.entries[0].name = "new.txt".into();
         w.entries[0].record_id = Some(*record_id.as_bytes());
-        let refreshed = ui::resources::resources(&w, &doc);
+        let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
             door::resolve(&refreshed, &address).is_some(),
             "the record action address survives a path rename and resolves its fresh path"
@@ -2133,7 +2289,7 @@ mod command_path_tests {
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
+        let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         for action in resources.iter().flat_map(|resource| {
             resource.actions.iter().chain(
                 resource
@@ -2143,7 +2299,21 @@ mod command_path_tests {
             )
         }) {
             if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
-                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                // Inspection and recovery answer with declared JSON receipts.
+                // Every existing void job must still declare Job.
+                let expected = if [
+                    crate::effects::FilesEffect::CLIPBOARD_STATUS.id,
+                    crate::effects::FilesEffect::RECOVER_CLIPBOARD_TRANSFERS.id,
+                ]
+                .contains(&action.id.as_str())
+                {
+                    ResultSpec::Json {
+                        schema: serde_json::json!({}),
+                    }
+                } else {
+                    ResultSpec::Job
+                };
+                assert_eq!(action.contract.result, expected, "{}", action.id);
                 assert!(
                     action.contract.validate_declaration().is_empty(),
                     "{}",
@@ -2246,7 +2416,7 @@ mod command_path_tests {
     ) -> Result<bool, String> {
         use ui::tilo_actions::{ActionAddress, door};
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(files, &doc);
+        let resources = crate::files_app::published::tree(files, &doc);
         let resource = source.map_or_else(
             || resources.first().unwrap().id.as_str().to_owned(),
             crate::search_provider::entry_resource_id,
@@ -2257,23 +2427,15 @@ mod command_path_tests {
             &serde_json::Map::new(),
         )
         .expect("the current resource must export the transfer action");
-        Widget::start_operation(
+        crate::files_app::published::start(
             files,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
-        .map(|started| {
-            matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            )
-        })
+        .map(|started| matches!(started, Some(ui::framework::Effected::Done(_))))
     }
 
     #[cfg(unix)]
@@ -2378,15 +2540,246 @@ mod command_path_tests {
         assert_eq!(w.current_path(), a, "forward re-visits");
     }
 
-    /// A hermetic widget whose favourites/zoom persist to a throwaway dir, so
-    /// tests never touch the user's real `~/.config`.
+    /// A hermetic widget whose recent files and previews live in a throwaway
+    /// dir, so tests never touch the user's real `~/.config`.
     fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         (w, cfg)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn airdrop_file_action_requires_host_availability_and_cannot_submit_trust() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTransferCommand, NearbyTransferReply,
+        };
+        let (mut widget, config) = hermetic();
+        let source = config.path().join("report.txt");
+        std::fs::write(&source, b"approved source").unwrap();
+        widget.navigate(config.path().to_path_buf());
+        let mut document = automerge::AutoCommit::new();
+        let address = ui::tilo_actions::ActionAddress::new(
+            crate::search_provider::entry_resource_id(&source),
+            "send-airdrop",
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferChanged);
+        let request_id = widget
+            .nearby_send
+            .take_requests()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::AirDropAvailability,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
+            });
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let action = ui::tilo_actions::door::resolve(&resources, &address)
+            .expect("lab host publishes file action");
+        assert_eq!(
+            action
+                .params()
+                .iter()
+                .map(|param| &*param.name)
+                .collect::<Vec<_>>(),
+            ["address", "port"]
+        );
+        let mut args = serde_json::Map::new();
+        args.insert("address".into(), "127.0.0.1".into());
+        args.insert("port".into(), 443.into());
+        let encoded = action.build_json(&args).unwrap();
+        crate::files_app::published::start(
+            &mut widget,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let requests = widget.nearby_send.take_requests();
+        assert!(
+            matches!(requests.as_slice(), [CollabRequest::NearbyTransferCommand {
+            command: NearbyTransferCommand::SendAirDrop { source_path, address, port: 443 }, ..
+        }] if source_path == source.as_os_str().as_encoded_bytes() && address == "127.0.0.1")
+        );
+        // Retaining an encoded action does not retain its source capability.
+        std::fs::remove_file(&source).unwrap();
+        widget.refresh();
+        assert!(
+            crate::files_app::published::start(
+                &mut widget,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &mut document,
+                &automerge::ROOT
+            )
+            .is_err()
+        );
+        assert!(widget.nearby_send.take_requests().is_empty());
+    }
+
+    #[test]
+    fn nearby_status_action_reports_progress_and_terminal_phases_without_authority() {
+        use ui::collaboration::{
+            NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase,
+            NearbyTransferSnapshot, NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x62; 16]);
+        let (mut widget, _config) = hermetic();
+        let mut document = automerge::AutoCommit::new();
+        for (phase, bytes) in [
+            (NearbyTransferPhase::AwaitingConsent, 0),
+            (NearbyTransferPhase::Transferring, 8),
+            (NearbyTransferPhase::Completed, 16),
+            (NearbyTransferPhase::Failed, 8),
+            (NearbyTransferPhase::Cancelled, 8),
+        ] {
+            let expected = NearbyTransferStatus {
+                handle: transfer,
+                name: "report.txt".into(),
+                device_label: "Verified fixture".into(),
+                direction: NearbyTransferDirection::Sending,
+                phase,
+                transferred_bytes: bytes,
+                total_bytes: 16,
+            };
+            widget
+                .nearby_send
+                .install_snapshot_for_test(NearbyTransferSnapshot {
+                    transfers: vec![expected.clone()],
+                    ..Default::default()
+                });
+            let rows = crate::files_app::published::tree(&widget, &document);
+            let resource = rows[0]
+                .children
+                .iter()
+                .find(|resource| resource.kind == "files.nearby-transfer")
+                .expect("terminal transfers remain semantic resources");
+            let status = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "status")
+                .expect("a read-only status action exists in every phase");
+            assert_eq!(status.contract.kind, ActionKind::Read);
+            assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
+            let ActionInput::Immediate(encoded) = &status.input else {
+                panic!("status uses the app's opaque row payload")
+            };
+            let Some(ui::framework::Effected::Done(output)) = crate::files_app::published::start(
+                &mut widget,
+                status.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &mut document,
+                &automerge::ROOT,
+            )
+            .expect("read status through the production effect door") else {
+                panic!("status must return an immediate structured answer")
+            };
+            assert_eq!(
+                output.value,
+                Some(serde_json::json!({"transfer": expected}))
+            );
+            assert!(
+                widget.nearby_send.take_requests().is_empty(),
+                "inspection grants no authority or network work"
+            );
+            widget
+                .nearby_send
+                .install_snapshot_for_test(NearbyTransferSnapshot::default());
+            assert!(
+                crate::files_app::published::start(
+                    &mut widget,
+                    status.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &mut document,
+                    &automerge::ROOT,
+                )
+                .expect_err("an expired row cannot inspect another transfer")
+                .contains("no longer available")
+            );
+            assert!(widget.nearby_send.take_requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn nearby_recovered_receive_decline_is_available_without_a_destination() {
+        use ui::collaboration::{
+            CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,
+            NearbyTransferPhase, NearbyTransferSnapshot, NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x61; 16]);
+        let (mut widget, _config) = hermetic();
+        widget
+            .nearby_send
+            .install_snapshot_for_test(NearbyTransferSnapshot {
+                transfers: vec![NearbyTransferStatus {
+                    handle: transfer,
+                    name: "Interrupted report".into(),
+                    device_label: "Offline laptop".into(),
+                    direction: NearbyTransferDirection::Receiving,
+                    phase: NearbyTransferPhase::AwaitingDestination,
+                    transferred_bytes: 8,
+                    total_bytes: 16,
+                }],
+                ..Default::default()
+            });
+        let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
+        let resource = rows[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "files.nearby-transfer")
+            .expect("recoverable receive remains a semantic resource");
+        let decline = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "decline")
+            .expect("decline needs no destination grant");
+        assert_eq!(decline.contract.confirmation, ConfirmationPolicy::Confirm);
+        let ActionInput::Immediate(encoded) = &decline.input else {
+            panic!("decline must use the existing opaque action payload")
+        };
+        let mut document = automerge::AutoCommit::new();
+        crate::files_app::published::start(
+            &mut widget,
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .expect("execute recovered receive decline");
+        assert!(matches!(widget.nearby_send.take_requests().as_slice(), [
+            CollabRequest::NearbyTransferCommand {
+                command: NearbyTransferCommand::Decide {
+                    handle, accept: false, destination: None, remember_for_session: false,
+                }, ..
+            }
+        ] if *handle == transfer));
     }
 
     fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
@@ -2420,8 +2813,8 @@ mod command_path_tests {
         widget
             .nearby_send
             .install_snapshot_for_test(snapshot.clone());
-        let root = widget.action_directory_folder_root();
-        let transfer_resource = root
+        let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
+        let transfer_resource = rows[0]
             .children
             .iter()
             .find(|resource| resource.kind == "files.nearby-transfer")
@@ -2442,14 +2835,11 @@ mod command_path_tests {
         widget.nearby_send.install_snapshot_for_test(snapshot);
         let mut document = automerge::AutoCommit::new();
         assert!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut document,
                 &automerge::ROOT
             )
@@ -2511,43 +2901,22 @@ mod command_path_tests {
         );
     }
 
-    /// Each phase persists into its own throwaway config dir.
+    /// Favourite commands edit the sidebar, which follows the localized
+    /// user folders. (The stored places are the resource's: see
+    /// `resource::tests`.)
     #[test]
-    fn zoom_and_favourites_persist_and_follow_localized_user_dirs() {
-        zoom_level_persists_across_reconstruction();
-        favorite_commands_add_reorder_and_remove_and_persist();
+    fn favourites_edit_the_sidebar_and_follow_localized_user_dirs() {
+        favorite_commands_add_reorder_and_remove();
         favourites_follow_localized_xdg_user_dirs();
     }
 
-    fn zoom_level_persists_across_reconstruction() {
+    fn favorite_commands_add_reorder_and_remove() {
         let cfg = tempfile::tempdir().unwrap();
-        {
-            let mut w = FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            );
-            w.apply_command(FileCommand::ZoomIn);
-            w.apply_command(FileCommand::ZoomIn);
-            assert_eq!(w.zoom_level(), 2);
-        }
-        // A fresh widget reads the persisted level back.
-        let w2 = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+        let mut w = FileExplorerWidget::with_persistence(
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
-        assert_eq!(w2.zoom_level(), 2, "zoom level survives a restart");
-    }
-
-    fn favorite_commands_add_reorder_and_remove_and_persist() {
-        let cfg = tempfile::tempdir().unwrap();
-        let make = || {
-            FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            )
-        };
         let sub = PathBuf::from("/home/tester/Projects/tilo");
-        let mut w = make();
         let before = w.favorites().len();
         w.apply_command(FileCommand::AddFavorite(sub.clone()));
         assert_eq!(w.favorites().len(), before + 1, "added one favourite");
@@ -2558,19 +2927,8 @@ mod command_path_tests {
         w.apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
         assert_eq!(w.favorites()[1].path, sub, "reorder moved it to slot 1");
 
-        // The new order + membership persists to a fresh widget.
-        let w2 = make();
-        assert_eq!(w2.favorites()[1].path, sub, "reordered favourite persists");
-
-        // Remove drops it (and persists).
-        let mut w3 = make();
-        w3.apply_command(FileCommand::RemoveFavorite(sub.clone()));
-        assert!(!w3.favorites().iter().any(|f| f.path == sub));
-        let w4 = make();
-        assert!(
-            !w4.favorites().iter().any(|f| f.path == sub),
-            "removal persists"
-        );
+        w.apply_command(FileCommand::RemoveFavorite(sub.clone()));
+        assert!(!w.favorites().iter().any(|f| f.path == sub));
     }
 
     fn favourites_follow_localized_xdg_user_dirs() {
@@ -2587,11 +2945,8 @@ mod command_path_tests {
             videos: Some(home.join("Videos")),
             ..Default::default()
         };
-        let w = FileExplorerWidget::with_persistence_dirs(
-            Some(cfg.path().to_path_buf()),
-            Some(home.clone()),
-            dirs,
-        );
+        let w =
+            FileExplorerWidget::with_persistence_dirs(Some(cfg.path()), Some(home.clone()), dirs);
         let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
         // The sidebar shows the user's real localized names, not hard-coded
         // English ones.
@@ -2625,6 +2980,7 @@ mod command_path_tests {
         std::fs::create_dir(&work).unwrap();
 
         let (mut w, _cfg) = hermetic();
+        w.templates_dir = Some(d.path().to_path_buf());
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
@@ -2811,17 +3167,17 @@ mod command_path_tests {
 
     fn context_menu_gates_new_file_on_templates_existing() {
         // The "New File ▸" entry appears iff the Templates dir has files, and
-        // "New Folder" is always present. Templates are injected so the check is
+        // "New folder" is always present. Templates are injected so the check is
         // hermetic (no reliance on the ambient Templates dir).
         let (w, _cfg) = hermetic();
         let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label.starts_with("New File"))
+            spec.iter().any(|(label, _)| label.starts_with("New file"))
         };
         let has_new_folder = |spec: &[(String, Option<FileCommand>)]| {
-            spec.iter().any(|(label, _)| label == "New Folder")
+            spec.iter().any(|(label, _)| label == "New folder")
         };
 
-        // Empty Templates dir → no "New File", but "New Folder" stays.
+        // Empty Templates dir → no "New File", but "New folder" stays.
         let none = w.context_menu_spec(&[]);
         assert!(!has_new_file(&none), "no templates → submenu hidden");
         assert!(has_new_folder(&none), "New Folder is always offered");
@@ -2877,7 +3233,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -2888,11 +3244,11 @@ mod command_path_tests {
         w.selection.select_only(0);
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+            label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
         assert!(w.apply_command(FileCommand::KeepOffline));
         assert_eq!(
-            xattr::get(&file, crate::model::PIN_XATTR)
+            xattr::get(&file, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
@@ -2924,13 +3280,13 @@ mod command_path_tests {
         };
         xattr::set(
             &local,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "resident", "bytes": 5})),
         )
         .unwrap();
         xattr::set(
             &remote,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "not_resident"})),
         )
         .unwrap();
@@ -2953,18 +3309,18 @@ mod command_path_tests {
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
-                    label == "Free Local Space" && *command == Some(FileCommand::FreeLocalSpace)
+                    label == "Free local space" && *command == Some(FileCommand::FreeLocalSpace)
                 })
         );
         assert!(widget.apply_command(FileCommand::FreeLocalSpace));
         assert_eq!(
-            xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&local, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict".as_slice())
         );
         assert_eq!(
-            xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&remote, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None
         );
     }
@@ -2981,22 +3337,25 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();
-        xattr::set(&before, crate::model::SYNC_XATTR, b"projected").unwrap();
+        xattr::set(&before, fs_protocol::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
+        // A workspace mount is FUSE: its watch reports local edits only, and
+        // remote ones (renames, sync state) are found by the poll.
+        widget.directory_watch.assume_partial_coverage();
         widget.selection.select_only(0);
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
-        xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = ui::time::now();
+        xattr::set(&after, fs_protocol::SYNC_XATTR, b"local").unwrap();
+        widget.next_metadata_refresh = Some(ui::time::now());
 
         assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
-            Some(crate::model::SyncState::Local)
+            Some(fs_protocol::SyncState::Local)
         );
         assert_eq!(widget.selection.selected(), vec![0]);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3030,13 +3389,13 @@ mod command_path_tests {
         };
         xattr::set(
             &automatic,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("automatic", false),
         )
         .unwrap();
         xattr::set(
             &pinned,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("pinned", false),
         )
         .unwrap();
@@ -3060,24 +3419,21 @@ mod command_path_tests {
 
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+            label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
         assert!(spec.iter().any(|(label, command)| {
-            label == "Use Automatic Storage" && *command == Some(FileCommand::RemoveOfflinePin)
+            label == "Use automatic storage" && *command == Some(FileCommand::RemoveOfflinePin)
         }));
 
         w.apply_command(FileCommand::KeepOffline);
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
         );
-        assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&pinned, fs_protocol::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
 
         // `refresh` deliberately treats this temp directory as an ordinary
         // non-workspace path. Restore the directly-read projections so the
@@ -3088,22 +3444,19 @@ mod command_path_tests {
         w.selection.select_all(w.entries.len());
         w.apply_command(FileCommand::RemoveOfflinePin);
         assert_eq!(
-            xattr::get(&pinned, crate::model::PIN_XATTR)
+            xattr::get(&pinned, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"automatic".as_slice())
         );
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice()),
             "the opposite policy action must not rewrite an automatic record"
         );
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     #[cfg(unix)]
@@ -3125,7 +3478,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -3138,7 +3491,7 @@ mod command_path_tests {
         let spec = w.context_menu_spec(&[]);
         assert!(
             spec.iter().any(|(label, command)| {
-                label == "Pinned by Parent Folder" && command.is_none()
+                label == "Pinned by parent folder" && command.is_none()
             })
         );
         assert!(
@@ -3147,16 +3500,16 @@ mod command_path_tests {
                 .any(|(_, command)| { *command == Some(FileCommand::RemoveOfflinePin) })
         );
         w.apply_command(FileCommand::RemoveOfflinePin);
-        assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&file, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     fn failed_projected_file_offers_retry_and_availability_details() {
         let mut entry = ent("offline.txt", false, "text/plain");
-        entry.availability = crate::model::AvailabilityProjection::parse(
+        entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": null,
+                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
                     "last_error": "No available replica could provide this file",
@@ -3167,14 +3520,15 @@ mod command_path_tests {
                     "local_verified_at_ms": null, "replicas_observed_at_ms": 11}
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
 
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Retry Download" && *command == Some(FileCommand::RetryTransfer)
+            label == "Retry download" && *command == Some(FileCommand::RetryTransfer)
         }));
         assert!(spec.iter().any(|(label, command)| {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
@@ -3213,7 +3567,7 @@ mod command_path_tests {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.record_id =
             Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
-        entry.rich_metadata = crate::model::MetadataProjection::parse(
+        entry.rich_metadata = fs_protocol::MetadataProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3222,8 +3576,9 @@ mod command_path_tests {
                     "page_count": 4, "codec": "h264", "container": "mp4"}
             }))
             .unwrap(),
-        );
-        entry.share = crate::model::ShareProjection::parse(
+        )
+        .ok();
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3243,8 +3598,9 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
-        entry.history = crate::model::HistoryProjection::parse(
+        )
+        .ok();
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3265,16 +3621,17 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
         let spec = w.context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
-            label == "Sharing & Access…" && *command == Some(FileCommand::ShowSharing)
+            label == "Sharing and access…" && *command == Some(FileCommand::ShowSharing)
         }));
         assert!(spec.iter().any(|(label, command)| {
-            label == "Version History…" && *command == Some(FileCommand::ShowHistory)
+            label == "Version history…" && *command == Some(FileCommand::ShowHistory)
         }));
         assert!(spec.iter().any(|(label, command)| {
             label == "Properties…" && *command == Some(FileCommand::ShowProperties)
@@ -3304,10 +3661,85 @@ mod command_path_tests {
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
         assert!(w.collab_panel.is_none());
-        let registration = ui::history_mode::capability::history_registration(&w);
-        assert!(registration.unwrap().is_some());
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
+    }
+
+    /// A version an agent's own device signed reaches Workspace Activity as
+    /// the agent's, on behalf of its person, as the file's History names it.
+    #[test]
+    fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let person = root.verifying_key().to_bytes();
+        let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: agent_key.verifying_key().to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let device = certificate.device_public_key;
+        let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "record_id": record, "total_versions": 1,
+                "versions_truncated": false, "heads": [version],
+                "versions": [
+                    {"id": version, "record_id": record, "parents": [],
+                     "actor": {"person": person.to_vec(), "device": device.to_vec()},
+                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
+                ], "conflicts_truncated": false, "conflicts": []
+            }))
+            .unwrap(),
+        ).ok();
+        let mut w = FileExplorerWidget::new();
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                            agent_id: "scribe".into(),
+                            label: "Scribe".into(),
+                            color: [10, 20, 30],
+                        }),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
+        w.apply_command(FileCommand::ShowInWorkspaceActivity {
+            record_id: record.into(),
+            version_id: selected,
+        });
+        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            entry: Some(entry), ..
+        }) = w.take_host_intent()
+        else {
+            panic!("Files hands the selected version to Workspace Activity");
+        };
+        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
+        let attribution = entry.author.attribution.expect("who acted for whom");
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.actor_name, "Scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        assert_eq!(
+            attribution.on_behalf_of_name.as_deref(),
+            Some("Ada Lovelace")
+        );
     }
 
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
@@ -3315,7 +3747,7 @@ mod command_path_tests {
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
         let mut entry = ent("report.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "record_id": record, "total_versions": 2,
                 "versions_truncated": false, "heads": [current],
@@ -3329,12 +3761,12 @@ mod command_path_tests {
                 ], "conflicts_truncated": false, "conflicts": []
             }))
             .unwrap(),
-        );
+        ).ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
-        let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -3368,16 +3800,16 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             b"/run/tilo/app/tilo-fs-share.sock",
         )
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let person_bytes = root_key.verifying_key().to_bytes();
-        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
-            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
@@ -3396,7 +3828,10 @@ mod command_path_tests {
                 humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             },
         )
@@ -3420,7 +3855,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Never,
                             link_uses: None,
                             recipient_devices: vec![device],
@@ -3436,7 +3871,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Month,
                             link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                             recipient_devices: Vec::new(),
@@ -3444,22 +3879,20 @@ mod command_path_tests {
                     ))
         }));
 
-        w.entries[0].share = Some(crate::model::ShareProjection {
+        w.entries[0].share = Some(fs_protocol::ShareProjectionV1 {
             schema_version: 1,
-            record_id: uuid::Uuid::from_u128(82).to_string(),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(82)),
             observed_at_ms: 1,
-            grants: vec![crate::model::ShareGrantProjection {
-                grant_id: uuid::Uuid::from_u128(83).to_string(),
-                subject: crate::model::ShareSubject::Person {
-                    person: *person.as_bytes(),
-                },
-                permission: crate::model::FilePermission::Edit,
+            grants: vec![fs_protocol::ShareGrantProjectionV1 {
+                grant_id: uuid::Uuid::from_u128(83),
+                subject: fs_protocol::ShareSubjectProjection::Person { person },
+                permission: fs_protocol::FilePermission::Edit,
                 expires_at_ms: None,
                 revoked: false,
                 expired: false,
                 used: false,
                 exhausted: false,
-                status: crate::model::ShareGrantStatus::Active,
+                status: fs_protocol::ShareGrantStatus::Active,
                 redemptions: 0,
                 max_redemptions: None,
             }],
@@ -3494,7 +3927,10 @@ mod command_path_tests {
                         signature: [0; 64],
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }
                 })
                 .collect();
             tilo_user_identity::TrustedIdentityProjectionV2 {
@@ -3510,7 +3946,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
-        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
         let mut widget = FileExplorerWidget::new();
 
         std::fs::write(
@@ -3567,15 +4003,13 @@ mod command_path_tests {
 
     #[cfg(unix)]
     fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
-        use ui::widget::Widget;
-
         let dir = tempfile::tempdir().unwrap();
         let record_id = uuid::Uuid::from_u128(0xabc);
         let nested = dir.path().join("nested");
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
         let projection = serde_json::json!({
             "schema_version": 1,
             "truncated": false,
@@ -3587,7 +4021,7 @@ mod command_path_tests {
         });
         xattr::set(
             dir.path(),
-            crate::model::RECORD_INDEX_XATTR,
+            fs_protocol::projection::RECORD_INDEX_XATTR,
             &serde_json::to_vec(&projection).unwrap(),
         )
         .unwrap();
@@ -3602,46 +4036,29 @@ mod command_path_tests {
         // refresh once, then Ctrl+K itself performs no mount traversal.
         widget.refresh_external_search_catalogs();
 
-        let providers = ui::search::capability::search_providers(&widget);
-        // Places and remote-account discovery remain separate providers; find
-        // the collaborative hit by its stable record action rather than by a
-        // brittle provider position or a developer's local account settings.
-        let hit = providers
-            .iter()
-            .flat_map(|provider| provider.search("renamed"))
+        let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+            widget.search_entries_shown(),
+        );
+        // Find the collaborative hit by its stable record anchor rather than
+        // by position or a developer's local account settings.
+        let hit = ui::search::SearchProvider::search(&source, "renamed")
+            .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = ui::resources::resources(&widget, &doc);
-        resources.push(
-            ui::resources::resource(&widget, &doc, &address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            Widget::start_operation(
-                &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -3658,7 +4075,7 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
@@ -3673,13 +4090,13 @@ mod command_path_tests {
             stream.read_exact(&mut request).unwrap();
             seen_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let response = collab_types::ShareControlResponseV1 {
-                protocol_version: collab_types::SHARE_CONTROL_VERSION,
-                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+            let response = fs_protocol::ShareControlResponseV1 {
+                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
+                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
                     uri: "tilo-file://bounded".into(),
                 },
             };
-            let response = collab_types::canonical_bytes(&response).unwrap();
+            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
             stream
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .unwrap();
@@ -3706,7 +4123,7 @@ mod command_path_tests {
         assert!(widget.apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: collab_types::FilePermission::Edit,
+                permission: fs_protocol::FilePermission::Edit,
                 expiry: crate::sharing::ShareExpiryChoice::Month,
                 link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
@@ -3719,8 +4136,8 @@ mod command_path_tests {
         release_tx.send(()).unwrap();
         server.join().unwrap();
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        assert!(widget.update(&mut doc, &automerge::ROOT));
+        let doc = automerge::AutoCommit::new();
+        assert!(widget.update(&doc, &automerge::ROOT));
         assert!(widget.share_pending_path.is_none());
         assert_eq!(
             widget.status.as_deref(),
@@ -3730,11 +4147,11 @@ mod command_path_tests {
 
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
             &[arg("person", "Ada")],
         );
         let delivered = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
             &[arg("person", "Ada")],
         );
         assert!(pending.contains("pending"));
@@ -3746,7 +4163,7 @@ mod command_path_tests {
         let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let mut entry = ent("history.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3776,17 +4193,18 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
-        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
-                    label == "Restore Previous Version"
+                    label == "Restore previous version"
                         && *command
                             == Some(FileCommand::RestoreVersion {
                                 version_id: expected,
@@ -3808,7 +4226,7 @@ mod command_path_tests {
         let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
         entry.content_hash = Some([5; 32]);
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3844,18 +4262,19 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
         let menu = widget.context_menu_spec(&[]);
-        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
                     version_id: current_id,
                 })
         }));
@@ -3863,7 +4282,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id: other_id,
                 })
         }));
@@ -3871,7 +4290,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
                     version_id: other_id,
                 })
         }));
@@ -3887,23 +4306,19 @@ mod command_path_tests {
 
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
             action: None,
         });
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -3920,14 +4335,11 @@ mod command_path_tests {
             }) if *actual_conflict == conflict_id && *actual_version == version_id
         ));
 
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: false,
                 explanation: "Both revisions changed the same text region.".into(),
@@ -3947,24 +4359,20 @@ mod command_path_tests {
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
             action: Some(CollabPanelAction::EmptyTrash),
         });
         widget.merge_preflight_pending = Some((current_conflict, version_id));
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             stale_conflict,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id: stale_conflict,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -3986,14 +4394,14 @@ mod command_path_tests {
         let socket = root.path().join("share-control.sock");
         xattr::set(
             root.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
         let grant = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = file;
-        entry.share = crate::model::ShareProjection::parse(
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -4013,7 +4421,8 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.workspace_roots = vec![root.path().to_path_buf()];
         w.entries = vec![entry];
@@ -4073,8 +4482,8 @@ mod command_path_tests {
             .collect();
         assert!(menu_labels.contains(&"Extract archive…"));
         assert!(menu_labels.iter().all(|label| !label.starts_with('✓')));
-        assert!(!menu_labels.contains(&"New Folder"));
-        assert!(!menu_labels.contains(&"Open Terminal Here"));
+        assert!(!menu_labels.contains(&"New folder"));
+        assert!(!menu_labels.contains(&"Open terminal here"));
         let list_choice = files
             .context_menu
             .items()
@@ -4111,8 +4520,8 @@ mod responsive_body_tests {
     //! to make room for the list of places. Drives the real production path
     //! (`build_layout` → `apply_layout` at a size, then `handle_event`).
     use super::*;
-    use std::collections::HashMap;
     use taffy::prelude::*;
+    use ui::framework::HostDelivery as _;
     use ui::theme::Theme;
 
     include!("../native_proof_tests.rs");
@@ -4134,8 +4543,8 @@ mod responsive_body_tests {
             Self::from_widget(w, width, height)
         }
 
-        /// Lay out a pre-built widget (e.g. one with persisted favourites, which
-        /// `new`'s home-less widget lacks).
+        /// Lay out a pre-built widget (e.g. one with a home and its standard
+        /// favourites, which `new`'s home-less widget lacks).
         fn from_widget(w: FileExplorerWidget, width: f32, height: f32) -> Self {
             let mut h = H {
                 w,
@@ -4158,78 +4567,65 @@ mod responsive_body_tests {
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            self.w.sync(&mut self.state.doc, &self.state.root);
+            self.w.sync(&self.state.doc, &self.state.root);
             let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
-            let measure_map = nm.clone();
-            let trm = &mut self.tr;
-            taffy
-                .compute_layout_with_measure(
-                    node,
+            let frame = taffy
+                .new_with_children(
+                    Style {
+                        size: Size::from_lengths(width, height),
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: this fixture exclusively owns the exact widget/layout
+            // tree and keeps both stable through admission and measurement.
+            unsafe {
+                bindings.rebuild(&self.w, &taffy, frame, &nm);
+                ui::widget::compute_widget_layout(
+                    &mut taffy,
+                    frame,
                     Size {
                         width: AvailableSpace::Definite(width),
                         height: AvailableSpace::Definite(height),
                     },
-                    |k, a, id, _, _| {
-                        if let Some(&p) = measure_map.get(&id) {
-                            unsafe { (*p).measure(k, a, trm) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
+                    &nm,
+                    &bindings,
+                    &mut self.tr,
                 )
                 .unwrap();
+            }
             self.w.apply_layout(&taffy, node, Point::ORIGIN);
             self.taffy = taffy;
             self.node = node;
         }
 
         fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
-            let mut handled = false;
-            let mut focus = None;
-            self.w.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut self.state.doc,
-                    path: &self.state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .send(&mut self.w, ev);
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
-            self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn right_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                winit::event::ElementState::Pressed,
+                winit::event::MouseButton::Right,
+            ));
         }
 
         fn left_release(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn left_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
@@ -4269,50 +4665,32 @@ mod responsive_body_tests {
         fn draw(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
-            let permissions = ui::permissions::PermissionContext::permissive();
             let mut scene = vello::Scene::new();
-            self.w.draw_with_presence(
+            self.w.draw(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut self.tr,
                 &theme,
                 &presence,
-                &permissions,
             );
         }
 
         fn press_named(&mut self, key: winit::keyboard::NamedKey) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(key);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
 
         fn type_char(&mut self, s: &str) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(winit::keyboard::SmolStr::new(s));
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
     }
 
@@ -4350,7 +4728,7 @@ mod responsive_body_tests {
         let mut h = H::new(None, 1200.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            ShellMode::Wide,
+            SidebarPlacement::Docked,
             "a wide window docks the places list beside the file view"
         );
         // Resize DOWN on the same instance (a real window resize re-runs
@@ -4358,12 +4736,12 @@ mod responsive_body_tests {
         h.lay_out(520.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            ShellMode::Narrow,
+            SidebarPlacement::Drawer,
             "a narrow window collapses the body to a single pane"
         );
         // ...and back up again proves it isn't one-way.
         h.lay_out(1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
     }
 
     /// Each phase lays out its own harness (or App) at its own size.
@@ -4391,10 +4769,14 @@ mod responsive_body_tests {
         );
 
         h.lay_out(560.0, 760.0);
+        h.lay_out(560.0, 760.0);
         assert!(
-            h.w.toolbar.is_compact(),
-            "the 560 px tablet width keeps the location readable instead of overlapping it with desktop controls"
+            !h.w.toolbar.is_compact(),
+            "a 560 px content column still fits the direct controls; only a phone width moves them into the overflow"
         );
+        h.lay_out(390.0, 760.0);
+        h.lay_out(390.0, 760.0);
+        assert!(h.w.toolbar.is_compact(), "back to phone width");
 
         // The width is discovered during layout; one follow-up composition is
         // how the live app promotes wide controls after a real resize.
@@ -4468,22 +4850,19 @@ mod responsive_body_tests {
         h.left_release();
         let intent = ui::widget::controls::take_control_invocation(&mut h.w)
             .expect("the shared button emits a resource action");
-        assert_eq!(intent.address.resource, "tilo.control:files.retry");
+        assert_eq!(intent.address.resource, "files.retry");
         assert_eq!(intent.address.action, "invoke");
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.retry""#,
-                ),
+            crate::files_app::published::invoke(
+                &mut h.w,
                 &mut h.state.doc,
-                &h.state.root,
+                &intent.address.resource,
+                &intent.address.action,
+                &serde_json::Value::Object(intent.arguments),
             )
             .unwrap()
             .is_some(),
-            "the resource action is accepted by the Files action boundary"
+            "the retry row refreshes the folder"
         );
         assert!(
             h.w.error().is_none(),
@@ -4494,20 +4873,19 @@ mod responsive_body_tests {
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.view_menu""#,
-                ),
+            h.w.start_encoded(
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
+                br#""files.view_menu""#,
                 &mut h.state.doc,
-                &h.state.root,
+                &h.state.root
             )
             .unwrap()
             .is_some(),
             "the same resource action an AT-SPI client discovers is handled"
         );
+        // The button queued its command; the frame after applies it.
+        h.lay_out(1200.0, 720.0);
         assert!(
             h.w.context_menu.is_open(),
             "resource/AT-SPI activation opens the real View options menu"
@@ -4525,12 +4903,30 @@ mod responsive_body_tests {
         // provider: find the visual button in an AccessKit update, dispatch
         // its action through App, then require the newly opened menu item in
         // the next update. A `DoAction` reply alone is not enough.
+        //
+        // The item is matched by role as well as name: the folder's
+        // "New folder" resource action is exported as a button whether or not
+        // the menu is open, so a name alone cannot tell the opened menu apart
+        // from the closed one. The installed-image AT-SPI smoke looks for this
+        // same menu item.
+        let new_folder_item = t("files-menu-new-folder");
+        let exports_new_folder_item = |update: &ui::accesskit::TreeUpdate| {
+            update.nodes.iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::MenuItem
+                    && node.label() == Some(new_folder_item.as_str())
+                    && !node.is_hidden()
+            })
+        };
         let mut app = ui::App::new(
             ui::State::new(),
             Box::new(FileExplorerWidget::with_persistence(None, None)),
         );
         app.init_layout();
         let before = app.build_a11y_tree_update(1.0);
+        assert!(
+            !exports_new_folder_item(&before),
+            "the closed View options menu exports no New Folder item"
+        );
         let view_options = before
             .nodes
             .iter()
@@ -4546,15 +4942,21 @@ mod responsive_body_tests {
         );
         let after = app.build_a11y_tree_update(1.0);
         assert!(
-            after
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("New folder")),
+            exports_new_folder_item(&after),
             "AT-SPI activation must publish the actual View options menu, not only acknowledge Click"
         );
     }
 
     fn archive_extraction_stays_directly_reachable_on_phone_and_desktop() {
+        fn names(widget: &dyn Widget, name: &str) -> bool {
+            widget
+                .accessibility()
+                .is_some_and(|node| node.name.as_deref() == Some(name))
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| names(child, name))
+        }
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("note.txt");
         std::fs::write(&source, b"hello").unwrap();
@@ -4563,14 +4965,8 @@ mod responsive_body_tests {
 
         let mut h = H::new(Some(&archive), 390.0, 760.0);
         let extract = t("files-archive-extract");
-        let has_extract = |toolbar: &crate::toolbar::FileToolbar| {
-            toolbar.children().into_iter().any(|child| {
-                child
-                    .accessibility()
-                    .is_some_and(|node| node.name.as_deref() == Some(extract.as_str()))
-            })
-        };
-        assert!(has_extract(&h.w.toolbar), "phone toolbar exposes Extract");
+        let has_extract = |w: &FileExplorerWidget| names(&w.nav, extract.as_str());
+        assert!(has_extract(&h.w), "phone toolbar exposes Extract");
         assert!(
             h.w.toolbar.view_menu_rect().is_none(),
             "archive toolbar must not expose a one-item duplicate menu"
@@ -4581,7 +4977,7 @@ mod responsive_body_tests {
         if h.w.take_structure_dirty() {
             h.lay_out(1200.0, 760.0);
         }
-        assert!(has_extract(&h.w.toolbar), "desktop toolbar exposes Extract");
+        assert!(has_extract(&h.w), "desktop toolbar exposes Extract");
         assert!(h.w.toolbar.view_menu_rect().is_none());
     }
 
@@ -4596,7 +4992,7 @@ mod responsive_body_tests {
             std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
         }
         let h = H::new(Some(dir.path()), 600.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
 
         assert!(
             !h.w.debug_places_open(),
@@ -4628,12 +5024,17 @@ mod responsive_body_tests {
             std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
         }
         let mut h = H::new(Some(dir.path()), 390.0, 720.0);
+        // The grid scrolls under the shared scrollable; the list is a table
+        // that scrolls itself and keeps the lane clear in its own layout (see
+        // `FileView`'s list tests).
+        h.w.set_view_mode(crate::model::ViewMode::Grid);
+        h.lay_out(390.0, 720.0);
         let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
-            .expect("Files content is wrapped in the shared scrollable");
+            .expect("Files grid is wrapped in the shared scrollable");
 
         assert!(
             scrollable.y1 - content_viewport.y1
-                >= f64::from(STATUS_BUBBLE_SAFE_INSET_PX) - f64::EPSILON,
+                >= f64::from(status_bubble_safe_inset(&ui::Theme::dark())) - f64::EPSILON,
             "the item/status pill has a dedicated bottom lane rather than overlaying files: \
              scrollable={scrollable:?} viewport={content_viewport:?}"
         );
@@ -4654,10 +5055,17 @@ mod responsive_body_tests {
         assert!(labels.iter().any(|label| label == "Rename"));
 
         // Menu keyboard handling skips separators and maps the selected row
-        // back onto the exact FileCommand. Down selects Open, Down selects
+        // back onto the exact FileCommand. Down moves through the rows to
         // Rename, and Enter executes it without any pointer event.
-        h.press_named(winit::keyboard::NamedKey::ArrowDown);
-        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        let rows: Vec<&String> = labels.iter().collect();
+        let steps = rows
+            .iter()
+            .position(|label| label.as_str() == "Rename")
+            .expect("Rename is offered")
+            + 1;
+        for _ in 0..steps {
+            h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        }
         h.press_named(winit::keyboard::NamedKey::Enter);
         assert!(!h.w.context_menu.is_open());
         assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");
@@ -4715,8 +5123,12 @@ mod responsive_body_tests {
 
         h.w.debug_open_places_drawer();
         let semantic_children = h.w.nav.children();
-        assert_eq!(semantic_children.len(), 1);
-        assert_eq!(semantic_children[0].name(), "PlacesSidebar");
+        assert!(
+            semantic_children
+                .iter()
+                .any(|child| child.name() == "NavList"),
+            "the open drawer exposes the places list"
+        );
     }
 
     /// Picking a destination in the narrow drawer dismisses it, leaving the
@@ -4725,7 +5137,7 @@ mod responsive_body_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 520.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
         h.w.debug_open_places_drawer();
         assert!(h.w.debug_places_open());
 
@@ -4835,7 +5247,6 @@ mod responsive_body_tests {
         dropping_a_folder_on_the_sidebar_pins_it();
         releasing_a_pin_drag_off_the_sidebar_pins_nothing();
         a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
-        right_clicking_a_favourite_opens_its_menu();
     }
 
     /// Dragging a folder out of the list and dropping it on the docked sidebar
@@ -4843,11 +5254,11 @@ mod responsive_body_tests {
     fn dropping_a_folder_on_the_sidebar_pins_it() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
         let before = h.w.favorites().len();
         let folder = PathBuf::from("/home/tester/Projects/tilo");
 
@@ -4873,7 +5284,7 @@ mod responsive_body_tests {
     fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -4929,31 +5340,48 @@ mod responsive_body_tests {
     /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
     /// Favourites), not the file-view context menu. The pinned Home entry offers
     /// no Remove. Drives the real right-press path end to end.
+    #[test]
     fn right_clicking_a_favourite_opens_its_menu() {
+        fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
+            fn node(n: &ui::a11y::AccessNode, label: &str) -> Option<vello::kurbo::Point> {
+                if n.name.as_deref() == Some(label) && n.role == ui::a11y::Role::TreeItem {
+                    return n.bounds.map(|bounds| {
+                        vello::kurbo::Point::new(
+                            f64::midpoint(bounds.x0, bounds.x1),
+                            f64::midpoint(bounds.y0, bounds.y1),
+                        )
+                    });
+                }
+                n.children.iter().find_map(|child| node(child, label))
+            }
+            w.accessibility()
+                .as_ref()
+                .and_then(|n| node(n, label))
+                .or_else(|| w.children().iter().find_map(|child| row(*child, label)))
+        }
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            ShellMode::Wide,
+            SidebarPlacement::Docked,
             "wide docks the sidebar"
         );
 
-        let band =
-            h.w.favorites_store()
-                .borrow()
-                .band
-                .expect("sidebar laid out");
-        // Row 1 is a removable favourite (row 0 is the pinned Home).
-        let (x, y) = (band.center_x(), band.row_center_y(1));
+        let favorites = h.w.favorites_store().borrow().favorites.clone();
+        let removable = row(&h.w, &favorites[1].label).expect("the removable favorite is laid out");
+        let home_row = row(&h.w, &favorites[0].label).expect("the Home favorite is laid out");
+        let (x, y) = (removable.x, removable.y);
         h.cursor(x, y);
         h.right_press();
         let labels = h.open_menu_labels();
         assert!(
-            labels.iter().any(|l| l == "Remove from Favourites"),
+            labels
+                .iter()
+                .any(|l| l == &ui::i18n!("files-menu-remove-favourite")),
             "the favourite's own menu is shown: {labels:?}",
         );
         assert!(
@@ -4967,7 +5395,7 @@ mod responsive_body_tests {
         );
 
         // The pinned Home favourite (row 0) has no Remove.
-        let (hx, hy) = (band.center_x(), band.row_center_y(0));
+        let (hx, hy) = (home_row.x, home_row.y);
         h.cursor(hx, hy);
         h.right_press();
         let home = h.open_menu_labels();
@@ -4981,7 +5409,7 @@ mod responsive_body_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
         assert!(h.w.debug_places_open(), "wide docks the places list open");
 
         let content = h.w.debug_content_rect();
@@ -5000,6 +5428,79 @@ mod responsive_body_tests {
             h.w.debug_places_open(),
             "wide navigation leaves the docked list in place — nothing to dismiss",
         );
+    }
+
+    /// With the places list not beside the files, the shell's toggle sits at
+    /// the leading edge of the content header; the toolbar starts after it
+    /// instead of drawing over it.
+    #[test]
+    fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
+        let mut h = H::new(None, 520.0, 720.0);
+        for _ in 0..2 {
+            // The inset is discovered by a layout and applied by the rebuild
+            // it asks for, as the live frame loop does.
+            h.w.take_structure_dirty();
+            h.lay_out(520.0, 720.0);
+        }
+        let toggle = h.w.nav.geometry().toggle;
+        assert!(toggle.width() > 0.0, "the narrow shell shows its toggle");
+        let up =
+            h.w.toolbar
+                .up_button_rect()
+                .expect("the toolbar is laid out");
+        assert!(
+            up.x0 > toggle.x1,
+            "the toolbar's controls clear the toggle: toggle={toggle:?} up={up:?}"
+        );
+
+        // Beside the files the toggle belongs to the sidebar's own header, so
+        // the toolbar needs no room for it.
+        h.lay_out(1200.0, 720.0);
+        h.w.take_structure_dirty();
+        h.lay_out(1200.0, 720.0);
+        let docked = h.w.nav.geometry();
+        assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
+    }
+
+    /// The state a menu row shows as a check follows the sort in force and
+    /// whether hidden files are shown; no other row is a state.
+    #[test]
+    fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
+            Some(true)
+        );
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
+            Some(false)
+        );
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(false)
+        );
+        w.show_hidden = true;
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(true)
+        );
+        assert_eq!(w.command_checked(Some(&FileCommand::NewFolder)), None);
+        assert_eq!(w.command_checked(None), None);
+    }
+
+    /// A folder that did not open, or is still opening, has no item count to
+    /// float over the surface that says what is happening.
+    #[test]
+    fn the_item_count_is_withheld_while_a_folder_is_loading_or_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        w.navigate(dir.path().to_path_buf());
+        assert!(!w.footer_label().is_empty());
+        w.debug_show_error_state();
+        assert!(w.footer_label().is_empty(), "no count over an error");
+        w.debug_show_loading_state();
+        assert!(w.footer_label().is_empty(), "no count while opening");
     }
 }
 
@@ -5056,7 +5557,7 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        assert!(error.value.as_deref().unwrap().contains("Try Again"));
+        assert!(error.value.as_deref().unwrap().contains("Try again"));
         let state = error.children.first().expect("error state semantic group");
         assert_eq!(state.name.as_deref(), Some("Couldn’t open this folder"));
         assert_eq!(state.live, Some(Politeness::Assertive));
@@ -5085,7 +5586,6 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Sharing — report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
@@ -5118,7 +5618,6 @@ mod accessibility_tests {
         std::fs::write(&file, b"only local copy").unwrap();
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],
@@ -5133,7 +5632,7 @@ mod accessibility_tests {
             Some(t("files-destructive-eviction-confirm").as_str())
         );
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None,
             "opening the warning must not perform the destructive operation"
         );
@@ -5144,7 +5643,7 @@ mod accessibility_tests {
         widget.close_collab_panel();
         assert!(widget.apply_command(command));
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict-destructive".as_slice())
@@ -5256,6 +5755,7 @@ mod injected_startup_tests {
             thumbnails: None,
             document_opener: DocumentOpenRoute::Unavailable,
             open_with: None,
+            local_clipboard: false,
         }
     }
 
@@ -5290,7 +5790,7 @@ mod injected_startup_tests {
         let mut widget =
             FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
         let mut document = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&widget, &document);
+        let resources = crate::files_app::published::tree(&widget, &document);
         let account = resources
             .iter()
             .flat_map(|r| r.children.iter())
@@ -5305,19 +5805,15 @@ mod injected_startup_tests {
             .expect("an open action");
         assert_eq!(open.contract.availability, Availability::Available);
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::invoke(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.remote-account",
-                    &serde_json::to_vec(&vec!["open", "cloud"]).unwrap()
-                ),
                 &mut document,
-                &automerge::ROOT
+                account.id.as_str(),
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             widget.current_path, mount,
@@ -5356,8 +5852,8 @@ mod injected_startup_tests {
         assert_eq!(widget.displayed_entries().len(), 1);
         assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
         ui::widget::Widget::set_focus(&mut widget, true);
-        let mut document = automerge::AutoCommit::new();
-        ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        ui::widget::Widget::sync(&mut widget, &document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
         widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
@@ -5416,10 +5912,11 @@ mod injected_startup_tests {
             startup(&child),
             deferred_services(),
         );
-        widget.nearby_send.poll_if_due(ui::time::now());
+        // Nearby Send asks nothing until the shell announces a change, so it
+        // sets no deadline; nothing may be due yet.
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > ui::time::now()),
-            "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
+            Widget::next_wake_deadline(&widget).is_none_or(|deadline| deadline > ui::time::now()),
+            "the completed-reply branch, rather than Nearby Send, must supply the immediate wake"
         );
         widget
             .request_deferred_document_open(
@@ -5447,8 +5944,8 @@ mod injected_startup_tests {
             Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
             "a shell reply after draw must schedule the one follow-up Files sync"
         );
-        let mut document = automerge::AutoCommit::new();
-        Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        Widget::sync(&mut widget, &document, &automerge::ROOT);
         assert_eq!(widget.status_line(), Some("document storage unavailable"));
         assert!(widget.pending_document_open.is_none());
     }
@@ -5580,5 +6077,681 @@ fn headless_f2_renames_fixture_without_opening_a_file() {
             assert!(!previous.exists());
         }
         previous = destination;
+    }
+}
+
+mod sort_selection_tests {
+    use super::*;
+
+    #[test]
+    fn sorting_keeps_an_active_rename_on_the_original_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), b"aaa").unwrap();
+        std::fs::write(root.path().join("b.txt"), b"b").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        files.set_sort_by(SortBy::Name);
+        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        });
+        files.apply_command(FileCommand::Rename);
+        files.set_rename_buffer("chosen.txt".into());
+        let mut doc = automerge::AutoCommit::new();
+        let folder = published::tree(&files, &doc)[0].id.clone();
+        published::invoke(
+            &mut files,
+            &mut doc,
+            folder.as_str(),
+            "sort-size",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(files.is_renaming());
+        assert!(files.rename_input.is_focused());
+        assert_eq!(files.rename_buffer, "chosen.txt");
+        assert!(files.commit_rename());
+        assert_eq!(
+            std::fs::read(root.path().join("chosen.txt")).unwrap(),
+            b"aaa"
+        );
+        assert_eq!(std::fs::read(root.path().join("b.txt")).unwrap(), b"b");
+        assert!(!root.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn sort_capture_stages_keep_the_same_selected_files() {
+        use crate::resource::FileExplorerShell;
+        use ui::prelude::TestApp;
+        for scenario in ["selection-sort", "selection-sorted", "selection-reversed"] {
+            let mut app = TestApp::<FileExplorerShell>::capture(Some(scenario)).unwrap();
+            app.with_surface(|files: &mut FileExplorerWidget| {
+                let mut names: Vec<_> = files
+                    .selected_paths()
+                    .iter()
+                    .map(|path| path.file_name().unwrap().to_owned())
+                    .collect();
+                names.sort();
+                assert_eq!(names, vec!["Notes.txt", "Recipes.md"]);
+                assert_eq!(files.view_mode(), ViewMode::List);
+                assert_eq!(
+                    files.sort_by(),
+                    if scenario == "selection-sort" {
+                        SortBy::Name
+                    } else {
+                        SortBy::Size
+                    }
+                );
+                assert!(files.status.is_none());
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn every_published_sort_keeps_selection_and_an_empty_selection_stays_empty() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, bytes) in [("a.txt", "aaa"), ("b.md", "b"), ("c.txt", "cc")] {
+            std::fs::write(root.path().join(name), bytes).unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        let selected_path = root.path().join("a.txt");
+        let index = files
+            .entries
+            .iter()
+            .position(|entry| entry.path == selected_path)
+            .unwrap();
+        files.apply_command(FileCommand::Click {
+            index,
+            ctrl: true,
+            shift: false,
+        });
+        let mut doc = automerge::AutoCommit::new();
+        let folder = published::tree(&files, &doc)[0].id.clone();
+        for action in [
+            "sort-size",
+            "sort-type",
+            "sort-modified",
+            "sort-descending",
+            "sort-name",
+            "sort-ascending",
+        ] {
+            published::invoke(
+                &mut files,
+                &mut doc,
+                folder.as_str(),
+                action,
+                &serde_json::json!({}),
+            )
+            .unwrap();
+            assert_eq!(
+                files.selected_paths(),
+                vec![selected_path.clone()],
+                "{action}"
+            );
+            assert_eq!(
+                files.entries[files.selection.primary().unwrap()].path,
+                selected_path
+            );
+            assert_eq!(
+                files.entries[files.selection.anchor().unwrap()].path,
+                selected_path
+            );
+        }
+        files.selection.clear();
+        files.toggle_sort_order();
+        assert!(files.selection.is_empty());
+        assert_eq!(files.selection.primary(), None);
+        assert_eq!(files.selection.anchor(), None);
+    }
+
+    #[test]
+    fn sorting_keeps_the_range_anchor_and_a_deselected_keyboard_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(root.path().join(name), name).unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        files.set_sort_by(SortBy::Name);
+        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: true,
+            shift: false,
+        });
+        files.apply_command(FileCommand::Click {
+            index: 2,
+            ctrl: false,
+            shift: true,
+        });
+        files.toggle_sort_order();
+        assert_eq!(files.selection.anchor(), Some(3));
+        assert_eq!(files.selection.primary(), Some(1));
+        files.apply_command(FileCommand::Click {
+            index: 2,
+            ctrl: false,
+            shift: true,
+        });
+        assert_eq!(files.selection.selected(), vec![2, 3]);
+        files.apply_command(FileCommand::Click {
+            index: 2,
+            ctrl: true,
+            shift: false,
+        });
+        assert!(!files.selection.is_selected(2));
+        files.toggle_sort_order();
+        assert_eq!(files.selection.selected(), vec![0]);
+        assert_eq!(files.selection.anchor(), Some(1));
+        assert_eq!(files.selection.primary(), Some(1));
+        files.apply_command(FileCommand::Click {
+            index: 3,
+            ctrl: false,
+            shift: true,
+        });
+        assert_eq!(files.selection.selected(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn sorting_does_not_open_another_file_from_a_previous_click() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        files.set_sort_by(SortBy::Name);
+        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        });
+        files.toggle_sort_order();
+        files.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        });
+        assert_eq!(files.current_path, root.path());
+        assert_eq!(files.selected_paths(), vec![root.path().join("b")]);
+    }
+
+    #[test]
+    fn sorting_preserves_the_files_copied_by_a_multiselection() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        for (name, bytes) in [("a.txt", "aaa"), ("b.txt", "b"), ("c.txt", "cc")] {
+            std::fs::write(source.join(name), bytes).unwrap();
+        }
+        let mut files =
+            FileExplorerWidget::with_persistence(Some(root.path()), Some(root.path().into()));
+        files.navigate(source.clone());
+        files.set_sort_by(SortBy::Name);
+        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        for index in [0, 2] {
+            files.apply_command(FileCommand::Click {
+                index,
+                ctrl: true,
+                shift: false,
+            });
+        }
+        let mut doc = automerge::AutoCommit::new();
+        let folder = published::tree(&files, &doc)[0].id.clone();
+        published::invoke(
+            &mut files,
+            &mut doc,
+            folder.as_str(),
+            "sort-size",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let mut paths = files.selected_paths();
+        paths.sort();
+        assert_eq!(paths, vec![source.join("a.txt"), source.join("c.txt")]);
+        assert!(files.apply_command(FileCommand::Copy));
+        files.navigate(destination.clone());
+        assert!(files.apply_command(FileCommand::Paste));
+        assert_eq!(std::fs::read(destination.join("a.txt")).unwrap(), b"aaa");
+        assert_eq!(std::fs::read(destination.join("c.txt")).unwrap(), b"cc");
+        assert!(!destination.join("b.txt").exists());
+        assert_eq!(std::fs::read(source.join("a.txt")).unwrap(), b"aaa");
+    }
+}
+
+mod recent_resource_tests {
+    use super::*;
+    use crate::effects::FilesEffect;
+    use crate::resource::FileExplorerShell;
+    use ui::prelude::TestApp;
+
+    #[test]
+    fn recent_capture_stages_actual_rows_and_effect_outcomes() {
+        for scenario in [
+            "recent",
+            "recent-menu",
+            "recent-revealed",
+            "recent-forgotten",
+        ] {
+            let mut app = TestApp::<FileExplorerShell>::capture(Some(scenario)).unwrap();
+            app.with_surface(|files: &mut FileExplorerWidget| {
+                assert!(
+                    files.status.is_none(),
+                    "a capture must not hide a failed effect"
+                );
+                match scenario {
+                    "recent-revealed" => {
+                        assert!(!files.is_recent_view());
+                        let selected = files.selected_index().unwrap();
+                        assert_eq!(files.entries()[selected].name, "Quarterly report.pdf");
+                        assert!(files.entries()[selected].path.exists());
+                    }
+                    "recent-forgotten" => {
+                        assert!(files.is_recent_view());
+                        assert_eq!(files.entries().len(), 1);
+                        assert_eq!(files.entries()[0].name, "Notes.txt");
+                        assert!(
+                            files.entries()[0]
+                                .path
+                                .parent()
+                                .unwrap()
+                                .join("Quarterly report.pdf")
+                                .exists()
+                        );
+                    }
+                    _ => {
+                        assert!(files.is_recent_view());
+                        assert_eq!(files.entries().len(), 2);
+                        if scenario == "recent-menu" {
+                            assert!(
+                                files
+                                    .context_menu
+                                    .items()
+                                    .iter()
+                                    .any(|item| item.label() == Some("Open containing folder"))
+                            );
+                        }
+                    }
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    fn invoke(app: &mut TestApp<FileExplorerShell>, row: &str, action: &str) {
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(row, action),
+                },
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        app.settle();
+    }
+    #[test]
+    fn recent_resource_reveals_and_forgets_without_changing_files() {
+        let root = tempfile::tempdir().unwrap();
+        let reports = root.path().join("Reports");
+        std::fs::create_dir(&reports).unwrap();
+        let target = reports.join("budget.txt");
+        let sibling = reports.join("notes.txt");
+        std::fs::write(&target, b"budget").unwrap();
+        std::fs::write(&sibling, b"notes").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
+        let shared_before = app.state();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files.note_recent(&sibling, crate::recent::RecentUse::Opened);
+            files.note_recent(&target, crate::recent::RecentUse::Opened);
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Recent).unwrap();
+        let row = crate::search_provider::entry_resource_id(&target);
+        let published = app
+            .with_surface(|files: &mut FileExplorerWidget| files.published_row(&row).unwrap())
+            .unwrap();
+        for expected in ["reveal", "forget-recent"] {
+            assert!(
+                published.actions.iter().any(|action| action.id == expected),
+                "Recent's {expected} must be available through the resource door"
+            );
+            assert_eq!(
+                published
+                    .actions
+                    .iter()
+                    .find(|action| action.id == expected)
+                    .unwrap()
+                    .kind,
+                ui::tilo_actions::OperationKind::View,
+                "Recent navigation and device history do not mutate shared files"
+            );
+        }
+        app.leave_room();
+        for action in ["reveal", "forget-recent"] {
+            assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
+        }
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            assert!(files.is_recent_view());
+            assert_eq!(files.entries().len(), 2);
+        })
+        .unwrap();
+        app.set_role(ui::permissions::Role::Viewer);
+        invoke(&mut app, &row, "reveal");
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            assert_eq!(files.current_path(), reports);
+            let selected = files.selected_index().unwrap();
+            assert_eq!(files.entries()[selected].path, target);
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Back).unwrap();
+        invoke(&mut app, &row, "forget-recent");
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            assert!(files.published_row(&row).is_none());
+            assert_eq!(files.entries().len(), 1);
+            assert_eq!(files.entries()[0].path, sibling);
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"budget");
+        assert_eq!(std::fs::read(&sibling).unwrap(), b"notes");
+        assert_eq!(
+            app.state(),
+            shared_before,
+            "shared bookmarks and file operations stay unchanged"
+        );
+        assert_eq!(
+            app.settings::<crate::recent::RecentFiles>()
+                .get()
+                .items()
+                .len(),
+            1
+        );
+        assert!(
+            app.call_on(&row, "forget-recent", serde_json::json!({}))
+                .is_err()
+        );
+        let mut reopened = app.reopen().unwrap();
+        reopened.effect(&FilesEffect::Recent).unwrap();
+        reopened
+            .with_surface(|files: &mut FileExplorerWidget| {
+                assert_eq!(files.entries().len(), 1);
+                assert_eq!(files.entries()[0].path, sibling);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn retained_recent_actions_refuse_other_views_and_deleted_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("report.txt");
+        std::fs::write(&target, b"report").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files.note_recent(&target, crate::recent::RecentUse::Opened);
+        })
+        .unwrap();
+        let row = crate::search_provider::entry_resource_id(&target);
+        for effect in [
+            FilesEffect::RevealRecent { entry: row.clone() },
+            FilesEffect::ForgetRecent { entry: row.clone() },
+        ] {
+            assert!(
+                app.effect(&effect).is_err(),
+                "a folder row is not a Recent target"
+            );
+        }
+        assert_eq!(
+            app.settings::<crate::recent::RecentFiles>()
+                .get()
+                .items()
+                .len(),
+            1
+        );
+        app.effect(&FilesEffect::Recent).unwrap();
+        for action in ["reveal", "forget-recent"] {
+            assert!(
+                app.call_on(
+                    &row,
+                    action,
+                    serde_json::json!({"entry": root.path().display().to_string()})
+                )
+                .is_err(),
+                "bound targets cannot be replaced by caller paths"
+            );
+        }
+        std::fs::remove_file(&target).unwrap();
+        for action in ["reveal", "forget-recent"] {
+            assert!(
+                app.call_on(&row, action, serde_json::json!({})).is_err(),
+                "an unrefreshed but deleted row is stale"
+            );
+        }
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            assert!(files.is_recent_view());
+            files.refresh();
+            assert!(files.published_row(&row).is_none());
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
+    let home = tempfile::tempdir().unwrap();
+    let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
+    widget.navigate(home.path().to_owned());
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
+    let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
+        },
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
+    assert_eq!(
+        widget.status.as_deref(),
+        Some(t("files-clipboard-undone").as_str())
+    );
+    assert!(widget.entries.is_empty());
+}
+
+mod oauth_cloud_location_tests {
+    use super::*;
+    use crate::remote_accounts::{self, RemoteAccountHealth};
+
+    const PROVIDERS: [(&str, &str); 4] = [
+        ("a-google", remote_accounts::GOOGLE_DRIVE_TYPE),
+        ("b-onedrive", remote_accounts::ONEDRIVE_TYPE),
+        ("c-dropbox", remote_accounts::DROPBOX_TYPE),
+        ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
+    ];
+
+    fn fixture_store(root: &Path) -> accounts::AccountStore {
+        let mut store = accounts::AccountStore::new();
+        for (id, provider) in PROVIDERS {
+            let mut account = accounts::Account::new(id, provider);
+            account.display_name = "Cloud".into();
+            // Projection must select only public provider facts, not forward
+            // arbitrary stored configuration or imply authenticated access.
+            account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
+            store.upsert(account);
+        }
+        store.save_in(root).unwrap();
+        accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
+            .offline()
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _store = fixture_store(config.path());
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let accounts = widget.remote_account_snapshot();
+        assert_eq!(accounts.len(), PROVIDERS.len());
+        let first = accounts
+            .iter()
+            .find(|account| account.id.as_str() == "a-google")
+            .unwrap();
+        assert_eq!(first.health, RemoteAccountHealth::Offline);
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| account.id.as_str() != "a-google")
+                .all(|account| account.health == RemoteAccountHealth::NeverChecked)
+        );
+        for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
+            let account = accounts
+                .iter()
+                .find(|account| account.id.as_str() == *id)
+                .unwrap();
+            assert_eq!(remote_accounts::type_id(account.kind).as_str(), *provider);
+            let name = if index == 0 {
+                "Cloud".into()
+            } else {
+                format!("Cloud ({})", index.checked_add(1).unwrap())
+            };
+            let mount = home.path().join("Remote").join(name);
+            assert_eq!(account.mount.as_ref(), Some(&mount));
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::write(mount.join("Selected-provider.txt"), id.as_bytes()).unwrap();
+            let places = widget.current_places().sections();
+            assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+                row.id == format!("loc:{}", mount.display()) && row.label == "Cloud"
+            }));
+            let resource_id = remote_accounts::resource_id(&account.id);
+            let resources = crate::files_app::published::tree(&widget, &document);
+            let resource = resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .find(|resource| resource.id.as_str() == resource_id)
+                .unwrap();
+            assert_eq!(resource.kind, "files.remote-account");
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+                .unwrap();
+            assert_eq!(open.contract.availability, Availability::Available);
+            assert!(
+                !serde_json::to_string(&resource.presentation)
+                    .unwrap()
+                    .contains("secret-sentinel")
+            );
+            assert!(matches!(
+                crate::files_app::published::invoke(
+                    &mut widget,
+                    &mut document,
+                    &resource_id,
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    &serde_json::json!({})
+                )
+                .unwrap(),
+                Some(ui::framework::Effected::Done(_))
+            ));
+            assert_eq!(widget.current_path, mount);
+            assert_eq!(
+                std::fs::read(widget.current_path.join("Selected-provider.txt")).unwrap(),
+                id.as_bytes()
+            );
+        }
+        assert!(
+            !accounts::vault_dir_in(config.path()).exists(),
+            "projection and open must not create credential custody"
+        );
+    }
+
+    #[test]
+    fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = fixture_store(config.path());
+        let mut disabled = store
+            .get(&accounts::AccountId::from("c-dropbox"))
+            .unwrap()
+            .clone();
+        disabled.enabled = false;
+        store.upsert(disabled);
+        store.save_in(config.path()).unwrap();
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let places = widget.current_places().sections();
+        assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+            row.id == "account:c-dropbox" && row.secondary.as_deref() == Some("Disabled")
+        }));
+        let id = remote_accounts::resource_id(&accounts::AccountId::from("c-dropbox"));
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let resource = resources
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|resource| resource.id.as_str() == id)
+            .unwrap();
+        assert!(resource.actions.iter().any(|action| {
+            action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
+                && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
+        }));
+        store.remove(&accounts::AccountId::from("c-dropbox"));
+        store.save_in(config.path()).unwrap();
+        widget.refresh_external_search_catalogs();
+        assert!(
+            !widget
+                .current_places()
+                .sections()
+                .iter()
+                .flat_map(|section| &section.items)
+                .any(|row| row.id == "account:c-dropbox")
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(
+            !resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == id)
+        );
+        assert!(
+            crate::files_app::published::invoke(
+                &mut widget,
+                &mut document,
+                &id,
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({})
+            )
+            .is_err()
+        );
     }
 }

@@ -10,6 +10,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
+| any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
@@ -53,6 +54,14 @@ script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
 
+Its registered CPU count, memory, architecture and resolution are passed to
+the same harness. It uses the software 2D display unless `--gl` requests virgl;
+`--emulated` explicitly selects TCG. Without `--emulated`, the harness probes
+KVM and warns if it must fall back to TCG. Record the actual accelerator and
+renderer with performance results: TCG timings cannot establish KVM or physical
+machine budgets. `--resolution` and `--gl` work with this adapter; multiple
+display heads require libvirt.
+
 ## Windows ARM64 Home: QEMU with WHPX
 
 Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor
@@ -76,13 +85,15 @@ respective volume. The guest gets the host CPU through WHPX, a PCI serial
 device for Linux `console=ttyS0`, a separate firmware UART, a user network
 with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
 display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
-`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
-through QMP and waits for QEMU to exit.
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest to power off
+through SSH first, then uses the QMP power button if SSH is unavailable.
 
 For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
-virtual GPU, USB devices and VNC. `--memory-mb` controls guest RAM; less RAM
-can shorten WHPX's cold start, but choose enough for the components being
-tested. A 2 GiB VM is suitable only for light service work. Neither option
+virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
+`--memory-mb 8192` when an in-guest build needs more. On a Snapdragon X Elite
+Windows ARM64 host, the same cached direct-boot disk reached SSH in 22 seconds
+with 3 GiB, versus 44 seconds with 8 GiB; a full stop and restart with 3 GiB
+took 28 seconds. A 2 GiB VM is suitable only for light service work. Neither option
 changes the disk image or the installer test path.
 
 ### Direct kernel boot for a fast service VM
@@ -229,6 +240,19 @@ tilo-vm vm create esp1 --image base.raw --boot-esp tilo-boot-override.raw
 The ESP is attached read-only with the first boot index, so firmware boots its
 loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
 support it; keep the ESP on a local drive.
+
+### WHPX monitor diagnostics
+
+`tilo-vm vm control` sends a QEMU monitor command through the VM's local QMP
+connection. It works before guest SSH is available:
+
+```sh
+tilo-vm vm control info status
+tilo-vm vm control info block
+```
+
+`tilo-vm vm shot` captures the real VM display. Use `tilo-vm control` for the
+running compositor's semantic actions; monitor commands manage the VM itself.
 
 ## The root SSH key
 

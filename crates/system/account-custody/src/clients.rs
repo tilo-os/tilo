@@ -24,6 +24,9 @@ const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
+    pub music: Vec<String>,
+    pub music_streaming: Vec<String>,
+    pub models: Vec<String>,
 }
 
 impl Scopes {
@@ -31,6 +34,9 @@ impl Scopes {
         match capability {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
+            Capability::Music => &self.music,
+            Capability::MusicStreaming => &self.music_streaming,
+            Capability::Models => &self.models,
         }
     }
 }
@@ -54,6 +60,7 @@ pub struct ClientTable {
     pub google: ClientEntry,
     pub microsoft: ClientEntry,
     pub dropbox: ClientEntry,
+    pub spotify: ClientEntry,
 }
 
 impl ClientTable {
@@ -82,6 +89,7 @@ impl ClientTable {
             OAuthIssuer::Google => &self.google,
             OAuthIssuer::Microsoft => &self.microsoft,
             OAuthIssuer::Dropbox => &self.dropbox,
+            OAuthIssuer::Spotify => &self.spotify,
         }
     }
 
@@ -189,6 +197,10 @@ mod tests {
         assert!(table.microsoft.redirect_ports.is_empty());
         assert!(!table.dropbox.redirect_ports.is_empty());
         assert!(table.dropbox.paste_code_fallback);
+        assert_eq!(table.spotify.client_id, "fc7bc68792734157a2c9857cba652df7");
+        assert!(table.spotify.client_secret.is_empty());
+        assert_eq!(table.spotify.redirect_ports, [47654]);
+        assert!(!table.spotify.paste_code_fallback);
     }
 
     #[test]
@@ -210,6 +222,21 @@ mod tests {
             table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
             ["https://www.googleapis.com/auth/drive"]
         );
+        // Vertex AI asks for the cloud scope alone, in its own grant: none
+        // of the Google uses shares a scope with another.
+        let vertex = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
+        assert_eq!(
+            table.scopes(vertex),
+            ["https://www.googleapis.com/auth/cloud-platform"]
+        );
+        for other in [GMAIL, OAuthCloud::GoogleDrive.oauth_use()] {
+            assert!(
+                table
+                    .scopes(other)
+                    .iter()
+                    .all(|scope| !table.scopes(vertex).contains(scope))
+            );
+        }
         // Dropbox is storage only.
         assert!(
             table

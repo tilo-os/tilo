@@ -4,16 +4,6 @@
 //! `resolve_tile_shape_for_test`, a probe returning `"App"`/`"Stub"`
 //! without exposing `UiTile` (which carries a `Box<dyn AppWidget>`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
@@ -46,6 +36,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace::new(ws_id, "Home");
@@ -96,7 +87,7 @@ fn persisted_terminal_and_files_placeholders_resolve_to_live_tiles() {
         assert_eq!(
             resolve_tile_shape_for_test(&tile),
             "App",
-            "FileExplorerWidget::new is infallible; placeholder must resolve to App"
+            "a Files placeholder must resolve to the Files component"
         );
     }
 

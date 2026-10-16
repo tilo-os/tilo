@@ -1,0 +1,80 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "video-player.library"
+label = "Video Player"
+version = 1
+fields = [
+  { path = "playlists", type = "Collection<Playlist>", stored = "collection" },
+  { path = "playlists.*.name", type = "String", label = true },
+  { path = "items", type = "Collection<PlaylistItem>", stored = "collection" },
+  { path = "items.*.playlist", type = "Id", readonly = true },
+  { path = "items.*.media_ref", type = "String", readonly = true },
+  { path = "items.*.title", type = "String", label = true },
+  { path = "annotations", type = "Collection<TimestampAnnotation>", stored = "collection" },
+  { path = "annotations.*.media_ref", type = "String", readonly = true },
+  { path = "annotations.*.time_ms", type = "u64" },
+  { path = "annotations.*.text", type = "String", label = true },
+  { path = "transports", type = "BTreeMap<String, SharedTransport>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "create-playlist"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-playlist"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "playlist", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-to-playlist"
+kind = "undoable"
+params = [
+  { name = "playlist", required = true, schema = { type = "string" } },
+  { name = "media_ref", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-to-watch-later"
+kind = "undoable"
+params = [
+  { name = "media_ref", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-annotation"
+kind = "undoable"
+params = [
+  { name = "media_ref", required = true, schema = { type = "string" } },
+  { name = "time_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "delete-annotation"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "annotation", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-transport"
+kind = "undoable"
+params = [
+  { name = "media_ref", required = true, schema = { type = "string" } },
+  { name = "playing", required = true, schema = { type = "boolean" } },
+  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "rate", required = true, schema = { type = "number" } },
+  { name = "epoch_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+

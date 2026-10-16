@@ -34,7 +34,7 @@ distrobox enter my-distrobox -- ./tilo-swipe/setup-futo.sh   # clone + build + f
 export TILO_SWIPE_LIB=.../swipe-library
 export TILO_SWIPE_MODELS=.../models
 cargo run -p osk
-cargo test -p tilo-swipe        # decodes real swipes (hello, the, world, swipe)
+cargo test -p swipe             # decodes real swipes (hello, the, world, swipe)
 ```
 
 ## Models

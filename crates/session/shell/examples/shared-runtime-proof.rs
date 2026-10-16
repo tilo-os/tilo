@@ -65,6 +65,7 @@ fn start_action(
     let receipt = shell::shell::remote_actions::BrokerActionHost::new(actions.clone()).invoke(
         &Caller::local_person(actor).in_room(&surface.route.cluster_id),
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: surface.peer_id.to_string(),
@@ -76,6 +77,8 @@ fn start_action(
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
+            appearance: None,
         },
     );
     // This thread does not drive the broker; waiting here blocks nothing.
@@ -330,13 +333,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        if let Ok(model) = qdoc::model::open(&document, &automerge::ROOT)
-            && let Some(block) = qdoc::model::materialize(&document, &model)
+        if let Ok(model) = tilo_doc::model::open(&document, &automerge::ROOT)
+            && let Some(block) = tilo_doc::model::materialize(&document, &model)
                 .blocks
                 .into_iter()
                 .find(|block| {
                     block.kind == "image"
-                        && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into()))
+                        && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.into()))
                 })
         {
             std::fs::write(root.join("received.automerge"), document.save())?;

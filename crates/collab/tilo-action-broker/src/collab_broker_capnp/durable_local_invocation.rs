@@ -1,12 +1,12 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
 use super::{
-    AdmissionProvenance, AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapDecision,
-    CapnpBrokerState, CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
+    AdmissionProvenance, AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapnpBrokerState,
+    CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
     InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
-    PublishedAction, PublishedSurface, Rc, ResourceRef, Verb, VerifiedActionCaller, channel_handle,
-    mpsc, resolved_invocation, validate_directory_identifier, validate_directory_text,
+    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle, mpsc,
+    resolved_invocation, validate_directory_identifier, validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
 
@@ -20,7 +20,11 @@ pub(super) struct LocalCaller {
     time: crate::peer_actions::PolicyTime,
 }
 impl LocalCaller {
-    fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
+    /// The room it acts in and who the host admitted on it.
+    pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
+        (self.route.cluster_id.clone(), self.admitted.clone())
+    }
+    pub(super) fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state
             .registered_policy_time()?
@@ -48,10 +52,108 @@ impl LocalCaller {
         owner.validate()?;
         Ok(owner)
     }
-    fn owner(&self) -> InvocationOwner {
+    pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
     }
-    fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
+    /// Check the exact host action against the live authenticated connection,
+    /// including its device ceiling. Call inside the owner's serialized admission.
+    pub(super) fn authorize_host_action(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        requirement: &crate::services::NativeTaskActionRequirement,
+    ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
+        let actor = self.current(state)?.broker_actor();
+        let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let spent = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let (answer, spent) = actor.action_verdict_in(
+                    workspace,
+                    &requirement.app,
+                    (
+                        &requirement.resource_kind,
+                        &requirement.resource,
+                        &requirement.action,
+                    ),
+                    &requirement.need,
+                    now,
+                );
+                if !answer.admits(actor.direct()) {
+                    return Err("caller no longer authorized for invocation".to_string());
+                }
+                Ok(spent)
+            })??;
+        state.checked_policy_time(Some(&self.time))?;
+        Ok(spent)
+    }
+
+    pub(super) fn authorize_retained_task(
+        &self,
+        state: &CapnpBrokerState,
+        record: &DurableInvocation,
+    ) -> Result<crate::services::NativeTaskActionRequirement, String> {
+        let current = self.current(state)?;
+        let contract: tilo_actions::ActionContract = serde_json::from_value(
+            record
+                .intent
+                .get("contract")
+                .cloned()
+                .ok_or("retained task contract absent")?,
+        )
+        .map_err(|_| "retained task contract invalid")?;
+        let app = record
+            .intent
+            .get("app_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task app absent")?;
+        let action = record
+            .intent
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task action absent")?;
+        let resource = record
+            .intent
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task resource absent")?;
+        let resource_kind = record
+            .intent
+            .get("resource_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task resource kind absent")?;
+        let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let need = contract.need();
+        state.authorize_invocation_permission(
+            &self.route.cluster_id,
+            (app, resource_kind, resource, action),
+            &need,
+            &current.broker_actor(),
+            now,
+        )?;
+        Ok(crate::services::NativeTaskActionRequirement {
+            binding: match &record.key.owner {
+                InvocationOwner::NativeTask { task, agent, epoch } => {
+                    Some(crate::services::NativeTaskBinding {
+                        task_id: task.clone(),
+                        agent_id: agent.clone(),
+                        epoch: *epoch,
+                        revision: 0,
+                    })
+                }
+                _ => None,
+            },
+            app: app.into(),
+            resource_kind: resource_kind.into(),
+            resource: resource.into(),
+            action: action.into(),
+            need,
+        })
+    }
+    pub(super) fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
             return Err("invocation broker retired".into());
         }
@@ -105,6 +207,12 @@ impl Request {
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
     Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
+    Task {
+        caller: &'a LocalCaller,
+        binding: &'a crate::services::NativeTaskBinding,
+        invocation: tilo_actions::InvocationId,
+        intent: &'a serde_json::Value,
+    },
     Local {
         caller: &'a LocalCaller,
         request: &'a Request,
@@ -117,36 +225,47 @@ impl<'a> DurableContext<'a> {
         match self {
             Self::Peer(c, _) => c.owner(),
             Self::Local { caller, .. } => caller.owner(),
+            Self::Task { binding, .. } => InvocationOwner::NativeTask {
+                agent: binding.agent_id.clone(),
+                task: binding.task_id.clone(),
+                epoch: binding.epoch,
+            },
         }
     }
     pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {
         match self {
             Self::Peer(c, _) => c.policy_time.as_ref(),
-            Self::Local { caller, .. } => Some(&caller.time),
+            Self::Local { caller, .. } | Self::Task { caller, .. } => Some(&caller.time),
         }
     }
     pub(super) fn invocation(self) -> tilo_actions::InvocationId {
         match self {
             Self::Peer(_, r) => r.invocation,
             Self::Local { request, .. } => request.invocation,
+            Self::Task { invocation, .. } => invocation,
         }
     }
     pub(super) fn intent(self) -> serde_json::Value {
         match self {
             Self::Peer(_, r) => r.intent(),
             Self::Local { request, .. } => request.intent(),
+            Self::Task { intent, .. } => intent.clone(),
         }
     }
     pub(super) fn origin(self) -> InvocationCaller {
         match self {
-            Self::Peer(c, _) => InvocationCaller::Certified(Box::new(c.clone())),
-            Self::Local { caller, .. } => caller.origin(),
+            Self::Peer(c, _) => InvocationCaller::Certified {
+                caller: Box::new(c.clone()),
+                // This path has only the original signed device restriction.
+                foreign_restriction: false,
+            },
+            Self::Local { caller, .. } | Self::Task { caller, .. } => caller.origin(),
         }
     }
-    pub(super) fn network(self) -> Option<tilo_relay::client::CertifiedAction> {
+    pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
         match self {
             Self::Peer(c, _) => c.network.clone(),
-            Self::Local { .. } => None,
+            Self::Local { .. } | Self::Task { .. } => None,
         }
     }
     pub(super) fn before_admission(
@@ -159,6 +278,7 @@ impl<'a> DurableContext<'a> {
     ) -> Result<(), String> {
         let current = match self {
             Self::Peer(c, _) => state.current_action_caller(c)?,
+            Self::Task { caller, .. } => caller.current(state)?,
             Self::Local {
                 caller,
                 request,
@@ -180,9 +300,13 @@ impl<'a> DurableContext<'a> {
         let now = state.checked_policy_time(self.time())?.1 / 1_000_000_000;
         state.authorize_invocation_permission(
             &offered.0.route.cluster_id,
-            &offered.0.app_id,
-            &offered.1.action,
-            offered.1.contract.permission,
+            (
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.resource,
+                &offered.1.action,
+            ),
+            &offered.1.contract.need(),
             &current.broker_actor(),
             now,
         )?;
@@ -191,51 +315,62 @@ impl<'a> DurableContext<'a> {
     }
 }
 
+/// The action check of one admission, decided on the caller's borrowed
+/// sample of exactly that room's committed workspace.
+pub(super) fn authorize_action_in(
+    workspace: &tilo_desktop_model::Workspace,
+    (app, resource_kind, resource, action): (&str, &str, &str, &str),
+    need: &tilo_actions::ActionNeed,
+    actor: &BrokerActor,
+    now: u64,
+) -> Result<(), String> {
+    // Genuine durable callers revalidate live membership and delegation
+    // separately; this is the action's own grant.
+    if !actor
+        .action_answer_in(workspace, app, (resource_kind, resource, action), need, now)
+        .admits(actor.direct())
+    {
+        return Err("caller no longer authorized for invocation".into());
+    }
+    Ok(())
+}
+
+impl CapnpBrokerState {
+    /// Revoke the `Once` grants an admitted action spent in `room`
+    /// ([`tilo_action_policy::Verdict::spent`]), through the host that
+    /// records the room's grants.
+    pub(super) fn spend_once_grants(&self, room: &str, spent: &[tilo_action_policy::GrantId]) {
+        let Some(grants) = self.services.app_action_grants.as_ref() else {
+            return;
+        };
+        for grant in spent {
+            grants.revoke(room, grant.as_str());
+        }
+    }
+}
+
 impl CapnpBrokerState {
     pub(super) fn authorize_invocation_permission(
         &self,
         room: &str,
-        app: &str,
-        action: &str,
-        permission: tilo_actions::PermissionRequirement,
+        (app, resource_kind, resource, action): (&str, &str, &str, &str),
+        need: &tilo_actions::ActionNeed,
         actor: &BrokerActor,
         now: u64,
     ) -> Result<(), String> {
-        let tree = self
-            .membership
+        self.membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .ok_or("workspace no longer hosted")?;
-        // Preserve the existing common dispatch policy projection. Genuine
-        // durable callers revalidate live membership/delegation separately.
-        let caller = actor.policy_in(workspace, now);
-        let verb = match permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &caller,
-                &ResourceRef::Action {
-                    app: app.into(),
-                    action: action.into(),
-                },
-                verb,
-                now,
-            ) != CapDecision::Allow
-        }) {
-            return Err("caller no longer authorized for invocation".into());
-        }
-        Ok(())
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                authorize_action_in(
+                    workspace,
+                    (app, resource_kind, resource, action),
+                    need,
+                    actor,
+                    now,
+                )
+            })?
     }
     pub(super) fn require_current_stable_sender(
         &self,
@@ -269,6 +404,12 @@ impl CapnpBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<DurableInvocation>, String> {
         let current = caller.current(self)?;
+        // Ordinary durable observations may reconcile effects too. Only the
+        // task-owned route can exercise a native agent's action authority.
+        if current.broker_actor().is_agent && self.native_tasks(&caller.route.cluster_id).is_some()
+        {
+            return Err("native task agent requires authenticated task action admission".into());
+        }
         if host != self.invocation_host()? {
             return Err("durable invocation host mismatch".into());
         }
@@ -289,6 +430,15 @@ impl CapnpBrokerState {
             .ok_or("durable admission unavailable")?
             .lookup(&key)?;
         if let Some(record) = &record {
+            if record.prepared_effect.is_some()
+                && record
+                    .intent
+                    .get("actor")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(current.broker_actor().id.as_str())
+            {
+                return Err("prepared invocation actor differs from current caller".into());
+            }
             let contract: tilo_actions::ActionContract =
                 serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
                     .map_err(|_| "journal action contract invalid")?;
@@ -297,6 +447,16 @@ impl CapnpBrokerState {
                 .get("app_id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or("journal app invalid")?;
+            let resource = record
+                .intent
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("journal resource invalid")?;
+            let resource_kind = record
+                .intent
+                .get("resource_kind")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("journal resource kind invalid")?;
             let action = record
                 .intent
                 .get("action")
@@ -305,11 +465,15 @@ impl CapnpBrokerState {
             let now = self.checked_policy_time(Some(&caller.time))?.1 / 1_000_000_000;
             self.authorize_invocation_permission(
                 &caller.route.cluster_id,
-                app,
-                action,
-                contract.permission,
+                (app, resource_kind, resource, action),
+                &contract.need(),
                 &current.broker_actor(),
                 now,
+            )?;
+            self.authorize_checkpoint_result(
+                &caller.route.cluster_id,
+                current.certificate.as_ref(),
+                record,
             )?;
         }
         caller.current(self)?;
@@ -325,13 +489,10 @@ impl CapnpBrokerState {
             uuid::Uuid::from_bytes(request.binding.host),
             request.invocation,
         )?;
-        if existing.as_ref().is_some_and(|record| {
-            record
-                .intent
-                .get("request")
-                .unwrap_or(&serde_json::Value::Null)
-                != &request.intent()
-        }) {
+        if existing
+            .as_ref()
+            .is_some_and(|record| !record.admitted_request_is(&request.intent()))
+        {
             return Err("invocation identity reused with different intent".into());
         }
         Ok(existing)
@@ -514,6 +675,15 @@ pub(super) fn invoke(
             .local_existing(&caller, &request)
             .map_err(capnp::Error::failed)?
         {
+            let record = state
+                .reconcile_prepared_effect(record, || {
+                    state
+                        .local_existing(&caller, &request)?
+                        .ok_or("invocation missing")?;
+                    Ok(())
+                })
+                .await
+                .map_err(capnp::Error::failed)?;
             return write_observation(
                 results.get().init_observation(),
                 host,
@@ -610,6 +780,10 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    original_request: None,
+                    requested: None,
+                    caller: None,
+                    execution: None,
                     argument: request.argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),
@@ -642,7 +816,7 @@ pub(super) fn observe(
     params: &channel_handle::PublishedInvocationObservationParams,
     mut results: channel_handle::PublishedInvocationObservationResults,
 ) -> Promise<(), capnp::Error> {
-    let outcome = (|| {
+    let parsed = (|| {
         let p = params.get()?;
         let host = uuid::Uuid::from_bytes(array(p.get_host()?, "invocation host")?);
         let id = tilo_actions::InvocationId(uuid::Uuid::from_bytes(array(
@@ -650,16 +824,30 @@ pub(super) fn observe(
             "invocation UUID",
         )?));
         let caller = LocalCaller::capture(channel).map_err(capnp::Error::failed)?;
-        let record = channel
-            .state
+        Ok((caller, host, id))
+    })();
+    let (caller, host, id) = match parsed {
+        Ok(value) => value,
+        Err(error) => return Promise::err(error),
+    };
+    let state = channel.state.clone();
+    Promise::from_future(async move {
+        let mut record = state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
+        if let Some(retained) = record {
+            record = Some(
+                state
+                    .reconcile_prepared_effect(retained, || {
+                        state.local_status(&caller, host, id)?;
+                        Ok(())
+                    })
+                    .await
+                    .map_err(capnp::Error::failed)?,
+            );
+        }
         write_observation(results.get().init_observation(), host, id, record.as_ref())
-    })();
-    match outcome {
-        Ok(()) => Promise::ok(()),
-        Err(error) => Promise::err(error),
-    }
+    })
 }
 pub(super) fn cancel(
     channel: &CapnpChannelHandle,

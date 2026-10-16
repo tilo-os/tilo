@@ -11,8 +11,13 @@
  * relay's on-demand track serving does.
  */
 /* Browser-importable (the self-test below loads node modules only when run directly by node). */
-import * as realLibrary from './media-moq-library.mjs';
 import {MOQ_PROTOCOL, requestBroadcast} from './moq-carrier.mjs';
+
+// The library is generated from the @moq/net pinned in
+// scripts/moq-browser/package-lock.json and never committed.
+const realLibrary = await import('./media-moq-library.mjs').catch(error => {
+  throw new Error('media-moq-library.mjs is generated: run `npm ci --prefix scripts/moq-browser && node scripts/moq-browser/build.mjs` from the repository root', {cause: error});
+});
 
 const RECORD = /^ops\/[0-9a-f]{64}$/;
 

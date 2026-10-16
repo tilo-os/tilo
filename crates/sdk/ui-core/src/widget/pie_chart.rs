@@ -3,6 +3,12 @@
 //! The widget owns interaction geometry as well as painting, so pointer,
 //! keyboard/accessibility activation, tooltips and the rendered wedges always
 //! agree. Values may be updated without rebuilding the widget tree.
+//!
+//! Its height comes from the space it is given: the donut and its legend
+//! are one unit, centred, the donut as large as the room allows. The legend
+//! and the tooltip state a share the same way (whole percent), a slice can
+//! add a detail column to the legend (its size), and the tooltip never
+//! covers the legend.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -10,7 +16,7 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -18,14 +24,15 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartInspection, InteractiveChart, chart_nav_action, handle_chart_event,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -40,6 +47,9 @@ pub struct PieSlice {
     pub value: f64,
     pub color: Color,
     pub detail: String,
+    /// A column after the legend's label and share: the slice's size
+    /// ("12.4 GB"). Empty for none.
+    pub legend_detail: String,
     /// Whether activation is meaningful. Inspection remains available when false.
     pub interactive: bool,
 }
@@ -52,8 +62,17 @@ impl PieSlice {
             value,
             color,
             detail: String::new(),
+            legend_detail: String::new(),
             interactive: true,
         }
+    }
+
+    /// A detail column in the legend (the slice's size), aligned after the
+    /// label and its share.
+    #[must_use]
+    pub fn with_legend_detail(mut self, detail: impl Into<String>) -> Self {
+        self.legend_detail = detail.into();
+        self
     }
 
     #[must_use]
@@ -142,16 +161,24 @@ pub struct PieChart {
     style: PieStyle,
     center_title: String,
     center_subtitle: String,
-    height: f32,
+    /// A fixed height; `None` takes the space the parent gives.
+    height: Option<f32>,
+    /// The theme seen at layout, for measuring the legend.
+    theme: Option<Theme>,
+    /// Where the legend's entries were painted, for the tooltip to avoid.
+    legend_rects: Vec<Rect>,
+    /// Keys inspect slices only while the chart has focus.
+    focused: bool,
     rect: Rect,
-    hovered: Option<usize>,
     activated: Option<String>,
-    pointer: Point,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
+    inspection: ChartInspection<usize>,
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
     reduce_motion: bool,
+    /// The chart names its slices in a legend beside or under it.
+    legend: bool,
+    /// Where the wedges go: the whole rect, less the legend's area.
+    chart_rect: Rect,
 }
 
 impl PieChart {
@@ -161,16 +188,155 @@ impl PieChart {
             style: PieStyle::default(),
             center_title: String::new(),
             center_subtitle: String::new(),
-            height: 420.0,
+            height: None,
+            theme: None,
+            legend_rects: Vec::new(),
+            focused: false,
             rect: Rect::ZERO,
-            hovered: None,
             activated: None,
-            pointer: Point::ZERO,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
+            inspection: ChartInspection::default(),
             transition_from: None,
             transition_started: crate::time::now(),
             reduce_motion: false,
+            legend: false,
+            chart_rect: Rect::ZERO,
+        }
+    }
+
+    /// Name every slice in a legend (a swatch, its label and its share)
+    /// beside the chart when there is room, under it otherwise. The legend
+    /// and the wedges never overlap: the chart shrinks to make room.
+    #[must_use]
+    pub fn with_legend(mut self) -> Self {
+        self.legend = true;
+        self
+    }
+
+    /// The widest legend detail plus its gap, or zero without details.
+    fn legend_detail_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let style = theme.text(TextRole::Caption).numeric();
+        let widest = self
+            .slices
+            .iter()
+            .filter(|slice| !slice.legend_detail.is_empty())
+            .map(|slice| f64::from(text.measure_style(&slice.legend_detail, None, &style).0))
+            .fold(0.0, f64::max);
+        if widest > 0.0 {
+            (widest + f64::from(theme.tokens.spacing.s4)).ceil()
+        } else {
+            0.0
+        }
+    }
+
+    /// Lay the donut and the legend out inside `rect` as one centred unit
+    /// and return the rect for the wedges, with each legend entry's rect
+    /// (swatch, label and share, then its detail column).
+    fn legend_layout(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> (Rect, Vec<(usize, Rect)>) {
+        if !self.legend || self.slices.is_empty() {
+            return (rect, Vec::new());
+        }
+        let total = self.total();
+        let labels: Vec<String> = self
+            .slices
+            .iter()
+            .map(|slice| legend_label(slice, total))
+            .collect();
+        let detail_w = self.legend_detail_width(text, theme);
+        let mut entries =
+            crate::widget::chart_legend::measure(text, theme, labels.iter().map(String::as_str));
+        let label_w = entries.iter().map(|e| e.width).fold(0.0, f64::max);
+        for entry in &mut entries {
+            // Details line up in one column after the longest label.
+            if detail_w > 0.0 {
+                entry.width = label_w + detail_w;
+            }
+        }
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let widest = entries.iter().map(|e| e.width).fold(0.0, f64::max);
+        let row = entries.first().map_or(0.0, |e| e.height);
+        let side_room = rect.width() - rect.height().min(rect.width() * 0.6);
+        if widest + gap <= side_room {
+            // Beside: the donut and one legend column, centred together.
+            let diameter = (rect.width() - widest - gap).min(rect.height()).max(0.0);
+            let unit = diameter + gap + widest;
+            let x0 = (rect.center().x - unit / 2.0).max(rect.x0);
+            let legend_x = x0 + diameter + gap;
+            let block = crate::num::f64_of_usize(entries.len()) * row;
+            let mut y = (rect.center().y - block / 2.0).max(rect.y0);
+            let items = entries
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let r = Rect::new(
+                        legend_x,
+                        y,
+                        legend_x + e.width.min(rect.x1 - legend_x),
+                        y + row,
+                    );
+                    y += row;
+                    (i, r)
+                })
+                .collect();
+            (Rect::new(x0, rect.y0, x0 + diameter, rect.y1), items)
+        } else {
+            // Under: wrapping rows, each centred, under the donut.
+            let rows = crate::widget::chart_legend::wrap(&entries, rect.x0, rect.x1, 0.0, theme);
+            let height = rows.iter().map(|r| r.y1).fold(0.0, f64::max);
+            let diameter = (rect.height() - gap - height).min(rect.width()).max(0.0);
+            let unit = diameter + gap + height;
+            let y0 = (rect.center().y - unit / 2.0).max(rect.y0);
+            let top = y0 + diameter + gap;
+            let mut items: Vec<(usize, Rect)> = Vec::with_capacity(rows.len());
+            let mut start = 0;
+            while start < rows.len() {
+                let line_y = rows[start].y0;
+                let end = rows[start..]
+                    .iter()
+                    .position(|r| (r.y0 - line_y).abs() > 0.5)
+                    .map_or(rows.len(), |n| start + n);
+                let line = &rows[start..end];
+                let x1 = line.iter().map(|r| r.x1).fold(rect.x0, f64::max);
+                let shift = ((rect.x1 - x1) / 2.0).max(0.0);
+                for (offset, r) in line.iter().enumerate() {
+                    items.push((start + offset, *r + vello::kurbo::Vec2::new(shift, top)));
+                }
+                start = end;
+            }
+            (Rect::new(rect.x0, y0, rect.x1, y0 + diameter), items)
+        }
+    }
+
+    /// The height the chart wants at `width`: a donut as wide as it may
+    /// be, with its legend beside or under it.
+    fn natural_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let line = f64::from(theme.text(TextRole::Body).line_height_px());
+        let diameter = (line * 14.0).min(width).max(line * 6.0);
+        if !self.legend || self.slices.is_empty() {
+            return diameter;
+        }
+        // Lay out at the donut's height to see where the legend lands.
+        let probe = Rect::new(0.0, 0.0, width, diameter);
+        let (_, items) = self.legend_layout(text, theme, probe);
+        let beside = items.first().is_some_and(|(_, r)| r.x0 > probe.center().x);
+        if beside {
+            let block = items.iter().map(|(_, r)| r.y1).fold(0.0, f64::max)
+                - items
+                    .iter()
+                    .map(|(_, r)| r.y0)
+                    .fold(f64::INFINITY, f64::min);
+            diameter.max(block)
+        } else {
+            let rows = items.iter().map(|(_, r)| r.y1).fold(0.0, f64::max)
+                - items
+                    .iter()
+                    .map(|(_, r)| r.y0)
+                    .fold(f64::INFINITY, f64::min);
+            diameter + f64::from(theme.tokens.spacing.rhythm.section) + rows.max(0.0)
         }
     }
 
@@ -180,24 +346,15 @@ impl PieChart {
         self
     }
     #[must_use]
-    pub fn styled(self, style: PieStyle) -> Self {
-        self.with_style(style)
-    }
-    pub fn style(&self) -> &PieStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut PieStyle {
-        &mut self.style
-    }
-    #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
         self.center_title = title.into();
         self.center_subtitle = subtitle.into();
         self
     }
+    /// A fixed height instead of the space the parent gives.
     #[must_use]
     pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(80.0);
+        self.height = Some(height.max(80.0));
         self
     }
     pub fn set_slices(&mut self, slices: Vec<PieSlice>) {
@@ -215,7 +372,7 @@ impl PieChart {
         } else {
             self.transition_from = None;
         }
-        self.hovered =
+        self.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
     }
     /// Replace data without motion, useful for initial hydration, restored
@@ -224,7 +381,7 @@ impl PieChart {
         let hovered_id = self.hovered().map(|slice| slice.id.clone());
         self.slices = slices;
         self.transition_from = None;
-        self.hovered =
+        self.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
     }
     pub fn finish_animation(&mut self) {
@@ -241,18 +398,17 @@ impl PieChart {
         self.center_subtitle = subtitle.into();
     }
     pub fn hovered(&self) -> Option<&PieSlice> {
-        self.hovered.and_then(|i| self.slices.get(i))
+        self.inspection.hovered.and_then(|i| self.slices.get(i))
     }
     /// Inspect a slice by stable ID. Useful for keyboard navigation,
     /// coordinated views, guided tours, and deterministic visual tests.
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self.slices.iter().position(|slice| slice.id == id);
-        self.keyboard_inspection = self.hovered.is_some();
-        self.hovered.is_some()
+        self.inspection.hovered = self.slices.iter().position(|slice| slice.id == id);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
@@ -328,8 +484,13 @@ impl PieChart {
             .collect()
     }
     fn geometry(&self) -> (Point, f64, f64) {
-        let center = self.rect.center();
-        let outer = (self.rect.width().min(self.rect.height()) / 2.0 - self.style.padding).max(1.0);
+        let area = if self.chart_rect == Rect::ZERO {
+            self.rect
+        } else {
+            self.chart_rect
+        };
+        let center = area.center();
+        let outer = (area.width().min(area.height()) / 2.0 - self.style.padding).max(1.0);
         (
             center,
             outer,
@@ -389,7 +550,7 @@ impl PieChart {
         let slice_anchor = || {
             self.sectors_at(crate::time::now())
                 .into_iter()
-                .find(|sector| self.hovered == Some(sector.index))
+                .find(|sector| self.inspection.hovered == Some(sector.index))
                 .map_or_else(
                     || self.rect.center(),
                     |sector| {
@@ -404,14 +565,16 @@ impl PieChart {
                 )
         };
         let anchor = match self.style.tooltip_anchor {
-            PieTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
+            PieTooltipAnchor::Pointer if self.rect.contains(self.inspection.pointer) => {
+                self.inspection.pointer
+            }
             PieTooltipAnchor::Pointer | PieTooltipAnchor::Slice => slice_anchor(),
         };
-        let title_size = theme.tokens.typography.scale.sm;
-        let body_size = theme.tokens.typography.scale.xs;
+        let title_style = theme.text(TextRole::Caption);
+        let body_style = theme.text(TextRole::Caption);
         let detail = self.tooltip_detail(slice, total);
-        let (tw, _) = tr.measure(&slice.label, title_size, None);
-        let (dw, _) = tr.measure(&detail, body_size, None);
+        let (tw, _) = tr.measure_style(&slice.label, None, &title_style);
+        let (dw, _) = tr.measure_style(&detail, None, &body_style);
         let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
         let available_width =
             (self.rect.width() - self.style.tooltip_right_inset.max(0.0) - 16.0).max(80.0);
@@ -448,44 +611,94 @@ impl PieChart {
             self.rect.y0 + 8.0,
             (self.rect.y1 - height - 8.0).max(self.rect.y0 + 8.0),
         );
-        let rect = Rect::new(x, y, x + width, y + height);
+        // Never over the legend: try the other side of the anchor, then
+        // above it, then above and to the other side.
+        let covers = |r: Rect| {
+            self.legend_rects
+                .iter()
+                .any(|legend| r.intersect(*legend).area() > 0.0)
+        };
+        let mut rect = Rect::new(x, y, x + width, y + height);
+        if covers(rect) {
+            let left = (anchor.x - offset - width).max(self.rect.x0 + 8.0);
+            let above = (anchor.y - offset - height).max(self.rect.y0 + 8.0);
+            if let Some(free) = [
+                Rect::new(left, y, left + width, y + height),
+                Rect::new(x, above, x + width, above + height),
+                Rect::new(left, above, left + width, above + height),
+            ]
+            .into_iter()
+            .find(|candidate| !covers(*candidate))
+            {
+                rect = free;
+            }
+        }
+        let (x, y) = (rect.x0, rect.y0);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &slice.label,
-            title_size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((x + padding, y + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &title_style.clone().with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &detail,
-            body_size,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((x + padding, y + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &body_style,
         );
     }
 
     fn tooltip_detail(&self, slice: &PieSlice, total: f64) -> String {
-        let percent = if total > 0.0 {
-            Self::value(slice) / total * 100.0
-        } else {
-            0.0
-        };
+        let share = share_text(Self::value(slice), total);
         match (slice.detail.is_empty(), self.style.tooltip_show_percent) {
-            (true, true) => format!("{percent:.1}%"),
-            (false, true) => format!("{}  ·  {percent:.1}%", slice.detail),
+            (true, true) => share,
+            (false, true) => format!("{}, {share}", slice.detail),
             (_, false) => slice.detail.clone(),
         }
+    }
+}
+
+impl InteractiveChart for PieChart {
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
+    }
+    fn update_hover(&mut self) {
+        self.inspection.hovered = self.hit_test(self.inspection.pointer);
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(slice) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.slices.get(index))
+        else {
+            return false;
+        };
+        if !slice.interactive {
+            return false;
+        }
+        self.activated = Some(slice.id.clone());
+        true
+    }
+    fn keyboard_items(&self) -> Vec<usize> {
+        let sectors = self.sectors_at(crate::time::now());
+        sectors.into_iter().map(|sector| sector.index).collect()
+    }
+    /// Keyboard inspection leaves the pointer alone: the tooltip places itself
+    /// per [`PieTooltipAnchor`].
+    fn anchor(&self, _index: &usize) -> Option<Point> {
+        None
     }
 }
 
@@ -493,28 +706,46 @@ impl Widget for PieChart {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        self.theme = Some(theme.clone());
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
+                height: self.height.map_or_else(Dimension::auto, Dimension::length),
             },
+            // Without a fixed height the chart takes the room it is given.
+            flex_grow: if self.height.is_some() { 0.0 } else { 1.0 },
             ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 320.0,
         });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let height = match (self.height, &self.theme) {
+            (Some(height), _) => height,
+            (None, Some(theme)) => {
+                let theme = theme.clone();
+                crate::num::f32_of_f64(self.natural_height(text, &theme, f64::from(width)))
+            }
+            (None, None) => 320.0,
+        };
+        taffy::Size {
+            width,
+            height: known.height.unwrap_or(height),
+        }
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -525,6 +756,8 @@ impl Widget for PieChart {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
+        let (chart_rect, legend) = self.legend_layout(tr, theme, self.rect);
+        self.chart_rect = chart_rect;
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
         if sectors.is_empty() {
@@ -541,7 +774,7 @@ impl Widget for PieChart {
                 continue;
             };
             let mid = sector.start.midpoint(sector.end);
-            let lift = if self.hovered == Some(sector.index) && slice.interactive {
+            let lift = if self.inspection.hovered == Some(sector.index) && slice.interactive {
                 self.style.hover_offset
             } else {
                 0.0
@@ -565,21 +798,51 @@ impl Widget for PieChart {
                 ),
             );
         }
-        if inner > 0.0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &Circle::new(base_center, (inner - 2.0).max(0.0)),
-            );
+        self.legend_rects = legend.iter().map(|(_, rect)| *rect).collect();
+        if !legend.is_empty() {
+            let total = self.total();
+            let detail_w = self.legend_detail_width(tr, theme);
+            let detail_style = theme.text(TextRole::Caption).numeric();
+            for (index, rect) in &legend {
+                let Some(slice) = self.slices.get(*index) else {
+                    continue;
+                };
+                let label_rect = Rect::new(rect.x0, rect.y0, rect.x1 - detail_w, rect.y1);
+                crate::widget::chart_legend::paint_entry(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    label_rect,
+                    slice.color,
+                    &legend_label(slice, total),
+                );
+                if detail_w > 0.0 && !slice.legend_detail.is_empty() {
+                    let (w, h) = tr.measure_style(&slice.legend_detail, None, &detail_style);
+                    tr.draw_style(
+                        scene,
+                        &slice.legend_detail,
+                        theme.text_dim,
+                        transform
+                            * Affine::translate((
+                                rect.x1 - f64::from(w),
+                                rect.center().y - f64::from(h) / 2.0,
+                            )),
+                        None,
+                        &detail_style,
+                    );
+                }
+            }
         }
-        let title_size = theme.tokens.typography.scale.x2l;
-        let (w, h) = tr.measure_weighted(&self.center_title, title_size, None, TextWeight::Bold);
-        tr.draw_text_weighted(
+        let title_style = theme.text(TextRole::LargeTitle);
+        let (w, h) = tr.measure_style(
+            &self.center_title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Bold),
+        );
+        tr.draw_style(
             scene,
             &self.center_title,
-            title_size,
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
@@ -587,93 +850,26 @@ impl Widget for PieChart {
                     base_center.y - f64::from(h),
                 )),
             None,
-            TextWeight::Bold,
+            &title_style.clone().with_weight(TextWeight::Bold),
         );
-        let sub_size = theme.tokens.typography.scale.sm;
-        let (sw, _) = tr.measure(&self.center_subtitle, sub_size, None);
-        tr.draw_text(
+        let sub_style = theme.text(TextRole::Caption);
+        let (sw, _) = tr.measure_style(&self.center_subtitle, None, &sub_style);
+        tr.draw_style(
             scene,
             &self.center_subtitle,
-            sub_size,
             theme.tokens.colors.text_dim,
             transform
                 * Affine::translate((base_center.x - f64::from(sw) / 2.0, base_center.y + 8.0)),
             None,
+            &sub_style,
         );
         self.draw_tooltip(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    if let Some(slice) = self.hovered.and_then(|index| self.slices.get(index))
-                        && slice.interactive
-                    {
-                        self.activated = Some(slice.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.hovered = self.hit_test(self.pointer);
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(index) = self.hovered
-                    && let Some(slice) = self.slices.get(index)
-                    && slice.interactive
-                {
-                    self.activated = Some(slice.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                let indices = self
-                    .sectors_at(crate::time::now())
-                    .into_iter()
-                    .map(|sector| sector.index)
-                    .collect::<Vec<_>>();
-                if action == ChartNavAction::Activate {
-                    if let Some(slice) = self.hovered.and_then(|index| self.slices.get(index))
-                        && slice.interactive
-                    {
-                        self.activated = Some(slice.id.clone());
-                    }
-                } else {
-                    let position = self
-                        .hovered
-                        .and_then(|index| indices.iter().position(|candidate| *candidate == index));
-                    self.hovered = moved_index(position, indices.len(), action)
-                        .and_then(|position| indices.get(position).copied());
-                    self.keyboard_inspection = self.hovered.is_some();
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
+        // Keys inspect the pie only while it has focus; otherwise they belong
+        // to whatever does.
+        if self.focused || chart_nav_action(event).is_none() {
+            handle_chart_event(self, event, ctx);
         }
     }
     fn accessibility(&self) -> Option<AccessNode> {
@@ -683,23 +879,22 @@ impl Widget for PieChart {
             .iter()
             .filter(|s| Self::value(s) > 0.0)
             .map(|s| {
-                let percent = if total > 0.0 {
-                    Self::value(s) / total * 100.0
-                } else {
-                    0.0
-                };
+                let share = share_text(Self::value(s), total);
+                let description = [share.as_str(), s.legend_detail.as_str(), s.detail.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let node = AccessNode::new(if s.interactive {
                     Role::Button
                 } else {
                     Role::StaticText
                 })
                 .with_name(&s.label)
-                .with_description(format!("{percent:.1}% {}", s.detail));
+                .with_description(description);
                 if s.interactive {
-                    node.with_action_target(&s.id).with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    node.with_action_target(&s.id)
+                        .with_state(AccessState::new().focusable(true))
                 } else {
                     node
                 }
@@ -711,34 +906,22 @@ impl Widget for PieChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
-            return false;
-        };
-        if let Some(slice) = self
-            .slices
-            .iter()
-            .find(|s| s.interactive && crate::a11y::hash_key(&s.id) == *key)
-        {
-            self.activated = Some(slice.id.clone());
-            return true;
-        }
-        false
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
+            action,
+            key_path,
+            self.slices.iter().filter(|s| s.interactive).map(|s| &s.id),
+        )
     }
     fn name(&self) -> &'static str {
         "PieChart"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()
@@ -746,14 +929,83 @@ impl Widget for PieChart {
     fn is_focusable(&self) -> bool {
         true
     }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused && self.inspection.keyboard {
+            self.clear_inspection();
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+/// A share as the legend and the tooltip both state it: whole percent, and
+/// "<1%" for a sliver rather than a misleading "0%".
+fn share_text(value: f64, total: f64) -> String {
+    if total <= 0.0 {
+        return "0%".to_owned();
+    }
+    let percent = value / total * 100.0;
+    if percent > 0.0 && percent < 0.5 {
+        "<1%".to_owned()
+    } else {
+        format!("{}%", percent.round())
+    }
+}
+
+/// A legend entry: the slice's label and its share, as a secondary line
+/// would put it ("Photos 42%"), never joined by a dot.
+fn legend_label(slice: &PieSlice, total: f64) -> String {
+    if total > 0.0 {
+        format!(
+            "{} {}",
+            slice.label,
+            share_text(PieChart::value(slice), total)
+        )
+    } else {
+        slice.label.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_legend_never_overlaps_the_wedges() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let slices = vec![
+            PieSlice::new("photos", "Photos", 42.0, Color::WHITE),
+            PieSlice::new("music", "Music", 21.0, Color::WHITE),
+            PieSlice::new("documents", "Documents and spreadsheets", 9.0, Color::WHITE),
+            PieSlice::new("other", "Other", 4.0, Color::WHITE),
+        ];
+        for rect in [
+            Rect::new(0.0, 0.0, 640.0, 300.0),
+            Rect::new(0.0, 0.0, 300.0, 420.0),
+        ] {
+            let mut chart = PieChart::new(slices.clone()).with_legend();
+            chart.rect = rect;
+            let (area, legend) = chart.legend_layout(&mut text, &theme, rect);
+            chart.chart_rect = area;
+            let (center, outer, _) = chart.geometry();
+            let disc = Rect::from_center_size(center, (2.0 * outer, 2.0 * outer));
+            assert_eq!(legend.len(), 4);
+            for (_, entry) in &legend {
+                assert!(
+                    disc.intersect(*entry).area() <= 0.0,
+                    "{rect:?}: legend {entry:?} overlaps the chart {disc:?}"
+                );
+                assert!(rect.contains(entry.origin()) && entry.x1 <= rect.x1 + 0.5);
+            }
+        }
+        assert_eq!(legend_label(&slices[0], 76.0), "Photos 55%");
+    }
 
     fn chart() -> PieChart {
         let mut chart = PieChart::new(vec![
@@ -872,5 +1124,41 @@ mod tests {
             assert!(!chart.is_animating());
             assert_eq!(chart.slices[0].value, 2.0);
         }
+    }
+
+    #[test]
+    fn legend_and_tooltip_state_a_share_alike_and_details_line_up() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut chart = PieChart::new(vec![
+            PieSlice::new("photos", "Photos", 42.4, Color::WHITE)
+                .with_legend_detail("42.4 GB")
+                .with_detail("1,204 files"),
+            PieSlice::new("music", "Music", 57.6, Color::WHITE).with_legend_detail("57.6 GB"),
+        ])
+        .with_legend();
+        assert_eq!(legend_label(&chart.slices[0], 100.0), "Photos 42%");
+        let tooltip = chart.tooltip_detail(&chart.slices[0].clone(), 100.0);
+        assert_eq!(tooltip, "1,204 files, 42%");
+        assert!(!tooltip.contains('\u{b7}'), "no dot chains");
+        let rect = Rect::new(0.0, 0.0, 640.0, 300.0);
+        chart.rect = rect;
+        let (area, legend) = chart.legend_layout(&mut text, &theme, rect);
+        // Beside: donut and legend centred as one unit.
+        let left_gap = area.x0 - rect.x0;
+        let right_gap = rect.x1 - legend.iter().map(|(_, r)| r.x1).fold(0.0, f64::max);
+        assert!(
+            (left_gap - right_gap).abs() < 2.0,
+            "{left_gap} vs {right_gap}"
+        );
+        let widths: Vec<f64> = legend.iter().map(|(_, r)| r.width()).collect();
+        assert!(
+            (widths[0] - widths[1]).abs() < 0.5,
+            "details share a column"
+        );
+        // Without a fixed height the chart asks for room from its width.
+        let natural = chart.natural_height(&mut text, &theme, 640.0);
+        assert!(natural > 100.0 && natural < 640.0, "{natural}");
+        assert_eq!(share_text(0.2, 100.0), "<1%");
     }
 }

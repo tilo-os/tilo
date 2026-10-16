@@ -11,15 +11,6 @@
 //!  - no state for any workspace leaks from B → A.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
@@ -67,7 +58,7 @@ async fn cross_user_peer_relay_is_rejected() {
 
     // Alice's client publishes a delta on Alice's relay. If auth
     // had been bypassed, it would flow to Bob's relay and end up
-    // in Bob's `workspaces/42/log.jsonl`.
+    // through Bob's ingress and count as a delta Bob's relay accepted.
     let ep = client_endpoint().await;
     let a = RelayClient::connect(
         ep,
@@ -92,32 +83,23 @@ async fn cross_user_peer_relay_is_rejected() {
     // Alice's host must have committed the delta before we judge that Bob
     // never saw it — otherwise a slow disk makes the isolation check a
     // race against the writer's own latency.
-    let alice_log = a_relay
-        .state_root
-        .join("workspaces")
-        .join("42")
-        .join("log.jsonl");
-    wait_until("Alice's relay persisted the published delta", || {
-        std::fs::read(&alice_log).is_ok_and(|b| !b.is_empty())
+    let alice_metrics = a_relay.relay.handle().metrics;
+    wait_until("Alice's relay committed the published delta", || {
+        alice_metrics.snapshot().deltas_received == 1
     })
     .await;
 
-    // Bob's relay must have received NO deltas — the log file
-    // either doesn't exist or is empty.
-    let bob_log = b_relay
-        .state_root
-        .join("workspaces")
-        .join("42")
-        .join("log.jsonl");
-    let bytes = if bob_log.exists() {
-        std::fs::read(&bob_log).unwrap()
-    } else {
-        Vec::new()
-    };
-    assert!(
-        bytes.is_empty(),
-        "cross-user peer relay must not receive any delta — {} bytes leaked",
-        bytes.len(),
+    // Bob's relay must have accepted NO deltas, and never authenticated a
+    // session at all: no ingress path (delta, sync, pending) had a peer.
+    let bob = bob_metrics.snapshot();
+    assert_eq!(
+        bob.deltas_received, 0,
+        "cross-user peer relay must not receive any delta — {} leaked",
+        bob.deltas_received,
+    );
+    assert_eq!(
+        bob.conns_authed, 0,
+        "cross-user peer relay must not authenticate Alice's relay",
     );
 
     // Bob's pending dir for Alice's client must not exist either.

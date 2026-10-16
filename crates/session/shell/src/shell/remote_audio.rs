@@ -24,7 +24,7 @@
 //! peers tell a paused source from a dead link.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -49,6 +49,7 @@ use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutCl
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
+use tilo_lock::MutexRecover as _;
 
 const PENDING_TTL: Duration = Duration::from_secs(30);
 /// How long a source waits for the target's consent decision. Longer than
@@ -345,7 +346,7 @@ struct SharedPlayout(Arc<Mutex<RoutePlayout>>);
 
 impl SharedPlayout {
     fn lock(&self) -> std::sync::MutexGuard<'_, RoutePlayout> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock_recover()
     }
 }
 
@@ -590,6 +591,18 @@ struct RemoteAudioState {
     inbound: BTreeMap<[u8; 16], InboundRoute>,
     interrupted: BTreeMap<[u8; 16], InterruptedRoute>,
     local: BTreeMap<[u8; 16], LocalGroupRoute>,
+}
+
+impl RemoteAudioState {
+    /// Nothing for [`pump`] to reconcile, capture, send or expire. Picker
+    /// source tokens need no pumping.
+    fn is_idle(&self) -> bool {
+        self.pending.is_empty()
+            && self.outbound.is_empty()
+            && self.inbound.is_empty()
+            && self.interrupted.is_empty()
+            && self.local.is_empty()
+    }
 }
 
 fn record_interruption(
@@ -923,16 +936,6 @@ fn state() -> &'static Mutex<RemoteAudioState> {
     STATE.get_or_init(|| Mutex::new(RemoteAudioState::default()))
 }
 
-fn random_nonzero_16() -> [u8; 16] {
-    loop {
-        let mut value = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-        if value != [0; 16] {
-            return value;
-        }
-    }
-}
-
 fn random_nonzero_u64(existing: &BTreeMap<u64, LocalAudioSelection>) -> u64 {
     loop {
         let value = UnwrapErr(SysRng).next_u64();
@@ -1172,7 +1175,7 @@ pub fn request(
             LocalAudioSelection::System => crate::shell::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
-        let session_id = random_nonzero_16();
+        let session_id = crate::random::nonzero::<16>();
         let now = Instant::now();
         state.outbound.insert(
             session_id,
@@ -1232,7 +1235,7 @@ pub fn authorize(
         .pending
         .remove(&session_id)
         .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-request-expired"))?;
-    let authorization = approved.then(random_nonzero_16);
+    let authorization = approved.then(crate::random::nonzero::<16>);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
             media::pw_stream::native_streams(),
@@ -1312,7 +1315,7 @@ fn set_role_with(
     role: ChannelRole,
 ) -> Result<(), String> {
     let inactive = || crate::shell::i18n::t("remote-audio-error-route-inactive");
-    let current = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = state.lock_recover();
     let route = current.inbound.get(&session_id).map(|route| {
         (
             route.label.clone(),
@@ -1326,32 +1329,13 @@ fn set_role_with(
     }
     // Opening a stream talks to the daemon; never while holding the state.
     let playback = start_playback(streams, &label, role)?;
-    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state.lock_recover();
     let route = state.inbound.get_mut(&session_id).ok_or_else(inactive)?;
     if let Some(previous) = route.playback.as_ref() {
         let clock = previous.shared.lock().clock;
         playback.shared.lock().clock = clock;
     }
     route.playback = Some(playback);
-    drop(state);
-    Ok(())
-}
-
-/// Delay this device's playout of an inbound route by `trim_ns` beyond the
-/// group latency, the per-member offset acoustic calibration measures. A
-/// change under 20 ms is absorbed by resampling, without a gap.
-///
-/// # Errors
-///
-/// Returns a message when the route is no longer active or not playing.
-pub fn set_trim(session_id: [u8; 16], trim_ns: i64) -> Result<(), String> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
-    let playback = state
-        .inbound
-        .get(&session_id)
-        .and_then(|route| route.playback.as_ref())
-        .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-route-inactive"))?;
-    playback.shared.lock().playout.set_trim_ns(trim_ns);
     drop(state);
     Ok(())
 }
@@ -1365,8 +1349,7 @@ fn tap_for(
         GroupRouteSource::System => TapSelection::System,
         GroupRouteSource::Picker(token) => {
             let chosen = state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .source_tokens
                 .get(&token)
                 .cloned()
@@ -1397,7 +1380,7 @@ pub fn start_group_send(
 ) -> Result<(), String> {
     let tap = tap_for(state(), source)?;
     let capture = PcmCapture::group_sink(tap.serial())?;
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
         return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
@@ -1443,20 +1426,16 @@ pub fn start_group_local(
         playback,
     )?;
     playback.shared.lock().clock = Some(PeerPlayoutClock::new(0, 0, 0.0));
-    state()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .local
-        .insert(
-            route,
-            LocalGroupRoute {
-                capture,
-                pending: PendingAudio::default(),
-                playback,
-                sequence: 0,
-                _tap: tap,
-            },
-        );
+    state().lock_recover().local.insert(
+        route,
+        LocalGroupRoute {
+            capture,
+            pending: PendingAudio::default(),
+            playback,
+            sequence: 0,
+            _tap: tap,
+        },
+    );
     Ok(())
 }
 
@@ -1479,7 +1458,7 @@ pub fn start_group_receive(
         "Speaker group",
         playback,
     )?;
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
         return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
@@ -1505,7 +1484,7 @@ pub fn start_group_receive(
 
 /// End one group route here. The speaker-group runtime tells the peer.
 pub fn end_group_route(route: [u8; 16]) {
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state
         .outbound
         .get(&route)
@@ -1528,7 +1507,7 @@ pub fn end_group_route(route: [u8; 16]) {
 /// own clock of the source. `None` once the route is gone.
 #[must_use]
 pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     if let Some(outbound) = state.outbound.get(&route)
         && outbound.tap.is_some()
     {
@@ -1548,7 +1527,7 @@ pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
 /// [`group_route_playout`] for every running group route at once.
 #[must_use]
 pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     let outbound = state
         .outbound
         .iter()
@@ -1572,7 +1551,7 @@ pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
 /// its own when its link or output fails.
 #[must_use]
 pub fn has_group_route(route: [u8; 16]) -> bool {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     state
         .outbound
         .get(&route)
@@ -1701,31 +1680,49 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             accepted,
             authorization,
         } => {
+            let awaiting = |state: &RemoteAudioState| {
+                state
+                    .outbound
+                    .get(session_id)
+                    .filter(|route| {
+                        route.target == envelope.source && route.authorization.is_none()
+                    })
+                    .map(|route| route.selection.clone())
+            };
+            let selection = state().lock().ok().and_then(|state| awaiting(&state));
             let mut remove = false;
-            if let Ok(mut state) = state().lock()
-                && let Some(route) = state.outbound.get_mut(session_id)
-                && route.target == envelope.source
-                && route.authorization.is_none()
-            {
-                if *accepted {
-                    if let Some(authorization) = authorization {
-                        match PcmCapture::start(&route.selection) {
-                            Ok(capture) => {
+            if let Some(selection) = selection {
+                // Starting a capture asks PipeWire for its graph and waits for
+                // the stream (seconds on a busy graph). The route state stays
+                // free meanwhile: the compositor's Quick Settings reads it.
+                let capture = (*accepted)
+                    .then_some(authorization.as_ref())
+                    .flatten()
+                    .map(|_| PcmCapture::start(&selection));
+                let mut unused = None;
+                if let Ok(mut state) = state().lock()
+                    && awaiting(&state).as_ref() == Some(&selection)
+                {
+                    match (capture, authorization) {
+                        (Some(Ok(capture)), Some(authorization)) => {
+                            if let Some(route) = state.outbound.get_mut(session_id) {
                                 let now = Instant::now();
                                 route.authorization = Some(*authorization);
                                 route.capture = Some(capture);
                                 route.last_audio = now;
                                 route.last_heard = now;
                             }
-                            Err(_) => remove = true,
+                        }
+                        (None, _) if *accepted => {}
+                        _ => {
+                            remove = true;
+                            unused = state.outbound.remove(session_id);
                         }
                     }
-                } else {
-                    remove = true;
                 }
-                if remove {
-                    state.outbound.remove(session_id);
-                }
+                // A route or capture that is let go stops its stream, which
+                // joins the stream's thread: not under the state lock.
+                drop(unused);
             }
             if remove && let Some(authorization) = authorization {
                 let _ = network.send_personal_fabric_action(
@@ -1890,14 +1887,25 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
 
 /// Drive capture, bounded frame transmission, and all lifecycle revocations.
 pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
-    let online = network
-        .device_fabric()
-        .online_devices()
-        .map(|presence| presence.device.clone())
-        .collect::<BTreeSet<_>>();
+    pump_state(state(), network, enabled, focus);
+}
+
+/// [`pump`] over `state`. Runs every compositor frame, so with no route,
+/// request or notice it returns before touching the device fabric, and
+/// otherwise reads the fabric in place rather than cloning it.
+fn pump_state(
+    state: &Mutex<RemoteAudioState>,
+    network: &ShellNetwork,
+    enabled: bool,
+    focus: Option<&PhysicalGamepadBinding>,
+) {
+    if state.lock().is_ok_and(|state| state.is_idle()) {
+        return;
+    }
+    let online = network.online_device_ids();
     let now = Instant::now();
     let mut egress = Vec::new();
-    let Ok(mut guard) = state().lock() else {
+    let Ok(mut guard) = state.lock() else {
         return;
     };
     egress.extend(reconcile_lifecycle(
@@ -1959,7 +1967,7 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
     for message in egress {
         let outbound_session = message.outbound_session;
         if let Err(error) = network.try_send_personal_fabric_action(&message.target, message.action)
-            && let Ok(mut state) = state().lock()
+            && let Ok(mut state) = state.lock()
         {
             apply_send_failure(&mut state, outbound_session, &error, Instant::now());
         }
@@ -2097,6 +2105,42 @@ mod tests {
 
     fn before(now: Instant, elapsed: Duration) -> Instant {
         now.checked_sub(elapsed).unwrap()
+    }
+
+    #[test]
+    fn pump_does_not_clone_fabric_when_idle() {
+        let (network, mut commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0xA0D1,
+        );
+        let state = Mutex::new(RemoteAudioState::default());
+        for _ in 0..100 {
+            pump_state(&state, &network, true, None);
+        }
+        assert_eq!(
+            network.device_fabric_reads(),
+            (0, 0),
+            "an idle pump does not look at the fabric"
+        );
+        assert!(commands.try_recv().is_err(), "an idle pump sends nothing");
+
+        // A live notice needs the online set, read in place.
+        state.lock().unwrap().interrupted.insert(
+            [9; 16],
+            InterruptedRoute {
+                peer: DeviceId::new("peer").unwrap(),
+                label: "Music".into(),
+                inbound: false,
+                at: Instant::now(),
+            },
+        );
+        pump_state(&state, &network, true, None);
+        assert_eq!(
+            network.device_fabric_reads(),
+            (0, 1),
+            "borrowed, never cloned"
+        );
+        assert_eq!(state.lock().unwrap().interrupted.len(), 1);
     }
 
     #[test]

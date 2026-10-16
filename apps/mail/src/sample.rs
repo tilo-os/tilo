@@ -1,15 +1,57 @@
 //! A representative sample mailbox used when the app runs headless
-//! (`--shots`) or before a live account is configured. Two messages (including
-//! one with a PDF attachment) are authored as raw RFC 5322 `.eml` blobs and
-//! hydrated through [`crate::transport::parse_eml`]. The rest are constructed
-//! directly for breadth across
-//! folders, threads, read/unread, and starred state.
-
-use uuid::Uuid;
+//! (`--shots`) and by tests. Three messages (one with a PDF attachment, one
+//! with an HTML part) are authored as raw RFC 5322 `.eml` blobs and hydrated
+//! through [`crate::transport::parse_eml`]; the rest are constructed directly
+//! for breadth across folders, threads, read and unread, and starred state.
+//!
+//! Times are relative to the clock (`ui::clock`), which a capture pins, so a
+//! shot shows the same mailbox on every run.
 
 use crate::account::{Account, AccountStore};
 use crate::model::{AccountConfig, Addr, Attachment, Folder, Mailbox, Message};
 use crate::transport::parse_eml;
+
+const OWNER_NAME: &str = "Sam Rivera";
+const OWNER_EMAIL: &str = "sam@rivera.example";
+
+/// What a screenshot shows in place of the person's mail: a mailbox, the
+/// accounts beside it and the clock it is read at. Never the person's own.
+#[derive(Clone)]
+pub struct MailFixture {
+    pub mailbox: Mailbox,
+    pub accounts: AccountStore,
+    pub now_min: i64,
+}
+
+impl MailFixture {
+    /// The bundled sample mailbox and two sample accounts.
+    pub fn bundled() -> Self {
+        Self {
+            mailbox: sample_mailbox(),
+            accounts: sample_account_store(),
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+
+    /// Nobody has added an account yet.
+    pub fn without_accounts() -> Self {
+        Self {
+            mailbox: Mailbox::new(AccountConfig::default()),
+            accounts: AccountStore::new(),
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+
+    /// A configured account before any message has arrived.
+    pub fn before_first_fetch() -> Self {
+        let accounts = sample_account_store();
+        Self {
+            mailbox: Mailbox::new(accounts.active_config()),
+            accounts,
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+}
 
 /// Deterministic "now" for the sample corpus so relative timestamps render
 /// identically every run. 2026-06-30 14:05 UTC.
@@ -19,9 +61,14 @@ pub const SAMPLE_NOW_MIN: i64 = {
     29_713_805
 };
 
+/// The clock of the hermetic sample corpus.
+pub fn sample_now_min() -> i64 {
+    SAMPLE_NOW_MIN
+}
+
 /// A metadata-only (projected, not yet downloaded) sample attachment. Its
-/// bytes aren't present, so the reader shows it but a save requires hydration —
-/// mirroring how a live IMAP fetch lists an attachment before fetching it.
+/// bytes aren't present, so the reader shows it but a save requires
+/// hydration, as a live IMAP fetch lists an attachment before fetching it.
 fn att(filename: &str, mime: &str, size: u64) -> Attachment {
     Attachment::projected(filename, mime, size)
 }
@@ -39,9 +86,14 @@ struct SampleMessage<'a> {
 }
 
 impl SampleMessage<'_> {
-    fn build(self) -> Message {
+    fn build(self, now: i64) -> Message {
         Message {
-            id: Uuid::new_v4(),
+            id: crate::transport::stable_message_id(&format!(
+                "{}/{}/{}",
+                self.folder.as_key(),
+                self.ago_min,
+                self.subject
+            )),
             rfc_message_id: None,
             in_reply_to: None,
             from: self.from,
@@ -51,7 +103,7 @@ impl SampleMessage<'_> {
             body: self.body.into(),
             html_body: None,
             attachments: self.attachments,
-            timestamp_min: SAMPLE_NOW_MIN - self.ago_min,
+            timestamp_min: now - self.ago_min,
             read: self.read,
             starred: self.starred,
             folder: self.folder,
@@ -60,509 +112,429 @@ impl SampleMessage<'_> {
     }
 }
 
-struct InboxCorrespondents<'a> {
-    ci: Addr,
-    katherine: &'a Addr,
-    alan: Addr,
-    linus: Addr,
-    calendar: Addr,
+/// One hour, in minutes: the unit the sample timestamps are expressed in.
+const HOUR_MIN: i64 = 60;
+/// One day, in minutes.
+const DAY_MIN: i64 = 24 * HOUR_MIN;
+
+/// The people the sample mail is from and to.
+struct People {
+    me: Addr,
+    maya: Addr,
+    daniel: Addr,
+    priya: Addr,
+    jonas: Addr,
 }
 
-/// One hour, in minutes — the unit the sample timestamps are expressed in.
-const HOUR_MIN: i64 = 60;
+impl People {
+    fn new() -> Self {
+        Self {
+            me: Addr::new(OWNER_NAME, OWNER_EMAIL),
+            maya: Addr::new("Maya Chen", "maya@northwind.example"),
+            daniel: Addr::new("Daniel Okoro", "daniel@northwind.example"),
+            priya: Addr::new("Priya Nair", "priya@northwind.example"),
+            jonas: Addr::new("Jonas Weber", "jonas@weber.example"),
+        }
+    }
+}
 
-/// Build the bundled mailbox. The account is a plausible self-host config so
-/// the account-setup screen has real values to display.
-pub fn sample_mailbox() -> Mailbox {
-    let me = Addr::new("You", "you@example.test");
-    let account = AccountConfig {
-        display_name: "You".into(),
-        email: "you@example.test".into(),
-        imap_host: "imap.example.test".into(),
+/// The owner's account settings, so the account sheet has real values.
+fn owner_config() -> AccountConfig {
+    AccountConfig {
+        display_name: OWNER_NAME.into(),
+        email: OWNER_EMAIL.into(),
+        imap_host: "imap.rivera.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.example.test".into(),
+        smtp_host: "smtp.rivera.example".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@example.test".into(),
+        username: OWNER_EMAIL.into(),
         auth: crate::model::AuthMethod::Password,
-        password: "********".into(),
-    };
-    let mut mb = Mailbox::new(account);
+        import_pending: false,
+        password: "correct-horse-battery".into(),
+    }
+}
 
-    let ada = Addr::new("Ada Lovelace", "ada@analytical.example");
-    let grace = Addr::new("Grace Hopper", "grace@navy.example");
-    let alan = Addr::new("Alan Turing", "alan@bletchley.example");
-    let katherine = Addr::new("Katherine Johnson", "katherine@nasa.example");
-    let linus = Addr::new("Linus Torvalds", "linus@kernel.example");
-    let ci = Addr::new("Tilo CI", "ci@example.test");
-    let calendar = Addr::new("Calendar", "noreply@cal.example.test");
+/// Build the bundled mailbox, its times relative to the clock.
+pub fn sample_mailbox() -> Mailbox {
+    sample_mailbox_at(sample_now_min())
+}
 
-    insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
-    insert_standalone_inbox_items(
-        &mut mb,
-        &me,
-        InboxCorrespondents {
-            ci,
-            katherine: &katherine,
-            alan,
-            linus,
-            calendar,
-        },
-    );
+/// Build the bundled mailbox with `now` (minutes since the epoch) as the
+/// present.
+pub fn sample_mailbox_at(now: i64) -> Mailbox {
+    let mut mb = Mailbox::new(owner_config());
+    let people = People::new();
+    insert_launch_plan_thread(&mut mb, &people, now);
+    insert_standalone_inbox_items(&mut mb, &people, now);
+    insert_sent_archive_and_junk(&mut mb, &people, now);
 
-    insert_sent_archive_and_junk(&mut mb, me, ada, grace, katherine);
-
-    // ---- Two messages hydrated through the REAL mail-parser path ----
-    // (one plain, one multipart/mixed with a PDF attachment). This proves
-    // the offline screenshot is running the same parse code the live IMAP
-    // fetch would.
-    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), SAMPLE_NOW_MIN - 30, Folder::Inbox) {
+    // Three messages hydrated through the real mail-parser path (plain text,
+    // a PDF attachment, and an HTML newsletter), so the offline mailbox runs
+    // the same parse code a live IMAP fetch does.
+    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), now - 30, Folder::Inbox) {
         m.read = false;
         m.starred = false;
         mb.insert(m);
     }
-    if let Some(mut m) = parse_eml(
-        RAW_WITH_PDF.as_bytes(),
-        SAMPLE_NOW_MIN - 7 * 60,
-        Folder::Inbox,
-    ) {
+    if let Some(mut m) = parse_eml(RAW_WITH_PDF.as_bytes(), now - 7 * HOUR_MIN, Folder::Inbox) {
         m.read = true;
         mb.insert(m);
     }
-    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
-    // reader exercises the sandboxed WebView path and the remote-content block.
-    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
+    // The newsletter carries a remote tracking image the reader blocks.
+    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), now - 52, Folder::Inbox) {
         m.read = false;
         m.starred = true;
         mb.insert(m);
     }
-
     mb
 }
 
-/// Thread 1 of the bundled corpus: the only multi-message conversation, so
-/// the list's threading and unread-head rendering have something to group.
-fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
-    // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    let root_id = "sample-launch-plan-root@example.test";
+/// The one conversation of several messages, so the list's threading and its
+/// unread newest message have something to group.
+fn insert_launch_plan_thread(mb: &mut Mailbox, people: &People, now: i64) {
+    let root_id = "sample-launch-plan-root@northwind.example";
     let mut root = SampleMessage {
-        from: ada.clone(),
-        to: vec![me.clone()],
-        subject: "Launch plan for the spatial shell",
-        body: "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
-First milestone is the tiling engine, then per-cluster sandboxing, then the \
-collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
+        from: people.maya.clone(),
+        to: vec![people.me.clone(), people.daniel.clone()],
+        subject: "Spring launch plan",
+        body: "Hi both,\n\nHere is a first pass at the order for the spring launch: the \
+email campaign first, then the website, then the press kit. Does that sequence work for \
+you?\n\nMaya",
         ago_min: 2 * HOUR_MIN + 23,
         read: true,
         starred: true,
         folder: Folder::Inbox,
         attachments: vec![],
     }
-    .build();
+    .build(now);
     root.rfc_message_id = Some(root_id.into());
     mb.insert(root);
     let mut reply = SampleMessage {
-        from: grace.clone(),
-        to: vec![me.clone(), ada.clone()],
-        subject: "Re: Launch plan for the spatial shell",
-        body: "Sequencing looks right. I'd pull sandboxing forward — it's the \
-security boundary everything else leans on. Let's not ship streaming before \
-the bubblewrap policy is solid.\n\nGrace",
+        from: people.daniel.clone(),
+        to: vec![people.me.clone(), people.maya.clone()],
+        subject: "Re: Spring launch plan",
+        body: "I would put the website first. The campaign links to it, so it has to be \
+live before anything goes out.\n\nDaniel",
         ago_min: HOUR_MIN + 47,
         read: true,
         starred: false,
         folder: Folder::Inbox,
         attachments: vec![],
     }
-    .build();
-    reply.rfc_message_id = Some("sample-launch-plan-reply@example.test".into());
+    .build(now);
+    reply.rfc_message_id = Some("sample-launch-plan-reply@northwind.example".into());
     reply.in_reply_to = Some(root_id.into());
     mb.insert(reply);
     let mut latest = SampleMessage {
-        from: ada.clone(),
-        to: vec![me.clone(), grace.clone()],
-        subject: "Re: Launch plan for the spatial shell",
-        body: "Agreed. New order: tiling → sandbox → streaming. I attached the \
-revised gantt. Can you review the collaboration section before Friday?",
+        from: people.maya.clone(),
+        to: vec![people.me.clone(), people.daniel.clone()],
+        subject: "Re: Spring launch plan",
+        body: "Agreed. New order: website, press kit, then the campaign. I attached the \
+revised timeline. Sam, could you review the press section before Friday?",
         ago_min: 38,
         read: false,
         starred: false,
         folder: Folder::Inbox,
-        attachments: vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
+        attachments: vec![att("launch-timeline.pdf", "application/pdf", 184_320)],
     }
-    .build();
-    latest.rfc_message_id = Some("sample-launch-plan-latest@example.test".into());
+    .build(now);
+    latest.rfc_message_id = Some("sample-launch-plan-latest@northwind.example".into());
     latest.in_reply_to = Some(root_id.into());
     mb.insert(latest);
 }
 
-/// The one-off inbox items: a CI failure, two short replies, a mailing-list
-/// post and a calendar invite. Each stands alone rather than threading.
-fn insert_standalone_inbox_items(
-    mb: &mut Mailbox,
-    me: &Addr,
-    correspondents: InboxCorrespondents<'_>,
-) {
-    // ---- Thread 2: CI failure (unread, attachment: log)
+/// The messages that stand alone: a quick question, a budget, an invitation,
+/// a neighbourhood list and a delivery notice.
+fn insert_standalone_inbox_items(mb: &mut Mailbox, people: &People, now: i64) {
     mb.insert(
         SampleMessage {
-            from: correspondents.ci,
-            to: vec![me.clone()],
-            subject: "Build #4821 failed on shell --lib",
-            body: "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
-error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
-contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
-            ago_min: 14,
-            read: false,
-            starred: false,
-            folder: Folder::Inbox,
-            attachments: vec![att("build-4821.log", "text/plain", 28_716)],
-        }
-        .build(),
-    );
-
-    // ---- Thread 3: Katherine, calculations (read)
-    mb.insert(
-        SampleMessage {
-            from: correspondents.katherine.clone(),
-            to: vec![me.clone()],
-            subject: "Re-check the trajectory math",
-            body: "I ran the re-entry numbers by hand and they line up with the \
-solver. Margins are tight on the third burn — want me to widen the window?",
-            ago_min: 5 * HOUR_MIN,
-            read: true,
-            starred: true,
-            folder: Folder::Inbox,
-            attachments: vec![att("trajectory.csv", "text/csv", 9_204)],
-        }
-        .build(),
-    );
-
-    // ---- Thread 4: Alan, single short (unread)
-    mb.insert(
-        SampleMessage {
-            from: correspondents.alan,
-            to: vec![me.clone()],
-            subject: "Coffee before the standup?",
-            body: "Fancy a coffee at 9:15 before we dive into the compositor review? \
-I have thoughts on the focus model.",
+            from: people.jonas.clone(),
+            to: vec![people.me.clone()],
+            subject: "Coffee before the design review?",
+            body: "Do you have time for a coffee at 9:15 before the design review? I have a \
+few thoughts on the new onboarding screens.",
             ago_min: 3,
             read: false,
             starred: false,
             folder: Folder::Inbox,
             attachments: vec![],
         }
-        .build(),
+        .build(now),
     );
-
-    // ---- Thread 5: Linus, mailing-list style (read, long)
     mb.insert(
         SampleMessage {
-            from: correspondents.linus,
-            to: vec![Addr::bare("tilo-app@lists.example.test")],
-            subject: "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
-            body: "On Tue, the patch looks mostly fine, but the readahead window is \
-hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
-moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
-            ago_min: 26 * HOUR_MIN,
+            from: people.priya.clone(),
+            to: vec![people.me.clone()],
+            subject: "Budget numbers for the second quarter",
+            body: "I went through the second-quarter numbers line by line and they match the \
+forecast. Travel is tight; should we move the offsite to September?",
+            ago_min: 5 * HOUR_MIN,
             read: true,
-            starred: false,
+            starred: true,
             folder: Folder::Inbox,
-            attachments: vec![],
+            attachments: vec![att("q2-budget.csv", "text/csv", 9_204)],
         }
-        .build(),
+        .build(now),
     );
-
-    // ---- Calendar invite (unread, ics attachment)
     mb.insert(
         SampleMessage {
-            from: correspondents.calendar,
-            to: vec![me.clone()],
-            subject: "Invitation: Compositor sync @ Thu 11:00",
-            body: "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
-11:45\nWhere: cluster://review-room\n\nAccept · Decline · Tentative",
+            from: Addr::new("Northwind Calendar", "calendar@northwind.example"),
+            to: vec![people.me.clone()],
+            subject: "Invitation: Design review on Thursday at 11:00",
+            body: "Maya Chen invited you to the design review.\nWhen: Thursday, 11:00 to \
+11:45\nWhere: Room 4B and online",
             ago_min: 9 * HOUR_MIN,
             read: false,
             starred: false,
             folder: Folder::Inbox,
             attachments: vec![att("invite.ics", "text/calendar", 1_842)],
         }
-        .build(),
+        .build(now),
+    );
+    mb.insert(
+        SampleMessage {
+            from: Addr::new("Tom Becker", "tom@neighbours.example"),
+            to: vec![Addr::bare("garden@lists.neighbours.example")],
+            subject: "Community garden: watering rota for July",
+            body: "Thanks to everyone who signed up. The rota for July is on the shed door \
+and in the shared folder. Please swap directly with each other if you are away.",
+            ago_min: DAY_MIN + 2 * HOUR_MIN,
+            read: true,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(now),
+    );
+    mb.insert(
+        SampleMessage {
+            from: Addr::new("Linden Books", "orders@lindenbooks.example"),
+            to: vec![people.me.clone()],
+            subject: "Your order has shipped",
+            body: "Good news: your order of two books is on its way and should arrive on \
+Thursday. You can follow the delivery from your account page.",
+            ago_min: 2 * DAY_MIN + 5 * HOUR_MIN,
+            read: true,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(now),
     );
 }
 
-/// The Sent, Archive and Junk folders of the bundled corpus. Split out of
-/// [`sample_mailbox`] so neither half runs past the line budget.
-fn insert_sent_archive_and_junk(
-    mb: &mut Mailbox,
-    me: Addr,
-    ada: Addr,
-    grace: Addr,
-    katherine: Addr,
-) {
-    // ---- Sent items
+/// The Sent, Archive and Junk folders of the bundled corpus.
+fn insert_sent_archive_and_junk(mb: &mut Mailbox, people: &People, now: i64) {
     mb.insert(
         SampleMessage {
-            from: me.clone(),
-            to: vec![ada, grace.clone()],
-            subject: "Re: Launch plan for the spatial shell",
-            body: "Thanks both. I'll own the tiling engine and have a skeleton up by \
-Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
+            from: people.me.clone(),
+            to: vec![people.maya.clone(), people.daniel.clone()],
+            subject: "Re: Spring launch plan",
+            body: "Thanks both. I will take the press kit and have a draft ready by \
+Wednesday.",
             ago_min: 50,
             read: true,
             starred: false,
             folder: Folder::Sent,
             attachments: vec![],
         }
-        .build(),
+        .build(now),
     );
     mb.insert(
         SampleMessage {
-            from: me.clone(),
-            to: vec![katherine],
-            subject: "Re: Re-check the trajectory math",
-            body: "Widen it — better a longer window than a missed burn. I'll update \
-the solver bounds and re-run tonight.",
+            from: people.me.clone(),
+            to: vec![people.priya.clone()],
+            subject: "Re: Budget numbers for the second quarter",
+            body: "September works for me. I will ask the venue whether they can hold the \
+same rooms.",
             ago_min: 4 * HOUR_MIN + 30,
             read: true,
             starred: false,
             folder: Folder::Sent,
             attachments: vec![],
         }
-        .build(),
+        .build(now),
     );
-
-    // ---- Archive
     mb.insert(
         SampleMessage {
-            from: grace,
-            to: vec![me.clone()],
-            subject: "Onboarding notes",
-            body: "Welcome aboard! Here are the cluster conventions and the review \
-rota. Ping me if the FUSE mount misbehaves.",
-            ago_min: 9 * 1440,
+            from: people.daniel.clone(),
+            to: vec![people.me.clone()],
+            subject: "Welcome to the team",
+            body: "Welcome aboard! Here are the team handbook and the review schedule. Ask \
+me anything in your first weeks.",
+            ago_min: 9 * DAY_MIN,
             read: true,
             starred: false,
             folder: Folder::Archive,
-            attachments: vec![att("onboarding.pdf", "application/pdf", 512_000)],
+            attachments: vec![att("team-handbook.pdf", "application/pdf", 512_000)],
         }
-        .build(),
+        .build(now),
     );
-
-    // ---- Junk
     mb.insert(
         SampleMessage {
-            from: Addr::new("Totally Legit Prize Co", "winner@prize.example"),
-            to: vec![me],
-            subject: "\u{1F389} You have WON a free spatial monitor!!!",
-            body: "Dear winner, click here within 24 hours to claim your prize. This \
-is definitely not a scam.",
+            from: Addr::new("Prize Centre", "winner@prize.example"),
+            to: vec![people.me.clone()],
+            subject: "Congratulations, you have won a free monitor",
+            body: "Dear winner, click here within 24 hours to claim your prize.",
             ago_min: 7 * HOUR_MIN,
             read: false,
             starred: false,
             folder: Folder::Junk,
             attachments: vec![],
         }
-        .build(),
+        .build(now),
     );
 }
 
-/// A bundled multi-account store so the sidebar shows more than one account
-/// offline (`--shots`). The first account owns the sample [`Mailbox`]; the
-/// second is a plausible work account (collapsed by default) so the
-/// collapsible-per-account sidebar behaviour is visible in a single frame.
+/// A bundled store of two accounts so the sidebar shows more than one
+/// account offline. The first owns the sample [`Mailbox`]; the second is a
+/// work account.
 pub fn sample_account_store() -> AccountStore {
-    let personal = AccountConfig {
-        display_name: "You".into(),
-        email: "you@example.test".into(),
-        imap_host: "imap.example.test".into(),
-        imap_port: 993,
-        imap_tls: true,
-        smtp_host: "smtp.example.test".into(),
-        smtp_port: 465,
-        smtp_tls: true,
-        username: "you@example.test".into(),
-        auth: crate::model::AuthMethod::Password,
-        password: "********".into(),
-    };
     let work = AccountConfig {
-        display_name: "You at Hooli".into(),
-        email: "you@hooli.example".into(),
-        imap_host: "imap.hooli.example".into(),
+        display_name: OWNER_NAME.into(),
+        email: "sam@northwind.example".into(),
+        imap_host: "imap.northwind.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.hooli.example".into(),
+        smtp_host: "smtp.northwind.example".into(),
         smtp_port: 587,
         smtp_tls: true,
-        username: "you@hooli.example".into(),
+        username: "sam@northwind.example".into(),
         auth: crate::model::AuthMethod::Password,
-        password: "********".into(),
+        import_pending: false,
+        password: "correct-horse-battery".into(),
     };
-    let mut a0 = Account::new(personal);
-    a0.tint = 0;
-    let mut a1 = Account::new(work);
-    a1.tint = 3;
-    a1.collapsed = true;
+    let mut personal = Account::new(owner_config());
+    personal.tint = 0;
+    let mut work = Account::new(work);
+    work.tint = 3;
+    work.collapsed = true;
     AccountStore {
-        accounts: vec![a0, a1],
+        accounts: vec![personal, work],
         active: 0,
     }
 }
 
 /// A plain text/plain message, parsed live by mail-parser.
-const RAW_PLAIN: &str = "From: Margaret Hamilton <margaret@apollo.example>\r\n\
-To: you@example.test\r\n\
-Subject: Priority display + error detection\r\n\
-Message-ID: <apollo-2026@apollo.example>\r\n\
+const RAW_PLAIN: &str = "From: Lena Fischer <lena@fischer.example>\r\n\
+To: sam@rivera.example\r\n\
+Subject: Photos from the weekend\r\n\
+Message-ID: <weekend-2026@fischer.example>\r\n\
 Date: Tue, 30 Jun 2026 08:30:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
-The async-restart logic we built for the guidance computer maps neatly onto \
-your compositor's frame scheduler. Drop low-priority redraws under load \
-rather than queueing them. Happy to pair on it.\r\n";
+The photos from the lake are in the shared album now. The one of the boat at \
+sunset came out really well. Shall we print a few for your parents?\r\n";
 
 /// A multipart/mixed message with a PDF attachment, parsed live.
-const RAW_WITH_PDF: &str = "From: Radia Perlman <radia@spanning.example>\r\n\
-To: you@example.test\r\n\
-Subject: Spanning-tree notes for the gossip mesh\r\n\
-Message-ID: <stp-2026@spanning.example>\r\n\
+const RAW_WITH_PDF: &str = "From: Lumen Energy <billing@lumen-energy.example>\r\n\
+To: sam@rivera.example\r\n\
+Subject: Your June invoice\r\n\
+Message-ID: <invoice-2026-06@lumen-energy.example>\r\n\
 Date: Tue, 30 Jun 2026 07:05:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/mixed; boundary=\"=_tilo_boundary_=\"\r\n\
+Content-Type: multipart/mixed; boundary=\"=_sample_boundary_=\"\r\n\
 \r\n\
---=_tilo_boundary_=\r\n\
+--=_sample_boundary_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
-Your direct + hosted gossip topology can loop if two clusters bridge the same \
-peer. A spanning-tree pass keeps the collaboration buffer from echoing. \
-Diagram attached.\r\n\
---=_tilo_boundary_=\r\n\
+Your invoice for June is ready. The amount will be collected on 15 July. \
+The invoice is attached.\r\n\
+--=_sample_boundary_=\r\n\
 Content-Type: application/pdf\r\n\
-Content-Disposition: attachment; filename=\"spanning-tree.pdf\"\r\n\
+Content-Disposition: attachment; filename=\"invoice-june.pdf\"\r\n\
 Content-Transfer-Encoding: base64\r\n\
 \r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
---=_tilo_boundary_=--\r\n";
+--=_sample_boundary_=--\r\n";
 
-/// A multipart/alternative message with a plain-text part and a rich HTML part
-/// (including a **remote** image the reader must block by default), parsed live.
-const RAW_HTML: &str = "From: Tilo Weekly <news@weekly.example.test>\r\n\
-To: you@example.test\r\n\
-Subject: This week in Tilo — spatial shells & collab buffers\r\n\
-Message-ID: <weekly-2026-27@weekly.example.test>\r\n\
-Date: Tue, 30 Jun 2026 13:13:00 +0000\r\n\
+/// A multipart/alternative message with a plain-text part and a rich HTML
+/// part (including a **remote** image the reader must block by default),
+/// parsed live.
+const RAW_HTML: &str = "From: Field Notes <hello@fieldnotes.example>\r\n\
+To: sam@rivera.example\r\n\
+Subject: Field Notes 27: gardens on the roof\r\n\
+Message-ID: <fieldnotes-27@fieldnotes.example>\r\n\
+Date: Tue, 30 Jun 2026 09:50:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/alternative; boundary=\"=_tilo_alt_=\"\r\n\
+Content-Type: multipart/alternative; boundary=\"=_sample_alt_=\"\r\n\
 \r\n\
---=_tilo_alt_=\r\n\
+--=_sample_alt_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
-This week: the scrollable-strip shell landed, and collaboration buffers now \
-stream over gossip. Read on.\r\n\
---=_tilo_alt_=\r\n\
+This issue: three city roofs that turned into gardens, and what they grow. \
+Read on.\r\n\
+--=_sample_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
 <html><body style=\"font-family:sans-serif\">\
-<h1 style=\"color:#4f7cff\">This week in Tilo</h1>\
-<img src=\"https://track.example.test/open.gif?u=you\" width=\"1\" height=\"1\">\
-<p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
-buffers now stream over gossip.</p>\
-<ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
-<li>Live collab presence</li></ul>\
-<blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
-<p><a href=\"https://example.test/weekly/27\">Read the full issue \u{2192}</a></p>\
+<h1>Field Notes</h1>\
+<img src=\"https://track.fieldnotes.example/open.gif?u=sam\" width=\"1\" height=\"1\">\
+<p>This issue: <strong>three city roofs</strong> that turned into gardens, \
+and what they grow.</p>\
+<ul><li>Tomatoes in crates</li><li>Bees above the bakery</li>\
+<li>A rain garden on a car park</li></ul>\
+<blockquote>\u{201c}It changed how the whole street talks to each other.\u{201d}</blockquote>\
+<p><a href=\"https://fieldnotes.example/27\">Read the full issue</a></p>\
 </body></html>\r\n\
---=_tilo_alt_=--\r\n";
+--=_sample_alt_=--\r\n";
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::minutes_of;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn sample_corpus_is_populated_threaded_and_hydrated() {
-        // Phase `sample_now_matches_civil_date`.
-        {
-            assert_eq!(SAMPLE_NOW_MIN, minutes_of(2026, 6, 30, 14, 5));
-        }
+        let mb = sample_mailbox();
+        // Populated across folders.
+        assert!(
+            mb.count(Folder::Inbox) >= 8,
+            "inbox: {}",
+            mb.count(Folder::Inbox)
+        );
+        assert!(mb.count(Folder::Sent) >= 2);
+        assert!(mb.count(Folder::Archive) >= 1);
+        assert!(mb.count(Folder::Junk) >= 1);
+        assert!(mb.unread_count(Folder::Inbox) > 0);
 
-        // Phase `corpus_is_populated_across_folders`.
-        {
-            let mb = sample_mailbox();
-            assert!(
-                mb.count(Folder::Inbox) >= 8,
-                "inbox: {}",
-                mb.count(Folder::Inbox)
-            );
-            assert!(mb.count(Folder::Sent) >= 2);
-            assert!(mb.count(Folder::Archive) >= 1);
-            assert!(mb.count(Folder::Junk) >= 1);
-            assert!(mb.unread_count(Folder::Inbox) > 0);
-        }
-
-        // Phase `parsed_messages_are_present_with_attachment`.
-        {
-            let mb = sample_mailbox();
-            // The Radia Perlman message was parsed from raw MIME and must carry
-            // its PDF attachment.
-            let radia = mb
-                .messages
+        // The invoice was parsed from raw MIME and carries its PDF with bytes.
+        let invoice = mb
+            .messages
+            .values()
+            .find(|m| m.from.email == "billing@lumen-energy.example")
+            .expect("parsed invoice present");
+        assert_eq!(invoice.attachments.len(), 1);
+        assert_eq!(invoice.attachments[0].filename, "invoice-june.pdf");
+        assert!(invoice.attachments[0].is_downloadable());
+        assert!(!invoice.attachments[0].content.is_empty());
+        // The plain message was parsed too.
+        assert!(
+            mb.messages
                 .values()
-                .find(|m| m.from.email == "radia@spanning.example")
-                .expect("parsed Radia message present");
-            assert_eq!(radia.attachments.len(), 1);
-            assert_eq!(radia.attachments[0].filename, "spanning-tree.pdf");
-            // The Margaret message was parsed from plain MIME.
-            assert!(
-                mb.messages
-                    .values()
-                    .any(|m| m.from.email == "margaret@apollo.example")
-            );
-        }
+                .any(|m| m.from.email == "lena@fischer.example")
+        );
+        // A hand-built attachment is projected: metadata, no bytes yet.
+        let timeline = mb
+            .messages
+            .values()
+            .flat_map(|m| m.attachments.iter())
+            .find(|a| a.filename == "launch-timeline.pdf")
+            .expect("projected attachment");
+        assert!(!timeline.is_downloadable());
 
-        // Phase `parsed_attachment_is_hydrated_projected_ones_are_not`.
-        {
-            let mb = sample_mailbox();
-            // The Radia message was parsed from raw MIME → real bytes present.
-            let radia = mb
-                .messages
-                .values()
-                .find(|m| m.from.email == "radia@spanning.example")
-                .unwrap();
-            assert!(
-                radia.attachments[0].is_downloadable(),
-                "parsed attachment carries bytes"
-            );
-            assert!(!radia.attachments[0].content.is_empty());
-            // A hand-built projected attachment has metadata only (not downloaded).
-            let gantt = mb
-                .messages
-                .values()
-                .flat_map(|m| m.attachments.iter())
-                .find(|a| a.filename == "rollout-gantt.pdf")
-                .unwrap();
-            assert!(
-                !gantt.is_downloadable(),
-                "projected attachment has no bytes yet"
-            );
-        }
+        // The launch thread's three messages collapse into one row.
+        let threads = mb.threads_in(Folder::Inbox);
+        let launch = threads
+            .iter()
+            .find(|t| t.subject == "Spring launch plan")
+            .expect("launch thread present");
+        assert_eq!(launch.message_ids.len(), 3);
 
-        // Phase `threads_collapse_replies`.
-        {
-            let mb = sample_mailbox();
-            let threads = mb.threads_in(Folder::Inbox);
-            // The "Launch plan" thread has 3 messages collapsed into one row.
-            let launch = threads
-                .iter()
-                .find(|t| t.subject == "Launch plan for the spatial shell")
-                .expect("launch thread present");
-            assert_eq!(launch.message_ids.len(), 3);
-        }
+        // Every message is in the past.
+        let now = sample_now_min();
+        assert!(mb.messages.values().all(|m| m.timestamp_min <= now));
     }
 }

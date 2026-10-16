@@ -1,10 +1,10 @@
-use std::ffi::CString;
 use std::fs::File;
 use std::io::{Seek, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
+use rustix::fs::MemfdFlags;
 use thiserror::Error;
 
 use crate::CapsuleCommandPlan;
@@ -33,8 +33,10 @@ pub struct BwrapExecutor;
 
 impl SandboxExecutor for BwrapExecutor {
     fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
-        // SAFETY: these calls only read this process's effective credentials.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
         validate_identity_uid(plan.identity_uid, uid)?;
         let mut filter_file = if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
@@ -61,18 +63,18 @@ impl SandboxExecutor for BwrapExecutor {
             let mut file = create_memfd(name)?;
             file.write_all(contents.as_bytes())?;
             file.rewind()?;
-            inherited.push((duplicate_above_child_slots(file.as_raw_fd())?, target));
+            inherited.push((duplicate_above_child_slots(file.as_fd())?, target));
         }
         if let Some(filter) = &filter_file {
             inherited.push((
-                duplicate_above_child_slots(filter.as_raw_fd())?,
+                duplicate_above_child_slots(filter.as_fd())?,
                 SECCOMP_CHILD_FD,
             ));
         }
         if plan.runtime_lock_required {
             let lock = create_memfd("tilo-runtime-lock")?;
             inherited.push((
-                duplicate_above_child_slots(lock.as_raw_fd())?,
+                duplicate_above_child_slots(lock.as_fd())?,
                 RUNTIME_LOCK_CHILD_FD,
             ));
         }
@@ -116,15 +118,9 @@ impl SandboxExecutor for BwrapExecutor {
     }
 }
 
-fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::Error> {
-    // SAFETY: fcntl duplicates the borrowed live descriptor without changing
-    // it. The result is newly owned and kept close-on-exec in the parent.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, GROUP_CHILD_FD + 1) };
-    if duplicate < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: a successful F_DUPFD_CLOEXEC returns a new owned descriptor.
-    Ok(unsafe { File::from_raw_fd(duplicate) })
+fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<File, std::io::Error> {
+    // The duplicate stays close-on-exec in the parent.
+    Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?.into())
 }
 
 fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
@@ -153,24 +149,9 @@ fn identity_files(uid: u32, gid: u32) -> [(&'static str, String, i32); 2] {
 }
 
 fn create_memfd(name: &str) -> Result<File, ExecutionError> {
-    let name = CString::new(name)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid memfd name"))?;
-    // SAFETY: `name` is a valid NUL-terminated C string. On success this call
-    // returns a new owned file descriptor, transferred immediately to `File`.
-    let raw = unsafe {
-        libc::syscall(
-            libc::SYS_memfd_create,
-            name.as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    let fd =
-        i32::try_from(raw).map_err(|_| ExecutionError::Memfd(std::io::Error::last_os_error()))?;
-    if fd < 0 {
-        return Err(ExecutionError::Memfd(std::io::Error::last_os_error()));
-    }
-    // SAFETY: `fd` is newly returned by memfd_create and has no other owner.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let fd = rustix::fs::memfd_create(name, MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)
+        .map_err(|error| ExecutionError::Memfd(error.into()))?;
+    Ok(fd.into())
 }
 
 #[derive(Debug, Error)]

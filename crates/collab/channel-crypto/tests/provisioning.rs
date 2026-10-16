@@ -242,15 +242,15 @@ fn delivery_is_idempotent_and_ordered_whatever_the_transport_does() {
         .reconcile(&allowed(&[&first, &second]), &pending, &vault())
         .unwrap();
 
-    // Newest first, every frame twice: the member buffers, then applies in
-    // chain order exactly once.
-    let mut frames = frames_for(&steward, second.public());
-    frames.reverse();
+    // Both are admitted by one frame, sent after genesis; delivered twice,
+    // each is applied exactly once.
+    let frames = frames_for(&steward, second.public());
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames, frames_for(&steward, first.public()));
     let mut events = Vec::new();
     for frame in frames.iter().chain(frames.iter()) {
         events.extend(two.receive(frame.clone(), &vault()).unwrap());
     }
-    assert!(events.contains(&MemberEvent::Buffered));
     assert!(events.contains(&MemberEvent::Duplicate));
     assert_eq!(
         events
@@ -346,6 +346,14 @@ fn a_device_that_lost_its_state_is_admitted_again() {
         .unwrap();
     assert!(!unchanged.changed());
     let again = request(&mut member, &phone, 2);
+    // Replaying the journal, with the admission of the key package the
+    // phone lost, asks for nothing more: the request it just sent stands.
+    let mut replayed = Vec::new();
+    for frame in steward.journal().frames().to_vec() {
+        replayed.extend(member.receive(frame, &vault()).unwrap());
+    }
+    assert!(!replayed.contains(&MemberEvent::Desynchronised));
+    assert_eq!(member.access(), Access::Waiting);
     let outcome = steward
         .reconcile(
             &allowed(&[&phone]),
@@ -358,6 +366,83 @@ fn a_device_that_lost_its_state_is_admitted_again() {
     deliver(&mut steward, &mut member, &phone);
     let sealed = seal(&steward, artifact, b"welcome back");
     assert!(opens(&member, artifact, &sealed));
+}
+
+/// A member that asks again within the same second (its Welcome did not
+/// open, or the admission it joined with was replaced) still asks with a
+/// newer request, so the steward admits it again instead of leaving it
+/// without keys.
+#[test]
+fn a_member_asking_again_within_a_second_is_admitted_again() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let mut steward = steward(&owner, channel);
+    let mut member = laptop.member(channel, &owner);
+    let first = request(&mut member, &laptop, 100);
+    let second = request(&mut member, &laptop, 100);
+    assert!(second.issued_at > first.issued_at);
+    let allowed = allowed(&[&laptop]);
+    steward
+        .reconcile(&allowed, &requests(vec![(&laptop, first)]), &vault())
+        .unwrap();
+    let replaced = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, second)]), &vault())
+        .unwrap();
+    assert_eq!(replaced.admitted, vec![laptop.public()]);
+    // Only the newest admission is sent, and it names the newer request.
+    deliver(&mut steward, &mut member, &laptop);
+    assert!(matches!(member.access(), Access::Ready { .. }));
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"after the readmission");
+    assert!(opens(&member, artifact, &sealed));
+}
+
+/// A device that starts over with no state (a page whose storage was
+/// cleared) asks with a fresh key package. Its earlier instance may have
+/// minted requests ahead of the clock; the steward still admits the fresh
+/// one rather than keep it waiting behind an admission it cannot use.
+#[test]
+fn a_member_starting_over_behind_its_earlier_requests_is_admitted_again() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let mut steward = steward(&owner, channel);
+    let allowed = allowed(&[&laptop]);
+    let mut earlier = laptop.member(channel, &owner);
+    // Asked again and again within one second: the requests ran ahead.
+    let _ = request(&mut earlier, &laptop, 100);
+    let _ = request(&mut earlier, &laptop, 100);
+    let ahead = request(&mut earlier, &laptop, 100);
+    assert!(ahead.issued_at > 100);
+    steward
+        .reconcile(
+            &allowed,
+            &requests(vec![(&laptop, ahead.clone())]),
+            &vault(),
+        )
+        .unwrap();
+
+    // The same device starts over, with none of its earlier state, at the
+    // same second.
+    let restarted = Device::new(2);
+    let mut fresh = restarted.member(channel, &owner);
+    let again = request(&mut fresh, &restarted, 100);
+    assert!(again.issued_at < ahead.issued_at);
+    let readmitted = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, again)]), &vault())
+        .unwrap();
+    assert_eq!(readmitted.admitted, vec![laptop.public()]);
+    deliver(&mut steward, &mut fresh, &restarted);
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"after starting over");
+    assert!(opens(&fresh, artifact, &sealed));
+
+    // The earlier admission's request, replayed, admits nothing.
+    let replayed = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, ahead)]), &vault())
+        .unwrap();
+    assert!(replayed.admitted.is_empty());
 }
 
 #[test]
@@ -393,4 +478,88 @@ fn wipe(dir: &Path) {
     for entry in std::fs::read_dir(dir).unwrap() {
         std::fs::remove_file(entry.unwrap().path()).unwrap();
     }
+}
+
+/// Everyone who asked since the last change is admitted by one frame, the
+/// steward keeps only that head, and a device joining later needs nothing
+/// but its own admission. A member that missed a commit finds the next one
+/// out of reach, waits again, and is admitted afresh.
+#[test]
+fn a_crowd_joins_in_one_change_and_a_newcomer_needs_only_its_own_welcome() {
+    let channel = ChannelId::new();
+    let owner = Device::new(40);
+    let mut steward = steward(&owner, channel);
+    let crowd: Vec<Device> = (41..49).map(Device::new).collect();
+    let mut members: Vec<ChannelMember> = crowd
+        .iter()
+        .map(|device| device.member(channel, &owner))
+        .collect();
+    let pending = requests(
+        crowd
+            .iter()
+            .zip(members.iter_mut())
+            .map(|(device, member)| (device, request(member, device, 1)))
+            .collect(),
+    );
+    let everyone: Vec<&Device> = crowd.iter().collect();
+    let outcome = steward
+        .reconcile(&allowed(&everyone), &pending, &vault())
+        .unwrap();
+    assert_eq!(outcome.admitted.len(), crowd.len());
+    assert_eq!(steward.epoch(), 1, "one commit for the whole crowd");
+    assert_eq!(steward.journal().frames().len(), 2, "genesis and the head");
+    for (device, member) in crowd.iter().zip(members.iter_mut()) {
+        deliver(&mut steward, member, device);
+        assert_eq!(member.access(), Access::Ready { epoch: 1 });
+    }
+
+    // A newcomer is admitted in the next change: the crowd's Welcome is
+    // gone, and its own is all it receives.
+    let newcomer = Device::new(49);
+    let mut late = newcomer.member(channel, &owner);
+    let mut with_newcomer = everyone.clone();
+    with_newcomer.push(&newcomer);
+    steward
+        .reconcile(
+            &allowed(&with_newcomer),
+            &requests(vec![(&newcomer, request(&mut late, &newcomer, 1))]),
+            &vault(),
+        )
+        .unwrap();
+    assert_eq!(frames_for(&steward, newcomer.public()).len(), 2);
+    deliver(&mut steward, &mut late, &newcomer);
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"hello everyone");
+    assert!(opens(&late, artifact, &sealed));
+
+    // The first of the crowd misses that commit and the next one.
+    let (laggard, rest) = members.split_first_mut().unwrap();
+    for (device, member) in crowd.iter().skip(1).zip(rest.iter_mut()) {
+        deliver(&mut steward, member, device);
+        assert!(opens(member, artifact, &sealed));
+    }
+    let another = Device::new(50);
+    let mut third = another.member(channel, &owner);
+    let mut with_another = with_newcomer.clone();
+    with_another.push(&another);
+    steward
+        .reconcile(
+            &allowed(&with_another),
+            &requests(vec![(&another, request(&mut third, &another, 1))]),
+            &vault(),
+        )
+        .unwrap();
+    let events = deliver(&mut steward, laggard, &crowd[0]);
+    assert!(events.contains(&MemberEvent::Desynchronised));
+    assert_eq!(laggard.access(), Access::Waiting);
+    steward
+        .reconcile(
+            &allowed(&with_another),
+            &requests(vec![(&crowd[0], request(laggard, &crowd[0], 2))]),
+            &vault(),
+        )
+        .unwrap();
+    deliver(&mut steward, laggard, &crowd[0]);
+    let sealed = seal(&steward, artifact, b"welcome back");
+    assert!(opens(laggard, artifact, &sealed));
 }

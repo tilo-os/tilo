@@ -10,10 +10,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -21,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, ServiceReq, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -40,17 +36,23 @@ fn runtime_dir_env(dir: &Path) -> ScopedEnv {
 // `with_glibc_binds` is gone: those loader paths are in the launcher's
 // system read profile now, so every app gets them without declaring.
 
-fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> MinimalManifest {
+fn service_req(raw: &str) -> ServiceReq {
+    ServiceReq::parse("", raw).expect("valid service requirement")
+}
+
+fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -> ManifestView {
     let _ = payload_root;
-    MinimalManifest {
+    ManifestView {
         package_id: "com.example.hello".to_string(),
         name: None,
         localized_names: BTreeMap::default(),
+        keywords: Vec::new(),
         category: None,
         icon: None,
         version: "0.0.0".to_string(),
         kind: "app".to_string(),
         runtime: None,
+        optional_runtimes: Vec::new(),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -133,11 +135,21 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         std::fs::write(
             &path,
             r#"
-    package_id = "com.example.demo"
+    [package]
+    id = "com.example.demo"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 
     [entrypoint]
     bin = "bin/demo"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
 
     [sandbox.net]
     mode = "off"
@@ -150,8 +162,10 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         .unwrap();
         let m = read_manifest(&path).expect("parse");
         assert_eq!(m.package_id, "com.example.demo");
+        assert_eq!(m.version, "1.2.3");
         assert_eq!(m.entrypoint.bin, "bin/demo");
-        assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
+        let collab = &m.sandbox.services["collab"];
+        assert!(collab.is_required() && collab.version == 1);
     }
 }
 
@@ -168,7 +182,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let _env = runtime_dir_env(dir.path());
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(dir.path(), svcs);
         let opts = RunOptions {
             no_services: false,
@@ -187,7 +201,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         // step succeeds; the spawn step is exercised by the live tests.
         let _dir = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let resolved =
             launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
         assert!(resolved.is_empty());
@@ -198,7 +212,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
         let data = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: true,
@@ -221,7 +235,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("collab".to_string(), service_req("optional@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: false,
@@ -426,15 +440,17 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let home = runtime_home();
         let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
-        let mut m = MinimalManifest {
+        let mut m = ManifestView {
             package_id: "com.example.hello".to_string(),
             name: None,
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             icon: None,
             version: "0.0.0".to_string(),
             kind: "app".to_string(),
             runtime: Some("tilo-runtime/smoke-1.0.0".to_string()),
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/hello".to_string(),
                 r#type: launcher::manifest::EntrypointType::Gui,
@@ -550,15 +566,17 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
         assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
-        let m = MinimalManifest {
+        let m = ManifestView {
             package_id: "so.tilo.thin".to_string(),
             name: None,
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             icon: None,
             version: "0.1.0".to_string(),
             kind: "app".to_string(),
             runtime: Some(format!("tilo-runtime/{version}")),
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/thin".to_string(),
                 r#type: launcher::manifest::EntrypointType::Cli,
@@ -618,6 +636,62 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 && w[1] == "LD_LIBRARY_PATH"
                 && w[2] == format!("{mount}/lib")),
             "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
+        );
+
+        // Phase `an_app_built_for_another_runtime_is_refused_before_bwrap`.
+        // The same app rebuilt against a different libstd: the installed
+        // bundle carries `libstd-abc123.so`, the app needs another hash. The
+        // launch fails with the library named instead of dying in the loader
+        // inside the sandbox with only a stderr line to show for it.
+        let payload = tempfile::tempdir().unwrap();
+        let entry = payload.path().join("bin/thin");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &entry,
+            launcher::loader_preflight::elf_fixture(
+                &["libruntime_dylib.so", "libstd-55999f89fc36b51f.so"],
+                None,
+            ),
+        )
+        .unwrap();
+        let data_home = tempfile::tempdir().unwrap();
+        let opts = RunOptions {
+            no_services: true,
+            landlock_enforce: false,
+            ..isolated_options(data_home.path())
+        };
+        let err = run_with(&m, payload.path(), &opts).unwrap_err();
+        match &err {
+            RunError::RuntimeLibraryMissing {
+                package,
+                runtime,
+                library,
+                searched,
+            } => {
+                assert_eq!(package, "so.tilo.thin");
+                assert_eq!(runtime, &format!("tilo-runtime/{version}"));
+                assert_eq!(library, "libstd-55999f89fc36b51f.so");
+                assert_eq!(searched.first(), Some(&bundle_dir.join("lib")));
+            }
+            other => panic!("expected RuntimeLibraryMissing, got {other:?}"),
+        }
+        let message = err.to_string();
+        for needle in [
+            "built for a different Tilo runtime",
+            "libstd-55999f89fc36b51f.so",
+            "tilo-runtime/thin-smoke-1",
+            "`app update so.tilo.thin`",
+            "`app install so.tilo.thin`",
+            "`app remove so.tilo.thin`",
+        ] {
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from: {message}"
+            );
+        }
+        assert!(
+            !message.contains('\n'),
+            "one stderr line for the shell: {message}"
         );
     }
     // Phase `configured_runtime_root_wins_over_the_installed_fallback`.
@@ -701,6 +775,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let plan = launcher::sandbox::DBusBindPlan {
             host_socket: guard.socket_path().to_path_buf(),
             sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
+            atspi: None,
         };
 
         // The proxy child exists.
@@ -749,10 +824,54 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
+fn optional_runtimes_mount_when_installed_and_trusted() {
+    let mut home = runtime_home();
+    let (installed, identity) = install_signed_bundle(home.data(), "2026.10.0-engine");
+    let _unsigned = install_unsigned_bundle(home.data(), "2026.10.0-unsigned");
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
+    m.optional_runtimes = vec![
+        "tilo-runtime/2026.10.0-engine".to_string(),
+        "tilo-runtime/2026.10.0-missing".to_string(),
+        "tilo-runtime/2026.10.0-unsigned".to_string(),
+    ];
+    let trust_file = home.root().join("trust.txt");
+    std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
+    home.env()
+        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+
+    // Phase `an_installed_trusted_bundle_is_mounted_read_only_before_the_entry`.
+    // Phase `a_missing_or_unsigned_bundle_never_stops_the_launch`.
+    let (argv, mounts) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(
+        argv,
+        [
+            "--ro-bind".to_string(),
+            installed.display().to_string(),
+            "/run/tilo-runtime/2026.10.0-engine".to_string(),
+            "entry".to_string(),
+        ]
+    );
+    assert_eq!(mounts, ["/run/tilo-runtime/2026.10.0-engine"]);
+
+    // Phase `a_bundle_from_another_publisher_is_not_mounted`.
+    let other = runtime_bundle::Identity::generate();
+    std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
+    let (argv, mounts) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(argv, ["entry"]);
+    assert!(mounts.is_empty());
+
+    // Phase `a_version_that_is_not_one_path_component_is_refused`.
+    m.optional_runtimes = vec!["tilo-runtime/../2026.07".to_string()];
+    let (argv, _) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(argv, ["entry"]);
+}
+
+#[test]
 fn bundle_signatures_gate_the_runtime_mount() {
     // Phase `unsigned_bundle_is_refused_unless_opted_in`.
     // A runtime bundle that exists but is unsigned is refused by default;
@@ -896,7 +1015,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
     // exact pair `run_with` uses: `resolve_capabilities` reads it,
     // `build_bwrap_argv` renders the result.
     {
-        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+        use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
         let dir = tempfile::tempdir().unwrap();
         let caps_file = dir.path().join("caps.json");
@@ -904,17 +1023,25 @@ fn capability_files_on_disk_become_binds_or_nothing() {
             CapOverride::grant(
                 Subject::app("com.example.hello"),
                 Scope::FsPath("/var/workspace/books".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
             // Addressed to a different app: must not survive the crossing,
             // even though it sits in the same file.
             CapOverride::grant(
                 Subject::app("com.example.other"),
                 Scope::FsPath("/var/workspace/secrets".to_string()),
-                Verb::Write,
+                Access::Write,
             ),
         ];
-        std::fs::write(&caps_file, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &caps_file,
+            serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                authors: Vec::new(),
+                sandbox: caps,
+            })
+            .unwrap(),
+        )
+        .unwrap();
 
         let m = hello_manifest(dir.path(), BTreeMap::new());
         let opts = RunOptions {

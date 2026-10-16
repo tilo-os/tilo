@@ -24,14 +24,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
+use tilo_ui::text_render::{TextKind, TextRenderer};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
@@ -47,40 +47,13 @@ fn columns() -> Vec<ColumnDef<Proc>> {
     vec![
         ColumnDef::new("name", "Process", ColumnWidth::Flex(1.0))
             .sortable(true)
-            .with_text_render(Box::new(|r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.name,
-                    14.0,
-                    theme.text_primary,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            })),
-        ColumnDef::new("cpu", "CPU%", ColumnWidth::Fixed(90.0)).with_text_render(Box::new(
-            |r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.cpu,
-                    14.0,
-                    theme.text_dim,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            },
-        )),
-        ColumnDef::new("mem", "Mem", ColumnWidth::Fixed(90.0)).with_text_render(Box::new(
-            |r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.mem,
-                    14.0,
-                    theme.text_dim,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            },
-        )),
+            .with_text(|r: &Proc| r.name.clone()),
+        ColumnDef::new("cpu", "CPU%", ColumnWidth::Fixed(90.0))
+            .with_kind(TextKind::Numeric)
+            .with_text(|r: &Proc| r.cpu.clone()),
+        ColumnDef::new("mem", "Mem", ColumnWidth::Fixed(90.0))
+            .with_kind(TextKind::Numeric)
+            .with_text(|r: &Proc| r.mem.clone()),
     ]
 }
 
@@ -123,10 +96,7 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::length(width_f32),
-                    height: Dimension::length(full_h),
-                },
+                size: Size::from_lengths(width_f32, full_h),
                 ..Default::default()
             },
             &[tnode],
@@ -181,7 +151,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect>
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     table.scrollbar_thumb()
 }

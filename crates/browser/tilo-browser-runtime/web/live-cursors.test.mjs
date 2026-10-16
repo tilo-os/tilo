@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveCursors, placePointer, SETTLE_MS} from './live-cursors.mjs';
+import {createLiveCursors, placePointer, publishedPointer, SETTLE_MS} from './live-cursors.mjs';
 
 function element() {
   const listeners = new Map();
@@ -48,6 +48,22 @@ test('publishes the local pointer relative to the surface and clears it on leave
   surface.dispatch('pointermove', {clientX: 110, clientY: 70});
   surface.dispatch('pointerleave', {});
   assert.deepEqual(layer.published, [{pointer: [100, 50]}, {pointer: null}]);
+  cursors.close();
+});
+
+test('a pointer over the focused window leaves relative to it, as receivers place it', () => {
+  const windows = [{record: 'note-1', rect: [200, 100, 600, 400]}];
+  const focus = {app: 'so.tilo.notes', record: 'note-1'};
+  assert.deepEqual(publishedPointer([250, 130], focus, windows), [50, 30]);
+  assert.deepEqual(placePointer(publishedPointer([250, 130], focus, windows), focus, windows), [250, 130]);
+  assert.deepEqual(publishedPointer([250, 130], {app: 'so.tilo.browser-desktop', record: 'desktop'}, windows), [250, 130]);
+  assert.deepEqual(publishedPointer([250, 130], null, windows), [250, 130]);
+  const surface = element();
+  const layer = fakeLayer();
+  const f = frames();
+  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, windows: () => windows, localFocus: () => focus, now: () => 0, requestFrame: f.request, cancelFrame: f.cancel});
+  surface.dispatch('pointermove', {clientX: 260, clientY: 150});
+  assert.deepEqual(layer.published, [{pointer: [50, 30]}]);
   cursors.close();
 });
 

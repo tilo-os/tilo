@@ -36,13 +36,13 @@
 
 use std::io::{self, Read};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use cloud_source::{
     Capabilities, Change, ChangeFeed, ChangePage, CloudSource, ContentHash, CredentialSource,
     Cursor, Download, Error, HashAlgorithm, Item, ItemId, ItemKind, Notify, Quota, Result,
-    Revision, RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait,
+    Revision, RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait, http,
 };
 use serde_json::{Value, json};
 
@@ -58,6 +58,7 @@ pub use api::Endpoints;
 
 use api::{Api, Failure};
 use metadata::{Entry, Kind, Paths, is_within, parent_path};
+use tilo_lock::MutexRecover as _;
 
 /// Default bytes per upload-session chunk: a multiple of the 4 MiB hash
 /// block, so a resumed session can keep verifying the whole file.
@@ -118,10 +119,6 @@ pub struct DropboxSource {
     backoff_until: Arc<Mutex<Option<Instant>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// A Dropbox id (`id:…`); anything else cannot name an item.
 fn is_dropbox_id(id: &ItemId) -> bool {
     id.as_str().len() > 3 && id.as_str().starts_with("id:")
@@ -142,34 +139,6 @@ fn check_name(name: &str) -> Result<()> {
         return Err(Error::InvalidResponse("file name"));
     }
     Ok(())
-}
-
-/// Reads exactly `remaining` bytes; an early end of stream is an error, so
-/// a cut-off body never looks like a short file.
-struct Exact<R> {
-    inner: R,
-    remaining: u64,
-}
-
-impl<R: Read> Read for Exact<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.remaining == 0 || buf.is_empty() {
-            return Ok(0);
-        }
-        let want = usize::try_from(self.remaining)
-            .unwrap_or(usize::MAX)
-            .min(buf.len());
-        let slice = buf.get_mut(..want).unwrap_or_default();
-        let read = self.inner.read(slice)?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the download ended early",
-            ));
-        }
-        self.remaining = self.remaining.saturating_sub(read as u64);
-        Ok(read)
-    }
 }
 
 impl DropboxSource {
@@ -216,7 +185,7 @@ impl DropboxSource {
     }
 
     fn paths(&self) -> MutexGuard<'_, Paths> {
-        lock(&self.paths)
+        self.paths.lock_recover()
     }
 
     /// The API `path` argument for an item.
@@ -443,6 +412,13 @@ impl DropboxSource {
                 }
             })?;
         let entry = Entry::parse(&downloaded.result).ok_or(Error::InvalidResponse("metadata"))?;
+        if !entry
+            .path_lower
+            .as_deref()
+            .is_some_and(|path| self.within_root(path))
+        {
+            return Err(Error::NotFound);
+        }
         if let Some(id) = expect_id
             && entry.id.as_deref() != Some(id.as_str())
         {
@@ -454,59 +430,39 @@ impl DropboxSource {
         {
             return Err(Error::Conflict { current });
         }
-        let total = entry
-            .size
-            .or_else(|| downloaded.content_range.as_ref().and_then(|(_, t)| *t));
-        let mut body: Box<dyn Read + Send> = Box::new(downloaded.response);
-        let range = match range {
-            None => {
-                let len = total
-                    .or(downloaded.content_length)
-                    .ok_or(Error::InvalidResponse("size"))?;
-                let exact = Exact {
-                    inner: body,
-                    remaining: len,
-                };
-                let body: Box<dyn Read + Send> = match entry.content_hash {
-                    Some(hash) => Box::new(content_hash::Verifying::new(exact, hash)),
-                    None => Box::new(exact),
-                };
-                return Ok(Download {
-                    body,
-                    range: 0..len,
-                    total: Some(len),
-                    revision: current,
-                });
-            }
-            Some(wanted) => {
-                let end = total.map_or(wanted.end, |t| wanted.end.min(t));
-                let wanted = wanted.start..end.max(wanted.start);
-                if downloaded.partial {
-                    let (got, _) = downloaded
-                        .content_range
-                        .ok_or(Error::InvalidResponse("content-range"))?;
-                    if got.start != wanted.start || got.end < wanted.end {
-                        return Err(Error::InvalidResponse("content-range"));
-                    }
-                } else {
-                    // The server sent the whole body: skip to the range.
-                    let skipped = io::copy(&mut (&mut body).take(wanted.start), &mut io::sink())?;
-                    if skipped != wanted.start {
-                        return Err(Error::InvalidResponse("short body"));
-                    }
-                }
-                wanted
-            }
+        let total = entry.size.or_else(|| {
+            downloaded
+                .served
+                .content_range
+                .as_ref()
+                .and_then(|(_, t)| *t)
+        });
+        let body: Box<dyn Read + Send> = Box::new(downloaded.response);
+        let Some(wanted) = range else {
+            let len = total
+                .or(downloaded.served.declared)
+                .ok_or(Error::InvalidResponse("size"))?;
+            let exact = http::Exact::new(body, len);
+            let body: Box<dyn Read + Send> = match entry.content_hash {
+                Some(hash) => Box::new(content_hash::Verifying::new(exact, hash)),
+                None => Box::new(exact),
+            };
+            return Ok(Download {
+                body,
+                range: 0..len,
+                total: Some(len),
+                revision: current,
+            });
         };
-        let len = range.end.saturating_sub(range.start);
+        let wanted = match total {
+            Some(total) => wanted.start..wanted.end.min(total).max(wanted.start),
+            None => wanted,
+        };
+        let download = http::ranged_body(body, Some(wanted), downloaded.served)?;
         Ok(Download {
-            body: Box::new(Exact {
-                inner: body,
-                remaining: len,
-            }),
-            range,
             total,
             revision: current,
+            ..download
         })
     }
 
@@ -599,7 +555,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn list(&self, folder: &ItemId) -> Result<Vec<Item>> {
-        let path = self.api_path(folder)?;
+        let path = self.folder_path(folder)?;
         let mut value = self
             .api
             .rpc("files/list_folder", &self.list_arg(&path, false))
@@ -657,7 +613,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn wait(&self, cursor: Option<&Cursor>, timeout: Duration) -> Result<Wait> {
-        let backing_off = *lock(&self.backoff_until);
+        let backing_off = *self.backoff_until.lock_recover();
         if let Some(until) = backing_off {
             let now = Instant::now();
             if now < until {
@@ -689,7 +645,7 @@ impl CloudSource for DropboxSource {
             .get("backoff")
             .and_then(Value::as_u64)
             .map(Duration::from_secs);
-        *lock(&self.backoff_until) = backoff.and_then(|b| Instant::now().checked_add(b));
+        *self.backoff_until.lock_recover() = backoff.and_then(|b| Instant::now().checked_add(b));
         let changed = value
             .get("changes")
             .and_then(Value::as_bool)
@@ -737,8 +693,14 @@ impl CloudSource for DropboxSource {
                     Some(expected) if !is_rev(&expected) => {
                         return Err(Error::Conflict { current: None });
                     }
-                    Some(expected) => upload::Commit::update(id.0, expected.0),
-                    None => upload::Commit::overwrite(id.0),
+                    Some(expected) => {
+                        self.entry(&id)?;
+                        upload::Commit::update(id.0, expected.0)
+                    }
+                    None => {
+                        self.entry(&id)?;
+                        upload::Commit::overwrite(id.0)
+                    }
                 }
             }
             UploadTarget::Create { parent, name } => {
@@ -876,7 +838,16 @@ impl CloudSource for DropboxSource {
                     failure.into_error()
                 }
             })?;
-        Ok(Self::entries(&value)
+        let entries = Self::entries(&value);
+        if entries.iter().any(|entry| {
+            !entry
+                .path_lower
+                .as_deref()
+                .is_some_and(|path| self.within_root(path))
+        }) {
+            return Err(Error::NotFound);
+        }
+        Ok(entries
             .into_iter()
             .filter_map(|entry| {
                 Some(RevisionInfo {
@@ -936,6 +907,7 @@ impl CloudSource for DropboxSource {
         if !is_dropbox_id(id) {
             return Err(Error::NotFound);
         }
+        self.entry(id)?;
         let url = |value: &Value| value.get("url").and_then(Value::as_str).map(str::to_owned);
         match self.api.rpc(
             "sharing/create_shared_link_with_settings",
@@ -1003,22 +975,5 @@ mod tests {
         assert!(!is_rev(&Revision::new("abc")));
         assert!(is_dropbox_id(&ItemId::new("id:a4ayc_80_OEAAAAAAAAAXw")));
         assert!(!is_dropbox_id(&ItemId::new("missing")));
-    }
-
-    #[test]
-    fn exact_reads_fail_on_early_end() {
-        let mut short = Exact {
-            inner: &b"abc"[..],
-            remaining: 5,
-        };
-        let error = short.read_to_end(&mut Vec::new()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-        let mut exact = Exact {
-            inner: &b"abcdef"[..],
-            remaining: 4,
-        };
-        let mut out = Vec::new();
-        exact.read_to_end(&mut out).unwrap();
-        assert_eq!(out, b"abcd");
     }
 }

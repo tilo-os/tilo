@@ -9,7 +9,10 @@ use crate::app_host_capnp::{
     app_host,
 };
 use crate::install::InstallExpectation;
+
+mod pending;
 use package_store::InstalledPackage;
+pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +20,66 @@ pub enum FlatpakAction {
     Install,
     Update,
     Remove,
+}
+
+/// One installed package as the host lists it: its store row, and what its
+/// signed manifest says to show a person about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPackage {
+    pub package: InstalledPackage,
+    pub about: PackageAbout,
+}
+
+/// The manifest's `[package]` display metadata. It is installed and signed,
+/// so it describes the app whether or not any repository is reachable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageAbout {
+    /// `[package].name`, or a name derived from the id when it is unset.
+    pub name: String,
+    /// `[package.names]`: the name in other languages, by BCP 47 tag.
+    pub names: std::collections::BTreeMap<String, String>,
+    /// `[package].category`, when declared.
+    pub category: Option<String>,
+}
+
+impl PackageAbout {
+    fn from_manifest(package: &tilo_app_package::manifest::Package) -> Self {
+        Self {
+            name: package
+                .name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| package_store::display_name_for_package_id(&package.id)),
+            names: package.names.clone(),
+            category: package
+                .category
+                .clone()
+                .filter(|category| !category.trim().is_empty()),
+        }
+    }
+
+    /// The name to show in `locale` (BCP 47): its exact tag, else its
+    /// language, else [`Self::name`].
+    #[must_use]
+    pub fn name_for(&self, locale: &str) -> &str {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        [locale, language]
+            .into_iter()
+            .find_map(|wanted| {
+                self.names
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
+            })
+            .map_or(self.name.as_str(), |(_, name)| name.as_str())
+    }
+}
+
+/// Host Flatpak availability and machine-readable installation/remote rows.
+#[derive(Clone, Debug, Default)]
+pub struct FlatpakStatus {
+    pub available: bool,
+    pub installed: String,
+    pub remotes: String,
 }
 
 pub struct BlockingClient {
@@ -32,15 +95,32 @@ impl BlockingClient {
     ///
     /// Returns an error when the runtime or launcher-issued service cannot be opened.
     pub fn from_service() -> Result<Self, String> {
+        Self::connect(|| {
+            runtime_portal::try_open_service::<app_host::Client>("app-host")
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Open an explicitly owned connected capability in a test host.
+    ///
+    /// # Errors
+    /// Returns why the runtime or supplied connection could not be opened.
+    #[cfg(all(unix, feature = "test-support"))]
+    pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
+        use std::os::fd::IntoRawFd as _;
+        Self::connect(move || {
+            runtime_portal::open_service_on_fd::<app_host::Client>(fd.into_raw_fd())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn connect(open: impl FnOnce() -> Result<app_host::Client, String>) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("create app-host runtime: {e}"))?;
         let local = tokio::task::LocalSet::new();
-        let client = local.block_on(&runtime, async {
-            runtime_portal::try_open_service::<app_host::Client>("app-host")
-                .map_err(|e| e.to_string())
-        })?;
+        let client = local.block_on(&runtime, async { open() })?;
         Ok(Self {
             runtime,
             local,
@@ -55,6 +135,42 @@ impl BlockingClient {
         self.local
             .block_on(&self.runtime, future)
             .map_err(|e| e.to_string())
+    }
+
+    /// Review immutable file bytes using the host's current trusted attestors.
+    ///
+    /// # Errors
+    /// Returns why the host refused the local package.
+    pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
+        let mut request = self.client.review_local_request();
+        request.get().set_tapp_bytes(bytes);
+        let response = self.wait(request.send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        let json = result
+            .get_review_json()
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(json).map_err(|e| e.to_string())
+    }
+
+    /// Install exactly the immutable archive/root previously reviewed.
+    ///
+    /// # Errors
+    /// Returns current trust, payload, runtime or local update policy refusal.
+    pub fn install_local(
+        &self,
+        bytes: &[u8],
+        review: &crate::local_package::LocalReview,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_local_request();
+        let mut p = request.get();
+        p.set_tapp_bytes(bytes);
+        p.set_reviewed_root(&review.root);
+        p.set_reviewed_archive_hash(&review.archive_hash);
+        let response = self.wait(request.send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        parse_id(result.get_id().map_err(|e| e.to_string())?)
     }
 
     /// Install a verified package through the privileged host service.
@@ -87,51 +203,43 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
+    /// Install the exact signed catalogue offer through the shared installer.
+    ///
+    /// # Errors
+    /// Returns why the selected offer, runtime or installation was refused.
+    pub fn install_offer(
+        &self,
+        registry: &str,
+        expected: &InstallExpectation,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_offer_request();
+        {
+            let mut params = request.get();
+            params.set_registry(registry);
+            params.set_app_id(&expected.app_id);
+            params.set_version(&expected.version);
+            params.set_expected_root(expected.package_root.as_bytes());
+            params.set_expected_publisher(&expected.publisher);
+            params.set_expected_size_bytes(expected.size_bytes);
+        }
+        let response = self.wait(request.send().promise)?;
+        parse_id(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_id()
+                .map_err(|error| error.to_string())?,
+        )
+    }
+
     /// List the packages the host service can launch: the user's, and the
     /// read-only system packages they do not shadow.
     ///
     /// # Errors
     ///
     /// Returns an error when the service request or an installed manifest cannot be read.
-    pub fn list(&self) -> Result<Vec<InstalledPackage>, String> {
-        let response = self.wait(self.client.list_request().send().promise)?;
-        let result = response.get().map_err(|e| e.to_string())?;
-        let entries = result.get_entries().map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(entries.len() as usize);
-        for entry in entries {
-            let manifest_text = entry
-                .get_manifest_text()
-                .map_err(|e| e.to_string())?
-                .to_string()
-                .map_err(|e| e.to_string())?;
-            let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
-                .map_err(|e| format!("installed manifest: {e}"))?;
-            let text = |value: Result<capnp::text::Reader<'_>, capnp::Error>| {
-                text_result(value).map(std::path::PathBuf::from)
-            };
-            let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
-            out.push(InstalledPackage {
-                id: manifest.package.id,
-                version: manifest.package.version,
-                package_id_hex: id.to_hex(),
-                payload_root: text(entry.get_payload_root())?,
-                manifest_path: text(entry.get_manifest_path())?,
-                publisher_key_hex: manifest
-                    .publisher
-                    .identity_bytes()
-                    .map(hex::encode)
-                    .unwrap_or_default(),
-                pinned: entry.get_pinning().map_err(|e| e.to_string())? == WirePinning::Pinned,
-                installed_at: 0,
-                last_used: entry.get_last_used_unix(),
-                attested_by: String::new(),
-                cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
-                runtime: manifest.package.runtime.unwrap_or_default(),
-                source: String::new(),
-                system: !entry.get_user_managed(),
-            });
-        }
-        Ok(out)
+    pub fn list(&self) -> Result<Vec<ListedPackage>, String> {
+        self.complete(self.begin_list())
     }
 
     /// Launch an installed package.
@@ -222,6 +330,119 @@ impl BlockingClient {
             self.wait(request.send().promise)?
                 .get()
                 .map_err(|e| e.to_string())?
+                .get_status(),
+        )
+    }
+
+    /// The person's app repositories, as `app repo list --json` prints them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot read them.
+    pub fn repositories(&self) -> Result<String, String> {
+        self.complete(self.begin_repositories())
+    }
+
+    /// Read verified metadata from an enabled repository configured by this person.
+    /// The host retains the durable antirollback checkpoint outside the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the configured repository cannot be verified or read.
+    pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
+        self.complete(self.begin_registry_catalogue(registry))
+    }
+
+    /// Resolve a signed offer providing exactly this runtime, without
+    /// installation, as its JSON catalogue entry (`null` when none is offered).
+    /// The caller owns parsing, so this client stays free of the installer.
+    ///
+    /// # Errors
+    /// Returns a repository proof, transport or response error.
+    pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
+        let mut request = self.client.runtime_offer_request();
+        request.get().set_registry(registry);
+        request.get().set_runtime(runtime);
+        let response = self.wait(request.send().promise)?;
+        let json = response
+            .get()
+            .map_err(|error| error.to_string())?
+            .get_offer()
+            .map_err(|error| error.to_string())?
+            .to_string()
+            .map_err(|error| error.to_string())?;
+        if json.len() > 256 * 1024 {
+            return Err("runtime offer exceeds the response limit".into());
+        }
+        Ok(json)
+    }
+
+    /// The verified metadata the host last accepted from an enabled
+    /// repository, without the network. Fails when there is none, or when it
+    /// no longer verifies (it expired, or a newer one was accepted since).
+    ///
+    /// # Errors
+    /// Returns why no verified catalogue is held for the repository.
+    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, String> {
+        self.complete(self.begin_last_verified_catalogue(registry))
+    }
+
+    /// Read cached app metadata from one configured Flatpak repository.
+    ///
+    /// # Errors
+    /// Returns why the repository cannot be read on this device.
+    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+        self.complete(self.begin_flatpak_catalogue(remote, user_managed))
+    }
+
+    /// Install from a configured repository belonging to this account.
+    ///
+    /// # Errors
+    /// Returns why the repository or installation was refused.
+    pub fn flatpak_install_remote(
+        &self,
+        remote: &str,
+        app_id: &str,
+        branch: &str,
+    ) -> Result<String, String> {
+        let mut request = self.client.flatpak_install_remote_request();
+        request.get().set_remote(remote);
+        request.get().set_app_id(app_id);
+        request.get().set_branch(branch);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_status()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Read host Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the host installation cannot be read.
+    pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
+        self.complete(self.begin_flatpak_status())
+    }
+
+    /// Enable or disable an existing repository in this account's scope.
+    ///
+    /// # Errors
+    /// Returns why the repository change was refused or failed.
+    pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
+        let mut request = self.client.remote_request();
+        request.get().set_action(if enabled {
+            WireRemoteAction::Enable
+        } else {
+            WireRemoteAction::Disable
+        });
+        request.get().set_name(name);
+        request.get().set_url("");
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|error| error.to_string())?
                 .get_status(),
         )
     }

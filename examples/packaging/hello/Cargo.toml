@@ -19,7 +19,11 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime = { path = "../../../crates/runtime/runtime" }
+hex.workspace = true
+runtime-collab = { path = "../../../crates/runtime/runtime-collab" }
+runtime-fs = { path = "../../../crates/runtime/runtime-fs" }
+runtime-identity = { path = "../../../crates/runtime/runtime-identity" }
+runtime-portal = { path = "../../../crates/runtime/runtime-portal" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
 workspace-hack = { version = "0.1" }

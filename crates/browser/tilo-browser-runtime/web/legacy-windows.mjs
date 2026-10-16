@@ -1,18 +1,30 @@
 /**
- * Legacy (non-Tilo) windows on the mounted desktop. The session streams each
- * legacy window it runs (a browser, an office suite: anything that is not a
- * Tilo app) as H.264 video; the workspace host re-publishes those streams on
- * LIVE_V1 record tracks in the session device's namespace
- * (`live_wire::legacy_window`). This layer subscribes to every member's
- * legacy-window index, decodes each listed stream with WebCodecs and draws it
- * over the desktop tab showing that app, one canvas per stream on a DOM layer
- * above the WebGPU canvas. Those tabs are the ones this build has no
- * application for (`legacy` in the runtime's live snapshot).
+ * Other members' legacy (non-Tilo) windows on the mounted desktop. A session
+ * streams each legacy window it shares with the room's host (a browser, an
+ * office suite: anything that is not a Tilo app) as video, in a codec every
+ * member's page decodes (H.264, VP9 or AV1: each page tells the host which,
+ * `decodableCodecs`, and a page that never did counts as H.264 only); the host
+ * re-publishes those streams on live record tracks in the session device's
+ * namespace (`tilo_relay_protocol::legacy_window`). This layer reads every
+ * member's legacy-window index, opens a desktop window for each listed
+ * stream (the runtime's `desktop_set_peer_windows`), decodes the stream with
+ * WebCodecs and draws it over that window's content, one canvas per stream
+ * on a DOM layer above the WebGPU canvas.
  *
- * A member whose live grant may publish drives the window: pointer and keys
- * on its canvas go to the host as `legacy_window::InputRequest`s, which the
- * host forwards to the session. A viewer's canvas takes no input, and the
- * host refuses a viewer's input anyway.
+ * A member the host lets drive the window (it probes once per stream) sends
+ * pointer, wheel, keys and pasted text on its canvas to the host, which
+ * forwards them to the session; anyone else's canvas takes no input. The
+ * keyboard of a window it drives is a visually hidden text area beside the
+ * canvas (a canvas is not editable, so no input method composes on it):
+ * plain keys go out as keys, and what an input method, a dead key, dictation
+ * or an emoji picker commits there goes out once as text, never as the keys
+ * that composed it.
+ *
+ * A stream whose codec is `tilo-paint` is a page the session's browser
+ * shares as a display list (`tilo_paint_stream::wire`): its reassembled
+ * frames go to the runtime (`paintFrame`), which draws the page inside the
+ * desktop with the toolkit, and the input the person gives that window comes
+ * back from the runtime (`takePaintInput`) instead of from a canvas.
  *
  * Frames: `0xF1 | kind u8 | payload`; kind 1 index (JSON streams), 2 start
  * (JSON stream, first frame of every group), 3 chunk (`flags u8 | seq u32 |
@@ -20,6 +32,31 @@
  */
 
 export const LEGACY_APP = 'so.tilo.legacy-window';
+/** Codec of a page shared as a display list rather than as video. */
+export const PAINT_CODEC = 'tilo-paint';
+/**
+ * The WebCodecs configuration each video codec of a stream is decoded with
+ * (H.264's profile and level come from the stream's own SPS), and probed
+ * with when the page tells the host what it decodes
+ * (`tilo_relay_protocol::legacy_window::VIDEO_CODECS`).
+ */
+export const VIDEO_DECODER_CONFIGS = Object.freeze({h264: 'avc1.42E01F', vp9: 'vp09.00.10.08', av1: 'av01.0.04M.08'});
+const CODECS = new Set([...Object.keys(VIDEO_DECODER_CONFIGS), PAINT_CODEC]);
+const isVideo = codec => codec !== PAINT_CODEC;
+
+/**
+ * The video codecs this page's WebCodecs decodes, as stream codec labels;
+ * empty without WebCodecs (the page then plays no legacy window at all).
+ */
+export async function decodableCodecs(VideoDecoder = globalThis.VideoDecoder) {
+  if (typeof VideoDecoder?.isConfigSupported !== 'function') return [];
+  const probed = await Promise.all(Object.entries(VIDEO_DECODER_CONFIGS).map(async ([label, codec]) => {
+    try {
+      return (await VideoDecoder.isConfigSupported({codec, optimizeForLatency: true}))?.supported ? label : null;
+    } catch { return null; }
+  }));
+  return probed.filter(Boolean);
+}
 export const INDEX_RECORD = Object.freeze({app: LEGACY_APP, record: '@tilo:legacy-windows'});
 const FRAME_TAG = 0xf1;
 const KIND_INDEX = 1;
@@ -31,32 +68,62 @@ export const CHUNK_FIRST = 2;
 export const CHUNK_LAST = 4;
 const CHUNK_HEADER = 2 + 1 + 4 + 8 + 4;
 const MAX_ENCODED_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_STREAMS = 32;
+const MAX_ROOM_STREAMS = 64;
+const MAX_ROOM_PIXELS = 32 * 1024 * 1024;
+// Four seconds of physical mixed-case typing can exceed 128 events while an
+// HTTPS send is pending. Keep eight wire batches, still bounded by 128 KiB.
+const MAX_INPUT_BACKLOG = 512;
+const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 /** The host re-sends a live index every second: a silent publisher's streams are gone. */
 export const INDEX_EXPIRE_MS = 5000;
 /** Decoder backlog past which frames are skipped until the next keyframe. */
 const MAX_DECODE_QUEUE = 6;
+/**
+ * A stream skipping a backlog that then goes quiet this long sends no
+ * keyframe to resume from: a still window. It is subscribed again, and the
+ * group the host replays (its keyframe and every frame since) is decoded
+ * whole, so the window ends on its current picture rather than a stale one.
+ */
+export const RESYNC_QUIET_MS = 500;
+/** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
+const MAX_INPUT_EVENTS = 64;
+// Native input permits 120 offered events per second. A 32-event burst plus
+// 80 events/second of catch-up stays below that fence, with room for focus.
+const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
+const INPUT_EVENTS_PER_SECOND = 80;
+/** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
+const MAX_CLIPBOARD_BYTES = 64 * 1024;
+/** Committed text one event carries (`legacy_window::MAX_TEXT_BYTES`, the
+ * session's `MAX_REMOTE_TEXT_BYTES`): longer text the session would refuse. */
+export const MAX_TEXT_BYTES = 4096;
+/** Pixels one wheel line scrolls. */
+const LINE_PIXELS = 40;
 const HEX16 = /^[0-9a-f]{16}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
 const text = new TextDecoder();
 
 function validStream(value) {
   if (!value || typeof value !== 'object') return null;
-  const {source, surface, app, codec, width, height, record} = value;
-  if (!HEX16.test(source) || !HEX16.test(surface) || typeof app !== 'string' || !app || app.length > 128
-    || typeof codec !== 'string' || typeof record !== 'string' || !record || record.length > 128
+  const {surface, app, codec, width, height, record} = value;
+  if (!HEX16.test(surface) || typeof app !== 'string' || !app || app.length > 128
+    || !CODECS.has(codec) || record !== `@tilo:legacy-window:${surface}`
     || !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 8192 || height > 8192) return null;
-  return {source, surface, app, codec, width, height, record};
+  return {surface, app, codec, width, height, record};
 }
 
 /** One legacy-window frame, or null for anything malformed. */
 export function decodeFrame(bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 2 || bytes[0] !== FRAME_TAG) return null;
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 2 || bytes.byteLength > MAX_FRAME_BYTES || bytes[0] !== FRAME_TAG) return null;
   try {
     switch (bytes[1]) {
       case KIND_INDEX: {
         const streams = JSON.parse(text.decode(bytes.subarray(2)));
         if (!Array.isArray(streams) || streams.length > MAX_STREAMS) return null;
-        const valid = streams.map(validStream);
+        // A stream in a codec this page does not know (a newer host's) is
+        // left out; the publisher's other windows still show.
+        const valid = streams.filter(stream => !stream || typeof stream !== 'object' || CODECS.has(stream.codec)).map(validStream);
         return valid.every(Boolean) ? {kind: 'index', streams: valid} : null;
       }
       case KIND_START: {
@@ -64,7 +131,7 @@ export function decodeFrame(bytes) {
         return stream ? {kind: 'start', stream} : null;
       }
       case KIND_CHUNK: {
-        if (bytes.byteLength <= CHUNK_HEADER) return null;
+        if (bytes.byteLength <= CHUNK_HEADER || bytes[2] & ~7) return null;
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         return {
           kind: 'chunk',
@@ -95,7 +162,8 @@ export function createReassembler() {
         pending = chunk.total > 0 && chunk.total <= MAX_ENCODED_FRAME_BYTES
           ? {key: Boolean(chunk.flags & CHUNK_KEY), seq: chunk.seq, tsUs: chunk.tsUs, data: new Uint8Array(chunk.total), filled: 0}
           : null;
-      } else if (!pending || pending.seq !== chunk.seq) {
+      } else if (!pending || pending.seq !== chunk.seq || pending.tsUs !== chunk.tsUs
+        || pending.data.byteLength !== chunk.total || pending.key !== Boolean(chunk.flags & CHUNK_KEY)) {
         pending = null;
         return null;
       }
@@ -122,14 +190,28 @@ export function h264CodecString(accessUnit) {
   return 'avc1.42E01F';
 }
 
+/** The WebCodecs codec string a `codec` stream's key frame `data` decodes with. */
+export function decoderCodecString(codec, data) {
+  return codec === 'h264' ? h264CodecString(data) : VIDEO_DECODER_CONFIGS[codec] ?? null;
+}
+
 /**
  * WebCodecs decode of one stream: configured from its first keyframe, frames
  * before a keyframe (or after a backlog) are skipped until the next one.
+ * `catchUp()` decodes the next group whole, however long the queue grows:
+ * a group the host replays (to a new subscription) arrives at once, and only
+ * all of it ends on the window's current picture. `onStall()` is told when
+ * a backlog starts a skip.
+ * `decode(frame, codec)` takes the stream's codec label (H.264 by default);
+ * a stream whose session switched codec reconfigures at its next keyframe.
  */
-export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}}) {
+export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}, onStall = () => {}}) {
   let decoder = null;
   let codec = null;
   let waitKey = true;
+  // false, 'key' (the next keyframe starts the group to catch up on) or
+  // 'group' (decoding that group; the keyframe after it ends it).
+  let catchingUp = false;
   const stats = {decoded: 0, skipped: 0, errors: 0};
   function close() {
     try { if (decoder && decoder.state !== 'closed') decoder.close(); } catch {}
@@ -148,16 +230,23 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
   }
   return {
     stats,
-    decode(frame) {
+    decode(frame, streamCodec = 'h264') {
       if (frame.key) {
-        const next = h264CodecString(frame.data);
+        const next = decoderCodecString(streamCodec, frame.data);
+        if (!next) { stats.skipped++; return false; }
         try {
           if (!decoder || decoder.state === 'closed' || codec !== next) open(next);
         } catch (error) { stats.errors++; onError(error); close(); return false; }
         waitKey = false;
+        catchingUp = catchingUp === 'key' ? 'group' : false;
       }
       if (waitKey || !decoder) { stats.skipped++; return false; }
-      if (!frame.key && decoder.decodeQueueSize > MAX_DECODE_QUEUE) { waitKey = true; stats.skipped++; return false; }
+      if (catchingUp !== 'group' && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+        waitKey = true;
+        stats.skipped++;
+        onStall();
+        return false;
+      }
       try {
         decoder.decode(new EncodedVideoChunk({type: frame.key ? 'key' : 'delta', timestamp: frame.tsUs, data: frame.data}));
         return true;
@@ -169,6 +258,7 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
       }
     },
     reset() { waitKey = true; },
+    catchUp() { catchingUp = 'key'; waitKey = true; },
     close,
   };
 }
@@ -183,12 +273,21 @@ const KEYS = {
   PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110, Delete: 111,
   MetaLeft: 125, MetaRight: 126,
 };
-/** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
-const MAX_INPUT_EVENTS = 64;
+/** Control, Shift, Alt and Meta, which never repeat. */
+const MODIFIERS = new Set([KEYS.ControlLeft, KEYS.ControlRight, KEYS.ShiftLeft, KEYS.ShiftRight, KEYS.AltLeft, KEYS.AltRight, KEYS.MetaLeft, KEYS.MetaRight]);
+/** `KeyboardEvent.key` of keys that only modify the next one. */
+const MODIFIER_NAMES = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Super', 'Hyper', 'Fn', 'CapsLock', 'NumLock']);
+/** A named `KeyboardEvent.key` (`Enter`, `ArrowLeft`, `F5`), not a character. */
+const NAMED_KEY = /^[A-Z][A-Za-z0-9]+$/;
 
-/** The Linux evdev keycode of a `KeyboardEvent.code`, or null. */
-export function evdevKey(code) {
+/**
+ * The Linux evdev keycode of a `KeyboardEvent.code`, or null. With `mac`,
+ * Command is Control, as the window's own shortcuts (copy, paste) expect.
+ */
+export function evdevKey(code, {mac = false} = {}) {
   if (typeof code !== 'string') return null;
+  if (mac && code === 'MetaLeft') return KEYS.ControlLeft;
+  if (mac && code === 'MetaRight') return KEYS.ControlRight;
   if (/^Key[A-Z]$/.test(code)) return LETTERS[code[3]];
   if (/^Digit[0-9]$/.test(code)) return code[5] === '0' ? 11 : Number(code[5]) + 1;
   if (/^F([1-9]|10)$/.test(code)) return 58 + Number(code.slice(1));
@@ -207,35 +306,16 @@ export function windowPoint(box, width, height, clientX, clientY) {
   return x >= 0 && y >= 0 && x < width && y < height ? [Math.round(x * 100) / 100, Math.round(y * 100) / 100] : null;
 }
 
-const validRect = rect => Array.isArray(rect) && rect.length === 4 && rect.every(Number.isFinite) && rect[2] > 0 && rect[3] > 0;
+/** A wheel event's distance in window pixels (`deltaMode` 0 pixels, 1 lines, 2 pages). */
+export function wheelPixels(event, pageHeight) {
+  const scale = event.deltaMode === 1 ? LINE_PIXELS : event.deltaMode === 2 ? pageHeight : 1;
+  return [event.deltaX * scale, event.deltaY * scale];
+}
 
-/**
- * Which legacy tab each stream is drawn over: a tab of the same app id, in
- * desktop order, keeping earlier assignments while their tab still exists.
- * Returns `Map<streamKey, {tab, content}>`.
- */
-export function matchStreams(snapshot, streams, previous = new Map()) {
-  const tiles = [];
-  if (snapshot && !snapshot.covered) {
-    for (const group of snapshot.groups ?? []) {
-      const legacy = group?.legacy;
-      if (legacy && typeof legacy.app === 'string' && typeof legacy.tab === 'string' && validRect(legacy.content)) tiles.push(legacy);
-    }
-  }
-  const free = new Map(tiles.map(tile => [tile.tab, tile]));
-  const out = new Map();
-  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-  for (const [key, stream] of streams) {
-    const tab = previous.get(key)?.tab;
-    const tile = tab !== undefined ? free.get(tab) : undefined;
-    if (tile && same(tile.app, stream.app)) { out.set(key, {tab, content: tile.content}); free.delete(tab); }
-  }
-  for (const [key, stream] of streams) {
-    if (out.has(key)) continue;
-    const tile = [...free.values()].find(candidate => same(candidate.app, stream.app));
-    if (tile) { out.set(key, {tab: tile.tab, content: tile.content}); free.delete(tile.tab); }
-  }
-  return out;
+/** What the desktop calls a stream's window: its app id's last part. */
+export function windowTitle(app) {
+  const name = app.split('.').filter(Boolean).at(-1) ?? app;
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 function defaultRequestFrame(callback) {
@@ -252,19 +332,43 @@ function defaultCancelFrame(handle) {
 /**
  * Bind the legacy-window layer to a mounted desktop surface.
  *
- * - `live()`: current `session.liveV1` or undefined.
- * - `snapshot()`: the runtime's `live_view_snapshot` JSON (or null).
- * - `presented()`: a value that changes whenever the runtime presents a frame.
+ * - `live()`: the room's live layer (`peer.mjs`), or undefined.
+ * - `windows()`: `[{key, rect: [x0, y0, x1, y1], focused}]`, where the
+ *   desktop shows each stream's window and whether it is the focused one
+ *   (`desktop_peer_windows`), or undefined. A window the desktop focuses
+ *   (opening it, or its tab chosen) takes the keyboard; one it stops
+ *   focusing gives it back to `focusDesktop()`.
+ * - `focusWindow(key)`: the person clicked into the window; the desktop
+ *   focuses it too (`desktop_focus_peer_window`).
+ * - `setWindows(list)`: show exactly `[{key, app, title}]` as windows
+ *   (`desktop_set_peer_windows`).
+ * - `sendInput(publisher, surface, events)`: resolves whether the host took
+ *   them (`peer.legacyInput`); with no events, whether this member may.
+ * - `dismissed()`: the keys of windows the person closed since the last
+ *   call (`desktop_dismissed_peer_windows`); each is asked to close at its
+ *   source, when this member drives it.
+ * - `paintFrame(key, bytes)`: one reassembled frame of a `tilo-paint`
+ *   stream, for the runtime to draw (`desktop_peer_window_paint`).
+ * - `takePaintInput()`: `[{key, events}]` the person gave painted windows
+ *   since the last call (`desktop_take_peer_window_input`).
  */
 export function createLegacyWindows({
   surface,
   live,
-  snapshot,
-  presented = () => surface?.dataset?.frames,
+  windows,
+  setWindows,
+  sendInput,
+  dismissed = () => [],
+  paintFrame = () => false,
+  takePaintInput = () => [],
+  focusWindow = () => {},
+  focusDesktop = () => {},
+  mac = /Mac/.test(globalThis.navigator?.platform ?? ''),
   document: doc = globalThis.document,
   VideoDecoder = globalThis.VideoDecoder,
   EncodedVideoChunk = globalThis.EncodedVideoChunk,
   now = () => performance.now(),
+  inputPause = ms => new Promise(resolve => globalThis.setTimeout(resolve, ms)),
   requestFrame = defaultRequestFrame,
   cancelFrame = defaultCancelFrame,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
@@ -276,126 +380,357 @@ export function createLegacyWindows({
   layer.className = 'tilo-legacy-windows';
   layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;contain:strict;z-index:1';
   surface.append(layer);
-  const streams = new Map(); // `${publisher}/${record}` -> entry
+  const streams = new Map(); // `${publisher}:${surface}` -> entry
+  const inputSenders = new Map(); // One native rate budget across a publisher's windows.
   const indexed = new Map(); // publisher -> last index time
-  let placement = new Map();
-  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
+  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0, resyncs: 0};
   let api;
-  let unwatchIndex;
+  let unwatch = [];
   let frame;
   let closed = false;
-  let lastPresented;
-  let layoutDirty = true;
+  let shown = '';
 
-  function streamKey(publisher, record) { return `${publisher}/${record}`; }
+  const streamKey = (publisher, stream) => `${publisher}:${stream.surface}`;
   function schedule() {
     if (closed || frame !== undefined) return;
     frame = requestFrame(tick);
   }
+  function publishWindows() {
+    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app), codec: entry.stream.codec}));
+    const next = JSON.stringify(list);
+    if (next === shown) return;
+    shown = next;
+    try { setWindows(list); } catch (error) { report(error); }
+  }
   function removeStream(key) {
     const entry = streams.get(key);
     if (!entry) return;
+    releaseInput(entry);
     streams.delete(key);
-    try { entry.unwatch(); } catch {}
-    entry.decoder.close();
-    entry.canvas.remove();
-    layoutDirty = true;
+    entry.control = false;
+    entry.input.length = 0;
+    entry.reassembler.reset();
+    try { entry.unsubscribe(); } catch {}
+    entry.decoder?.close();
+    entry.canvas?.remove();
+    entry.keyboard?.remove();
   }
   function addStream(publisher, stream) {
-    const key = streamKey(publisher, stream.record);
+    const key = streamKey(publisher, stream);
     const existing = streams.get(key);
-    if (existing) { existing.stream = stream; return; }
+    // A session that switches between video codecs keeps the window; one
+    // that turns video into a painted page (or back) gets a new one.
+    if (existing && isVideo(existing.stream.codec) === isVideo(stream.codec)) { existing.stream = stream; return; }
+    if (existing) removeStream(key);
+    const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
+    if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
+    if (stream.codec === PAINT_CODEC) {
+      // Drawn by the runtime inside the desktop: no canvas, no decoder.
+      const entry = {publisher, stream, paint: true, reassembler: createReassembler(), visible: false, rect: '', control: false,
+        input: [], focused: false, keys: new Set(), buttons: new Set()};
+      entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
+      streams.set(key, entry);
+      probeControl(entry);
+      return;
+    }
     const canvas = doc.createElement('canvas');
     canvas.className = 'tilo-legacy-window';
     canvas.dataset.app = stream.app;
+    canvas.dataset.key = key;
     canvas.width = stream.width;
     canvas.height = stream.height;
-    canvas.style.cssText = 'position:absolute;left:0;top:0;display:none;object-fit:contain;background:#000;transform-origin:0 0';
-    layer.append(canvas);
-    const entry = {publisher, stream, canvas, context: null, reassembler: createReassembler(), visible: false, rect: ''};
+    canvas.style.cssText = 'position:absolute;left:0;top:0;display:none;object-fit:contain;background:#000;transform-origin:0 0;pointer-events:none;outline:none';
+    // The window's keyboard: where an input method composes for it.
+    const keyboard = doc.createElement('textarea');
+    keyboard.className = 'tilo-legacy-window-keyboard';
+    keyboard.dataset.key = key;
+    keyboard.setAttribute?.('aria-label', windowTitle(stream.app));
+    keyboard.autocomplete = 'off';
+    keyboard.autocapitalize = 'off';
+    keyboard.spellcheck = false;
+    keyboard.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:20px;padding:0;margin:0;border:0;resize:none;overflow:hidden;opacity:0;pointer-events:none;outline:none;transform-origin:0 0';
+    layer.append(canvas, keyboard);
+    const entry = {publisher, stream, canvas, keyboard, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false,
+      stalledAt: undefined, lastChunkAt: now()};
     entry.decoder = createStreamDecoder({
       VideoDecoder, EncodedVideoChunk,
       onFrame: picture => draw(entry, picture),
       onError: report,
+      onStall: () => { entry.stalledAt ??= now(); },
     });
-    entry.unwatch = api.watchRecord({app: LEGACY_APP, record: stream.record}, (from, bytes) => {
-      if (from === publisher) onStreamFrame(entry, bytes);
-    });
+    // What the host replays to this new subscription arrives at once.
+    entry.decoder.catchUp();
+    entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
     bindInput(entry);
     streams.set(key, entry);
-    layoutDirty = true;
+    probeControl(entry);
   }
-  // ---- Input (a member whose grant may publish; the host refuses anyone else) --
+  function pacedInput(entry, events) {
+    let sender = inputSenders.get(entry.publisher);
+    if (!sender) {
+      sender = {tail: Promise.resolve(), next: 0};
+      inputSenders.set(entry.publisher, sender);
+    }
+    const operation = sender.tail.then(async () => {
+      const delay = sender.next - now();
+      if (delay > 0) await inputPause(delay);
+      if (closed || streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return false;
+      try {
+        return await sendInput(entry.publisher, entry.stream.surface, events);
+      } finally {
+        // Start the quiet period after acknowledgement: a delayed request must
+        // not spend its wait time buying an immediate catch-up burst.
+        sender.next = now() + events.length * 1000 / INPUT_EVENTS_PER_SECOND;
+      }
+    });
+    sender.tail = operation.catch(() => {});
+    return operation;
+  }
+  async function probeControl(entry) {
+    try {
+      const may = Boolean(await sendInput(entry.publisher, entry.stream.surface, []));
+      entry.control = !closed && streams.get(streamKey(entry.publisher, entry.stream)) === entry && may;
+    } catch (error) { entry.control = false; report(error); }
+    schedule();
+  }
+
+  // ---- Input (a member the host lets drive the window) ----------------------
   function queueInput(entry, event) {
-    if (!api?.canControl) return;
-    const motion = 'PointerMotion' in event;
-    const last = entry.input.at(-1);
-    // Latest-wins pointer motion; buttons, keys and focus keep their order.
-    if (motion && last && 'PointerMotion' in last) entry.input[entry.input.length - 1] = event;
-    else entry.input.push(event);
+    if (!entry.control || closed) return;
+    if (entry.input.length >= MAX_INPUT_BACKLOG || JSON.stringify(entry.input).length + JSON.stringify(event).length > MAX_INPUT_BACKLOG_BYTES) {
+      entry.control = false;
+      entry.input.length = 0;
+      report(Error('legacy window input backlog exceeded'));
+      schedule();
+      return;
+    }
+    const latest = name => name in event && entry.input.at(-1) && name in entry.input.at(-1);
+    // Latest-wins pointer motion; wheel distances add up; the rest keep their order.
+    if (latest('PointerMotion')) entry.input[entry.input.length - 1] = event;
+    else if (latest('PointerAxis')) {
+      const last = entry.input.at(-1).PointerAxis;
+      entry.input[entry.input.length - 1] = {PointerAxis: {dx: last.dx + event.PointerAxis.dx, dy: last.dy + event.PointerAxis.dy}};
+    } else entry.input.push(event);
     if (!entry.flushing) void flushInput(entry);
   }
   async function flushInput(entry) {
     entry.flushing = true;
     try {
-      while (entry.input.length && api?.canControl) {
-        const events = entry.input.splice(0, MAX_INPUT_EVENTS);
-        const sent = await api.sendLegacyInput({record: entry.stream.record, events});
-        if (sent.ok) stats.inputSent += events.length;
-        else stats.inputRefused += events.length;
+      while (entry.input.length && entry.control && !closed) {
+        const events = entry.input.splice(0, INPUT_SEND_BATCH);
+        const sent = await pacedInput(entry, events);
+        if (sent) stats.inputSent += events.length;
+        else { stats.inputRefused += events.length; entry.control = false; schedule(); }
       }
-    } catch (error) { report(error); } finally {
+    } catch (error) { entry.control = false; schedule(); report(error); } finally {
       entry.input.length = 0;
       entry.flushing = false;
+      const release = entry.release;
+      entry.release = undefined;
+      if (release?.length) {
+        try {
+          for (let offset = 0; offset < release.length; offset += INPUT_SEND_BATCH) {
+            const events = release.slice(offset, offset + INPUT_SEND_BATCH);
+            if (await pacedInput(entry, events)) stats.inputSent += events.length;
+          }
+        } catch (error) { report(error); }
+      }
     }
   }
+  function releaseInput(entry) {
+    if (!entry.focused) return;
+    entry.focused = false;
+    entry.release = [
+      ...[...entry.keys].map(keysym => ({Key: {keysym, pressed: false, modifiers: 0}})),
+      ...[...entry.buttons].map(button => ({PointerButton: {button, pressed: false}})),
+      {KeyboardFocus: {surface: 0, focused: false}},
+    ];
+    entry.keys.clear();
+    entry.buttons.clear();
+    entry.pasteKey = false;
+    entry.composing = false;
+    entry.deadKey = false;
+    if (entry.keyboard) entry.keyboard.value = '';
+    if (!entry.flushing) void flushInput(entry);
+  }
+  /** Keys typed on the page go to `entry`'s window. */
+  function takeKeyboard(entry) {
+    entry.keyboard.focus?.({preventScroll: true});
+    if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
+  }
+  /** Text an input method committed for the window that holds the keyboard:
+   * one `Text`, refused here when the session would refuse it. */
+  function commitText(entry, text) {
+    if (typeof text !== 'string' || !text || !entry.focused) return;
+    if (new TextEncoder().encode(text).byteLength > MAX_TEXT_BYTES) return;
+    queueInput(entry, {Text: {text}});
+  }
   function bindInput(entry) {
-    const {canvas} = entry;
+    const {canvas, keyboard} = entry;
     entry.input = [];
     entry.focused = false;
+    entry.pasteKey = false;
+    entry.composing = false;
+    entry.deadKey = false;
+    entry.keys = new Set();
+    entry.buttons = new Set();
     canvas.tabIndex = -1;
-    const surface = 0;
+    const target = 0;
     const point = event => windowPoint(canvas.getBoundingClientRect(), canvas.width, canvas.height, event.clientX, event.clientY);
     const motion = event => {
       const at = point(event);
       if (at) queueInput(entry, {PointerMotion: {x: at[0], y: at[1]}});
       return at;
     };
-    const on = (type, handler) => canvas.addEventListener?.(type, handler);
-    on('pointerenter', event => { queueInput(entry, {PointerEnter: {surface}}); motion(event); });
+    const on = (type, handler, options) => canvas.addEventListener?.(type, handler, options);
+    const onKeyboard = (type, handler) => keyboard.addEventListener?.(type, handler);
+    on('pointerenter', event => { queueInput(entry, {PointerEnter: {surface: target}}); motion(event); });
     on('pointermove', motion);
-    on('pointerleave', () => queueInput(entry, {PointerLeave: {surface}}));
+    on('pointerleave', () => queueInput(entry, {PointerLeave: {surface: target}}));
     on('pointerdown', event => {
-      if (!api?.canControl) return;
+      if (!entry.control) return;
       event.preventDefault();
-      canvas.focus?.({preventScroll: true});
-      if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface, focused: true}}); }
-      if (motion(event)) queueInput(entry, {PointerButton: {button: BUTTONS[event.button] ?? 272, pressed: true}});
+      takeKeyboard(entry);
+      try { focusWindow(canvas.dataset.key); } catch (error) { report(error); }
+      if (motion(event) && BUTTONS[event.button] !== undefined) {
+        const button = BUTTONS[event.button];
+        entry.buttons.add(button);
+        canvas.setPointerCapture?.(event.pointerId);
+        queueInput(entry, {PointerButton: {button, pressed: true}});
+      }
     });
     on('pointerup', event => {
-      if (!api?.canControl) return;
+      if (!entry.control) return;
       event.preventDefault();
-      queueInput(entry, {PointerButton: {button: BUTTONS[event.button] ?? 272, pressed: false}});
+      const button = BUTTONS[event.button];
+      if (button === undefined) return;
+      entry.buttons.delete(button);
+      if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      queueInput(entry, {PointerButton: {button, pressed: false}});
     });
-    on('contextmenu', event => { if (api?.canControl) event.preventDefault(); });
-    const key = pressed => event => {
-      const keysym = evdevKey(event.code);
-      if (!api?.canControl || keysym === null || (pressed && event.repeat)) return;
+    on('pointercancel', () => releaseInput(entry));
+    on('lostpointercapture', () => { if (entry.buttons.size) releaseInput(entry); });
+    on('wheel', event => {
+      if (!entry.control) return;
       event.preventDefault();
+      const [dx, dy] = wheelPixels(event, canvas.height);
+      if (dx || dy) queueInput(entry, {PointerAxis: {dx, dy}});
+    }, {passive: false});
+    on('contextmenu', event => { if (entry.control) event.preventDefault(); });
+    // A modifier may already be held when this window gains focus. Browser
+    // typing also supplies its state on each character without a separate
+    // modifier edge. Wayland needs those edges before the character's keycode.
+    const syncModifiers = event => {
+      const ctrl = mac && (typeof event.ctrlKey === 'boolean' || typeof event.metaKey === 'boolean')
+        ? Boolean(event.ctrlKey || event.metaKey) : event.ctrlKey;
+      const groups = [
+        [event.shiftKey, [KEYS.ShiftLeft, KEYS.ShiftRight]],
+        [ctrl, [KEYS.ControlLeft, KEYS.ControlRight]],
+        [event.altKey, [KEYS.AltLeft, KEYS.AltRight]],
+        ...mac ? [] : [[event.metaKey, [KEYS.MetaLeft, KEYS.MetaRight]]],
+      ];
+      for (const [held, keys] of groups) {
+        if (typeof held !== 'boolean') continue;
+        const down = keys.filter(keysym => entry.keys.has(keysym));
+        if (held && !down.length) {
+          entry.keys.add(keys[0]);
+          queueInput(entry, {Key: {keysym: keys[0], pressed: true, modifiers: 0}});
+        } else if (!held) {
+          for (const keysym of down) {
+            entry.keys.delete(keysym);
+            queueInput(entry, {Key: {keysym, pressed: false, modifiers: 0}});
+          }
+        }
+      }
+    };
+    // A dead key (`´`, `^`, `¨` on many layouts) composes with the key after
+    // it. Windows browsers, and Linux ones whose input method shows no
+    // preedit, report it as a `Dead` keydown and insert the composed
+    // character (`é`, or `´` then `x` when the two do not combine) as the
+    // next key's default action. Both keys stay here, uncancelled, so that
+    // insertion reaches the window once as text (`beforeinput`); their
+    // releases are dropped as releases the window never got. A modifier in
+    // between (Shift, for `Ê`) is still a key and keeps the sequence open; a
+    // named key or a shortcut after it is a key as before.
+    const deadKey = event => {
+      if (event.key === 'Dead') { entry.deadKey = true; return true; }
+      if (!entry.deadKey || MODIFIER_NAMES.has(event.key) || MODIFIERS.has(evdevKey(event.code, {mac}))) return false;
+      entry.deadKey = false;
+      const chord = (event.ctrlKey || event.metaKey) && !event.getModifierState?.('AltGraph');
+      return !chord && typeof event.key === 'string' && event.key !== '' && !NAMED_KEY.test(event.key);
+    };
+    const key = pressed => event => {
+      // An input method's own keystrokes compose; what it commits arrives
+      // once as text (`compositionend`), so they never reach the window.
+      if (entry.composing || event.isComposing || event.keyCode === 229 || event.key === 'Process') return;
+      if (!entry.control || (pressed && deadKey(event))) return;
+      const keysym = evdevKey(event.code, {mac});
+      if (keysym === null) return;
+      if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      // A release whose press the window never got (the key that ended a
+      // composition) stays here.
+      if (!pressed && !entry.keys.has(keysym) && !MODIFIERS.has(keysym)) return;
+      if (!MODIFIERS.has(keysym)) syncModifiers(event);
+      // The window repeats a held key only as the browser does: one more
+      // press of it. Modifiers do not repeat.
+      if (pressed && event.repeat) {
+        if (!entry.keys.has(keysym)) return;
+        event.preventDefault();
+        if (!MODIFIERS.has(keysym)) queueInput(entry, {Key: {keysym, pressed: true, modifiers: 0}});
+        return;
+      }
+      // Paste: the browser's clipboard reaches the window first (the
+      // `paste` event), then the key, so the window pastes this text.
+      if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey)) {
+        if (pressed) entry.pasteKey = true;
+        return;
+      }
+      event.preventDefault();
+      if (pressed) entry.keys.add(keysym); else entry.keys.delete(keysym);
       queueInput(entry, {Key: {keysym, pressed, modifiers: 0}});
     };
-    on('keydown', key(true));
-    on('keyup', key(false));
-    on('blur', () => {
-      if (!entry.focused) return;
-      entry.focused = false;
-      queueInput(entry, {KeyboardFocus: {surface, focused: false}});
+    onKeyboard('keydown', key(true));
+    onKeyboard('keyup', key(false));
+    onKeyboard('compositionstart', () => { entry.deadKey = false; if (entry.control) entry.composing = true; });
+    onKeyboard('compositionend', event => {
+      const composed = entry.composing;
+      entry.composing = false;
+      keyboard.value = '';
+      if (composed) commitText(entry, event.data);
     });
+    // Text committed without a composition (an emoji picker, dictation, a
+    // character no key here maps): plain keys are forwarded and their own
+    // insertion cancelled, so what reaches this is not a key already sent.
+    onKeyboard('beforeinput', event => {
+      if (!entry.control || entry.composing || event.isComposing || event.inputType === 'insertCompositionText') return;
+      event.preventDefault();
+      if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') {
+        commitText(entry, event.data ?? event.dataTransfer?.getData?.('text/plain'));
+      }
+    });
+    onKeyboard('input', () => { if (!entry.composing) keyboard.value = ''; });
+    onKeyboard('paste', event => {
+      if (!entry.control) return;
+      event.preventDefault();
+      const pasted = event.clipboardData?.getData?.('text/plain') ?? '';
+      if (pasted && new TextEncoder().encode(pasted).byteLength <= MAX_CLIPBOARD_BYTES) queueInput(entry, {ClipboardText: {text: pasted}});
+      if (entry.pasteKey) {
+        entry.pasteKey = false;
+        queueInput(entry, {Key: {keysym: LETTERS.V, pressed: true, modifiers: 0}});
+        queueInput(entry, {Key: {keysym: LETTERS.V, pressed: false, modifiers: 0}});
+      }
+    });
+    onKeyboard('blur', () => releaseInput(entry));
   }
+
+  // ---- Frames -----------------------------------------------------------------
   function draw(entry, picture) {
     try {
-      if (!streams.has(streamKey(entry.publisher, entry.stream.record))) return;
+      if (streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return;
       const {canvas} = entry;
+      const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry || !other.canvas ? 0 : other.canvas.width * other.canvas.height), 0);
+      if (picture.displayWidth <= 0 || picture.displayHeight <= 0 || picture.displayWidth > 8192 || picture.displayHeight > 8192
+        || pixels + picture.displayWidth * picture.displayHeight > MAX_ROOM_PIXELS) return;
       if (canvas.width !== picture.displayWidth || canvas.height !== picture.displayHeight) {
         canvas.width = picture.displayWidth;
         canvas.height = picture.displayHeight;
@@ -407,109 +742,173 @@ export function createLegacyWindows({
     } catch (error) { report(error); } finally { picture.close(); }
   }
   function onStreamFrame(entry, bytes) {
+    if (closed || streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return;
     const value = decodeFrame(bytes);
     if (!value) return;
     stats.frames++;
     if (value.kind === 'start') {
-      if (value.stream.record === entry.stream.record) entry.stream = value.stream;
+      if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record
+        || isVideo(value.stream.codec) !== isVideo(entry.stream.codec)) return;
+      entry.stream = value.stream;
+      entry.decoder?.reset();
       entry.reassembler.reset();
     } else if (value.kind === 'chunk') {
+      entry.lastChunkAt = now();
       const encoded = entry.reassembler.push(value);
-      if (encoded) entry.decoder.decode(encoded);
+      if (!encoded) return;
+      if (entry.paint) {
+        try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
+      } else if (entry.decoder.decode(encoded, entry.stream.codec) && encoded.key) entry.stalledAt = undefined;
     } else if (value.kind === 'end') {
-      entry.decoder.reset();
+      entry.decoder?.reset();
       entry.reassembler.reset();
     }
   }
   function onIndex(publisher, bytes) {
+    if (closed || !HEX64.test(publisher)) return;
     const value = decodeFrame(bytes);
     if (value?.kind !== 'index') return;
     stats.indexes++;
+    if (!indexed.has(publisher) && indexed.size >= MAX_ROOM_STREAMS) return;
     indexed.set(publisher, now());
     const listed = new Set();
     for (const stream of value.streams) {
-      listed.add(streamKey(publisher, stream.record));
+      listed.add(streamKey(publisher, stream));
       addStream(publisher, stream);
     }
     for (const [key, entry] of streams) if (entry.publisher === publisher && !listed.has(key)) removeStream(key);
+    publishWindows();
     schedule();
+  }
+  function dropPublisher(publisher) {
+    indexed.delete(publisher);
+    for (const [key, entry] of streams) if (entry.publisher === publisher) removeStream(key);
   }
   function expire() {
     const t = now();
-    for (const [publisher, at] of indexed) {
-      if (t - at < INDEX_EXPIRE_MS) continue;
-      indexed.delete(publisher);
-      for (const [key, entry] of streams) if (entry.publisher === publisher) removeStream(key);
-    }
+    for (const [publisher, at] of indexed) if (t - at >= INDEX_EXPIRE_MS) dropPublisher(publisher);
+    publishWindows();
   }
   function attach() {
     const next = live();
     if (next === api) return;
-    try { unwatchIndex?.(); } catch {}
-    unwatchIndex = undefined;
+    for (const stop of unwatch) { try { stop(); } catch {} }
+    unwatch = [];
+    for (const publisher of [...indexed.keys()]) dropPublisher(publisher);
     for (const key of [...streams.keys()]) removeStream(key);
-    indexed.clear();
     api = next;
-    if (api && typeof api.watchRecord === 'function') unwatchIndex = api.watchRecord(INDEX_RECORD, onIndex);
+    if (api && typeof api.watchRecordFrames === 'function') {
+      unwatch.push(api.watchRecordFrames(INDEX_RECORD, onIndex));
+      unwatch.push(api.onMember(({publisher, active}) => { if (!active) { dropPublisher(publisher); publishWindows(); } }));
+    }
+    publishWindows();
   }
   function layout() {
-    let current = null;
-    try {
-      const raw = snapshot();
-      current = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
-    } catch (error) { report(error); }
-    const listed = new Map([...streams].map(([key, entry]) => [key, entry.stream]));
-    placement = matchStreams(current, listed, placement);
-    stats.placed = placement.size;
+    let placed = [];
+    try { placed = windows() ?? []; } catch (error) { report(error); }
+    const byKey = new Map(placed.map(window => [window.key, window]));
+    stats.placed = 0;
     for (const [key, entry] of streams) {
-      const place = placement.get(key);
-      if (!place) {
-        if (entry.visible) { entry.canvas.style.display = 'none'; entry.visible = false; }
+      if (entry.paint) continue;
+      const rect = byKey.get(key)?.rect;
+      if (!rect) {
+        followDesktopFocus(entry, false);
+        if (entry.visible) { releaseInput(entry); entry.keyboard.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
-      const [x, y, w, h] = place.content;
-      const rect = `${x.toFixed(1)},${y.toFixed(1)},${w.toFixed(1)},${h.toFixed(1)}`;
-      if (entry.rect !== rect) {
-        entry.rect = rect;
-        entry.canvas.style.width = `${w.toFixed(1)}px`;
-        entry.canvas.style.height = `${h.toFixed(1)}px`;
-        entry.canvas.style.transform = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0)`;
+      stats.placed++;
+      const [x0, y0, x1, y1] = rect;
+      const box = `${x0.toFixed(1)},${y0.toFixed(1)},${(x1 - x0).toFixed(1)},${(y1 - y0).toFixed(1)}`;
+      if (entry.rect !== box) {
+        entry.rect = box;
+        entry.canvas.style.width = `${(x1 - x0).toFixed(1)}px`;
+        entry.canvas.style.height = `${(y1 - y0).toFixed(1)}px`;
+        entry.canvas.style.transform = `translate3d(${x0.toFixed(1)}px,${y0.toFixed(1)}px,0)`;
+        // An input method shows its candidates beside the window.
+        entry.keyboard.style.transform = entry.canvas.style.transform;
       }
-      entry.canvas.dataset.tab = place.tab;
-      const events = api?.canControl ? 'auto' : 'none';
+      const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
+      followDesktopFocus(entry, Boolean(byKey.get(key).focused && entry.control));
+    }
+  }
+  /** The desktop's focus moving onto a window (opened, or its tab chosen)
+   * hands it the keyboard; moving off, back to the desktop. */
+  function followDesktopFocus(entry, focus) {
+    if (focus === Boolean(entry.desktopFocus)) return;
+    entry.desktopFocus = focus;
+    if (focus) takeKeyboard(entry);
+    else if (doc.activeElement === entry.keyboard) { try { focusDesktop(); } catch (error) { report(error); } }
+  }
+  /** Ask the source of each window the person closed to close it. */
+  function closeDismissed() {
+    let keys = [];
+    try { keys = dismissed() ?? []; } catch (error) { report(error); }
+    for (const key of keys) {
+      const entry = streams.get(key);
+      if (!entry?.control || entry.closeRequested) continue;
+      entry.closeRequested = true;
+      releaseInput(entry);
+      pacedInput(entry, ['Close']).catch(report);
+    }
+  }
+  /** Send what the person did on painted windows to their hosts. */
+  function forwardPaintInput() {
+    let batches = [];
+    try { batches = takePaintInput() ?? []; } catch (error) { report(error); }
+    for (const {key, events} of batches) {
+      const entry = streams.get(key);
+      if (!entry?.paint || !Array.isArray(events)) continue;
+      for (const event of events) queueInput(entry, event);
+    }
+  }
+  /** Subscribe again to each stream whose backlog skip is waiting for a
+   * keyframe that a quiet (still) window will not send (`RESYNC_QUIET_MS`). */
+  function resync() {
+    const t = now();
+    for (const entry of streams.values()) {
+      if (entry.paint || entry.stalledAt === undefined || t - entry.lastChunkAt < RESYNC_QUIET_MS) continue;
+      entry.stalledAt = undefined;
+      entry.reassembler.reset();
+      entry.decoder.catchUp();
+      try { entry.unsubscribe(); } catch {}
+      entry.unsubscribe = api.subscribeMemberRecord(entry.publisher, {app: LEGACY_APP, record: entry.stream.record},
+        bytes => onStreamFrame(entry, bytes));
+      stats.resyncs++;
     }
   }
   function tick() {
     frame = undefined;
     if (closed) return;
-    const value = presented();
-    if (layoutDirty || value !== lastPresented) {
-      lastPresented = value;
-      layoutDirty = false;
-      layout();
-    }
+    resync();
+    closeDismissed();
+    forwardPaintInput();
+    layout();
     // Windows move with every presented frame (scrolls, drags, resizes).
     if (streams.size) schedule();
   }
-  const poll = every(() => { attach(); expire(); layoutDirty = true; schedule(); }, 1000);
+  const poll = every(() => { attach(); expire(); closeDismissed(); schedule(); }, 1000);
   attach();
 
   return {
     layer,
     stats: () => ({...stats, streams: streams.size, visible: [...streams.values()].filter(entry => entry.visible).length,
-      decoded: [...streams.values()].reduce((sum, entry) => sum + entry.decoder.stats.decoded, 0)}),
-    /** Streams by key with the tab each is drawn over. */
-    streams: () => [...streams].map(([key, entry]) => ({key, publisher: entry.publisher, ...entry.stream, tab: placement.get(key)?.tab ?? null})),
+      decoded: [...streams.values()].reduce((sum, entry) => sum + (entry.decoder?.stats.decoded ?? 0), 0)}),
+    /** Streams by key, with whether this member drives them and whether they are on screen. */
+    streams: () => [...streams].map(([key, entry]) => ({key, publisher: entry.publisher, ...entry.stream, control: entry.control, visible: entry.visible})),
     wake() { schedule(); },
     close() {
       if (closed) return;
       closed = true;
       stopEvery(poll);
       if (frame !== undefined) cancelFrame(frame);
-      try { unwatchIndex?.(); } catch {}
+      for (const stop of unwatch) { try { stop(); } catch {} }
       for (const key of [...streams.keys()]) removeStream(key);
+      try { setWindows([]); } catch {}
+      indexed.clear();
+      inputSenders.clear();
+      api = undefined;
       layer.remove();
     },
   };

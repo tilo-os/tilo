@@ -14,6 +14,42 @@ fn main() {
     if let Some(rev) = rev {
         println!("cargo:rustc-env=TILO_SDK_REV={}", rev.trim());
     }
+    watch_head();
+}
+
+/// Rerun when the checkout moves to another commit. A build directory that
+/// outlives one checkout (a developer's `target`, or a CI runner's shared
+/// one) would otherwise keep the first commit it saw and scaffold apps
+/// pinned to it.
+fn watch_head() {
+    let Some(dir) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let out = String::from_utf8(output.stdout).ok()?;
+        let out = out.trim();
+        (!out.is_empty()).then(|| out.to_owned())
+    };
+    let branch = git(&["symbolic-ref", "-q", "HEAD"]);
+    for name in ["HEAD", "packed-refs"].into_iter().chain(branch.as_deref()) {
+        let Some(path) = git(&["rev-parse", "--git-path", name]) else {
+            continue;
+        };
+        let path = std::path::Path::new(&dir).join(path);
+        // A path that does not exist would rerun this script on every build.
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
 
 /// `cargo install --git` builds from a clean clone of the requested commit.

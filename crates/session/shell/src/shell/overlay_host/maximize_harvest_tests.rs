@@ -6,7 +6,7 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
@@ -32,26 +32,14 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
             active_tab: tab_id,
             width: StateWidth::Normal,
             maximized,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Test".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -83,8 +71,7 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use vello::kurbo::Point;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{Modifiers, WindowEvent};
+
         let (tree, strip_id, group_id) = one_group_tree(false);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
@@ -135,27 +122,10 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
             },
         );
         g.apply_layout(&taffy, group_node, Point::ZERO);
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(9000.0, 9000.0),
-        };
-        g.handle_event(
-            &moved,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut state,
-                path: &root_id,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: group_node,
-                taffy: &taffy,
-            },
-        );
+        let moved = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
+        ui::testing::Dispatch::new()
+            .layout(&taffy, group_node)
+            .send(g, &moved);
         assert!(g.maximized, "drain must flip maximized true");
 
         // Pre-harvest: persisted state still un-maximized.

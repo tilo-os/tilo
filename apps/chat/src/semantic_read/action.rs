@@ -7,16 +7,17 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
+    encode_cursor,
 };
 
 pub const OPERATION_TYPE: &str = "chat.read";
-pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
-    OPERATION_TYPE,
-    result_schema,
-    validate_request,
-    project,
-)];
+pub static READERS: [RegisteredSemanticReader; 4] = [
+    RegisteredSemanticReader::new(OPERATION_TYPE, result_schema, validate_request, project),
+    crate::feedback::receipt_read::READER,
+    crate::feedback::status_read::READER,
+    crate::feedback::destination_read::READER,
+];
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,32 +29,23 @@ struct Request {
 
 /// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "chat.channel"
-        || !(resource
-            .id
-            .as_str()
-            .strip_prefix("chat.channel:")
-            .is_some_and(|channel| {
-                !channel.is_empty() && channel.len() <= 128 && channel == request.channel
-            }))
+    let request: Request = decode_request(payload)?;
+    let named =
+        ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
+    if resource.kind != "chat.workspace.channels"
+        || !named.is_some_and(|(field, channel)| {
+            field == "channels"
+                && !channel.as_str().is_empty()
+                && channel.as_str().len() <= 128
+                && channel.as_str() == request.channel
+        })
         || !(1..=32).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);
     }
-    if let Some(cursor) = request.cursor {
-        if cursor.len() > 1024 {
-            return Err(SemanticReadError::Limit);
-        }
-        let cursor: super::Cursor =
-            serde_json::from_str(&cursor).map_err(|_| SemanticReadError::InvalidRequest)?;
-        if cursor.channel != request.channel {
-            return Err(SemanticReadError::InvalidRequest);
-        }
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
+    if cursor.is_some_and(|cursor| cursor.channel != request.channel) {
+        return Err(SemanticReadError::InvalidRequest);
     }
     Ok(())
 }
@@ -108,27 +100,13 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    use qdoc::semantic_read::ReadError;
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let cursor = request
-        .cursor
-        .as_deref()
-        .map(serde_json::from_str::<super::Cursor>)
-        .transpose()
-        .map_err(|_| SemanticReadError::InvalidRequest)?;
-    let limits = qdoc::semantic_read::Limits {
+    let request: Request = decode_request(payload)?;
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
+    let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
-        ..qdoc::semantic_read::Limits::default()
+        ..tilo_doc::semantic_read::Limits::default()
     };
-    let page = super::read_messages(document, heads, &request.channel, cursor.as_ref(), limits)
-        .map_err(|error| match error {
-            ReadError::Pending => SemanticReadError::Pending,
-            ReadError::StaleCursor => SemanticReadError::StaleCursor,
-            ReadError::InvalidCursor => SemanticReadError::InvalidRequest,
-            ReadError::Limit => SemanticReadError::Limit,
-            ReadError::Malformed => SemanticReadError::Malformed,
-        })?;
+    let page = super::read_messages(document, heads, &request.channel, cursor.as_ref(), limits)?;
     let messages: Vec<serde_json::Value> = page
         .messages
         .iter()
@@ -144,15 +122,9 @@ fn project(
             })
         })
         .collect();
-    let next_cursor = page
-        .next
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|_| SemanticReadError::Limit)?;
     Ok(ReadPage {
         content: serde_json::json!({ "channel": page.channel, "messages": messages }),
-        next_cursor,
+        next_cursor: encode_cursor(page.next.as_ref())?,
     })
 }
 
@@ -167,17 +139,7 @@ pub fn result_schema() -> &'static serde_json::Value {
                 "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"}
             }}}
         }});
-        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
-            }},
-            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
-                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":content,
-            "nextCursor":{"type":["string","null"],"maxLength":1024}
-        }})
+        ui::semantic_document_read::result_schema(content, true)
     })
 }
 

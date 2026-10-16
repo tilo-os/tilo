@@ -16,20 +16,17 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use collab_types::CommitNamed as _;
 
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, UserId};
+use tilo_ui::permissions::UserId;
 use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -161,13 +158,8 @@ fn drawn_of(scene: &Scene) -> Drawn {
     clippy::cast_precision_loss,
     reason = "W and H are the fixed small test-canvas dimensions (480x120), exactly representable in f32"
 )]
-fn render_widget(
-    mut input: TextInput,
-    doc: &mut AutoCommit,
-    presence: &PresenceCtx,
-) -> LocalRender {
+fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx) -> LocalRender {
     let theme = Theme::dark();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
 
     // The real sync pass: widget visual state is pulled from the CRDT.
@@ -179,10 +171,7 @@ fn render_widget(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(W as f32),
-                    height: Dimension::length(H as f32),
-                },
+                size: Size::from_lengths(W as f32, H as f32),
                 ..Default::default()
             },
             &[child],
@@ -211,14 +200,7 @@ fn render_widget(
     (&mut input as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    (&mut input as &mut dyn Widget).draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        presence,
-        &permission,
-    );
+    (&mut input as &mut dyn Widget).draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
     let mut renderer = OffscreenRenderer::new(W, H);
     LocalRender {
         drawn: drawn_of(&scene),
@@ -226,9 +208,9 @@ fn render_widget(
     }
 }
 
-fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
+fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
-        .with_font_size(28.0)
+        .with_text_role(tilo_ui::TextRole::LargeTitle)
         .with_plain_chrome();
     input.bind_text(bound.clone());
     render_widget(input, doc, presence)
@@ -238,10 +220,10 @@ fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> 
 /// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
     let input = TextInput::new(path)
-        .with_font_size(28.0)
+        .with_text_role(tilo_ui::TextRole::LargeTitle)
         .with_plain_chrome();
-    let mut throwaway = AutoCommit::new();
-    render_widget(input, &mut throwaway, presence)
+    let throwaway = AutoCommit::new();
+    render_widget(input, &throwaway, presence)
 }
 
 #[track_caller]
@@ -305,6 +287,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         // Late-join handshake: A ships a full snapshot, B adopts it. This is
         // exactly the document snapshot path the App drives on join.
         a.send(CollabRequest::document_snapshot(a_doc.save()));
+        a_doc.commit_edit("fixture", "text");
         let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
         let mut b_doc = AutoCommit::new();
@@ -325,13 +308,14 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         assert_eq!(b_text, a_text, "both peers share one CRDT Text object id");
 
         let empty_presence = PresenceCtx::empty();
-        let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
+        let b_before = render_bound(&b_doc, &b_text, &empty_presence);
         assert!(
             non_background_pixels(&b_before.pixels) > 0,
             "B's pre-edit render must show the seeded text"
         );
 
         a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
+        a_doc.commit_edit("fixture", "text");
         let delta = a_doc.save_incremental();
         assert!(!delta.is_empty(), "the edit must produce a delta");
         a.send(CollabRequest::document_incremental(delta));
@@ -351,8 +335,8 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
         assert_eq!(text_of(&a_doc), text_of(&b_doc), "the two peers converge");
 
-        let b_after = render_bound(&mut b_doc, &b_text, &empty_presence);
-        let a_after = render_bound(&mut a_doc, &a_text, &empty_presence);
+        let b_after = render_bound(&b_doc, &b_text, &empty_presence);
+        let a_after = render_bound(&a_doc, &a_text, &empty_presence);
 
         // B re-rendered locally: its post-edit frame differs from its
         // pre-edit frame (the change is visible in B's OWN render).
@@ -473,12 +457,13 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
         peer_doc.splice_text(&t, 0, 0, "base").unwrap();
         let bound = text_obj(&peer_doc).unwrap();
-        let baseline_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let baseline_render = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
 
         let mut writer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
         writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
         let wt = text_obj(&writer_doc).unwrap();
         writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
+        writer_doc.commit_edit("fixture", "text");
         let writer_delta = writer_doc.save_incremental();
         let writer_op = sign_delta(
             &writer_sk,
@@ -494,6 +479,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         viewer_doc.set_actor(automerge::ActorId::from(b"viewer".as_slice()));
         let vt = text_obj(&viewer_doc).unwrap();
         viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
+        viewer_doc.commit_edit("fixture", "text");
         let viewer_delta = viewer_doc.save_incremental();
         let viewer_op = sign_delta(
             &viewer_sk,
@@ -505,7 +491,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
 
         match validate_inbound_op(&viewer_op, &mut state) {
-            Err(ValidationError::RoleForbidsOpClass) => {}
+            Err(ValidationError::NotGranted(_)) => {}
             other => panic!("viewer without write cap must be rejected, got {other:?}"),
         }
         // ...so the peer doc and its render are untouched.
@@ -514,7 +500,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             "base",
             "a rejected op must not mutate the shared doc"
         );
-        let again = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let again = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
         assert_same_frame(&again, &baseline_render, "a rejected op's local render");
 
         // The writer's op validates and is applied via the same
@@ -527,7 +513,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             "base-WROTE",
             "the writer's validated edit converges into the peer doc"
         );
-        let after_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let after_render = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
         assert_ne!(
             after_render.drawn, baseline_render.drawn,
             "the writer's validated edit re-renders locally"
@@ -547,7 +533,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
+    Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
@@ -595,7 +581,7 @@ fn sign_delta(
         artifact,
         author_pub,
         attestation_id,
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH
             .checked_add(StdDuration::from_secs(10))
             .unwrap(),

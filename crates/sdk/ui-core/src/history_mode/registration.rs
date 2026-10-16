@@ -1,6 +1,7 @@
 //! Explicit ownership and presentation registration for managed roots.
 use super::{HistoryResource, preview::PreviewFactory, restore::HistoryRestoreSchema};
 use crate::widget::Widget;
+use automerge::transaction::Transactable as _;
 
 pub struct ManagedRoot {
     pub(crate) widget: Box<dyn Widget>,
@@ -99,6 +100,18 @@ impl HistorySourceRegistration {
             | Self::CheckedFiles { scope, .. } => scope,
         }
     }
+    /// Committed frontier for the refresh predicate, preserving source admission.
+    pub(crate) fn committed_heads(
+        &self,
+        outer: &automerge::AutoCommit,
+    ) -> Result<Vec<automerge::ChangeHash>, HistoryRegistrationError> {
+        match self {
+            Self::OwnedDocument { owner, .. } => owner.committed_heads(outer),
+            Self::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
+            Self::HostDocument { .. } | Self::Unversioned { .. } => Ok(outer.base_heads()),
+        }
+    }
+
     pub(crate) fn document(
         &self,
         outer: &automerge::AutoCommit,
@@ -134,8 +147,10 @@ pub enum HistoryRegistrationError {
     ForeignSource,
 }
 impl HistoryRegistration {
-    /// Called only by the runner that installed an explicitly app-global opener.
-    /// A persistence path identifies storage; it is not a user-file write target.
+    /// A registration over an app-global state document, for tests of
+    /// History's presentation. A persistence path identifies storage; it is
+    /// not a user-file write target.
+    #[cfg(test)]
     #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
@@ -237,6 +252,14 @@ impl HistoryRegistration {
         }
         self.assets.insert(scope, source);
         Ok(self)
+    }
+    /// Whether every source is a checked file of the mounted filesystem: a
+    /// root's witness of the files it names, owning no document.
+    #[must_use]
+    pub fn is_checked_files_only(&self) -> bool {
+        self.sources
+            .iter()
+            .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }))
     }
     /// Validate the declared scope and source correspondence.
     ///

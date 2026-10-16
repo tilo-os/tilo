@@ -1,0 +1,36 @@
+[package]
+name = "tilo-board-successor"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Board update selection: follows the board's release hint only to a digest the pinned Cosign key signed, with provenance and freshness that bind it."
+
+[lib]
+name = "tilo_board_successor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-board-successor"
+path = "src/main.rs"
+
+[dependencies]
+# Strict base64 of attestation payloads, as base64.b64decode(validate=True).
+hex.workspace = true
+# sigaction for SIGTERM/SIGINT, so a stopped service kills its verifier.
+libc.workspace = true
+regex.workspace = true
+# poll over the verifier's two pipes, without FFI.
+rustix = { workspace = true, features = ["event", "std"] }
+serde_json.workspace = true
+sha2.workspace = true
+# The private 0700 directory holding the copied pull credentials.
+tempfile.workspace = true
+tilo-pycompat = { path = "../tilo-pycompat" }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+base64.workspace = true

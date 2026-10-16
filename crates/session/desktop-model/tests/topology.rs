@@ -2,9 +2,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
@@ -32,6 +30,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
         active_tab: tabs[0],
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -239,4 +238,58 @@ fn a_live_strip_shape_that_loses_or_invents_a_tab_is_refused() {
         layout(&tree, 1),
         vec![(10, vec![100, 101]), (11, vec![110])]
     );
+}
+
+#[test]
+fn closing_the_front_tab_returns_to_the_tab_it_came_from() {
+    let mut tree = tree();
+    // Group 10 shows 100; a third tab opens beside it and takes the front.
+    let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+    group.tabs.push(tab(102));
+    group.activate_tab(102);
+    // 100 was the one the person came from, though 101 sits beside it.
+    tree.close_tab(102).unwrap();
+    assert_eq!(
+        tree.workspaces[0].strips[0].window_groups[0].active_tab, 100,
+        "closing returns to the previously shown tab"
+    );
+}
+
+#[test]
+fn history_skips_tabs_that_closed_and_plain_removal_keeps_the_index_rule() {
+    let mut tree = tree();
+    let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+    group.tabs.push(tab(102));
+    group.tabs.push(tab(103));
+    group.activate_tab(101);
+    group.activate_tab(102);
+    group.activate_tab(103);
+    // 102 closes while behind, then 103 closes: 101 is the most recent
+    // survivor before it, not 100.
+    tree.close_tab(102).unwrap();
+    tree.close_tab(103).unwrap();
+    assert_eq!(
+        tree.workspaces[0].strips[0].window_groups[0].active_tab,
+        101
+    );
+    // Restructuring removal ignores history: the tab now at the index.
+    let mut plain = self::tree();
+    let group = &mut plain.workspaces[0].strips[0].window_groups[0];
+    group.activate_tab(101);
+    group.activate_tab(100);
+    plain.remove_tab(100).unwrap();
+    assert_eq!(
+        plain.workspaces[0].strips[0].window_groups[0].active_tab,
+        101
+    );
+}
+
+#[test]
+fn activating_the_front_tab_again_records_nothing() {
+    let mut group = group(30, &[300, 301]);
+    group.activate_tab(300);
+    assert!(group.focus_history.is_empty());
+    group.activate_tab(301);
+    group.activate_tab(301);
+    assert_eq!(group.focus_history, vec![300]);
 }

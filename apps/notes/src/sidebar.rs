@@ -21,15 +21,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+#[cfg(test)]
+use ui::widget::Edits;
 
 use ui::icons::Icon;
 use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
-use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::tree_view::{
-    NodeId, TreeHeadingAction, TreeModel, TreeModelChange, TreeRowAction, TreeRowDecoration,
-    TreeView,
+    NodeId, TreeModel, TreeModelChange, TreeRowAction, TreeRowDecoration, TreeView,
 };
 
 use crate::model::{PageId, Workspace};
@@ -99,7 +99,7 @@ pub(crate) fn note_menu_items() -> Vec<MenuItem> {
         MenuItem::icon_action(Icon::Download, ui::i18n!("notes-menu-export"), || {}),
         MenuItem::icon_action(Icon::Image, ui::i18n!("notes-menu-insert-image"), || {}),
         MenuItem::separator(),
-        MenuItem::icon_action(Icon::Trash2, ui::i18n!("notes-menu-delete"), || {}),
+        MenuItem::destructive_action(ui::i18n!("notes-menu-delete"), || {}).with_icon(Icon::Trash2),
     ]
 }
 
@@ -117,26 +117,6 @@ fn empty_area_items() -> Vec<MenuItem> {
         MenuItem::icon_action(Icon::FilePlus, "New note", || {}),
         MenuItem::icon_action(Icon::CloudDownload, "Import Markdown", || {}),
     ]
-}
-
-/// The tier a chosen control lifts to off a `surfaces.raised` ground — the
-/// narrow top bar's drawer toggle, the History page tree: whichever of the
-/// theme's semantic tiers moves furthest from `raised`, so the selection is a
-/// contrast step on every preset (HIG §9.3) instead of raised-on-raised with
-/// only an outline. `chrome::selection_tier` lifts base → raised and would
-/// land on the ground itself here.
-pub(crate) fn selection_fill_on_raised(theme: &Theme) -> vello::peniko::Color {
-    use ui::a11y::relative_luminance;
-    let c = &theme.tokens.colors;
-    let g = relative_luminance(c.surfaces.raised);
-    [c.surfaces.base, c.lift(1.0)]
-        .into_iter()
-        .max_by(|a, b| {
-            (relative_luminance(*a) - g)
-                .abs()
-                .total_cmp(&(relative_luminance(*b) - g).abs())
-        })
-        .unwrap_or(c.surfaces.base)
 }
 
 /// Stable tree keys for page ids. Keys survive every rebuild of the model,
@@ -194,15 +174,21 @@ impl PageTree {
             roots: Vec::new(),
             entries: HashMap::new(),
         };
+        // Every note's children in notebook order, gathered in one pass:
+        // asking the workspace per note scanned every note for each one.
+        let mut children_of: HashMap<Option<PageId>, Vec<&crate::model::PageMeta>> = HashMap::new();
+        for page in workspace.pages() {
+            children_of.entry(page.parent).or_default().push(page);
+        }
         let mut registry = keys.borrow_mut();
         let mut stack: Vec<(Option<PageId>, NodeId)> = vec![(None, ROOT)];
         while let Some((page, key)) = stack.pop() {
-            let children: Vec<NodeId> = workspace
-                .children_of(page)
+            let siblings = children_of.get(&page).map_or(&[][..], Vec::as_slice);
+            let children: Vec<NodeId> = siblings
                 .iter()
                 .map(|child| registry.key(child.id))
                 .collect();
-            for child in workspace.children_of(page) {
+            for child in siblings {
                 let child_key = registry.key(child.id);
                 tree.entries.insert(
                     child_key,
@@ -392,27 +378,17 @@ impl PageSidebar {
         let on_delete = (Rc::clone(&outbox), Rc::clone(&keys));
         let on_reorder = Rc::clone(&outbox);
         let on_row_action = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_heading = Rc::clone(&outbox);
         let on_menu = (Rc::clone(&outbox), Rc::clone(&keys));
         let tree = TreeView::from_model(model)
             .with_id("page_tree")
+            .with_accessible_name(ui::i18n!("notes-title"))
             .hide_root()
             .fill()
-            .with_heading(ui::i18n!("notes-title"))
-            .with_ground(|theme| theme.tokens.colors.surfaces.raised)
-            .with_trailing_edge()
-            .with_row_height(30.0)
-            .inset_rows()
             .with_indent_guides()
             .selection_follows_focus(true)
             .rename_on_double_click()
             .tab_indents(true)
             .with_row_hint(ui::i18n!("notes-affordance-note-row"))
-            .with_heading_action(
-                TreeHeadingAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-note"))
-                    .accessible_name("New note")
-                    .description("Create a top-level note"),
-            )
             .with_row_actions(vec![
                 TreeRowAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-child"))
                     .accessible_name(ui::i18n!("notes-a11y-new-child-under")),
@@ -465,12 +441,6 @@ impl PageSidebar {
                 push_for(&on_row_action.0, &on_row_action.1, key, |page| {
                     OutEvent::CreateChild { parent: Some(page) }
                 });
-            })
-            .on_heading_action(move || {
-                on_heading
-                    .borrow_mut()
-                    .events
-                    .push(OutEvent::CreateChild { parent: None });
             })
             .on_context_menu_item(move |target, index| {
                 let (outbox, keys) = &on_menu;
@@ -643,12 +613,6 @@ impl PageSidebar {
         self.tree.row_rect(key).map(|rect| rect.center())
     }
 
-    /// Test hook: the sidebar's laid-out rect.
-    #[doc(hidden)]
-    pub fn rect_for_test(&self) -> vello::kurbo::Rect {
-        ui::Widget::get_rect(&self.tree)
-    }
-
     /// Test hook: the x of the disclosure column's centre on row `index`.
     #[doc(hidden)]
     pub fn row_disclosure_x_for_test(&self, index: usize) -> Option<f64> {
@@ -684,14 +648,6 @@ impl PageSidebar {
             .map(ui::widget::TextInput::is_plain)
     }
 
-    /// Test hook: the centre of the heading's "+" new-page button.
-    #[doc(hidden)]
-    pub fn new_page_btn_center_for_test(&self) -> vello::kurbo::Point {
-        self.tree
-            .heading_action_rect()
-            .map_or(vello::kurbo::Point::ZERO, |rect| rect.center())
-    }
-
     /// Test hook: whether a drag past the threshold is in flight.
     #[doc(hidden)]
     pub fn drag_active_for_test(&self) -> bool {
@@ -720,9 +676,10 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use ui::Widget;
     use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use vello::kurbo::{Point, Rect};
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, NamedKey};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
+    use winit::keyboard::NamedKey;
 
     /// Lay the sidebar out at `rect` the way the drawer host does.
     fn place(sidebar: &mut PageSidebar, rect: Rect, text_scale: f32) {
@@ -752,7 +709,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut AutoCommit::new(),
+                state: Edits::lend(&mut AutoCommit::new()),
                 path: &ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -764,33 +721,38 @@ mod tests {
     }
 
     fn moved(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
     }
 
-    fn key(key: NamedKey) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+    use ui::synthetic_input::named_key;
+
+    #[test]
+    fn deleting_a_note_is_the_one_danger_row_and_sits_apart_at_the_end() {
+        let items = note_menu_items();
+        let danger: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                matches!(
+                    item,
+                    MenuItem::Action {
+                        destructive: true,
+                        ..
+                    }
+                )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(danger, vec![menu_row::DELETE]);
+        assert_eq!(menu_row::DELETE, items.len() - 1);
+        assert!(
+            matches!(items.get(menu_row::DELETE - 1), Some(MenuItem::Separator)),
+            "a separator sets the destructive row apart"
         );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
     }
 
     #[test]
@@ -809,32 +771,8 @@ mod tests {
         assert_eq!(name, catalog);
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn sidebar_rows_track_pages_and_scale_at_high_text_on_every_preset() {
-        eprintln!("phase selection_fill_moves_off_the_raised_sidebar_on_every_preset");
-        {
-            use ui::surface::{edge_delta, edge_on};
-            use ui::tokens::colors::HAIRLINE_MIN_DELTA;
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let raised = theme.tokens.colors.surfaces.raised;
-                let lifted = selection_fill_on_raised(&theme);
-                assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
-                if theme.name != "High Contrast" {
-                    assert!(
-                        edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
-                        "{}",
-                        theme.name
-                    );
-                }
-                assert!(
-                    edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
-                    "{}",
-                    theme.name
-                );
-            }
-        }
-
         eprintln!("phase sync_from_workspace_flattens_to_visible_rows");
         {
             let mut ws = Workspace::new();
@@ -861,12 +799,14 @@ mod tests {
         eprintln!("phase keys_stay_attached_to_pages_across_rebuilds");
         {
             let mut ws = Workspace::new();
-            let a = ws.create_page(None);
+            ws.create_page(None);
             let b = ws.create_page(None);
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             let key_b = tree.key(b).unwrap();
-            ws.move_to(b, None, Some(a));
+            // `b` moves before `a`.
+            let moved = ws.data.pages.remove(1);
+            ws.data.pages.insert(0, moved);
             tree.sync_from_workspace(&ws);
             assert_eq!(tree.key(b), Some(key_b));
             assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
@@ -893,8 +833,6 @@ mod tests {
                 .and_then(|(key, _, _)| tree.disclosure_rect(key))
                 .unwrap();
 
-            let heading = tree.heading_action_rect().unwrap();
-            assert!(heading.y1 <= first.y0, "rows start below the heading");
             assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
             assert!(first.height() > 30.0, "rows grow with the text");
             assert!(disclosure.x1 < first.x1 - 4.0, "the label keeps room");
@@ -904,7 +842,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let root = ws.create_page(None);
-            ws.rename(root, "Project plan");
+            ws.data.pages[0].title = "Project plan".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
@@ -915,17 +853,15 @@ mod tests {
                 node.name.as_deref(),
                 Some(ui::i18n!("notes-title").as_str())
             );
-            assert_eq!(node.children.len(), 2);
-            assert_eq!(node.children[0].role, ui::a11y::Role::Button);
-            assert_eq!(node.children[0].name.as_deref(), Some("New note"));
-            assert_eq!(node.children[1].name.as_deref(), Some("Project plan"));
+            assert_eq!(node.children.len(), 1, "the tree exposes its rows only");
+            assert_eq!(node.children[0].name.as_deref(), Some("Project plan"));
             let key = tree.key(root).unwrap();
             assert_eq!(
-                Widget::synthetic_accessibility_rect(tree.tree(), &[1]),
+                Widget::synthetic_accessibility_rect(tree.tree(), &[0]),
                 tree.row_rect(key)
             );
             tree.selection_mut().clear();
-            assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[1]));
+            assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[0]));
             assert_eq!(
                 tree.selected(),
                 Some(key),
@@ -961,11 +897,11 @@ mod tests {
                     .map(|target| (target.key, target.placement)),
                 Some((target_key, DropPlacement::Inside))
             );
-            let mut doc = AutoCommit::new();
-            tree.update(&mut doc, &ObjId::Root);
+            let doc = AutoCommit::new();
+            tree.update(&doc, &ObjId::Root);
             assert!(!tree.is_expanded(target_key), "no spring before the dwell");
             std::thread::sleep(std::time::Duration::from_millis(700));
-            tree.update(&mut doc, &ObjId::Root);
+            tree.update(&doc, &ObjId::Root);
             assert!(tree.is_expanded(target_key), "the dwell opens the branch");
         }
 
@@ -983,10 +919,10 @@ mod tests {
             event(&mut tree, &button(ElementState::Pressed));
             event(&mut tree, &moved(Point::new(start.x, 299.0)));
             assert!(tree.is_dragging());
-            let mut doc = AutoCommit::new();
-            tree.update(&mut doc, &ObjId::Root);
+            let doc = AutoCommit::new();
+            tree.update(&doc, &ObjId::Root);
             std::thread::sleep(std::time::Duration::from_millis(30));
-            tree.update(&mut doc, &ObjId::Root);
+            tree.update(&doc, &ObjId::Root);
             assert!(
                 tree.scroll_offset() > 0.0,
                 "edge dragging reveals lower drop targets without ending the gesture"
@@ -1027,7 +963,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let id = ws.create_page(None);
-            ws.rename(id, "Untitled");
+            ws.data.pages[0].title = "Untitled".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));
@@ -1050,7 +986,7 @@ mod tests {
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));
-            event(&mut tree, &key(NamedKey::Escape));
+            event(&mut tree, &named_key(NamedKey::Escape));
             assert!(!tree.is_renaming());
             assert!(tree.take_events().is_empty());
         }
@@ -1068,7 +1004,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &ObjId::Root
             ));
             assert!(tree.take_events().is_empty());
@@ -1103,7 +1039,7 @@ mod tests {
                 tree.tree_mut(),
                 &copy,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &ObjId::Root
             ));
             assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
@@ -1179,7 +1115,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Increment,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
             assert!(tree.take_events().is_empty());
@@ -1187,7 +1123,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
             assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
@@ -1201,7 +1137,7 @@ mod tests {
                     tree.tree_mut(),
                     &target,
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &ObjId::Root
                 ),
                 "closed menu target is stale"

@@ -31,12 +31,15 @@ pub enum QsLevel {
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
 /// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
-/// `connected` flags the active-radio dot.
+/// `connected` flags the active-radio dot. `security` is the scanned
+/// authentication mode, which decides whether a passphrase may be shared
+/// with the person's other devices without scanning again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
     pub signal: u8,
     pub secure: bool,
+    pub security: os_actions::WifiSecurity,
     pub connected: bool,
 }
 
@@ -44,13 +47,16 @@ pub struct WifiNetwork {
 /// None)` fails for every protected network not seen before — every
 /// network on first boot — and there's nowhere else to type a passphrase
 /// on a machine with no network yet, so the chrome asks for it.
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// The passphrase itself is never chrome state: the overlay host's secret
+/// field holds it while this prompt is up, and lets go of it with the
+/// prompt.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WifiPasswordPrompt {
     pub ssid: String,
-    /// Held in the clear only while the prompt is up — cleared on
-    /// submit, cancel, or popover close.
-    pub password: String,
-    pub selection: ui::text_selection::Selection,
+    /// Tells this prompt from any other, even for the same network, so
+    /// nothing typed into one is ever shown in the next.
+    pub id: u64,
     /// Set after a failed attempt, so a wrong passphrase says so
     /// instead of reopening an empty prompt.
     pub error: Option<String>,
@@ -61,18 +67,18 @@ pub struct WifiPasswordPrompt {
 
 impl WifiPasswordPrompt {
     pub fn new(ssid: impl Into<String>) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             ssid: ssid.into(),
-            password: String::new(),
-            selection: ui::text_selection::Selection::collapsed(0),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             error: None,
             connecting: false,
         }
     }
 
     /// An empty passphrase is rejected by every WPA network.
-    pub fn can_submit(&self) -> bool {
-        !self.connecting && !self.password.is_empty()
+    pub fn can_submit(&self, password: &str) -> bool {
+        !self.connecting && !password.is_empty()
     }
 }
 
@@ -85,6 +91,30 @@ pub struct BtDevice {
     pub address: String,
     pub battery: u8,
     pub connected: bool,
+}
+
+/// What a key does in a drill-in pane's list.
+#[derive(Clone, Copy)]
+pub(crate) enum PaneKey {
+    /// Move focus to the previous row when `true`, the next one otherwise.
+    Focus(bool),
+    /// Use the focused row.
+    Activate,
+}
+
+impl PaneKey {
+    /// Tab moves along `backwards`, arrows move regardless of it, Enter and
+    /// Space activate. Any other key is not the pane's.
+    pub(crate) fn of(logical_key: &winit::keyboard::Key, backwards: bool) -> Option<Self> {
+        use winit::keyboard::{Key, NamedKey};
+        match logical_key {
+            Key::Named(NamedKey::Tab) => Some(Self::Focus(backwards)),
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => Some(Self::Focus(true)),
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => Some(Self::Focus(false)),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => Some(Self::Activate),
+            _ => None,
+        }
+    }
 }
 
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.
@@ -116,3 +146,5 @@ mod tests {
         assert_eq!(PowerProfile::Performance.label(), "Performance");
     }
 }
+
+pub(crate) mod radio;

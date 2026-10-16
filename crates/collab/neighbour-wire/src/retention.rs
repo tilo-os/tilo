@@ -4,17 +4,78 @@
 //! else is live session traffic; persisting input, presence, media,
 //! permission prompts or request/response control frames would make them
 //! execute late.
+//!
+//! This is the one host-retention classifier: native publication, the relay
+//! and browser peers all call it, so a host keeps the same history whichever
+//! client wrote it.
 
 use crate::NeighbourMsg;
 
 /// How a retained message relates to the others on its channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The variant order is wire format: delivery handoffs serialize it
+/// (postcard variant index `Checkpoint = 0`, `Delta = 1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Retention {
     /// A complete, idempotent state baseline: the host replaces the previous
     /// checkpoint and its older tail on the same channel.
     Checkpoint,
     /// An incremental change appended after the channel's checkpoint.
     Delta,
+}
+
+/// The devices a host delivers `msg` to as it arrives, when only they can
+/// use it: the copy of a channel admission carrying what its devices join
+/// from (every other member gets the copy without it). `None` for a message
+/// every member of the room gets. A device catching up replays it like any
+/// retained message.
+pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]> {
+    let NeighbourMsg::MlsGovernance { frame, .. } = msg else {
+        return None;
+    };
+    match &frame.action {
+        collab_types::MlsGovernanceAction::AddWithKeyHistory {
+            recipients,
+            joining: collab_types::Joining::Material(_),
+            ..
+        } => Some(recipients),
+        _ => None,
+    }
+}
+
+/// Whether only a channel's steward reads `msg`: a device's access request
+/// (plain or routed) and its acknowledgements of the steward's frames. The
+/// steward is the device that governs the channel's room; every other
+/// member ignores these. A host that governs the room itself, and so
+/// stewards its channels, need deliver them to no member and replay them
+/// to none.
+pub fn steward_only(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
+            | NeighbourMsg::MlsGovernanceAck { .. }
+    )
+}
+
+/// Whether checkpoint `msg` is the whole of its route: its author's next
+/// one on the same channel leaves it nothing to add, so a host keeps only
+/// the latest. A device's latest certificate, access request and
+/// acknowledgement, and a channel's governance head, are each complete on
+/// their own; an Automerge checkpoint is not (whether it covers what came
+/// before is proven from the document).
+pub fn standalone(msg: &NeighbourMsg) -> bool {
+    match msg {
+        NeighbourMsg::MlsGovernance { frame, .. } => {
+            // Each genesis keeps a route of its own.
+            !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis)
+        }
+        NeighbourMsg::MlsAccessRequest { .. }
+        | NeighbourMsg::MlsRoutedAccessRequest { .. }
+        | NeighbourMsg::MlsGovernanceAck { .. }
+        | NeighbourMsg::IdentityHello { .. } => true,
+        _ => false,
+    }
 }
 
 /// Classify `msg` for durable retention.
@@ -40,8 +101,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             envelope,
             ..
         } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            let channel = *blake3::hash(route.as_bytes()).as_bytes();
+            let channel = app_document_channel(app_id, record_id);
             // Content-key ciphertext carries its storage class in the signed
             // encryption metadata, so a host retains encrypted history
             // without reading it. A single-use MLS application message is
@@ -75,20 +135,38 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             return Some((channel, retention));
         }
         // Channel governance is replayable state a device that was offline
-        // must still receive: every frame of the chain, and the latest access
-        // request and acknowledgement of each device. None of it is content.
-        // Each frame is its own baseline, keyed by its digest, so a steward
-        // redelivering a frame replaces the retained copy instead of growing
-        // the host's tail; receivers restore chain order themselves.
+        // must still receive, and none of it is content: the channel's
+        // genesis, its newest frame, and the latest access request and
+        // acknowledgement of each device. Genesis is kept for good: it names
+        // the channel's steward. Every later frame replaces the one before:
+        // a joining device needs only the admission that names it, and one
+        // that missed a commit asks again. Keeping every commit and Welcome
+        // made each newcomer replay the channel's whole history, every
+        // Welcome carrying the group's ratchet tree.
         NeighbourMsg::MlsGovernance { frame, .. } => {
-            let digest = frame.digest().ok()?;
             let mut route = b"mls-governance\0".to_vec();
             route.extend_from_slice(frame.channel.0.as_bytes());
-            route.extend_from_slice(&digest);
+            if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
+                route.extend_from_slice(&frame.digest().ok()?);
+            } else if audience(msg).is_some() {
+                // The copy carrying what an admission's devices join from
+                // keeps its own route: the head is every member's copy.
+                route.extend_from_slice(b"join");
+            } else {
+                route.extend_from_slice(b"head");
+            }
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
         NeighbourMsg::MlsAccessRequest { request, .. } => {
             let mut route = b"mls-access\0".to_vec();
+            route.extend_from_slice(request.channel.0.as_bytes());
+            route.extend_from_slice(request.device.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
+        // Kept apart from the plain request it travels with, so a steward
+        // that predates the routed form still finds the plain one retained.
+        NeighbourMsg::MlsRoutedAccessRequest { request, .. } => {
+            let mut route = b"mls-routed-access\0".to_vec();
             route.extend_from_slice(request.channel.0.as_bytes());
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
@@ -117,9 +195,29 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(user_public_key);
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // Each device's latest signed directory snapshot is the whole of
+        // what it knows, so a device that was offline catches up from the
+        // newest one per author.
+        NeighbourMsg::PersonalWorkspaces {
+            user_public_key,
+            update,
+        } => {
+            let mut route = Vec::new();
+            route.extend_from_slice(b"personal-workspaces\0");
+            route.extend_from_slice(user_public_key);
+            route.extend_from_slice(&update.author_device_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
+}
+
+/// The retained channel of an app record. Room isolation is supplied by the
+/// enclosing authenticated workspace, not by this digest.
+#[must_use]
+pub fn app_document_channel(app: &str, record: &str) -> [u8; 32] {
+    *blake3::hash(format!("app\0{app}\0{record}").as_bytes()).as_bytes()
 }
 
 #[cfg(test)]
@@ -132,7 +230,7 @@ mod tests {
             collab_types::ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
         );
@@ -164,6 +262,7 @@ mod tests {
         host_retains_channel_governance_per_channel_and_device();
         host_persists_state_but_never_late_session_actions();
         channel_digests_are_stable();
+        retention_wire_bytes_are_frozen();
     }
 
     /// The host replays a checkpoint followed by its tail. A snapshot too
@@ -231,9 +330,9 @@ mod tests {
         );
     }
 
-    /// A device that was offline gets every frame of a channel's chain
-    /// (a redelivered frame replaces its copy), and the steward gets each
-    /// device's latest request and acknowledgement.
+    /// A device that was offline gets a channel's genesis and newest frame,
+    /// and the steward gets each device's latest request and
+    /// acknowledgement.
     fn host_retains_channel_governance_per_channel_and_device() {
         use collab_types::{
             ChannelId, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
@@ -263,6 +362,31 @@ mod tests {
         assert_eq!(first, retention(&frame([0; 32]), false).unwrap());
         assert_ne!(first.0, retention(&frame([1; 32]), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
+        // Every later frame replaces the channel's previous one.
+        let change = |epoch| NeighbourMsg::MlsGovernance {
+            room: "room".into(),
+            frame: Box::new(
+                MlsGovernanceFrameV1::signed(
+                    channel,
+                    [epoch; 32],
+                    u64::from(epoch),
+                    [epoch; 32],
+                    u64::from(epoch),
+                    MlsGovernanceAction::Remove {
+                        removed: collab_types::Ed25519PublicKey::from_bytes(
+                            device.verifying_key().to_bytes(),
+                        ),
+                        commit: vec![epoch],
+                    },
+                    &steward,
+                )
+                .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let head = retention(&change(2), false).unwrap();
+        assert_eq!(head, retention(&change(3), false).unwrap());
+        assert_ne!(head.0, first.0);
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
             room: "room".into(),
@@ -273,6 +397,18 @@ mod tests {
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(mine, retention(&request(&other), false).unwrap().0);
         assert_ne!(mine, first.0);
+        // The routed form is kept beside the plain one, per device too.
+        let routed = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsRoutedAccessRequest {
+            room: "room".into(),
+            request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
+            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
+            delivery: 0,
+        };
+        let (routed_mine, kind) = retention(&routed(&device), false).unwrap();
+        assert_eq!(kind, Retention::Checkpoint);
+        assert!(standalone(&routed(&device)));
+        assert_ne!(routed_mine, mine);
+        assert_ne!(routed_mine, retention(&routed(&other), false).unwrap().0);
 
         let ack = NeighbourMsg::MlsGovernanceAck {
             room: "room".into(),
@@ -282,6 +418,14 @@ mod tests {
         let (acked, kind) = retention(&ack, false).unwrap();
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(acked, mine);
+
+        // Requests and acknowledgements are the steward's alone; the frames
+        // it sends every member, and the genesis naming it, are not.
+        assert!(steward_only(&request(&device)));
+        assert!(steward_only(&routed(&device)));
+        assert!(steward_only(&ack));
+        assert!(!steward_only(&frame([0; 32])));
+        assert!(!steward_only(&change(2)));
     }
 
     fn host_persists_state_but_never_late_session_actions() {
@@ -373,6 +517,7 @@ mod tests {
                     key: vec![4],
                     payload: collab_types::PeerPresencePayload::Arrived,
                 },
+                colour: None,
             },
         ] {
             assert!(retention(&live, false).is_none());
@@ -397,5 +542,19 @@ mod tests {
         )
         .expect("documents are retained");
         assert_eq!(channel, *blake3::hash(b"app\0app\0doc").as_bytes());
+        assert_eq!(channel, app_document_channel("app", "doc"));
+    }
+
+    /// Delivery handoffs serialize the class beside each governance item;
+    /// reordering the variants would silently swap checkpoints and deltas.
+    fn retention_wire_bytes_are_frozen() {
+        for (class, byte) in [(Retention::Checkpoint, 0u8), (Retention::Delta, 1)] {
+            let bytes = postcard::to_allocvec(&class).expect("retention encodes");
+            assert_eq!(bytes, [byte]);
+            assert_eq!(
+                postcard::from_bytes::<Retention>(&bytes).expect("retention decodes"),
+                class
+            );
+        }
     }
 }

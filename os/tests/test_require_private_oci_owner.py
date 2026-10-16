@@ -19,7 +19,7 @@ class OwnerVisibilityTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         import_step = workflow.index("- name: Import independently pinned Lenovo firmware data")
         candidate_push = workflow.index('podman push --digestfile "$digest_file" "$candidate"')
-        promote_step = workflow.index("  promote-lenovo:")
+        promote_step = workflow.index("  promote-board:")
         immutable_copy = workflow.index('skopeo copy --preserve-digests "docker://$image" "docker://$target"')
         guard = "python3 os/dev/require-private-oci-owner.py"
         self.assertIn(guard, workflow[import_step:candidate_push])

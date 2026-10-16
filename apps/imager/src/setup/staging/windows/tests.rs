@@ -2,11 +2,9 @@
 //! development host; the byte fixtures are built with the same 64-bit layout
 //! `sys.rs` asserts against `windows-sys` at compile time.
 
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 
-use super::super::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
+use super::super::platform::{Disk, NewPartition, Partition, SystemVolume};
 use super::super::probe::Blocker;
 use super::super::{ESP_TYPE, STAGING_ROOT_TYPE};
 use super::facts::{self, Observed, PowerStatus};
@@ -16,6 +14,44 @@ use super::{ops, remedies, scripts};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
+
+#[cfg(windows)]
+#[test]
+fn final_boot_geometry_snapshot_executes_without_shrink_probe() {
+    let fixture = Fixture::oem(512);
+    let json = fixture.snapshot_json("GPT", json!("NVMe"), json!(2));
+    let mocks = format!(
+        r#"$fixture = '{}' | ConvertFrom-Json
+$script:shrinkCalls = 0
+function Get-Partition {{
+ param($DriveLetter, $DiskNumber)
+ if ($DriveLetter) {{ $p = $fixture.Partitions[2]; $p | Add-Member -NotePropertyName DiskNumber -NotePropertyValue 0; return $p }}
+ return $fixture.Partitions
+}}
+function Get-Disk {{ param($Number) return $fixture.Disk }}
+function Get-PartitionSupportedSize {{ $script:shrinkCalls++; return $fixture.System }}
+function New-Object {{ throw 'COM intentionally unavailable in fixture' }}
+"#,
+        json.to_string().replace('\'', "''")
+    );
+    let drive = scripts::DriveLetter::new('c').unwrap();
+    for (program, calls) in [
+        (scripts::geometry_snapshot(drive), 0),
+        (scripts::snapshot(drive), 1),
+    ] {
+        let program = format!(
+            "{mocks}{program}\nif ($script:shrinkCalls -ne {calls}) {{ throw 'unexpected shrink probe' }}\n"
+        );
+        let output = super::sys::powershell(&program, std::time::Duration::from_secs(20)).unwrap();
+        let value = serde_json::from_slice(&output).unwrap();
+        let snapshot = storage::parse_snapshot(&value).unwrap();
+        storage::cross_check(&fixture.layout_disk(), &snapshot).unwrap();
+        if calls == 0 {
+            assert_eq!(snapshot.system.size_min, None);
+            assert_eq!(snapshot.system.size_max, None);
+        }
+    }
+}
 
 const MSR_TYPE: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
 const BASIC_DATA_TYPE: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
@@ -350,34 +386,6 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
         );
         assert!(layout::parse_drive_layout(&negative).is_err());
         assert!(layout::parse_geometry(&[0u8; 8]).is_err());
-    }
-
-    // Phase `live_firmware_facts_decode_boot_variables`.
-    {
-        let base = facts::basis_firmware(true, false);
-        let mut vars = HashMap::new();
-        vars.insert("BootCurrent".to_string(), vec![0x01, 0x00]);
-        vars.insert(
-            "BootOrder".to_string(),
-            vec![0x01, 0x00, 0x00, 0x00, 0x0a, 0x01],
-        );
-        let facts = super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).unwrap();
-        assert_eq!(facts.boot_current.as_deref(), Some("0001"));
-        assert_eq!(facts.boot_order, ["0001", "0000", "010A"]);
-        assert_eq!(facts.boot_next, None);
-        assert!(facts.uefi && !facts.secure_boot);
-
-        vars.insert("BootNext".to_string(), vec![0x04]);
-        assert!(super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).is_err());
-        vars.insert("BootNext".to_string(), vec![0x04, 0x01]);
-        assert_eq!(
-            super::live_firmware_facts(&FakeFirmware(vars), &base)
-                .unwrap()
-                .boot_next
-                .as_deref(),
-            Some("0104")
-        );
-        assert!(ops::decode_boot_order(&[1, 0, 2]).is_err());
     }
 }
 
@@ -945,6 +953,24 @@ fn windows_scripts_carry_only_validated_encoded_values() {
         assert!(
             scripts::snapshot(scripts::DriveLetter::new('d').unwrap()).contains("-DriveLetter D\n")
         );
+        let drive = scripts::DriveLetter::new('c').unwrap();
+        let full = scripts::snapshot(drive);
+        let geometry = scripts::geometry_snapshot(drive);
+        assert!(full.contains("Get-PartitionSupportedSize"));
+        assert!(!geometry.contains("Get-PartitionSupportedSize"));
+        for retained in [
+            "Get-Disk",
+            "Get-Partition -DiskNumber",
+            "Guid =",
+            "LogicalSectorSize",
+            "SizeMin = $min",
+            "BitLockerProtection",
+        ] {
+            assert!(
+                geometry.contains(retained),
+                "missing geometry check: {retained}"
+            );
+        }
         assert_eq!(
             scripts::DriveLetter::of_path(r"C:\Windows")
                 .unwrap()
@@ -984,47 +1010,5 @@ fn windows_scripts_carry_only_validated_encoded_values() {
         assert!(outer.contains(r"-FilePath 'C:\Win''dows\powershell.exe' -Verb RunAs"));
         assert!(outer.contains(&scripts::encode_command("exit 7")));
         assert!(outer.contains("exit 1223"));
-    }
-}
-
-/// In-memory EFI variables; every disk operation is refused.
-struct FakeFirmware(HashMap<String, Vec<u8>>);
-
-impl Platform for FakeFirmware {
-    fn system_disk(&self) -> IoResult<Disk> {
-        Err("fake".into())
-    }
-    fn system_volume(&self) -> IoResult<Option<SystemVolume>> {
-        Err("fake".into())
-    }
-    fn shrink_system_volume(&mut self, _: &str, _: u64) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn grow_system_volume(&mut self, _: &str, _: u64) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn create_partition(&mut self, _: &Disk, _: &NewPartition) -> IoResult<String> {
-        Err("fake".into())
-    }
-    fn delete_partition(&mut self, _: &Disk, _: &str) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn write_partition(&mut self, _: &Disk, _: &str, _: u64, _: &[u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn read_partition(&self, _: &Disk, _: &str, _: u64, _: &mut [u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn sync_disk(&mut self, _: &Disk) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>> {
-        Ok(self.0.get(name).cloned())
-    }
-    fn set_efi_var(&mut self, _: &str, _: &[u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn delete_efi_var(&mut self, _: &str) -> IoResult<()> {
-        Err("fake".into())
     }
 }

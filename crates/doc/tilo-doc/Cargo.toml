@@ -1,0 +1,40 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-doc"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Rich-text and spreadsheet document resources for Tilo"
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Hooks for tests that compare the bulk import path with the op-by-op reference.
+bulk-instrumentation = []
+
+[dependencies]
+automerge.workspace = true
+tilo-automerge.workspace = true
+blake3.workspace = true
+# Binary inputs (images, binary package parts) are referenced by content address; the bytes live
+# in the caller's content store.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Ordering keys, history, batched writes and diffs shared by every resource.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

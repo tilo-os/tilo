@@ -11,11 +11,11 @@ Usage:
 
 What it does:
   1. Spawns ./target/debug/shell --backend headless with
-     TILO_TEST_CONTROL set to the socket path and DISPLAY +
-     WAYLAND_DISPLAY unset.
+     HOME and the XDG dirs in a scratch profile, TILO_TEST_CONTROL
+     set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
-  4. Opens global search (Super+K), types "Files", proves its live state,
+  4. Opens global search (Super+Space), types "Files", proves its live state,
      waits for the transition to settle, and snapshots.
   5. Closes the palette (Escape), snapshots again.
   6. Kills the compositor + removes the socket.
@@ -26,12 +26,14 @@ Exits non-zero on any compositor error response or process timeout.
 """
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
 import time
 
 from _control import call, require_ok, runtime_socket_path
+from tilo_client import scratch_session_env
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -141,6 +143,37 @@ def assert_nonblank_png(path: pathlib.Path) -> None:
     raise RuntimeError(f"{path} is blank or effectively one-colour ({len(colours)} colours)")
 
 
+def assert_palette_input_painted(path: pathlib.Path, rect: list[float]) -> None:
+    """Reject a scrim-only frame even when state and semantic targets are open."""
+    width, height, channels, pixels = png_pixels(path)
+    x, y, w, h = rect
+    if not (0 <= x < x + w <= width and 0 <= y < y + h <= height):
+        raise RuntimeError("search input target lies outside the captured output")
+    # Inspect the typed query area, excluding the border and leading icon.
+    # This example types Files at the default scale in a fresh profile.
+    x0, x1 = int(x + 32), int(min(x + w - 8, x + 160))
+    y0, y1 = int(y + 8), int(y + h - 8)
+    luminances = []
+    for py in range(y0, y1):
+        for px in range(x0, x1):
+            offset = (py * width + px) * channels
+            rgb = pixels[offset:offset + min(channels, 3)]
+            if len(rgb) < 3:
+                value = rgb[0]
+            else:
+                value = (2126 * rgb[0] + 7152 * rgb[1] + 722 * rgb[2]) // 10000
+            if channels in (2, 4):
+                value = value * pixels[offset + channels - 1] // 255
+            luminances.append(value)
+    if not luminances:
+        raise RuntimeError("search input has no captured interior")
+    low, high = min(luminances), max(luminances)
+    if (high - low < 80
+            or sum(value <= low + 20 for value in luminances) < 80
+            or sum(value >= low + 80 for value in luminances) < 80):
+        raise RuntimeError("search state is open but its input text is not visibly painted")
+
+
 def assert_palette_is_visually_gone(open_path: pathlib.Path, closed_path: pathlib.Path) -> None:
     """Prove Escape changed the rendered palette area, not only live state."""
     ow, oh, oc, open_pixels = png_pixels(open_path)
@@ -170,16 +203,21 @@ def main() -> int:
         os.unlink(SOCKET)
     except FileNotFoundError:
         pass
-    env = {**os.environ, "TILO_TEST_CONTROL": SOCKET}
+    env, profile = scratch_session_env()
+    env["TILO_TEST_CONTROL"] = SOCKET
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     print(f"spawning {BINARY} --backend headless ...")
-    proc = subprocess.Popen(
-        [str(BINARY), "--backend", "headless"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        proc = subprocess.Popen(
+            [str(BINARY), "--backend", "headless"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        shutil.rmtree(profile, ignore_errors=True)
+        raise
 
     try:
         # 2. Wait for socket.
@@ -200,10 +238,11 @@ def main() -> int:
         require_ok(call(SOCKET, {"op": "click_named", "name": "wheel_disc"}))
         print("  clicked wheel_disc")
 
-        # 4. Super+K → machine-wide search, type, prove live state, snapshot.
-        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True}))
-        require_ok(call(SOCKET, {"op": "key", "key": "k"}))
-        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}))
+        # 4. Fresh profiles use Super+Space for machine-wide search.
+        # Hold the modifier through the production key-down/up path.
+        require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
+        require_ok(call(SOCKET, {"op": "key", "key": "Space"}))
+        require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
         wait_until("global-search palette to open", lambda: palette()["visible"])
         require_ok(call(SOCKET, {"op": "type", "text": "Files"}))
         wait_until(
@@ -211,15 +250,17 @@ def main() -> int:
             lambda: palette()["visible"] and palette()["query"] == "Files",
         )
         if state()["chrome"]["search_scope"] != "All":
-            raise RuntimeError("Super+K did not select machine-wide search scope")
-        if not any(
-            t["name"] == "command_palette_input"
-            for t in call(SOCKET, {"op": "list_targets"})["targets"]
-        ):
+            raise RuntimeError("Super+Space did not select machine-wide search scope")
+        input_target = next(
+            (t for t in call(SOCKET, {"op": "list_targets"})["targets"]
+             if t["name"] == "command_palette_input"), None,
+        )
+        if input_target is None:
             raise RuntimeError("palette is live in state but has no visible semantic target")
         time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
         require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)}))
         assert_nonblank_png(PALETTE_PNG)
+        assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
 
         # 5. Escape, snapshot final state.
@@ -248,6 +289,7 @@ def main() -> int:
             os.unlink(SOCKET)
         except FileNotFoundError:
             pass
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 if __name__ == "__main__":

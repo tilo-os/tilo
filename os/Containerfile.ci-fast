@@ -33,13 +33,15 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       gnupg2 diffutils which \
     && dnf clean all
 # Native fixture tools for check.yml's security-boundary invariants (EFI, RPM
-# signing, kernel modules, rendered fonts) and the C linker cargo needs when
+# signing, kernel modules, rendered fonts, runtime assembly confinement) and
+# the C linker cargo needs when
 # lint.yml compiles tilo-app-cli (`cc` is Fedora's alternatives symlink to gcc).
 # Baked in so those jobs neither wait on nor depend on a Fedora mirror; a
 # separate layer keeps the base cached.
 RUN dnf install -y --setopt=install_weak_deps=False \
-      gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts \
+      gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts bubblewrap \
     && dnf clean all \
+    && bwrap --version \
     && test -x /usr/bin/cc \
     && test "$(readlink -f /usr/bin/cc)" = "$(readlink -f /usr/bin/gcc)"
 

@@ -10,21 +10,22 @@
 )]
 //! Pixel readback stays in the compositor; this widget emits semantic intents.
 
-use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
     paint::PaintCtx,
     presence::PresenceCtx,
     surface,
-    text_render::{TextRenderer, TextWeight},
+    text_render::{TextRenderer, TextStyle, TextWeight},
     theme::Theme,
-    widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
+    widget::{Button, ButtonFace, ChipFace, ChipLead, ChipStyle, TaffyTreeExt, Tone, Widget},
 };
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -71,13 +72,13 @@ const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 /// renderer's accessibility scale, so centring on this — never on the font
 /// size, and never on a hand-tuned fraction of it — keeps a label centred
 /// in its pill at every type scale.
-fn line_height(tr: &mut TextRenderer, size: f32, weight: TextWeight) -> f64 {
-    f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+fn line_height(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style("Ag", None, style).1)
 }
 
 /// Top edge that centres one line of `size`-px text on `center_y`.
-fn centered_text_top(tr: &mut TextRenderer, size: f32, weight: TextWeight, center_y: f64) -> f64 {
-    center_y - line_height(tr, size, weight) / 2.0
+fn centered_text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
+    center_y - line_height(tr, style) / 2.0
 }
 
 /// `text`, or as much of it as fits `max_width` with a trailing ellipsis,
@@ -86,18 +87,12 @@ fn centered_text_top(tr: &mut TextRenderer, size: f32, weight: TextWeight, cente
 /// the legacy `max_width` argument wraps, and a wrapped label is a second
 /// line below the pill — which is exactly what showed at 2× type. The
 /// ellipsis policy is the renderer's, shared with every other widget.
-fn fit_label(
-    tr: &mut TextRenderer,
-    text: &str,
-    size: f32,
-    weight: TextWeight,
-    max_width: f64,
-) -> String {
+fn fit_label(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_width: f64) -> String {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a logical-pixel budget well inside f32's exact range"
     )]
-    tr.elide_to_width_weighted(text, size, max_width.max(0.0) as f32, weight)
+    tr.elide_to_width_style(text, max_width.max(0.0) as f32, style)
 }
 
 #[derive(Clone, Debug)]
@@ -386,6 +381,40 @@ impl DragSelection {
     }
 }
 
+/// State of one recording take, from the request until it stops.
+#[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a take is requested, active, paused and stopping independently"
+)]
+struct RecordingTake {
+    /// A recording was requested, but encoder/output setup has not yet been
+    /// confirmed by the compositor. Acknowledging this state immediately
+    /// prevents a slow start from reading as a missed click without falsely
+    /// claiming that pixels are already being recorded.
+    start_pending: bool,
+    request_started_at: Option<Instant>,
+    active: bool,
+    started_at: Option<Instant>,
+    confirmation_regions: Vec<Rect>,
+    /// Which sides of the physical output the selected virtual source keeps
+    /// going past. This is snapshotted at recorder start so the brief spatial
+    /// confirmation cannot drift if the strip moves underneath it.
+    /// Order: left, top, right, bottom.
+    continuation_edges: [bool; 4],
+    stop_pending: bool,
+    paused: bool,
+    pause_pending: bool,
+    paused_at: Option<Instant>,
+    paused_total: Duration,
+    state_changed_at: Option<Instant>,
+    transition_from_paused: Option<bool>,
+    /// Exact visual-harness phase for pause/resume. Production follows
+    /// `state_changed_at`; PNG renders must not advance it merely
+    /// because GPU readback is slow.
+    state_progress_override: Option<f64>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent capture, recording, replay, and receipt states are retained together"
@@ -410,32 +439,9 @@ pub struct CaptureStudio {
     candidates: Vec<CaptureTarget>,
     selected_target: Option<String>,
     pending: Vec<CaptureIntent>,
-    /// A recording was requested, but encoder/output setup has not yet been
-    /// confirmed by the compositor. Acknowledging this state immediately
-    /// prevents a slow start from reading as a missed click without falsely
-    /// claiming that pixels are already being recorded.
-    recording_start_pending: bool,
-    recording_request_started_at: Option<Instant>,
-    recording_active: bool,
-    recording_started_at: Option<Instant>,
+    /// The current take; reset whole whenever one starts or ends.
+    take: RecordingTake,
     recording_scope: String,
-    recording_confirmation_regions: Vec<Rect>,
-    /// Which sides of the physical output the selected virtual source keeps
-    /// going past. This is snapshotted at recorder start so the brief spatial
-    /// confirmation cannot drift if the strip moves underneath it.
-    /// Order: left, top, right, bottom.
-    recording_continuation_edges: [bool; 4],
-    stop_pending: bool,
-    recording_paused: bool,
-    pause_pending: bool,
-    recording_paused_at: Option<Instant>,
-    recording_paused_total: Duration,
-    recording_state_changed_at: Option<Instant>,
-    recording_transition_from_paused: Option<bool>,
-    /// Exact visual-harness phase for pause/resume. Production follows
-    /// `recording_state_changed_at`; PNG renders must not advance it merely
-    /// because GPU readback is slow.
-    recording_state_progress_override: Option<f64>,
     recording_finished_at: Option<Instant>,
     /// Active take duration snapshotted before the live timer is cleared, so
     /// the finish receipt can confirm both successful persistence and length.
@@ -487,21 +493,8 @@ impl Default for CaptureStudio {
             candidates: Vec::new(),
             selected_target: None,
             pending: Vec::new(),
-            recording_start_pending: false,
-            recording_request_started_at: None,
-            recording_active: false,
-            recording_started_at: None,
+            take: RecordingTake::default(),
             recording_scope: String::new(),
-            recording_confirmation_regions: Vec::new(),
-            recording_continuation_edges: [false; 4],
-            stop_pending: false,
-            recording_paused: false,
-            pause_pending: false,
-            recording_paused_at: None,
-            recording_paused_total: Duration::ZERO,
-            recording_state_changed_at: None,
-            recording_transition_from_paused: None,
-            recording_state_progress_override: None,
             recording_finished_at: None,
             recording_finished_duration: Duration::ZERO,
             recording_receipt_progress_override: None,
@@ -541,7 +534,7 @@ impl CaptureStudio {
     }
 
     pub fn open(&mut self) {
-        if self.recording_start_pending {
+        if self.take.start_pending {
             // Repeating the shortcut while encoder setup is in flight must
             // not restore the modal selector over the desktop.
             return;
@@ -555,7 +548,7 @@ impl CaptureStudio {
         self.regions.clear();
         self.region_remove_rects.clear();
         self.drag = None;
-        if self.recording_active {
+        if self.take.active {
             self.mode = CaptureMode::Recording;
         }
     }
@@ -565,7 +558,7 @@ impl CaptureStudio {
     /// chord saves it without reopening modal chrome.
     pub fn open_recording_setup(&mut self) {
         self.open();
-        if !self.recording_active {
+        if !self.take.active {
             self.set_mode(CaptureMode::Recording);
         }
     }
@@ -575,7 +568,7 @@ impl CaptureStudio {
     /// chord lands directly in the region picker with `PiP`-safe defaults.
     pub fn open_pip_setup(&mut self) {
         self.open();
-        if !self.recording_active {
+        if !self.take.active {
             self.set_mode(CaptureMode::Pip);
         }
     }
@@ -659,7 +652,7 @@ impl CaptureStudio {
         e: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         let Some(menu) = self.send_menu.as_mut() else {
@@ -700,7 +693,7 @@ impl CaptureStudio {
             &mut crate::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -708,6 +701,13 @@ impl CaptureStudio {
                 taffy: &taffy,
             },
         );
+        // The menu leaves motion unhandled so presence can follow it; over
+        // the menu the motion is still the menu's, not the widgets below.
+        if matches!(e, WindowEvent::CursorMoved { .. })
+            && menu.contains([self.cursor.x, self.cursor.y])
+        {
+            handled = true;
+        }
         if let Some(index) = menu.take_selection() {
             self.choose_send_target(index);
         }
@@ -781,14 +781,20 @@ impl CaptureStudio {
     pub fn mode(&self) -> CaptureMode {
         self.mode
     }
+    /// Whether the screenshot picker is up and the person is still choosing
+    /// what to capture. Not while a delayed capture counts down (the delay
+    /// exists to let the screen change), and not for recordings or mirrors.
+    pub fn is_choosing_screenshot(&self) -> bool {
+        self.mode == CaptureMode::Screenshot && self.modal_capture().is_some()
+    }
     pub fn is_recording_active(&self) -> bool {
-        self.recording_active
+        self.take.active
     }
     pub fn is_recording_start_pending(&self) -> bool {
-        self.recording_start_pending
+        self.take.start_pending
     }
     pub fn is_recording_paused(&self) -> bool {
-        self.recording_paused
+        self.take.paused
     }
     pub fn is_replay_active(&self) -> bool {
         self.replay_active
@@ -820,47 +826,28 @@ impl CaptureStudio {
         }
     }
     pub fn set_recording_active(&mut self, active: bool) {
-        if active && !self.recording_active {
-            self.recording_start_pending = false;
-            self.recording_request_started_at = None;
+        if active && !self.take.active {
+            self.take = RecordingTake {
+                started_at: Some(crate::time::now()),
+                confirmation_regions: self.current_recording_regions(),
+                continuation_edges: self.current_recording_continuation_edges(),
+                ..RecordingTake::default()
+            };
+            self.recording_scope = self.recording_scope_label();
             self.recording_finished_at = None;
             self.recording_finished_duration = Duration::ZERO;
-            self.recording_started_at = Some(crate::time::now());
-            self.recording_scope = self.recording_scope_label();
-            self.recording_confirmation_regions = self.current_recording_regions();
-            self.recording_continuation_edges = self.current_recording_continuation_edges();
-            self.stop_pending = false;
-            self.recording_paused = false;
-            self.pause_pending = false;
-            self.recording_paused_at = None;
-            self.recording_paused_total = Duration::ZERO;
-            self.recording_state_changed_at = None;
-            self.recording_transition_from_paused = None;
-            self.recording_state_progress_override = None;
             self.recording_receipt_progress_override = None;
             // The picker has already closed before the compositor starts the
             // encoder. Re-open only as a non-modal status surface.
             self.open = true;
         } else if !active {
-            self.recording_start_pending = false;
-            self.recording_request_started_at = None;
-            self.recording_started_at = None;
-            self.recording_confirmation_regions.clear();
-            self.recording_continuation_edges = [false; 4];
-            self.stop_pending = false;
-            self.recording_paused = false;
-            self.pause_pending = false;
-            self.recording_paused_at = None;
-            self.recording_paused_total = Duration::ZERO;
-            self.recording_state_changed_at = None;
-            self.recording_transition_from_paused = None;
-            self.recording_state_progress_override = None;
+            self.take = RecordingTake::default();
             self.recording_finished_at = None;
             self.recording_finished_duration = Duration::ZERO;
             self.recording_receipt_progress_override = None;
             self.open = false;
         }
-        self.recording_active = active;
+        self.take.active = active;
         if active {
             self.mode = CaptureMode::Recording;
         }
@@ -871,12 +858,12 @@ impl CaptureStudio {
     /// than the animation itself. Production code advances from `Instant`.
     #[doc(hidden)]
     pub fn set_recording_transition_progress(&mut self, permille: u16) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
         let progress = f64::from(permille.min(1_000)) / 1_000.0;
         let offset = RECORDING_HOLD + RECORDING_SETTLE.mul_f64(progress);
-        self.recording_started_at = crate::time::now().checked_sub(offset);
+        self.take.started_at = crate::time::now().checked_sub(offset);
     }
 
     /// Keep the compositor's spatial recording affordance alive just long
@@ -884,24 +871,11 @@ impl CaptureStudio {
     /// Failures deliberately use `set_recording_active(false)` instead, so a
     /// green receipt can never be shown for an incomplete file.
     pub fn set_recording_finished(&mut self) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
         self.recording_finished_duration = self.recording_elapsed();
-        self.recording_active = false;
-        self.recording_start_pending = false;
-        self.recording_request_started_at = None;
-        self.recording_started_at = None;
-        self.recording_confirmation_regions.clear();
-        self.recording_continuation_edges = [false; 4];
-        self.stop_pending = false;
-        self.recording_paused = false;
-        self.pause_pending = false;
-        self.recording_paused_at = None;
-        self.recording_paused_total = Duration::ZERO;
-        self.recording_state_changed_at = None;
-        self.recording_transition_from_paused = None;
-        self.recording_state_progress_override = None;
+        self.take = RecordingTake::default();
         self.recording_finished_at = Some(crate::time::now());
         self.recording_receipt_progress_override = None;
         self.open = true;
@@ -919,7 +893,7 @@ impl CaptureStudio {
         self.replay_started_at = active.then(crate::time::now);
         if active {
             self.open = true;
-        } else if !self.recording_active && self.recording_finished_at.is_none() {
+        } else if !self.take.active && self.recording_finished_at.is_none() {
             self.open = false;
         }
     }
@@ -936,30 +910,30 @@ impl CaptureStudio {
         }
     }
     pub fn set_recording_paused(&mut self, paused: bool) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
-        if paused != self.recording_paused {
+        if paused != self.take.paused {
             let now = crate::time::now();
-            self.recording_transition_from_paused = Some(self.recording_paused);
+            self.take.transition_from_paused = Some(self.take.paused);
             if paused {
-                self.recording_paused_at = Some(now);
-            } else if let Some(paused_at) = self.recording_paused_at.take() {
-                self.recording_paused_total += now.saturating_duration_since(paused_at);
+                self.take.paused_at = Some(now);
+            } else if let Some(paused_at) = self.take.paused_at.take() {
+                self.take.paused_total += now.saturating_duration_since(paused_at);
             }
-            self.recording_paused = paused;
-            self.recording_state_changed_at = Some(now);
-            self.recording_state_progress_override = None;
+            self.take.paused = paused;
+            self.take.state_changed_at = Some(now);
+            self.take.state_progress_override = None;
         }
-        self.pause_pending = false;
+        self.take.pause_pending = false;
     }
 
     /// Freeze the pause/resume crossfade at an exact phase for deterministic
     /// visual review. Live transitions remain elapsed-time driven.
     #[doc(hidden)]
     pub fn set_recording_state_transition_progress(&mut self, permille: u16) {
-        if self.recording_active && self.recording_state_changed_at.is_some() {
-            self.recording_state_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+        if self.take.active && self.take.state_changed_at.is_some() {
+            self.take.state_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
         }
     }
 
@@ -983,9 +957,6 @@ impl CaptureStudio {
     }
     pub fn set_extent(&mut self, extent: CaptureExtent) {
         self.extent = extent;
-    }
-    pub fn set_pip_layout(&mut self, layout: PipLayout) {
-        self.pip_layout = layout;
     }
     pub fn set_candidates(&mut self, candidates: Vec<CaptureTarget>) {
         self.candidates = candidates;
@@ -1016,10 +987,10 @@ impl CaptureStudio {
 
     fn begin_recording_request(&mut self) {
         self.recording_scope = self.recording_scope_label();
-        self.recording_confirmation_regions = self.current_recording_regions();
-        self.recording_continuation_edges = self.current_recording_continuation_edges();
-        self.recording_start_pending = true;
-        self.recording_request_started_at = Some(crate::time::now());
+        self.take.confirmation_regions = self.current_recording_regions();
+        self.take.continuation_edges = self.current_recording_continuation_edges();
+        self.take.start_pending = true;
+        self.take.request_started_at = Some(crate::time::now());
         self.recording_finished_at = None;
         self.open = true;
         self.mode = CaptureMode::Recording;
@@ -1134,7 +1105,7 @@ impl CaptureStudio {
     }
     fn action_rects(&self) -> [Rect; 3] {
         let b = self.bottom_bar();
-        if self.recording_active {
+        if self.take.active {
             let (_, _, stop) = self.recording_indicator_rects();
             return [Rect::ZERO, Rect::ZERO, stop];
         }
@@ -1521,7 +1492,9 @@ impl CaptureStudio {
         let visible = labels.into_iter().flatten().collect::<Vec<_>>();
         let width = visible
             .iter()
-            .map(|label| Chip::natural_width_at(label, 24.0, ChipLead::None, theme, text_renderer))
+            .map(|label| {
+                ChipFace::intrinsic_width(label, ChipLead::None, false, text_renderer, theme)
+            })
             .sum::<f64>()
             + visible.len().saturating_sub(1) as f64 * 4.0;
         let chrome = Self::region_chrome_layout(region, width, self.selection_bounds(), regions);
@@ -1585,6 +1558,157 @@ impl CaptureStudio {
             || (self.source == SourceMode::Window
                 && self.extent != CaptureExtent::Visible
                 && self.selected_candidate().is_some())
+    }
+
+    /// Glyphs of the four sources, in [`Self::source_rects`] order: a dashed
+    /// frame for an area, a window for an app, a monitor for the screen and
+    /// merged squares for several areas as one.
+    const SOURCE_ICONS: [Icon; 4] = [
+        Icon::SquareDashed,
+        Icon::AppWindow,
+        Icon::Monitor,
+        Icon::SquaresUnite,
+    ];
+
+    /// What the control under the pointer does, for its tooltip: the control's
+    /// rect and a plain sentence, with the chord where it has one. `None` when
+    /// the pointer is over nothing that acts.
+    fn control_tip(&self) -> Option<(Rect, String)> {
+        let at = self.cursor;
+        let caps = crate::keycaps::active();
+        let chord = |mods: &[&str], key: &str| caps.chord(mods.iter().copied(), key);
+        let hit = |rect: Rect| rect.area() > 0.0 && rect.contains(at);
+        let recording = self.mode == CaptureMode::Recording;
+
+        let modes = [
+            format!("Screenshot ({})", chord(&["Super", "Shift"], "S")),
+            "Record the screen".to_string(),
+            format!("Picture in Picture ({})", chord(&["Super", "Shift"], "P")),
+        ];
+        if let Some((rect, label)) = self
+            .mode_rects()
+            .into_iter()
+            .zip(modes)
+            .find(|(r, _)| hit(*r))
+        {
+            return Some((rect, label));
+        }
+        let sources = [
+            "Select an area",
+            "Choose an app",
+            "Capture the whole screen",
+            "Combine several areas",
+        ];
+        if let Some((rect, label)) = self
+            .source_rects()
+            .into_iter()
+            .zip(sources)
+            .find(|(r, _)| hit(*r))
+        {
+            return Some((rect, label.to_string()));
+        }
+        if self.source == SourceMode::Window {
+            for (target, rect) in self.candidates.iter().zip(self.candidate_picker_rects()) {
+                if hit(rect) {
+                    let suffix = if target.visible_rect.area() <= 0.0 {
+                        " (off-screen)"
+                    } else {
+                        ""
+                    };
+                    return Some((rect, format!("{}{suffix}", target.title)));
+                }
+            }
+        }
+        if let Some(rect) = self.region_remove_rects.iter().copied().find(|r| hit(*r)) {
+            return Some((rect, "Remove this selection".to_string()));
+        }
+        if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
+            let labels = if self.source == SourceMode::Multi {
+                [
+                    "Arrange the areas automatically",
+                    "Arrange the areas in a grid",
+                    "Stack the areas",
+                ]
+            } else {
+                [
+                    "Only what is visible",
+                    "The whole app, including what is scrolled out of view",
+                    "Every app in this strip",
+                ]
+            };
+            if let Some((rect, label)) = self
+                .option_rects()
+                .into_iter()
+                .zip(labels)
+                .find(|(r, _)| hit(*r))
+            {
+                return Some((rect, label.to_string()));
+            }
+        }
+        if self.mode != CaptureMode::Pip && hit(self.pointer_rect()) {
+            let text = if self.include_pointer {
+                "Pointer is shown. Click to hide it"
+            } else {
+                "Show the pointer in the capture"
+            };
+            return Some((self.pointer_rect(), text.to_string()));
+        }
+        if self.system_audio_available && hit(self.system_audio_rect()) {
+            let text = if self.audio.includes_system() {
+                "Desktop sound is recorded. Click to leave it out"
+            } else {
+                "Record desktop sound"
+            };
+            return Some((self.system_audio_rect(), text.to_string()));
+        }
+        if self.microphone_available && hit(self.microphone_rect()) {
+            let text = if self.audio.includes_microphone() {
+                "Microphone is recorded. Click to mute it"
+            } else {
+                "Record the microphone"
+            };
+            return Some((self.microphone_rect(), text.to_string()));
+        }
+        if self.mode != CaptureMode::Pip && hit(self.delay_rect()) {
+            let text = match self.delay_seconds {
+                0 => "Start right away. Click to add a delay",
+                3 => "Start after 3 seconds. Click to change",
+                _ => "Start after 10 seconds. Click to remove the delay",
+            };
+            return Some((self.delay_rect(), text.to_string()));
+        }
+        let actions = self.action_rects();
+        if recording && hit(actions[1]) {
+            let text = format!(
+                "Save the last 30 seconds ({})",
+                chord(&["Super", "Shift"], "R")
+            );
+            return Some((actions[1], text));
+        }
+        if self.mode == CaptureMode::Screenshot && hit(actions[0]) {
+            let text = if self.has_capture_source() {
+                "Copy to the clipboard"
+            } else {
+                "Choose what to capture first"
+            };
+            return Some((actions[0], text.to_string()));
+        }
+        let primary = match self.mode {
+            CaptureMode::Screenshot => Some((2, "Take the screenshot".to_string())),
+            CaptureMode::Recording if self.take.active => Some((2, "Stop recording".to_string())),
+            CaptureMode::Recording => Some((2, "Start recording".to_string())),
+            CaptureMode::Pip => Some((1, "Keep this live in a small floating window".to_string())),
+        };
+        let (i, label) = primary?;
+        if !hit(actions[i]) {
+            return None;
+        }
+        if self.has_capture_source() || (recording && self.take.active) {
+            Some((actions[i], label))
+        } else {
+            // A disabled button that says nothing reads as broken.
+            Some((actions[i], "Choose what to capture first".to_string()))
+        }
     }
 
     fn default_picker_context(&self) -> String {
@@ -1688,7 +1812,7 @@ impl CaptureStudio {
     }
 
     fn recording_motion(&self) -> f64 {
-        let Some(started) = self.recording_started_at else {
+        let Some(started) = self.take.started_at else {
             return 1.0;
         };
         if started.elapsed() <= RECORDING_HOLD {
@@ -1710,7 +1834,7 @@ impl CaptureStudio {
     /// override is also folded in so deterministic visual playback cannot
     /// leave a stale red perimeter around an already-docked recorder.
     fn recording_scope_confirmation_alpha(&self) -> f32 {
-        let Some(started_at) = self.recording_started_at else {
+        let Some(started_at) = self.take.started_at else {
             return 0.0;
         };
         let elapsed_t = (started_at.elapsed().as_secs_f64()
@@ -1882,22 +2006,20 @@ impl CaptureStudio {
     }
 
     fn recording_elapsed(&self) -> Duration {
-        let Some(started) = self.recording_started_at else {
+        let Some(started) = self.take.started_at else {
             return Duration::ZERO;
         };
         let now = crate::time::now();
-        let current_pause = self
-            .recording_paused_at
-            .map_or(Duration::ZERO, |paused_at| {
-                now.saturating_duration_since(paused_at)
-            });
+        let current_pause = self.take.paused_at.map_or(Duration::ZERO, |paused_at| {
+            now.saturating_duration_since(paused_at)
+        });
         now.saturating_duration_since(started)
-            .saturating_sub(self.recording_paused_total)
+            .saturating_sub(self.take.paused_total)
             .saturating_sub(current_pause)
     }
 
     fn recording_scope_icon(&self) -> Icon {
-        match self.recording_continuation_edges {
+        match self.take.continuation_edges {
             [true, false, false, false] => Icon::ChevronLeft,
             [false, true, false, false] => Icon::ChevronUp,
             [false, false, true, false] => Icon::ChevronRight,
@@ -1990,11 +2112,12 @@ impl CaptureStudio {
         detail: &str,
     ) {
         let colors = &theme.tokens.colors;
-        let (detail_width, _) = text_renderer.measure_weighted(
+        let (detail_width, _) = text_renderer.measure_style(
             detail,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let bounds = self.status_rect();
         let tooltip_width =
@@ -2007,7 +2130,13 @@ impl CaptureStudio {
             tooltip_x0 + tooltip_width,
             anchor.y1 + 36.0,
         );
-        surface::shadow(scene, transform, tooltip, 14.0, &theme.tokens.elevation.e2);
+        surface::shadow(
+            scene,
+            transform,
+            tooltip,
+            14.0,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2024,33 +2153,32 @@ impl CaptureStudio {
         );
         let detail_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Medium,
+            &theme.text(TextRole::Label),
             tooltip.center().y,
         );
         let shown = fit_label(
             text_renderer,
             detail,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Medium,
+            &theme.text(TextRole::Label),
             tooltip.width() - 24.0,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_dim,
             transform.pre_translate((tooltip.x0 + 12.0, detail_top).into()),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
     }
 
     fn recording_state_motion(&self) -> f64 {
-        if let Some(progress) = self.recording_state_progress_override {
+        if let Some(progress) = self.take.state_progress_override {
             return progress;
         }
-        let Some(started) = self.recording_state_changed_at else {
+        let Some(started) = self.take.state_changed_at else {
             return 1.0;
         };
         let raw = started.elapsed().as_secs_f64() / RECORDING_STATE_SETTLE.as_secs_f64();
@@ -2233,8 +2361,8 @@ impl CaptureStudio {
     }
 
     fn queue_recording_command(&mut self, command: RecordingCommand) {
-        if self.stop_pending
-            || (self.pause_pending
+        if self.take.stop_pending
+            || (self.take.pause_pending
                 && !matches!(
                     command,
                     RecordingCommand::Stop
@@ -2259,8 +2387,8 @@ impl CaptureStudio {
             screenshot_command: None,
         });
         match command {
-            RecordingCommand::Pause | RecordingCommand::Resume => self.pause_pending = true,
-            RecordingCommand::Stop => self.stop_pending = true,
+            RecordingCommand::Pause | RecordingCommand::Resume => self.take.pause_pending = true,
+            RecordingCommand::Stop => self.take.stop_pending = true,
             RecordingCommand::Start | RecordingCommand::OpenLast | RecordingCommand::RevealLast => {
             }
         }
@@ -2345,9 +2473,9 @@ impl CaptureStudio {
             ));
         }
         let stopping = self.mode == CaptureMode::Recording
-            && self.recording_active
+            && self.take.active
             && destination == CaptureDestination::File;
-        if stopping && self.stop_pending {
+        if stopping && self.take.stop_pending {
             return;
         }
         if stopping {
@@ -2468,15 +2596,15 @@ impl CaptureStudio {
             }
             return;
         }
-        if self.recording_active {
+        if self.take.active {
             let (_, pause, stop) = self.recording_indicator_rects();
-            if !self.stop_pending && !self.pause_pending && pause.contains(p) {
-                self.queue_recording_command(if self.recording_paused {
+            if !self.take.stop_pending && !self.take.pause_pending && pause.contains(p) {
+                self.queue_recording_command(if self.take.paused {
                     RecordingCommand::Resume
                 } else {
                     RecordingCommand::Pause
                 });
-            } else if !self.stop_pending && stop.contains(p) {
+            } else if !self.take.stop_pending && stop.contains(p) {
                 self.commit(CaptureDestination::File);
             }
             return;
@@ -2670,21 +2798,30 @@ impl CaptureStudio {
         icon: Icon,
     ) {
         let face = if on {
-            ButtonFace::new(r, "").primary()
+            ButtonFace::new(r, "").role(ButtonRole::Primary)
         } else {
             ButtonFace::new(r, "")
         }
         .icon(icon)
-        .radius(10.0)
         .hovered(hovered);
         Button::paint(scene, t, tr, theme, &face);
     }
 
     /// The tint a capture in the current mode marks its selection with.
+    /// What the selection's metadata chips say: a recording is live, a
+    /// picture-in-picture is information, a screenshot is neutral.
+    fn selection_tone(&self) -> Tone {
+        match self.mode {
+            CaptureMode::Screenshot => Tone::Neutral,
+            CaptureMode::Recording => Tone::Danger,
+            CaptureMode::Pip => Tone::Info,
+        }
+    }
+
     fn selection_color(&self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self.mode {
-            CaptureMode::Screenshot => c.accent[4],
+            CaptureMode::Screenshot => c.intent.inverted_hover,
             CaptureMode::Recording => c.semantic.danger,
             CaptureMode::Pip => c.semantic.info,
         }
@@ -2736,11 +2873,12 @@ impl CaptureStudio {
             String::new()
         };
         let label = format!("{prefix}{}{}", target.title, suffix);
-        let (tw, _) = tr.measure_weighted(
+        let (tw, _) = tr.measure_style(
             &label,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         let width = (f64::from(tw) + 48.0).min((rect.width() - 20.0).max(80.0));
         let badge_y = (rect.y0 + 10.0)
@@ -2778,25 +2916,28 @@ impl CaptureStudio {
         );
         let label_top = centered_text_top(
             tr,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             badge.center().y,
         );
         let shown = fit_label(
             tr,
             &label,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             badge.width() - 42.0,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &shown,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             if selected { c.text_primary } else { c.text_dim },
             t.pre_translate((badge.x0 + 34.0, label_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
     }
 
@@ -2897,7 +3038,13 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let width = 430.0_f64.min(bounds.width() - 40.0);
         let card = Rect::from_center_size(bounds.center(), (width, 132.0));
-        surface::shadow(scene, transform, card, 18.0, &theme.tokens.elevation.e4);
+        surface::shadow(
+            scene,
+            transform,
+            card,
+            18.0,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2933,14 +3080,13 @@ impl CaptureStudio {
             accent,
             1.7,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &target.title,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 22.0).into()),
             Some((card.width() - 100.0) as f32),
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
         );
         let scope = match (mode, extent) {
             (CaptureMode::Screenshot, CaptureExtent::FullApp) => "Full app · off-screen",
@@ -2953,27 +3099,28 @@ impl CaptureStudio {
         } else {
             target.virtual_rect
         };
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &format!(
                 "{scope} · {} × {}",
                 full.width().round() as i64,
                 full.height().round() as i64
             ),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             accent,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 51.0).into()),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let guidance = Self::offscreen_guidance(mode, extent);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             guidance,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_dim,
             transform.pre_translate((card.x0 + 22.0, card.y0 + 94.0).into()),
             Some((card.width() - 44.0) as f32),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -2989,7 +3136,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let active = seconds > 0;
         let fill = if active {
-            colors.accent[5]
+            colors.intent.inverted
         } else if hovered {
             colors.lift(0.72)
         } else {
@@ -3034,36 +3181,30 @@ impl CaptureStudio {
             // 2× type the two meet — the bar's scaling is the shell's
             // decision (see the F5 round-two report, R7).
             let label = seconds.to_string();
-            let size = theme.tokens.typography.scale.xs;
-            let (lw, _) = text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
+            let style = theme.text(TextRole::Caption);
+            let (lw, _) = text_renderer.measure_style(
+                &label,
+                None,
+                &style.clone().with_weight(TextWeight::Semibold),
+            );
+            text_renderer.draw_style(
                 scene,
                 &label,
-                size,
                 colors.text_primary,
                 t.pre_translate((rect.x1 - 3.0 - f64::from(lw), rect.y0 + 2.0).into()),
                 None,
-                TextWeight::Semibold,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
         }
     }
 
-    fn option_face<'a>(
-        theme: &Theme,
-        rect: Rect,
-        label: &'a str,
-        icon: Icon,
-        active: bool,
-    ) -> ButtonFace<'a> {
+    fn option_face(rect: Rect, label: &str, icon: Icon, active: bool) -> ButtonFace<'_> {
         if active {
-            ButtonFace::new(rect, label).primary()
+            ButtonFace::new(rect, label).role(ButtonRole::Primary)
         } else {
             ButtonFace::new(rect, label)
         }
         .icon(icon)
-        .radius(9.0)
-        .text_size(theme.tokens.typography.scale.sm)
-        .weight(TextWeight::Medium)
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -3089,14 +3230,18 @@ impl CaptureStudio {
             scene.fill(
                 Fill::NonZero,
                 t,
-                if hovered { c.accent[4] } else { c.text_primary },
+                if hovered {
+                    c.intent.inverted_hover
+                } else {
+                    c.text_primary
+                },
                 None,
                 &RoundedRect::from_rect(handle, radius),
             );
             scene.stroke(
                 &Stroke::new(1.5),
                 t,
-                c.accent[5],
+                c.intent.inverted,
                 None,
                 &RoundedRect::from_rect(handle, radius),
             );
@@ -3137,7 +3282,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let accent = match armed.intent.mode {
             CaptureMode::Recording => colors.semantic.danger,
-            CaptureMode::Screenshot => colors.accent[4],
+            CaptureMode::Screenshot => colors.intent.inverted_hover,
             CaptureMode::Pip => colors.semantic.info,
         };
         surface::shadow(
@@ -3145,7 +3290,7 @@ impl CaptureStudio {
             transform,
             pill,
             pill.height() / 2.0,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -3171,18 +3316,16 @@ impl CaptureStudio {
         );
         let count_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
             pill.center().y,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &count.to_string(),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 48.0, count_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
         );
         let track = Rect::new(pill.x0 + 11.0, pill.y1 - 6.0, pill.x1 - 11.0, pill.y1 - 4.0);
         scene.fill(
@@ -3220,7 +3363,7 @@ impl CaptureStudio {
             return;
         }
         let bounds = self.status_rect();
-        for region in &self.recording_confirmation_regions {
+        for region in &self.take.confirmation_regions {
             let mut visible = region.intersect(bounds);
             if visible.area() <= 1.0 {
                 continue;
@@ -3276,67 +3419,13 @@ impl CaptureStudio {
             .semantic
             .danger
             .with_alpha_factor(0.82 * alpha);
-        let [left, top, right, bottom] = self.recording_continuation_edges;
-        let center = bounds.center();
-        let markers = [
-            (
-                left,
-                Rect::new(
-                    bounds.x0 + 3.0,
-                    center.y - 20.0,
-                    bounds.x0 + 6.0,
-                    center.y + 20.0,
-                ),
-                Rect::from_center_size(Point::new(bounds.x0 + 14.0, center.y), (16.0, 16.0)),
-                Icon::ChevronLeft,
-            ),
-            (
-                top,
-                Rect::new(
-                    center.x - 20.0,
-                    bounds.y0 + 3.0,
-                    center.x + 20.0,
-                    bounds.y0 + 6.0,
-                ),
-                Rect::from_center_size(Point::new(center.x, bounds.y0 + 14.0), (16.0, 16.0)),
-                Icon::ChevronUp,
-            ),
-            (
-                right,
-                Rect::new(
-                    bounds.x1 - 6.0,
-                    center.y - 20.0,
-                    bounds.x1 - 3.0,
-                    center.y + 20.0,
-                ),
-                Rect::from_center_size(Point::new(bounds.x1 - 14.0, center.y), (16.0, 16.0)),
-                Icon::ChevronRight,
-            ),
-            (
-                bottom,
-                Rect::new(
-                    center.x - 20.0,
-                    bounds.y1 - 6.0,
-                    center.x + 20.0,
-                    bounds.y1 - 3.0,
-                ),
-                Rect::from_center_size(Point::new(center.x, bounds.y1 - 14.0), (16.0, 16.0)),
-                Icon::ChevronDown,
-            ),
-        ];
-        for (visible, rail, icon_rect, icon) in markers {
-            if !visible {
-                continue;
-            }
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &RoundedRect::from_rect(rail, 1.5),
-            );
-            icons::draw_icon(scene, transform, icon_rect, icon, accent, 1.8);
-        }
+        Self::draw_continuation_markers(
+            scene,
+            transform,
+            bounds,
+            self.take.continuation_edges,
+            accent,
+        );
     }
 
     /// Immediate, truthful acknowledgement while the compositor creates the
@@ -3353,7 +3442,13 @@ impl CaptureStudio {
         let pill = self.recording_indicator_rects_at(0.0).0;
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3396,30 +3491,33 @@ impl CaptureStudio {
         };
         let starting_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Starting · {scope}"),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (pill.width() - 98.0).max(40.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 45.0, starting_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
 
         // A restrained travelling emphasis across three dots communicates
         // genuine setup work without a spinner dominating this short state.
-        let phase = self.recording_request_started_at.map_or(0.0, |started| {
+        let phase = self.take.request_started_at.map_or(0.0, |started| {
             (started.elapsed().as_secs_f64() / 0.72) % 1.0
         });
         for (index, x) in [pill.x1 - 35.0, pill.x1 - 27.0, pill.x1 - 19.0]
@@ -3462,7 +3560,7 @@ impl CaptureStudio {
             self.draw_screenshot_receipt(scene, transform, text_renderer, theme);
             if let Some(menu) = self.send_menu.as_mut() {
                 menu.layout_within(text_renderer, theme);
-                menu.draw(
+                menu.draw_overlay(
                     scene,
                     transform,
                     text_renderer,
@@ -3472,7 +3570,7 @@ impl CaptureStudio {
             }
             return;
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             self.draw_recording_starting(scene, transform, text_renderer, theme);
             return;
         }
@@ -3481,7 +3579,7 @@ impl CaptureStudio {
             self.draw_recording_receipt(scene, transform, text_renderer, theme, finished_at);
             return;
         }
-        if !self.recording_active {
+        if !self.take.active {
             self.reset_docked_content_widths();
             return;
         }
@@ -3523,19 +3621,20 @@ impl CaptureStudio {
                 )
             }
         };
-        let settled_label = if self.stop_pending {
+        let settled_label = if self.take.stop_pending {
             "Saving…".to_string()
-        } else if self.recording_paused {
+        } else if self.take.paused {
             format!("Paused · {}", crate::format::timecode(elapsed))
         } else if self
-            .recording_state_changed_at
+            .take
+            .state_changed_at
             .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
         {
             format!("Resumed · {}", crate::format::timecode(elapsed))
         } else {
             normal_label()
         };
-        let previous_label = self.recording_transition_from_paused.map(|was_paused| {
+        let previous_label = self.take.transition_from_paused.map(|was_paused| {
             if was_paused {
                 format!("Paused · {}", crate::format::timecode(elapsed))
             } else {
@@ -3546,19 +3645,31 @@ impl CaptureStudio {
             // Measured at the size the captions are painted with (the theme
             // step handed to the renderer once), so the widths remembered
             // below are the widths the painter lays down.
-            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+            let style = theme.text(TextRole::Caption);
             let mut label_w = text_renderer
-                .measure_weighted(&settled_label, size, None, TextWeight::Semibold)
+                .measure_style(
+                    &settled_label,
+                    None,
+                    &style.clone().with_weight(TextWeight::Semibold),
+                )
                 .0;
             if let Some(previous) = &previous_label {
                 label_w = label_w.max(
                     text_renderer
-                        .measure_weighted(previous, size, None, TextWeight::Semibold)
+                        .measure_style(
+                            previous,
+                            None,
+                            &style.clone().with_weight(TextWeight::Semibold),
+                        )
                         .0,
                 );
             }
             let stop_label_w = text_renderer
-                .measure_weighted("Stop", size, None, TextWeight::Semibold)
+                .measure_style(
+                    "Stop",
+                    None,
+                    &style.clone().with_weight(TextWeight::Semibold),
+                )
                 .0;
             self.remember_docked_content_widths(
                 text_renderer,
@@ -3567,7 +3678,7 @@ impl CaptureStudio {
                 f64::from(stop_label_w),
             );
         }
-        let docking_label = if p < 0.66 && !self.stop_pending && !self.recording_paused {
+        let docking_label = if p < 0.66 && !self.take.stop_pending && !self.take.paused {
             crate::format::timecode(elapsed)
         } else {
             settled_label
@@ -3576,7 +3687,13 @@ impl CaptureStudio {
         let (pill, pause, stop) = self.recording_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3626,7 +3743,7 @@ impl CaptureStudio {
         let state_in_eased = state_in_raw * state_in_raw * (3.0 - 2.0 * state_in_raw);
         let state_out_alpha = 1.0 - state_out_eased;
         let state_in_alpha = state_in_eased;
-        if p < 0.9 && !self.recording_paused {
+        if p < 0.9 && !self.take.paused {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -3666,12 +3783,12 @@ impl CaptureStudio {
             }
         };
         if state_p < 0.999
-            && let Some(was_paused) = self.recording_transition_from_paused
+            && let Some(was_paused) = self.take.transition_from_paused
         {
             draw_state_mark(was_paused, state_out_alpha as f32);
-            draw_state_mark(self.recording_paused, state_in_alpha as f32);
+            draw_state_mark(self.take.paused, state_in_alpha as f32);
         } else {
-            draw_state_mark(self.recording_paused, 1.0);
+            draw_state_mark(self.take.paused, 1.0);
         }
 
         // The explanatory sentence gives way to the compact timer while the
@@ -3684,14 +3801,16 @@ impl CaptureStudio {
         // measured line box, so neither needs a per-size offset.
         let intro_y = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let settled_y = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         if intro_alpha > 0.01 {
@@ -3709,25 +3828,28 @@ impl CaptureStudio {
             let shown = fit_label(
                 text_renderer,
                 &intro_label,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 (pause.x0 - intro_x - 8.0).max(40.0),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 colors.text_primary.with_alpha_factor(intro_alpha),
                 transform
                     .pre_translate((intro_x, intro_y - 12.0 * f64::from(settled_alpha)).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
         }
         if settled_alpha > 0.01 {
             let scope_icon = self.recording_scope_icon();
             let continues_offscreen = self
-                .recording_continuation_edges
+                .take
+                .continuation_edges
                 .into_iter()
                 .any(|continues| continues);
             icons::draw_icon(
@@ -3748,34 +3870,36 @@ impl CaptureStudio {
                 let shown = fit_label(
                     text_renderer,
                     &previous_label,
-                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
                     (pause.x0 - pill.x0 - 51.0).max(20.0),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &shown,
-                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                     colors
                         .text_primary
                         .with_alpha_factor(settled_alpha * state_out_alpha as f32),
                     transform
                         .pre_translate((pill.x0 + 43.0, settled_y - 3.0 * state_out_eased).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
             let shown = fit_label(
                 text_renderer,
                 &docking_label,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 (pause.x0 - pill.x0 - 51.0).max(20.0),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors
                     .text_primary
                     .with_alpha_factor(settled_alpha * state_in_alpha as f32),
@@ -3789,16 +3913,18 @@ impl CaptureStudio {
                         .into(),
                 ),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
 
         let pause_hovered =
-            pause.contains(self.cursor) && !self.pause_pending && !self.stop_pending;
+            pause.contains(self.cursor) && !self.take.pause_pending && !self.take.stop_pending;
         scene.fill(
             Fill::NonZero,
             transform,
-            if self.pause_pending || self.stop_pending {
+            if self.take.pause_pending || self.take.stop_pending {
                 colors.lift(0.35)
             } else if pause_hovered {
                 colors.semantic.info.with_alpha_factor(0.22)
@@ -3808,9 +3934,9 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(pause, pause.height() / 2.0),
         );
-        if !self.stop_pending {
+        if !self.take.stop_pending {
             if state_p < 0.999
-                && let Some(was_paused) = self.recording_transition_from_paused
+                && let Some(was_paused) = self.take.transition_from_paused
             {
                 icons::draw_icon(
                     scene,
@@ -3825,16 +3951,16 @@ impl CaptureStudio {
                 scene,
                 transform,
                 Rect::from_center_size(pause.center(), (12.0, 12.0)),
-                if self.recording_paused {
+                if self.take.paused {
                     Icon::Play
                 } else {
                     Icon::Pause
                 },
-                if self.pause_pending {
+                if self.take.pause_pending {
                     colors
                         .text_dim
                         .with_alpha_factor(0.55 * state_in_alpha as f32)
-                } else if self.recording_paused {
+                } else if self.take.paused {
                     colors
                         .semantic
                         .info
@@ -3846,11 +3972,11 @@ impl CaptureStudio {
             );
         }
 
-        let hovered = stop.contains(self.cursor) && !self.stop_pending;
+        let hovered = stop.contains(self.cursor) && !self.take.stop_pending;
         scene.fill(
             Fill::NonZero,
             transform,
-            if self.stop_pending {
+            if self.take.stop_pending {
                 colors.lift(0.35)
             } else if hovered {
                 colors.semantic.danger.with_alpha_factor(0.24)
@@ -3860,7 +3986,7 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(stop, stop.height() / 2.0),
         );
-        if !self.stop_pending {
+        if !self.take.stop_pending {
             let square = Rect::new(
                 stop.x0 + 9.0,
                 stop.center().y - 3.5,
@@ -3876,18 +4002,20 @@ impl CaptureStudio {
             );
             let stop_top = centered_text_top(
                 text_renderer,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 stop.center().y,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 "Stop",
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors.semantic.danger,
                 transform.pre_translate((stop.x0 + 22.0, stop_top).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
     }
@@ -3950,7 +4078,7 @@ impl CaptureStudio {
             &theme
                 .tokens
                 .elevation
-                .e3
+                .floating
                 .with_alpha_scaled(background_alpha),
         );
         scene.fill(
@@ -3995,25 +4123,28 @@ impl CaptureStudio {
         let duration = crate::format::timecode(self.recording_finished_duration.as_secs());
         let saved_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Saved · {duration}"),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (pill.width() - 126.0).max(50.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary.with_alpha_factor(alpha),
             transform.pre_translate((pill.x0 + 32.0, saved_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
 
         let (open, reveal, dismiss) = Self::recording_receipt_action_rects(pill, compact);
@@ -4110,7 +4241,7 @@ impl CaptureStudio {
             transform,
             pill,
             radius,
-            &theme.tokens.elevation.e3.with_alpha_scaled(alpha),
+            &theme.tokens.elevation.floating.with_alpha_scaled(alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -4128,7 +4259,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.accent[4].with_alpha_factor(0.30 * alpha),
+            colors.intent.inverted_hover.with_alpha_factor(0.30 * alpha),
             None,
             &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
         );
@@ -4166,7 +4297,10 @@ impl CaptureStudio {
             &Stroke::new(1.0),
             transform,
             if preview_hovered {
-                colors.accent[4].with_alpha_factor(0.72 * content_alpha)
+                colors
+                    .intent
+                    .inverted_hover
+                    .with_alpha_factor(0.72 * content_alpha)
             } else {
                 crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
                     .with_alpha_factor(alpha)
@@ -4204,35 +4338,35 @@ impl CaptureStudio {
         };
         let status = if receipt.copied { "Copied" } else { "Saved" };
         let dimensions = format!("{} × {}", receipt.width, receipt.height);
-        let (status_width, status_height) = text_renderer.measure_weighted(
+        let (status_width, status_height) = text_renderer.measure_style(
             status,
-            theme.tokens.typography.scale.xs,
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             status,
-            theme.tokens.typography.scale.xs,
             colors.text_primary.with_alpha_factor(content_alpha),
             transform
                 .pre_translate((label_x, pill.center().y - f64::from(status_height) / 2.0).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         let dimensions_x = label_x + f64::from(status_width) + 8.0;
         let dimensions_width = (action_limit - dimensions_x - 5.0).max(0.0);
         if dimensions_width >= 24.0 {
-            let (_, dimensions_height) = text_renderer.measure_weighted(
+            let (_, dimensions_height) = text_renderer.measure_style(
                 &dimensions,
-                theme.tokens.typography.scale.xs,
                 Some(dimensions_width as f32),
-                TextWeight::Regular,
+                &theme.text(TextRole::Caption),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &dimensions,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim.with_alpha_factor(content_alpha),
                 transform.pre_translate(
                     (
@@ -4242,7 +4376,7 @@ impl CaptureStudio {
                         .into(),
                 ),
                 Some(dimensions_width as f32),
-                TextWeight::Regular,
+                &theme.text(TextRole::Caption),
             );
         }
 
@@ -4253,7 +4387,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if send_active {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4273,9 +4410,15 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if self.screenshot_pin_pending {
-                    colors.accent[4].with_alpha_factor(0.28 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.28 * content_alpha)
                 } else if pin_hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4288,7 +4431,10 @@ impl CaptureStudio {
                 pin.inset(-6.0),
                 Icon::Pin,
                 if self.screenshot_pin_pending {
-                    colors.accent[4].with_alpha_factor(content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(content_alpha)
                 } else {
                     colors.text_dim.with_alpha_factor(content_alpha)
                 },
@@ -4299,7 +4445,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if copy_hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4319,7 +4468,10 @@ impl CaptureStudio {
                 Fill::NonZero,
                 transform,
                 if hovered {
-                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                    colors
+                        .intent
+                        .inverted_hover
+                        .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
@@ -4372,7 +4524,13 @@ impl CaptureStudio {
         let (pill, save, stop) = self.replay_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4444,25 +4602,28 @@ impl CaptureStudio {
         }
         let replay_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (audio_x - pill.x0 - 38.0).max(24.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 32.0, replay_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
 
         let status_hovered = p > 0.98
@@ -4532,14 +4693,14 @@ impl CaptureStudio {
             );
             let save_top = centered_text_top(
                 text_renderer,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 save.center().y,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 "Save",
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 if save_ready {
                     colors.text_primary
                 } else {
@@ -4547,7 +4708,9 @@ impl CaptureStudio {
                 },
                 transform.pre_translate((save.x0 + 25.0, save_top).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
 
@@ -4598,16 +4761,7 @@ impl Widget for CaptureStudio {
         map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        if let Ok(l) = t.layout(n) {
-            self.rect = Rect::new(
-                o.x + f64::from(l.location.x),
-                o.y + f64::from(l.location.y),
-                o.x + f64::from(l.location.x + l.size.width),
-                o.y + f64::from(l.location.y + l.size.height),
-            )
-        }
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         s: &mut Scene,
@@ -4617,8 +4771,8 @@ impl Widget for CaptureStudio {
         _: &PresenceCtx,
     ) {
         if !self.open
-            || self.recording_start_pending
-            || self.recording_active
+            || self.take.start_pending
+            || self.take.active
             || self.replay_active
             || self.screenshot_receipt.is_some()
             || self.recording_finished_at.is_some()
@@ -4639,7 +4793,7 @@ impl Widget for CaptureStudio {
         let c = &theme.tokens.colors;
         let selection_color = self.selection_color(theme);
         let active_control_fill = match self.mode {
-            CaptureMode::Screenshot => c.accent[5],
+            CaptureMode::Screenshot => c.intent.inverted,
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
             CaptureMode::Pip => c.semantic.info.with_alpha_factor(0.32),
         };
@@ -4690,7 +4844,7 @@ impl Widget for CaptureStudio {
                         t,
                         selection_color.with_alpha_factor(if selected { 0.10 } else { 0.05 }),
                         None,
-                        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.xl)),
+                        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.tile)),
                     );
                 }
                 let stroke_width = if selected {
@@ -4714,7 +4868,7 @@ impl Widget for CaptureStudio {
                     None,
                     &RoundedRect::from_rect(
                         rect.inflate(half, half),
-                        f64::from(theme.tokens.radii.xl) + half,
+                        f64::from(theme.tokens.radii.tile) + half,
                     ),
                 );
                 if !selected || Self::target_has_useful_aperture(target, self.status_rect()) {
@@ -4794,35 +4948,22 @@ impl Widget for CaptureStudio {
                 .into_iter()
                 .flatten()
                 {
-                    let width = Chip::natural_width_at(
-                        label,
-                        chrome.metadata.height(),
-                        ChipLead::None,
-                        theme,
-                        tr,
-                    );
+                    let width = ChipFace::intrinsic_width(label, ChipLead::None, false, tr, theme);
                     let rect = Rect::new(
                         metadata_x,
                         chrome.metadata.y0,
                         metadata_x + width,
                         chrome.metadata.y1,
                     );
-                    Chip::draw_at(
-                        s,
-                        t,
-                        rect,
-                        label,
-                        ChipLead::None,
-                        ChipStyle::tinted(selection_color),
-                        theme,
-                        tr,
-                    );
+                    ChipFace::new(rect, label)
+                        .style(ChipStyle::Tinted(self.selection_tone()))
+                        .paint(s, t, tr, theme);
                     metadata_x = rect.x1 + 4.0;
                 }
                 let hovered = chrome.remove.contains(self.cursor);
                 let face = if hovered {
                     ButtonFace::new(chrome.remove, "")
-                        .danger()
+                        .role(ButtonRole::Destructive)
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 } else {
@@ -4830,7 +4971,6 @@ impl Widget for CaptureStudio {
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 }
-                .radius(12.0)
                 .hovered(hovered);
                 Button::paint(s, t, tr, theme, &face);
                 self.region_remove_rects.push(chrome.remove);
@@ -4838,7 +4978,7 @@ impl Widget for CaptureStudio {
         }
         let top = self.top_bar();
         for group in [self.mode_group_rect(), self.source_group_rect()] {
-            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.e4);
+            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.floating);
             // Raised group under an edge derived from it (HIG §9.5): over the
             // scrim the fill alone had no closed edge on the light preset.
             surface::card(s, top_t, group, 14.0, c.surfaces.raised);
@@ -4852,7 +4992,7 @@ impl Widget for CaptureStudio {
             self.mode == CaptureMode::Screenshot,
             m0.contains(self.cursor),
             Icon::Camera,
-            c.accent[5],
+            c.intent.inverted,
         );
         Self::symbol_button(
             s,
@@ -4892,12 +5032,7 @@ impl Widget for CaptureStudio {
                 SourceMode::Display,
                 SourceMode::Multi,
             ])
-            .zip([
-                Icon::Scissors,
-                Icon::GalleryVerticalEnd,
-                Icon::Monitor,
-                Icon::Layers,
-            ])
+            .zip(Self::SOURCE_ICONS)
         {
             Self::symbol_button(
                 s,
@@ -4910,63 +5045,9 @@ impl Widget for CaptureStudio {
                 active_control_fill,
             )
         }
-        let mut context = self.default_picker_context();
-        if let Some((_, label)) = self
-            .mode_rects()
-            .into_iter()
-            .zip([
-                "Screenshot · Super+Shift+S",
-                "Screen recording",
-                "Picture in Picture · Super+Shift+P",
-            ])
-            .find(|(rect, _)| rect.contains(self.cursor))
-        {
-            context = label.to_string();
-        } else if let Some((_, label)) = self
-            .source_rects()
-            .into_iter()
-            .zip([
-                "Select an area",
-                "Choose an app",
-                "Whole screen",
-                "Combine areas",
-            ])
-            .find(|(rect, _)| rect.contains(self.cursor))
-        {
-            context = label.to_string();
-        } else if self.mode != CaptureMode::Pip && self.pointer_rect().contains(self.cursor) {
-            context = if self.include_pointer {
-                "Pointer included"
-            } else {
-                "Include the pointer"
-            }
-            .to_string();
-        } else if self.system_audio_available && self.system_audio_rect().contains(self.cursor) {
-            context = if self.audio.includes_system() {
-                "Desktop sound included"
-            } else {
-                "Include desktop sound"
-            }
-            .to_string();
-        } else if self.microphone_available && self.microphone_rect().contains(self.cursor) {
-            context = if self.audio.includes_microphone() {
-                "Microphone included"
-            } else {
-                "Include the microphone"
-            }
-            .to_string();
-        } else if self.mode != CaptureMode::Pip && self.delay_rect().contains(self.cursor) {
-            context = match self.delay_seconds {
-                0 => "Start immediately",
-                3 => "Start after 3 seconds",
-                _ => "Start after 10 seconds",
-            }
-            .to_string();
-        } else if self.mode == CaptureMode::Recording
-            && self.action_rects()[1].contains(self.cursor)
-        {
-            context = "Keep the most recent 30 seconds · Super+Shift+R".to_string();
-        }
+        // The pill is the picker's status ("Drag to select"); what a control
+        // does is the control's own tooltip, drawn beside it below.
+        let context = self.default_picker_context();
         if self.source == SourceMode::Window && !self.candidates.is_empty() {
             for (target, rect) in self.candidates.iter().zip(self.candidate_picker_rects()) {
                 let selected = self.selected_target.as_ref() == Some(&target.id);
@@ -4993,7 +5074,7 @@ impl Widget for CaptureStudio {
                         rect.x0 + 26.0,
                         rect.y0 + 24.0,
                     ),
-                    Icon::GalleryVerticalEnd,
+                    Icon::AppWindow,
                     if selected || hovered {
                         c.text_primary
                     } else {
@@ -5006,23 +5087,17 @@ impl Widget for CaptureStudio {
                 } else {
                     ""
                 };
-                let title_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Medium,
-                    rect.center().y,
-                );
+                let title_top =
+                    centered_text_top(tr, &theme.text(TextRole::Label), rect.center().y);
                 let shown = fit_label(
                     tr,
                     &format!("{}{suffix}", target.title),
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Medium,
+                    &theme.text(TextRole::Label),
                     rect.width() - 40.0,
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     s,
                     &shown,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     if selected || hovered {
                         c.text_primary
                     } else {
@@ -5030,15 +5105,18 @@ impl Widget for CaptureStudio {
                     },
                     top_t.pre_translate((rect.x0 + 32.0, title_top).into()),
                     None,
-                    TextWeight::Medium,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Medium),
                 );
             }
         } else {
-            let (context_w, _) = tr.measure_weighted(
+            let (context_w, _) = tr.measure_style(
                 &context,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let bottom = self.bottom_bar();
             let context_rect = Rect::new(
@@ -5054,24 +5132,21 @@ impl Widget for CaptureStudio {
                 None,
                 &RoundedRect::from_rect(context_rect, 14.0),
             );
-            let context_top = centered_text_top(
-                tr,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                TextWeight::Medium,
-                context_rect.center().y,
-            );
-            tr.draw_text_weighted(
+            let context_top =
+                centered_text_top(tr, &theme.text(TextRole::Label), context_rect.center().y);
+            tr.draw_style(
                 s,
                 &context,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
                 top_t.pre_translate((context_rect.x0 + 14.0, context_top).into()),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
         let bottom = self.bottom_bar();
-        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.e4);
+        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.floating);
         // Raised bar under an edge derived from it (HIG §9.5).
         surface::card(s, bottom_t, bottom, 14.0, c.surfaces.raised);
         if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
@@ -5081,9 +5156,13 @@ impl Widget for CaptureStudio {
                 ["Selection", "App", "Strip"]
             };
             let option_icons = if self.source == SourceMode::Multi {
-                [Icon::Sparkles, Icon::LayoutGrid, Icon::Layers]
+                [Icon::WandSparkles, Icon::LayoutGrid, Icon::Layers]
             } else {
-                [Icon::Scissors, Icon::GalleryVerticalEnd, Icon::Layers]
+                [
+                    Icon::SquareDashed,
+                    Icon::AppWindow,
+                    Icon::AlignHorizontalDistributeCenter,
+                ]
             };
             for (i, ((r, label), icon)) in self
                 .option_rects()
@@ -5102,8 +5181,8 @@ impl Widget for CaptureStudio {
                             CaptureExtent::WholeStrip,
                         ][i]
                 };
-                let face = Self::option_face(theme, r, label, icon, active)
-                    .hovered(r.contains(self.cursor));
+                let face =
+                    Self::option_face(r, label, icon, active).hovered(r.contains(self.cursor));
                 Button::paint(s, bottom_t, tr, theme, &face);
             }
         }
@@ -5170,7 +5249,7 @@ impl Widget for CaptureStudio {
                 continue;
             }
             let active = self.has_capture_source()
-                || (self.mode == CaptureMode::Recording && self.recording_active && i == 2);
+                || (self.mode == CaptureMode::Recording && self.take.active && i == 2);
             let hovered = active && r.contains(self.cursor);
             let emphasized = match self.mode {
                 CaptureMode::Screenshot | CaptureMode::Recording => i == 2,
@@ -5182,7 +5261,7 @@ impl Widget for CaptureStudio {
                 match (self.mode, i) {
                     (CaptureMode::Recording, 1) => "Last 30s",
                     (CaptureMode::Screenshot, _) => "Save",
-                    (CaptureMode::Recording, _) if self.recording_active => "Stop",
+                    (CaptureMode::Recording, _) if self.take.active => "Stop",
                     (CaptureMode::Recording, _) => "Record",
                     (CaptureMode::Pip, _) => "Create PiP",
                 }
@@ -5190,24 +5269,29 @@ impl Widget for CaptureStudio {
                 ""
             };
             let face = if danger_action && emphasized {
-                ButtonFace::new(r, label).danger()
+                ButtonFace::new(r, label).role(ButtonRole::Destructive)
             } else if emphasized {
-                ButtonFace::new(r, label).primary()
+                ButtonFace::new(r, label).role(ButtonRole::Primary)
             } else {
                 ButtonFace::new(r, label)
             }
             .icon(icon)
-            .radius(10.0)
-            .text_size(theme.tokens.typography.scale.xs)
-            .weight(TextWeight::Semibold)
             .hovered(hovered)
             .disabled(!active);
             Button::paint(s, bottom_t, tr, theme, &face);
         }
+        if let Some((anchor, label)) = self.control_tip() {
+            let side_t = if anchor.y0 < self.rect.center().y {
+                top_t
+            } else {
+                bottom_t
+            };
+            super::tooltip::draw_hover_tooltip(s, side_t, tr, theme, anchor, &label, self.rect);
+        }
         s.pop_layer()
     }
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.open {
             return;
         }
@@ -5228,7 +5312,7 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             // Encoder setup status is intentionally non-modal and has no
             // speculative cancel control. Let every event continue to the
             // application beneath it until success or failure is confirmed.
@@ -5237,8 +5321,7 @@ impl Widget for CaptureStudio {
         if self.replay_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.replay_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5300,8 +5383,7 @@ impl Widget for CaptureStudio {
         if self.recording_finished_at.is_some() {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_receipt_rect().contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5329,11 +5411,10 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        if self.recording_active {
+        if self.take.active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5353,8 +5434,7 @@ impl Widget for CaptureStudio {
         *ctx.handled = true;
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(d) = self.drag.as_mut() {
                     d.set_current(self.cursor)
                 }
@@ -5443,9 +5523,9 @@ impl Widget for CaptureStudio {
                 "2" => self.set_source_mode(SourceMode::Window),
                 "3" => self.set_source_mode(SourceMode::Display),
                 "4" => self.set_source_mode(SourceMode::Multi),
-                "s" if !self.recording_active => self.set_mode(CaptureMode::Screenshot),
-                "r" if !self.recording_active => self.set_mode(CaptureMode::Recording),
-                "p" if !self.recording_active => self.set_mode(CaptureMode::Pip),
+                "s" if !self.take.active => self.set_mode(CaptureMode::Screenshot),
+                "r" if !self.take.active => self.set_mode(CaptureMode::Recording),
+                "p" if !self.take.active => self.set_mode(CaptureMode::Pip),
                 "t" if self.mode != CaptureMode::Pip => self.cycle_delay(),
                 "c" if self.mode == CaptureMode::Screenshot => {
                     self.commit(CaptureDestination::Clipboard)
@@ -5461,13 +5541,10 @@ impl Widget for CaptureStudio {
     fn test_id(&self) -> Option<&str> {
         Some("shell.capture-studio")
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn modal_capture(&self) -> Option<Rect> {
         (self.open
-            && !self.recording_start_pending
-            && !self.recording_active
+            && !self.take.start_pending
+            && !self.take.active
             && !self.replay_active
             && self.screenshot_receipt.is_none()
             && self.recording_finished_at.is_none()
@@ -5475,8 +5552,8 @@ impl Widget for CaptureStudio {
         .then_some(self.rect)
     }
     fn needs_animation_frame(&self) -> bool {
-        self.recording_start_pending
-            || self.recording_active
+        self.take.start_pending
+            || self.take.active
             || self.replay_active
             || self
                 .screenshot_receipt
@@ -5496,7 +5573,7 @@ impl Widget for CaptureStudio {
         if !self.open {
             return Vec::new();
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             return Vec::new();
         }
         if self.replay_active {
@@ -5534,6 +5611,20 @@ impl Widget for CaptureStudio {
                 rects.push(("capture.show-screenshot".into(), reveal));
             }
             rects.push(("capture.dismiss-screenshot".into(), dismiss));
+            // The open "Send…" picker's rows, so a pointer test can reach
+            // them by name like the receipt's own buttons.
+            if let Some(menu) = self.send_menu.as_ref().filter(|menu| menu.is_open()) {
+                for (index, target) in self.send_menu_targets.iter().enumerate() {
+                    let (Some(target), Some(rect)) = (target, menu.item_rect(index)) else {
+                        continue;
+                    };
+                    let name = match target {
+                        ScreenshotSendTarget::Workspace => "capture.send-to-workspace".into(),
+                        ScreenshotSendTarget::Device(id) => format!("capture.send-to-device.{id}"),
+                    };
+                    rects.push((name, rect));
+                }
+            }
             return rects;
         }
         if self.recording_finished_at.is_some() {
@@ -5544,11 +5635,11 @@ impl Widget for CaptureStudio {
                 ("capture.dismiss-recording".into(), dismiss),
             ];
         }
-        if self.recording_active {
+        if self.take.active {
             let (pill, pause, stop) = self.recording_indicator_rects();
             return vec![
                 (
-                    if self.recording_paused {
+                    if self.take.paused {
                         "capture.resume"
                     } else {
                         "capture.pause"
@@ -5846,6 +5937,64 @@ mod tests {
         symbolic_app_picker_commits_the_same_full_target_for_all_workflows();
         full_app_can_select_a_completely_offscreen_candidate();
         arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound();
+    }
+
+    #[test]
+    fn every_control_has_a_tooltip_and_none_is_a_decorative_glyph() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0., 0., 1400., 800.);
+        s.system_audio_available = true;
+        s.microphone_available = true;
+        s.open();
+        for mode in [
+            CaptureMode::Screenshot,
+            CaptureMode::Recording,
+            CaptureMode::Pip,
+        ] {
+            s.set_mode(mode);
+            for source in [SourceMode::Region, SourceMode::Window, SourceMode::Multi] {
+                s.set_source_mode(source);
+                let mut rects: Vec<Rect> = s.mode_rects().to_vec();
+                rects.extend(s.source_rects());
+                if matches!(source, SourceMode::Window | SourceMode::Multi) {
+                    rects.extend(s.option_rects());
+                }
+                if mode != CaptureMode::Pip {
+                    rects.extend([s.pointer_rect(), s.delay_rect()]);
+                }
+                if mode == CaptureMode::Recording {
+                    rects.extend([s.system_audio_rect(), s.microphone_rect()]);
+                }
+                rects.extend(s.action_rects().into_iter().filter(|r| r.area() > 0.0));
+                for rect in rects {
+                    s.cursor = rect.center();
+                    let (anchor, label) = s.control_tip().unwrap_or_else(|| {
+                        panic!("no tooltip for {rect:?} in {mode:?}/{source:?}")
+                    });
+                    assert_eq!(anchor, rect);
+                    assert!(label.chars().count() > 3, "{label:?}");
+                    assert!(
+                        !label.contains(['\u{2191}', '\u{21b5}', '\u{2318}']),
+                        "no glyph characters in a tooltip: {label:?}"
+                    );
+                }
+            }
+        }
+        s.cursor = Point::new(700.0, 400.0);
+        assert!(s.control_tip().is_none(), "the canvas has no tooltip");
+    }
+
+    #[test]
+    fn source_and_extent_icons_say_what_they_pick() {
+        assert_eq!(
+            CaptureStudio::SOURCE_ICONS,
+            [
+                Icon::SquareDashed,
+                Icon::AppWindow,
+                Icon::Monitor,
+                Icon::SquaresUnite
+            ]
+        );
     }
 
     #[test]
@@ -6156,7 +6305,7 @@ mod tests {
             s.set_extent(CaptureExtent::FullApp);
             s.set_recording_active(true);
 
-            assert_eq!(s.recording_continuation_edges, [true, false, true, true]);
+            assert_eq!(s.take.continuation_edges, [true, false, true, true]);
             assert_eq!(s.recording_scope, "Canvas · app window");
             assert_eq!(s.recording_scope_icon(), Icon::Layers);
         }
@@ -6196,7 +6345,7 @@ mod tests {
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0., 0., 1200., 800.);
             s.set_recording_active(true);
-            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(42));
+            s.take.started_at = Some(crate::time::now() - Duration::from_secs(42));
             s.set_recording_finished();
 
             assert!(!s.is_recording_active());
@@ -6230,7 +6379,7 @@ mod tests {
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0., 0., 1000., 700.);
             s.set_recording_active(true);
-            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(10));
+            s.take.started_at = Some(crate::time::now() - Duration::from_secs(10));
 
             let (_, pause, _) = s.recording_indicator_rects_at(1.0);
             s.click(pause.center());
@@ -6639,7 +6788,7 @@ mod tests {
             assert_eq!(s.compact_recording_scope(10), "Notes");
             assert_eq!(s.recording_scope_icon(), Icon::ChevronLeft);
             assert_eq!(
-                s.recording_confirmation_regions,
+                s.take.confirmation_regions,
                 vec![Rect::new(240.0, 120.0, 1_280.0, 820.0)]
             );
             assert_eq!(s.recording_indicator_rects_at(0.0).0.width(), 304.0);
@@ -6649,8 +6798,8 @@ mod tests {
             );
 
             s.set_recording_active(false);
-            assert!(s.recording_confirmation_regions.is_empty());
-            assert_eq!(s.recording_continuation_edges, [false; 4]);
+            assert!(s.take.confirmation_regions.is_empty());
+            assert_eq!(s.take.continuation_edges, [false; 4]);
         }
 
         fn recording_request_is_acknowledged_without_claiming_success_or_blocking_apps() {
@@ -6837,11 +6986,12 @@ mod tests {
                     pause.x0 >= pill.x0 && stop.x1 <= pill.x1 && pause.x1 + 3.9 <= stop.x0,
                     "at {scale}x the controls left the pill: {pill:?} {pause:?} {stop:?}"
                 );
-                let (stop_w, _) = tr.measure_weighted(
+                let (stop_w, _) = tr.measure_style(
                     "Stop",
-                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 assert!(
                     stop.width() >= 22.0 + f64::from(stop_w) + 8.0 - 1e-6,
@@ -6880,10 +7030,10 @@ mod tests {
                 assert!(!runs.is_empty(), "the count {seconds} was not painted");
                 for run in runs {
                     assert!(
-                        run.font_size >= theme.tokens.typography.scale.xs - 1e-6,
+                        run.font_size >= theme.tokens.typography.size(TextRole::Caption) - 1e-6,
                         "count {seconds} painted at {}px, under the {}px floor",
                         run.font_size,
-                        theme.tokens.typography.scale.xs
+                        theme.tokens.typography.size(TextRole::Caption)
                     );
                 }
             }
@@ -6894,22 +7044,20 @@ mod tests {
             for scale in [1.0_f32, 2.0] {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
-                for size in [
-                    theme.tokens.typography.scale.xs,
-                    theme.tokens.typography.scale.sm,
-                    theme.tokens.typography.scale.lg,
-                ] {
+                for role in [TextRole::Caption, TextRole::Label, TextRole::Heading] {
+                    let style = theme.text(role).with_weight(TextWeight::Semibold);
                     let center = 100.0;
-                    let top = centered_text_top(&mut tr, size, TextWeight::Semibold, center);
-                    let (_, h) = tr.measure_weighted("Ag", size, None, TextWeight::Semibold);
+                    let top = centered_text_top(&mut tr, &style, center);
+                    let (_, h) = tr.measure_style("Ag", None, &style);
                     assert!(
                         (top + f64::from(h) / 2.0 - center).abs() < 1e-6,
-                        "size {size} at {scale}x: top {top} + half of {h} misses centre {center}"
+                        "{role:?} at {scale}x: top {top} + half of {h} misses centre {center}"
                     );
                     // And it is genuinely the line box, not the font size.
                     assert!(
-                        f64::from(h) > f64::from(size) * f64::from(scale),
-                        "measured height {h} should exceed the bare size {size} × {scale}"
+                        f64::from(h) > f64::from(style.size),
+                        "measured height {h} should exceed the bare size {}",
+                        style.size
                     );
                 }
             }
@@ -6986,7 +7134,7 @@ mod tests {
                         (1400, 900),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");
@@ -7013,7 +7161,8 @@ mod tests {
                     clippy::cast_sign_loss,
                     reason = "a 1400x900 test surface"
                 )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                    .render(&scene, theme.tokens.colors.surfaces.content);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,

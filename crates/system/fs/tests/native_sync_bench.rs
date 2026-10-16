@@ -43,9 +43,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
@@ -112,15 +113,6 @@ fn mark(what: &str) {
     }
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], primary: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -139,7 +131,9 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: now_ns().saturating_sub(1_000_000_000),
+        issued_at_ns: tilo_clock::try_unix_now_ns()
+            .unwrap()
+            .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -151,19 +145,25 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     let person = SigningKey::from_bytes(&person_seed)
         .verifying_key()
         .to_bytes();
-    let caps: Vec<collab_types::CapOverride> =
-        [collab_types::Verb::Read, collab_types::Verb::Write]
-            .into_iter()
-            .map(|verb| {
-                collab_types::CapOverride::new(
-                    collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
-                    collab_types::Scope::FsPath("/".into()),
-                    collab_types::Effect::Grant,
-                    verb,
-                )
-            })
-            .collect();
-    std::fs::write(path, serde_json::to_vec(&caps).unwrap()).unwrap();
+    let caps: Vec<collab_types::CapOverride> = [
+        collab_types::caps::Access::Read,
+        collab_types::caps::Access::Write,
+    ]
+    .into_iter()
+    .map(|verb| {
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            verb,
+        )
+    })
+    .collect();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Two network namespaces joined by a veth pair with a fixed one-way delay
@@ -308,9 +308,7 @@ impl Daemon {
                         let at = bench_clock().elapsed().as_secs_f64();
                         eprintln!("{at:9.3} {name}: {line}");
                     }
-                    let mut logs = logs
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut logs = logs.lock_recover();
                     if logs.len() < 200_000 {
                         logs.push(line.clone());
                     }
@@ -330,10 +328,7 @@ impl Daemon {
     }
 
     fn dump(&self) -> String {
-        let logs = self
-            .logs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let logs = self.logs.lock_recover();
         let skip = logs.len().saturating_sub(200);
         logs[skip..].join("\n")
     }

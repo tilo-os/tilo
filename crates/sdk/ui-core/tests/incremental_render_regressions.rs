@@ -1,6 +1,6 @@
 //! Regressions for two bugs incremental rendering can reintroduce:
 //!
-//! 1. `Column`/`Row::draw_with_presence` rebuild path must recurse
+//! 1. `Column`/`Row::draw` rebuild path must recurse
 //!    into children at `Affine::IDENTITY`; vello's `Scene::append`
 //!    composes the supplied transform onto each stored primitive
 //!    transform, so passing the App-level scale here causes a
@@ -18,11 +18,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -34,14 +30,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::Widget;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::{
-    Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
-    ToggleGroup,
+    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
+    Text, ToggleGroup,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -54,9 +49,9 @@ fn leak(s: &str) -> &'static str {
 }
 
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
-    let mut col = Column::new()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(title_key).with_size(18.0)));
+    let mut col = Column::new().with_intrinsic_height().push(Box::new(
+        Text::new(title_key).with_role(tilo_ui::TextRole::Heading),
+    ));
     for i in 0..ROWS_PER_PANEL {
         let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
         let label_key = leak(&format!("dash_lbl_{row_idx}"));
@@ -68,7 +63,6 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                         .push(Box::new(Button::new(
                             leak(&format!("dash_btn_{row_idx}")),
                             leak(&format!("dash_btnlbl_{row_idx}")),
-                            None,
                         ))),
                 ));
             }
@@ -85,7 +79,10 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                        .push(Box::new(
+                            Avatar::person(format!("Teammate {i}"), format!("teammate-{i}"))
+                                .size(AvatarSize::Small),
+                        )),
                 ));
             }
         }
@@ -98,7 +95,9 @@ fn build_dashboard_root() -> Box<Scrollable> {
     // mirror the change here so the regression coverage stays
     // honest.
     let header = Row::new()
-        .push(Box::new(Text::new("dash_title").with_size(24.0)))
+        .push(Box::new(
+            Text::new("dash_title").with_role(tilo_ui::TextRole::LargeTitle),
+        ))
         .push(Box::new(ToggleGroup::new(
             vec![
                 Segment::new("Day"),
@@ -126,10 +125,18 @@ fn build_dashboard_root() -> Box<Scrollable> {
 
     let footer = Row::new()
         .push(Box::new(Text::new("dash_title")))
-        .push(Box::new(Avatar::from_initials("DB", 28.0)))
-        .push(Box::new(Avatar::from_initials("QD", 28.0)))
-        .push(Box::new(Avatar::from_initials("AL", 28.0)))
-        .push(Box::new(Avatar::from_initials("PB", 28.0)))
+        .push(Box::new(
+            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Priya Bose", "priya.bose").size(AvatarSize::Regular),
+        ))
         .push(Box::new(Badge::count(42)))
         .push(Box::new(Badge::count(7)))
         .push(Box::new(Badge::count(120)));
@@ -207,7 +214,6 @@ struct Harness {
     node_map: HashMap<NodeId, *mut dyn Widget>,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
-    perms: PermissionContext,
     theme: Theme,
     scene: Scene,
     renderer: OffscreenRenderer,
@@ -230,7 +236,6 @@ impl Harness {
         let theme = Theme::dark();
         let mut text_renderer = TextRenderer::new();
         let presence = PresenceCtx::default();
-        let perms = PermissionContext::permissive();
         let mut root = build_dashboard_root();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -272,7 +277,6 @@ impl Harness {
             node_map,
             text_renderer,
             presence,
-            perms,
             theme,
             scene: Scene::new(),
             renderer: OffscreenRenderer::new(canvas_w, canvas_h),
@@ -331,13 +335,12 @@ impl Harness {
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
         let root: &mut dyn Widget = self.root.as_mut();
-        root.draw_with_presence(
+        root.draw(
             &mut self.scene,
             self.transform,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
-            &self.perms,
         );
         self.presence.pop_viewport(prev);
         root.mark_drawn();
@@ -392,7 +395,7 @@ fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
         // Frame 1: only spinners + progress bars remain dirty —
         // exactly the "post-scroll steady state" the user reported
         // broken. If a future change reintroduces an unconditional
-        // damage-region clip across the whole `draw_with_presence`,
+        // damage-region clip across the whole `draw`,
         // the second frame will drop all static widgets and this
         // test will fail.
         let _warmup = h.draw_one_frame();
@@ -431,7 +434,6 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
 
     let mut col = Column::new().with_intrinsic_height();
     for i in 0..200 {
@@ -493,7 +495,7 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         scene.reset();
         let prev = presence.push_viewport(vp);
         let r: &mut dyn Widget = root;
-        r.draw_with_presence(scene, transform, text_renderer, &theme, presence, &perms);
+        r.draw(scene, transform, text_renderer, &theme, presence);
         presence.pop_viewport(prev);
         r.mark_drawn();
     };

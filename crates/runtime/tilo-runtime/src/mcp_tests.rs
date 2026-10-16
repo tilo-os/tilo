@@ -29,6 +29,51 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
     );
 }
 
+#[test]
+fn a_resolved_row_says_each_thing_once() {
+    let mut row = action_row(
+        "doc:1",
+        "save-as",
+        vec![tilo_actions::ActionParam::required(
+            "path",
+            tilo_actions::ParamType::Text,
+            "Where",
+        )],
+    );
+    row.parent_resource = "doc:1".into();
+    row.visibility = Some(tilo_actions::remote::RowVisibility {
+        action: "save-as".into(),
+        contract: tilo_actions::ActionContract::default(),
+    });
+    let resolved = resolved_row_json(&row);
+    assert_eq!(resolved["resource"], "doc:1");
+    assert_eq!(resolved["descriptor"]["params"][0]["name"], "path");
+    assert_eq!(
+        resolved["descriptor"]["contract"],
+        row_json(&row)["descriptor"]["contract"]
+    );
+    for key in [
+        "parent_resource",
+        "visibility_action",
+        "visibility_contract",
+    ] {
+        assert!(resolved.get(key).is_none(), "{key}: {resolved}");
+    }
+    for key in ["resource", "resource_kind", "resource_label"] {
+        assert!(
+            resolved["descriptor"].get(key).is_none(),
+            "{key}: {resolved}"
+        );
+    }
+
+    // A visibility other than the action's own contract is kept.
+    row.visibility = Some(tilo_actions::remote::RowVisibility {
+        action: "read".into(),
+        contract: tilo_actions::ActionContract::view(),
+    });
+    assert_eq!(resolved_row_json(&row)["visibility_action"], "read");
+}
+
 mod schema_rows {
     use tilo_resource::{Model, resource};
 
@@ -83,7 +128,7 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
     );
     let mut large = row.clone();
     if let Some(descriptor) = large.action.as_mut() {
-        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}));
+        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}).into());
     }
     let browsed = browsed_row_json(&large);
     assert!(browsed["descriptor"]["params"][0].get("schema").is_none());
@@ -92,29 +137,31 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         row_json(&large)["descriptor"]["params"][0]["schema"].is_object(),
         "resolve keeps the full schema"
     );
+    // Operations that restate a named action are named, not repeated: the
+    // row of `rename` carries its parameters.
     let schema = &row_json(&row)["descriptor"]["params"][0]["schema"];
     let operations = schema["properties"]["op"]["oneOf"].as_array().unwrap();
-    let rename = operations
+    let named = &operations
         .iter()
-        .find(|operation| operation["properties"]["action"]["const"] == "rename")
-        .unwrap();
-    assert_eq!(rename["description"], "Rename the note.");
-    assert_eq!(
-        rename["properties"]["args"]["properties"]["title"],
-        json!({"type": "string", "description": "New title"})
-    );
-    assert_eq!(rename["properties"]["args"]["required"], json!(["title"]));
-    assert!(
-        operations
-            .iter()
-            .any(|operation| operation["properties"]["action"]["const"] == "pin")
-    );
+        .find(|operation| operation["properties"]["action"]["enum"].is_array())
+        .unwrap()["properties"]["action"]["enum"];
+    assert!(named.as_array().unwrap().contains(&json!("rename")));
+    assert!(named.as_array().unwrap().contains(&json!("pin")));
+    let rename = tilo_actions::door::survey(&[tilo_resource::publish::<Note>(
+        "test.note:1",
+        "Note",
+        &Note::default(),
+    )])
+    .into_iter()
+    .find(|descriptor| descriptor.address.action == "rename")
+    .unwrap();
+    assert_eq!(rename.params[0].name, "title");
     // What an `apply` invocation carries validates against what the row shows.
     for action in [
-        Note::RENAME.with("Groceries".into()).build(0).unwrap(),
+        Note::RENAME.with("Groceries").build(0).unwrap(),
         // An absent option is written as `null`.
         tilo_resource::Stamped {
-            operation: schema_rows::NoteAction::Pin { pinned: None },
+            operation: schema_rows::NoteAction::Pin(schema_rows::note::Pin { pinned: None }),
             now_ms: 0,
         },
     ] {
@@ -140,6 +187,7 @@ fn action_row(
             presentation: None,
         },
         action: Some(tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),
             resource_kind: "writer.document".into(),
             resource_label: "Document".into(),
@@ -194,7 +242,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         )],
     );
     if let Some(action) = apply.action.as_mut() {
-        action.params[0].schema = Some(json!({"oneOf": []}));
+        action.params[0].schema = Some(json!({"oneOf": []}).into());
     }
     let other = action_row("doc:2", "save", Vec::new());
     let page = CataloguePage {
@@ -203,7 +251,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         next_cursor: b"tilo-dir-7".to_vec(),
         ..CataloguePage::default()
     };
-    let compact = page::compact_page(&page, Some(&mut page::Handles::default()));
+    let compact = page::compact_described(&page, Some(&mut page::Handles::default()), true);
     assert_eq!(
         compact,
         json!({
@@ -214,7 +262,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
                 {"resource": "doc:1", "kind": "writer.document", "label": "Document", "children": true, "actions": {
                     "save-as": "Label of save-as — Write the document to a file (path?) [destructive]",
                     "set-style": "Label of set-style (kind:heading|list, level?:integer)",
-                    "apply": "Label of apply (action:object (schema: tilo_resolve))",
+                    "apply": "Label of apply (action:object*)",
                 }},
                 {"resource": "doc:2", "kind": "writer.document", "label": "Document", "actions": {
                     "save": "Label of save",
@@ -226,6 +274,46 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         compact.to_string().len() * 4 < page_json(&page).to_string().len(),
         "the compact page is a fraction of the full one"
     );
+}
+
+/// The rows a needle matched are described; the rest of the resource's
+/// actions are bare signatures. A first sentence is never cut short of its
+/// end at an ordinary length.
+#[test]
+fn only_matched_rows_are_described_and_whole() {
+    let described = |id: &str, text: &str| {
+        let mut row = action_row("doc:1", id, Vec::new());
+        if let Some(action) = row.action.as_mut() {
+            action.description = Some(text.into());
+        }
+        row
+    };
+    let edit = "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.";
+    let page = CataloguePage {
+        revision: "r1".into(),
+        rows: vec![
+            described("edit", edit),
+            described("paint", "Paint brush strokes. Each stroke is points."),
+        ],
+        ..CataloguePage::default()
+    };
+    let compact = page::compact_first_described(&page, None, 1);
+    let actions = &compact["resources"][0]["actions"];
+    assert_eq!(
+        actions["edit"],
+        format!("Label of edit — {}", edit.trim_end_matches('.'))
+    );
+    assert_eq!(actions["paint"], "Label of paint");
+    let long = format!("{}, and then {}", "word ".repeat(40), "more ".repeat(40));
+    let page = CataloguePage {
+        rows: vec![described("long", &long)],
+        ..CataloguePage::default()
+    };
+    let line = page::compact_described(&page, None, true)["resources"][0]["actions"]["long"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(line.ends_with("word…"), "cut at the clause: {line}");
 }
 
 #[test]
@@ -285,4 +373,44 @@ fn every_word_of_a_needle_begins_a_word_of_the_row() {
         &format,
         &page::needle_words("heavier text")
     ));
+}
+
+#[test]
+fn a_running_app_is_named_by_its_id_or_its_last_part() {
+    let running = [
+        "so.tilo.canvas",
+        "so.tilo.word-processor",
+        "org.example.canvas",
+    ];
+    assert_eq!(
+        page::app_named("so.tilo.word-processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    assert_eq!(
+        page::app_named("Word-Processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    let both = page::app_named("canvas", &running).unwrap_err();
+    assert!(both.contains("several"), "{both}");
+    let none = page::app_named("sheets", &running[..1]).unwrap_err();
+    assert!(none.contains("running: so.tilo.canvas"), "{none}");
+}
+
+#[test]
+fn a_succeeded_batch_step_is_its_output_alone() {
+    let step = succeeded_step(json!({
+        "invocation_id": "a",
+        "update": {"state": "succeeded", "invocation": "a", "output": {
+            "value": {"content": "tilo.content:ab"}, "resources": ["tilo.content:ab"]
+        }},
+        "unchanged": "note"
+    }));
+    assert_eq!(
+        step,
+        json!({"value": {"content": "tilo.content:ab"}, "unchanged": "note"})
+    );
+    let empty = succeeded_step(
+        json!({"invocation_id": "b", "update": {"state": "succeeded", "invocation": "b", "output": {}}}),
+    );
+    assert_eq!(empty, json!({}));
 }

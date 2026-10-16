@@ -1,5 +1,5 @@
 //! Inner ownership during callback-bearing App assembly. No gate is held here.
-#[cfg(all(windows, feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 use super::native_runner;
 use super::{
     AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
@@ -60,8 +60,8 @@ impl Drop for AppAssemblyCustody {
 )]
 #[derive(Default)]
 pub(super) struct AppAssemblyValues {
-    #[cfg(all(windows, feature = "native"))]
-    pub startup_renderer: Option<Option<native_runner::RendererPreparation>>,
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+    pub startup_renderer: Option<Option<native_runner::startup::RendererPreparation>>,
     pub history: Option<Option<Box<crate::history_mode::host::HistoryHost>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub controlled_installed_history_definition:
@@ -103,7 +103,6 @@ pub(super) struct AppAssemblyValues {
             crate::collaboration::CommittedDocument,
         )>,
     >,
-    pub legacy_persistence: Option<crate::launch::LegacyPersistencePolicy>,
     pub persistence: Option<PersistenceRuntime>,
     pub autosave_generation: Option<u64>,
     pub actions: Option<ActionRuntime>,
@@ -165,7 +164,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         crate::control_custody::CustodyAttachment::Initial,
     );
     control.finish_initial_installation();
-    #[cfg(all(windows, feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     {
         assembly.values.startup_renderer = Some(None);
     }
@@ -222,7 +221,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     assembly.values.document_routes =
         Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
     assembly.values.committed_documents = Some(Vec::new());
-    assembly.values.legacy_persistence = Some(crate::launch::LegacyPersistencePolicy::Host);
     assembly.values.persistence = Some(PersistenceRuntime::new());
     assembly.values.autosave_generation = Some(0);
     assembly.values.actions = Some(ActionRuntime::new());
@@ -249,7 +247,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {
-        #[cfg(all(windows, feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
             startup_renderer: Some(startup_renderer),
         history: Some(history),
         #[cfg(any(test, feature = "test-support"))]
@@ -286,7 +284,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         window: Some(window),
         document_routes: Some(document_routes),
         committed_documents: Some(committed_documents),
-        legacy_persistence: Some(legacy_persistence),
         persistence: Some(persistence),
         autosave_generation: Some(autosave_generation),
         actions: Some(actions),
@@ -320,7 +317,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     let retirement = assembly.retirement.take();
     let mut app = App {
         retirement,
-        #[cfg(all(windows, feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
         startup_renderer,
         control_domain,
         wake_scope,
@@ -360,7 +357,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         accessibility,
         window,
         committed_documents,
-        legacy_persistence,
         persistence,
         autosave_generation,
         document_routes,
@@ -380,6 +376,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         floating,
     };
 
+    app.accessibility.window.your_colour = (inputs.your_colour)();
     app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
     app.accessibility.a11y.reduce_motion = match app.palette_source {
         PaletteSource::Host => app.accessibility.base_theme.reduce_motion,

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {createPanorama} from './panorama.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -38,7 +39,7 @@ async function fixture({standalone=false,legacy=false}={}){
  };
  let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime={mount(canvas,_config,_assets,_entries,callback){update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},flush_files:async()=>{},storage_write_hook(){},drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime={mount(canvas,_config,_assets,_entries,callback){update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,searchToggles:0,desktop_search_toggle(){this.searchToggles++;},
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
  };
@@ -63,6 +64,41 @@ test('outside pointer press dismisses only the current system search and preserv
  assert.deepEqual(keys,['Escape','Escape']);assert.equal(event.defaultPrevented,false);assert.equal(event.stopped,undefined);
  keys.length=0;f.state={...f.state,sequence:'3',owner:'writer'};
  outside.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
+});
+
+test('capture source belongs to its mount and never takes input focus',async()=>{
+ const f=await fixture({standalone:true});
+ assert.ok(f.host.captureSource,'the shared host exposes a source, not a desktop screenshot');
+ const calls=[];const ctx=new Proxy({}, {get:(_o,k)=>(...args)=>calls.push([k,...args])});
+ const output={getContext:()=>ctx};
+ const observer=createPanorama({canvas:output,sources:[{source:f.host.captureSource,rect:[0,0,100,50]}],width:100,height:50});
+ const before=f.document.activeElement;
+ assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/presented/);
+ // A missing real backing size cannot silently yield a successful frame.
+ f.update({phase:'presented',captureProtected:false,frames:2,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ await tick();
+ assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/dimensions/);
+ assert.equal(f.document.activeElement,before);
+ const originalCreate=f.document.createElement;
+ f.document.createElement=tag=>{const n=originalCreate(tag);n.getContext=()=>ctx;return n;};
+ f.host.canvas.width=100;f.host.canvas.height=50;
+ f.update({phase:'presented',captureProtected:false,frames:3,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ await tick();
+ const receipt=observer.render({cx:50,cy:25,scale:1});
+ assert.equal(receipt.panes[0].record,'one');assert.equal(receipt.panes[0].frame,3);
+ assert.equal(receipt.panes[0].presenceAvailable,false);
+ f.update({phase:'presented',captureProtected:false,frames:4,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4,'pixels and generation are captured before queued page callbacks');
+ f.update({clipboard:'copied'});assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4);
+ const draws=calls.filter(call=>call[0]==='drawImage').length;
+ for(const captureProtected of [true,undefined]){
+  f.update({phase:'presented',captureProtected,frames:5,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+  assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/capture protection/);
+  assert.equal(calls.filter(call=>call[0]==='drawImage').length,draws,'protected or unknown pixels never reach either copy or output');
+ }
+ f.update({phase:'presented',captureProtected:false,frames:6,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,6);
+ assert.equal(f.document.activeElement,before);observer.close();
 });
 test('mounted dead key composes one caret and retains the following numeric input',async()=>{
  const f=await fixture();f.host.editor.focus();f.delivered.length=0;const old=f.host.editor,canvasKeys=[];
@@ -166,4 +202,42 @@ test('desktop search chords follow the platform command key',async()=>{
  assert.equal(isDesktopSearchShortcut({key:'k',metaKey:true,shiftKey:true},true),false);
  assert.equal(isDesktopSearchShortcut({key:'k',metaKey:true,repeat:true},true),false);
  assert.equal(isDesktopSearchShortcut({key:'j',metaKey:true},true),false);
+});
+
+test('mounted semantic watch latches with pixels and preserves input through disposal',async()=>{
+ const f=await fixture({standalone:true});const requests=[];f.runtime.close=()=>[];
+ f.runtime.request_component_locus=(_id,target,observe)=>requests.push({target:JSON.parse(target),observe});
+ const target={app:'writer',instance:1,record:'one',resource:'tilo-ui-bound:v1:host:lifetime:hex',action:'edit'};
+ const before=f.document.activeElement,delivered=f.delivered.length;
+ Object.assign(f.host.canvas,{width:100,height:50});
+ const watch=f.host.observeSemanticTarget(target);assert.equal(watch.read(),null);
+ const ctx=new Proxy({}, {get:()=>()=>{}});
+ const observer=createPanorama({canvas:{getContext:()=>ctx},sources:[{source:f.host.captureSource,rect:[0,0,100,50]}],width:100,height:50});
+ document.createElement=tag=>Object.assign(new Node(tag),{getContext:()=>ctx});
+ const state={phase:'presented',captureProtected:false,presentation:true,frames:2,record:'one',gpuGeneration:1,layoutGeneration:1,logicalSize:[100,50],surfaceSize:[100,50],semanticLoci:[{target,rect:[2,3,20,30]}]};
+ f.update(state);
+ const semantic=watch.read(),pane=observer.render({cx:50,cy:25,scale:1}).panes[0];
+ assert.deepEqual(semantic.rect,[2,3,20,30]);assert.equal(semantic.frame,pane.frame);assert.equal(semantic.gpuGeneration,pane.gpuGeneration);assert.equal(semantic.layoutGeneration,pane.layoutGeneration);assert.equal(semantic.presentedAtMs,pane.presentedAtMs);
+ f.update({...state,presentation:false,semanticLoci:[]});assert.deepEqual(watch.read().rect,[2,3,20,30]);
+ f.host.canvas.width=101;assert.equal(watch.read(),null);
+ assert.equal(f.document.activeElement,before);assert.equal(f.delivered.length,delivered);
+ watch.close();assert.equal(requests.at(-1).observe,false);assert.equal(watch.read(),null);
+ observer.close();await f.host.cleanup();assert.throws(()=>f.host.observeSemanticTarget(target),/closed/);
+});
+test('desktop chords typed in a focused text field reach the desktop, other modified keys stay the browser\'s',async()=>{
+ const f=await fixture();f.host.editor.focus();
+ const canvasKeys=[];f.host.canvas.addEventListener('keydown',event=>canvasKeys.push([event.key,Boolean(event.metaKey),Boolean(event.ctrlKey),Boolean(event.altKey)]));
+ // The fixture is a Mac: Super is Cmd, the stand-in Ctrl+Option.
+ for(const init of [{key:'ArrowRight',code:'ArrowRight',metaKey:true},{key:'ArrowLeft',code:'ArrowLeft',ctrlKey:true,altKey:true},{key:'PageDown',code:'PageDown',metaKey:true},{key:'¡',code:'Digit1',ctrlKey:true,altKey:true}]){
+  const event=new DomEvent('keydown',init);f.host.editor.dispatchEvent(event);
+  assert.equal(event.defaultPrevented,true,`${init.code} is the desktop's, not the page's`);
+  f.host.editor.dispatchEvent(new DomEvent('keyup',{key:init.key,code:init.code}));
+ }
+ assert.deepEqual(canvasKeys,[['ArrowRight',true,false,false],['ArrowLeft',false,true,true],['PageDown',true,false,false],['¡',false,true,true]]);
+ canvasKeys.length=0;
+ for(const init of [{key:'ArrowLeft',code:'ArrowLeft',altKey:true},{key:'ArrowLeft',code:'ArrowLeft',altKey:true,shiftKey:true},{key:'l',code:'KeyL',metaKey:true}]){
+  const event=new DomEvent('keydown',init);f.host.editor.dispatchEvent(event);
+  assert.equal(event.defaultPrevented,false,`${JSON.stringify(init)} stays native`);
+ }
+ assert.deepEqual(canvasKeys,[],'word movement and browser chords are not desktop chords');
 });

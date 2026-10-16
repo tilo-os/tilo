@@ -130,7 +130,7 @@ struct Files {
     namespace: Arc<NamespaceFile>,
     history: Arc<FileHistoryStore>,
     hydrator: Arc<Hydrator>,
-    actor: collab_types::FileActor,
+    actor: fs_protocol::FileActor,
 }
 
 impl Files {
@@ -152,7 +152,7 @@ impl Files {
             namespace: Arc::new(namespace),
             history: Arc::new(history),
             hydrator,
-            actor: collab_types::FileActor {
+            actor: fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(author.person),
                 device: collab_types::Ed25519PublicKey(author.device),
             },
@@ -222,7 +222,7 @@ impl NamespaceFile {
             }
             (heads, namespace.save())
         };
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         *saved = heads;
         Ok(())
     }
@@ -239,9 +239,9 @@ pub(super) fn folder_in(home: &Path, workspace: &str) -> PathBuf {
 
 /// The folder of the workspace named `workspace` in this user's home.
 pub(super) fn folder(workspace: &str) -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
+    let home = tilo_paths::home()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is missing"))?;
-    Ok(folder_in(Path::new(&home), workspace))
+    Ok(folder_in(&home, workspace))
 }
 
 #[cfg(test)]

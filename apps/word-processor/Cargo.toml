@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
+description = "CRDT rich-text word processor: a ui app over tilo-doc with .odt support."
 
 [lib]
 name = "word_processor"
@@ -25,24 +25,25 @@ path = "src/main.rs"
 # this binary. Off by default -- a normal `cargo build --release -p
 # word-processor` is an unchanged static build.
 thin = ["dep:runtime-dylib"]
+# Writer's publication without a window, for peers in other crates' tests
+# that serve a Writer document the way its framework app publishes it.
+test-support = []
 
 [dependencies]
-fnv.workspace = true
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 # Comment replies are written in the SDK rich-text editor, embedded.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 tilo-spellcheck = { path = "../../crates/text/spellcheck" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
@@ -63,7 +64,11 @@ name = "it"
 path = "tests/it.rs"
 
 [dev-dependencies]
+settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tempfile.workspace = true
+# The PDF viewer's engine: the agent benchmark reopens its PDF export with it.
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

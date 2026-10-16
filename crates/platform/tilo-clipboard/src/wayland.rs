@@ -1,39 +1,83 @@
 //! `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 //! Wayland connection — the native clipboard for a Wayland app; see
 //! the crate docs for why this, rather than `arboard`, serves Wayland.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the Wayland clipboard owns its event thread"
-)]
 
 use std::sync::Arc;
 
 use crate::{
-    ClipboardBackend, ClipboardTarget, MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_IMAGE_INPUT_BYTES,
+    ClipboardBackend, ClipboardImage, ClipboardTarget, MAX_CLIPBOARD_IMAGE_BYTES,
+    MAX_CLIPBOARD_IMAGE_INPUT_BYTES,
 };
 
+/// The image another app put on the clipboard, read when the selection
+/// changed so a paste never waits on the copying app.
+type PastedImage = Arc<std::sync::Mutex<Option<ClipboardImage>>>;
+
+/// A completed same-offer rich selection. Constructed on the owning host so
+/// completion wakes that host through its existing wake scope.
+struct RichClipboard {
+    offer: std::sync::Mutex<Option<(u64, crate::RichTextOffer)>>,
+    generation: std::sync::atomic::AtomicU64,
+    wake: tilo_rt::wake::WakeHandle,
+}
+
+impl RichClipboard {
+    fn new() -> Self {
+        Self {
+            offer: std::sync::Mutex::new(None),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            wake: tilo_rt::wake::WakeHandle::new(),
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Ok(mut offer) = self.offer.lock() {
+            *offer = None;
+        }
+        self.wake.wake();
+    }
+
+    fn publish(&self, generation: u64, value: crate::RichTextOffer) {
+        if let Ok(mut offer) = self.offer.lock() {
+            if self.generation() != generation {
+                return;
+            }
+            *offer = Some((generation, value));
+        }
+        self.wake.wake();
+    }
+
+    fn read(&self) -> Option<crate::RichTextOffer> {
+        let cached = self.offer.try_lock().ok()?;
+        let (generation, offer) = cached.as_ref()?;
+        if *generation != self.generation() {
+            return None;
+        }
+        let result = offer.clone();
+        let generation = *generation;
+        drop(cached);
+        (generation == self.generation()).then_some(result)
+    }
+}
+
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
-const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
+
+fn publication_deadline() -> tilo_clock::Instant {
+    let now = tilo_clock::now();
+    now.checked_add(CLIPBOARD_READ_BUDGET).unwrap_or(now)
+}
 
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
     budget: tilo_clock::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
-}
-
-fn join_bounded(thread: std::thread::JoinHandle<()>, budget: tilo_clock::Duration) -> bool {
-    let now = tilo_clock::now();
-    let deadline = now.checked_add(budget).unwrap_or(now);
-    while !thread.is_finished() && tilo_clock::now() < deadline {
-        std::thread::yield_now();
-    }
-    if thread.is_finished() {
-        let _ = thread.join();
-        true
-    } else {
-        false
-    }
 }
 
 /// `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
@@ -60,6 +104,8 @@ pub struct WaylandClipboard {
     primary_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
     clipboard_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
     primary_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
+    pasted: PastedImage,
+    rich: Arc<RichClipboard>,
     wake: tilo_rt::wake::WakeHandle,
 }
 
@@ -69,10 +115,35 @@ struct PublicationClipboard {
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl PublicationClipboard {
+    /// Stop the worker and wait until it has. The worker drives the
+    /// application's own `wl_display`, which the application frees after
+    /// this clipboard; a worker left running would go on reading and
+    /// writing freed memory. It sits in its event loop, where `Exit` wakes
+    /// it at once, and none of its work blocks: its pipes are event
+    /// sources. `smithay_clipboard::Clipboard` makes the same wait on drop
+    /// for the readers this clipboard also owns.
+    fn shut_down(&self) {
+        let _ = self.sender.send(ClipboardCommand::Exit);
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
+    }
+}
+
 enum ClipboardCommand {
-    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>),
-    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>),
+    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
+    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     Exit,
+    Fence(std::sync::mpsc::Sender<()>),
+    ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
+    #[cfg(test)]
+    CommandProcessed(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
@@ -94,10 +165,14 @@ impl WaylandClipboard {
         let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
+        let pasted = PastedImage::default();
+        let worker_pasted = Arc::clone(&pasted);
+        let rich = Arc::new(RichClipboard::new());
+        let worker_rich = Arc::clone(&rich);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard".into())
             .spawn(move || {
-                publication_worker(connection, receiver);
+                publication_worker(connection, receiver, worker_pasted, worker_rich);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -125,6 +200,8 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pasted,
+            rich,
             wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
@@ -136,13 +213,59 @@ impl WaylandClipboard {
     pub fn new_for_wayland_test(
         connection: smithay_client_toolkit::reexports::client::Connection,
     ) -> Self {
+        Self::new_for_wayland_test_with_read_budget(connection, CLIPBOARD_READ_BUDGET)
+    }
+
+    /// Wait until the compositor has processed this worker's seat and device
+    /// bindings before a protocol fixture maps its window and acquires focus.
+    #[doc(hidden)]
+    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::Duration) -> bool {
+        let Some(end) = tilo_clock::now().checked_add(budget) else {
+            return false;
+        };
+        // The first reply follows seat capabilities; their callbacks bind the
+        // keyboard and data device. The second follows those new requests.
+        for _ in 0..2 {
+            let (reply, received) = std::sync::mpsc::channel();
+            if self
+                .publication
+                .sender
+                .send(ClipboardCommand::Fence(reply))
+                .is_err()
+                || recv_bounded(&received, end.saturating_duration_since(tilo_clock::now()))
+                    .is_none()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Use the production worker with an explicit transfer deadline in protocol
+    /// tests. Cancellation tests must finish before this deadline, so expiry
+    /// cannot satisfy an assertion that focus loss or NULL cleared an offer.
+    #[doc(hidden)]
+    pub fn new_for_wayland_test_with_read_budget(
+        connection: smithay_client_toolkit::reexports::client::Connection,
+        rich_read_budget: tilo_clock::Duration,
+    ) -> Self {
         let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
+        let pasted = PastedImage::default();
+        let worker_pasted = Arc::clone(&pasted);
+        let rich = Arc::new(RichClipboard::new());
+        let worker_rich = Arc::clone(&rich);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
-                publication_worker(connection, receiver);
+                image_worker_impl::run(
+                    connection,
+                    receiver,
+                    worker_pasted,
+                    worker_rich,
+                    rich_read_budget,
+                );
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -164,12 +287,14 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pasted,
+            rich,
             wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
 }
 
-fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
         return None;
     }
@@ -197,8 +322,8 @@ mod image_worker_impl {
     use std::os::unix::io::AsRawFd;
     use std::sync::Arc;
 
-    use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
-    use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
+    use sctk::data_device_manager::data_device::{DataDevice, DataDeviceData, DataDeviceHandler};
+    use sctk::data_device_manager::data_offer::{DataOfferData, DataOfferHandler, DragOffer};
     use sctk::data_device_manager::data_source::DataSourceHandler;
     use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
     use sctk::reexports::calloop::{self, EventLoop, LoopHandle, PostAction};
@@ -207,6 +332,7 @@ mod image_worker_impl {
     use sctk::reexports::client::globals::registry_queue_init;
     use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
     use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
+    use sctk::reexports::client::protocol::wl_data_offer::WlDataOffer;
     use sctk::reexports::client::protocol::wl_data_source::WlDataSource;
     use sctk::reexports::client::protocol::wl_keyboard::WlKeyboard;
     use sctk::reexports::client::protocol::wl_pointer::WlPointer;
@@ -217,12 +343,10 @@ mod image_worker_impl {
     use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
     use sctk::seat::touch::{TouchData, TouchHandler};
     use sctk::seat::{Capability, SeatHandler, SeatState};
-    use sctk::{
-        delegate_data_device, delegate_pointer, delegate_registry, delegate_seat, delegate_touch,
-    };
+    use sctk::{delegate_pointer, delegate_registry, delegate_seat, delegate_touch};
     use smithay_client_toolkit as sctk;
 
-    use super::ClipboardCommand;
+    use super::{ClipboardCommand, PastedImage, RichClipboard};
 
     #[derive(Debug, Default)]
     struct SeatData {
@@ -231,6 +355,8 @@ mod image_worker_impl {
         touch: Option<WlTouch>,
         data_device: Option<DataDevice>,
         has_focus: bool,
+        keyboard_focus: bool,
+        rich_offer_seen: bool,
         latest_serial: u32,
     }
 
@@ -248,6 +374,16 @@ mod image_worker_impl {
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
+        /// The image on the current selection, once read.
+        pasted: PastedImage,
+        /// Counts selections, so a slow read of an older one never lands.
+        selection_generation: u64,
+        rich: Arc<RichClipboard>,
+        rich_seat: Option<WlSeat>,
+        rich_active_seat: Option<WlSeat>,
+        rich_pending: Option<PendingRich>,
+        plain_pending: Option<PendingPlain>,
+        rich_read_budget: tilo_clock::Duration,
         exit: bool,
     }
 
@@ -268,7 +404,20 @@ mod image_worker_impl {
         }
     }
 
-    pub fn run(connection: Connection, commands: calloop::channel::Channel<ClipboardCommand>) {
+    pub fn run(
+        connection: Connection,
+        commands: calloop::channel::Channel<ClipboardCommand>,
+        pasted: PastedImage,
+        rich: Arc<RichClipboard>,
+        rich_read_budget: tilo_clock::Duration,
+    ) {
+        struct ClearRich(Arc<RichClipboard>);
+        impl Drop for ClearRich {
+            fn drop(&mut self) {
+                self.0.invalidate();
+            }
+        }
+        let _clear = ClearRich(Arc::clone(&rich));
         let Ok((globals, queue)) = registry_queue_init(&connection) else {
             return;
         };
@@ -303,20 +452,57 @@ mod image_worker_impl {
             pending_image: None,
             inflight_transfers: 0,
             inflight_bytes: 0,
+            pasted,
+            selection_generation: 0,
+            rich,
+            rich_seat: None,
+            rich_active_seat: None,
+            rich_pending: None,
+            plain_pending: None,
+            rich_read_budget,
             exit: false,
         };
-        let _ = loop_handle.insert_source(commands, |event, (), state| {
+        let fence_connection = connection.clone();
+        let _ = loop_handle.insert_source(commands, move |event, (), state| {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
-                    ClipboardCommand::SetText(text, reply) => {
-                        state.store_text(text);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetText(text, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Text(text),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
-                    ClipboardCommand::SetImage(png, reply) => {
-                        state.store_image(png);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetImage(png, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Image(png),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
+                    #[cfg(test)]
+                    ClipboardCommand::CommandProcessed(reply) => {
+                        let _ = reply.send(());
+                    }
+                    ClipboardCommand::Fence(reply) => {
+                        // A protocol sync reply shares the worker's event queue.
+                        // It proves earlier selection/focus events were handled,
+                        // unlike observing a command-channel acknowledgement.
+                        fence_connection.display().sync(&state.queue_handle, reply);
+                        let _ = fence_connection.flush();
+                    }
+                    ClipboardCommand::ReadText(reply, deadline) => {
+                        state.request_plain_read(&fence_connection, reply, deadline);
+                    }
                 }
             }
         });
@@ -326,9 +512,143 @@ mod image_worker_impl {
                 break;
             }
         }
+        state.invalidate_rich();
+    }
+
+    enum PublicationPayload {
+        Text(Vec<u8>),
+        Image(Vec<u8>),
+    }
+
+    struct PendingPublication {
+        payload: std::sync::Mutex<Option<PublicationPayload>>,
+        reply: std::sync::mpsc::Sender<bool>,
+        deadline: tilo_clock::Instant,
+    }
+
+    struct PublishedSelection {
+        reply: std::sync::mpsc::Sender<bool>,
+    }
+
+    struct PlainRequest {
+        reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
+        deadline: tilo_clock::Instant,
+    }
+
+    struct PendingPlain {
+        seat: WlSeat,
+        generation: u64,
+        reply: std::sync::mpsc::Sender<Option<String>>,
+        reader: Option<calloop::RegistrationToken>,
+        timer: Option<calloop::RegistrationToken>,
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PlainRequest> for State {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            request: &PlainRequest,
+            connection: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let Ok(mut reply) = request.reply.lock()
+                && let Some(reply) = reply.take()
+            {
+                state.start_plain_read(connection, reply, request.deadline);
+            }
+        }
+    }
+
+    impl PendingPublication {
+        fn new(
+            payload: PublicationPayload,
+            reply: std::sync::mpsc::Sender<bool>,
+            deadline: tilo_clock::Instant,
+        ) -> Self {
+            Self {
+                payload: std::sync::Mutex::new(Some(payload)),
+                reply,
+                deadline,
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PendingPublication>
+        for State
+    {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            pending: &PendingPublication,
+            connection: &Connection,
+            queue_handle: &QueueHandle<Self>,
+        ) {
+            // This callback follows all earlier focus events on the same
+            // protocol queue. A timed-out or unfocused copy must not become
+            // a selection later when the application regains focus.
+            let payload = pending
+                .payload
+                .lock()
+                .ok()
+                .and_then(|mut payload| payload.take());
+            let ok = if tilo_clock::now() < pending.deadline && state.can_publish() {
+                match payload {
+                    Some(PublicationPayload::Text(text)) => {
+                        state.store_text(text);
+                        state.publish_current()
+                    }
+                    Some(PublicationPayload::Image(png)) => {
+                        state.store_image(png);
+                        state.publish_current()
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            if ok {
+                // The new sink may take focus as soon as set_image returns.
+                // Fence set_selection on this connection before reporting a
+                // successful copy, so a caller's next focus change cannot
+                // overtake its own publication.
+                connection.display().sync(
+                    queue_handle,
+                    PublishedSelection {
+                        reply: pending.reply.clone(),
+                    },
+                );
+                let _ = connection.flush();
+            } else {
+                let _ = pending.reply.send(false);
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PublishedSelection>
+        for State
+    {
+        fn event(
+            _: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            published: &PublishedSelection,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let _ = published.reply.send(true);
+        }
     }
 
     impl State {
+        fn can_publish(&self) -> bool {
+            self.latest_seat
+                .as_ref()
+                .and_then(|seat| self.seats.get(seat))
+                .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
+        }
+
         fn store_text(&mut self, text: Vec<u8>) {
             self.text_contents = Some(Arc::from(text));
             self.pending_image = None;
@@ -388,10 +708,8 @@ mod image_worker_impl {
             };
             source.set_selection(device, serial);
             self.data_sources.push(source);
-            // Keep the latest image around just like text. If this command
-            // arrived before the seat's focus/serial event, publish_current
-            // will be retried from that event rather than silently dropping
-            // the user's copy.
+            // Keep the accepted payload available for protocol transfers and
+            // subsequent focus/serial updates.
             true
         }
 
@@ -452,6 +770,555 @@ mod image_worker_impl {
                     self.inflight_transfers = self.inflight_transfers.saturating_sub(1);
                     self.inflight_bytes = self.inflight_bytes.saturating_sub(transfer_len);
                 }
+            }
+        }
+    }
+
+    impl State {
+        /// Read the image the new selection offers, if it offers one, into
+        /// [`PastedImage`] without blocking the worker: the copying app writes
+        /// it at its own pace, and the read is dropped when the selection
+        /// changes again or the image is larger than a paste may be.
+        fn read_selection_image(&mut self, conn: &Connection, device: &WlDataDevice) {
+            self.selection_generation = self.selection_generation.wrapping_add(1);
+            let generation = self.selection_generation;
+            if let Ok(mut pasted) = self.pasted.lock() {
+                *pasted = None;
+            }
+            let Some(offer) = device
+                .data::<sctk::data_device_manager::data_device::DataDeviceData>()
+                .and_then(sctk::data_device_manager::data_device::DataDeviceData::selection_offer)
+            else {
+                return;
+            };
+            let Some(mime) = offer.with_mime_types(|types| {
+                crate::preferred_image_type(types.iter().map(String::as_str))
+            }) else {
+                return;
+            };
+            let Ok(pipe) = offer.receive(mime.to_owned()) else {
+                return;
+            };
+            let _ = conn.flush();
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return;
+            }
+            let mut bytes = Vec::new();
+            let mut chunk = vec![0u8; 64 * 1024];
+            let _ = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    use std::io::Read as _;
+                    if state.selection_generation != generation {
+                        return PostAction::Remove;
+                    }
+                    loop {
+                        // SAFETY: the source owns the pipe for this callback; the
+                        // borrow ends before it returns.
+                        match unsafe { pipe.get_mut() }.read(&mut chunk) {
+                            Ok(0) => {
+                                if !bytes.is_empty()
+                                    && let Ok(mut pasted) = state.pasted.lock()
+                                {
+                                    *pasted = Some(crate::ClipboardImage {
+                                        mime,
+                                        bytes: std::mem::take(&mut bytes),
+                                    });
+                                }
+                                return PostAction::Remove;
+                            }
+                            Ok(read) => {
+                                bytes.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                                if bytes.len() > crate::MAX_PASTED_IMAGE_BYTES {
+                                    return PostAction::Remove;
+                                }
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                return PostAction::Continue;
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(_) => return PostAction::Remove,
+                        }
+                    }
+                });
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) enum RichPart {
+        Html,
+        Plain,
+    }
+
+    impl RichPart {
+        fn limit(self) -> usize {
+            match self {
+                Self::Html => crate::MAX_CLIPBOARD_HTML_BYTES,
+                Self::Plain => crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES,
+            }
+        }
+    }
+
+    pub(super) enum RichRead {
+        Pending,
+        Finished(Option<String>),
+    }
+
+    /// One bounded nonblocking read callback, including interrupted syscalls.
+    pub(super) struct RichPipe {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+
+    impl RichPipe {
+        pub(super) fn new(part: RichPart) -> Self {
+            Self {
+                bytes: Vec::new(),
+                limit: part.limit(),
+            }
+        }
+
+        pub(super) fn read(&mut self, pipe: &mut impl std::io::Read) -> RichRead {
+            let mut chunk = [0u8; 8192];
+            for _ in 0..8 {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => {
+                        return RichRead::Finished(
+                            String::from_utf8(std::mem::take(&mut self.bytes)).ok(),
+                        );
+                    }
+                    Ok(read) => {
+                        if self.bytes.len().saturating_add(read) > self.limit {
+                            return RichRead::Finished(None);
+                        }
+                        self.bytes
+                            .extend_from_slice(chunk.get(..read).unwrap_or_default());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return RichRead::Pending;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => return RichRead::Finished(None),
+                }
+            }
+            RichRead::Pending
+        }
+    }
+
+    struct PendingRich {
+        deadline: tilo_clock::Instant,
+        html: Option<String>,
+        plain: Option<String>,
+        html_done: bool,
+        plain_done: bool,
+        html_reader: Option<calloop::RegistrationToken>,
+        plain_reader: Option<calloop::RegistrationToken>,
+        timer: Option<calloop::RegistrationToken>,
+    }
+
+    impl PendingRich {
+        fn reader(&mut self, part: RichPart) -> &mut Option<calloop::RegistrationToken> {
+            match part {
+                RichPart::Html => &mut self.html_reader,
+                RichPart::Plain => &mut self.plain_reader,
+            }
+        }
+    }
+
+    impl State {
+        fn request_plain_read(
+            &self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // Read only after this queue has handled preceding selection and
+            // keyboard-focus events, including a queued focus revocation.
+            connection.display().sync(
+                &self.queue_handle,
+                PlainRequest {
+                    reply: std::sync::Mutex::new(Some(reply)),
+                    deadline,
+                },
+            );
+            let _ = connection.flush();
+        }
+
+        fn finish_plain_read(&mut self, value: Option<String>) {
+            if let Some(pending) = self.plain_pending.take() {
+                for token in [pending.reader, pending.timer].into_iter().flatten() {
+                    self.loop_handle.remove(token);
+                }
+                let _ = pending.reply.send(value);
+                self.rich.wake.wake();
+            }
+        }
+
+        fn start_plain_read(
+            &mut self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // One explicit paste can own one bounded pipe. A newer request
+            // cancels the previous transfer rather than accumulating readers.
+            self.finish_plain_read(None);
+            let offered = self.latest_seat.as_ref().and_then(|seat| {
+                let data = self.seats.get(seat)?;
+                if !data.keyboard_focus || !data.rich_offer_seen {
+                    return None;
+                }
+                let device = data.data_device.as_ref()?;
+                let offer = device.data().selection_offer()?;
+                let mime = offer.with_mime_types(|types| {
+                    [
+                        "text/plain;charset=utf-8",
+                        "text/plain",
+                        "UTF8_STRING",
+                        "STRING",
+                        "TEXT",
+                    ]
+                    .into_iter()
+                    .find(|mime| types.iter().any(|offered| offered == mime))
+                })?;
+                Some((seat.clone(), offer.receive(mime.into()).ok()?))
+            });
+            let Some((seat, pipe)) = offered.filter(|_| tilo_clock::now() < deadline) else {
+                let _ = reply.send(None);
+                self.rich.wake.wake();
+                return;
+            };
+            let generation = self.rich.generation();
+            self.plain_pending = Some(PendingPlain {
+                seat,
+                generation,
+                reply,
+                reader: None,
+                timer: None,
+            });
+            if !self.register_plain_reader(pipe, generation, deadline) {
+                self.finish_plain_read(None);
+                return;
+            }
+            let timer = self.loop_handle.insert_source(
+                calloop::timer::Timer::from_deadline(deadline),
+                move |_, (), state| {
+                    if let Some(pending) = state.plain_pending.as_mut()
+                        && pending.generation == generation
+                    {
+                        pending.timer = None;
+                        state.finish_plain_read(None);
+                    }
+                    calloop::timer::TimeoutAction::Drop
+                },
+            );
+            if let Ok(timer) = timer {
+                if let Some(pending) = self.plain_pending.as_mut() {
+                    pending.timer = Some(timer);
+                }
+            } else {
+                self.finish_plain_read(None);
+            }
+            if connection.flush().is_err() {
+                self.finish_plain_read(None);
+            }
+        }
+
+        fn register_plain_reader(
+            &mut self,
+            pipe: sctk::data_device_manager::ReadPipe,
+            generation: u64,
+            deadline: tilo_clock::Instant,
+        ) -> bool {
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return false;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return false;
+            }
+            let mut reader = RichPipe::new(RichPart::Plain);
+            let inserted = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    let Some(pending) = state.plain_pending.as_ref() else {
+                        return PostAction::Remove;
+                    };
+                    if pending.generation != generation {
+                        return PostAction::Remove;
+                    }
+                    let current = generation == state.rich.generation()
+                        && tilo_clock::now() < deadline
+                        && state
+                            .seats
+                            .get(&pending.seat)
+                            .is_some_and(|seat| seat.keyboard_focus);
+                    // SAFETY: this source owns the nonblocking pipe throughout
+                    // this callback, and the borrow ends before returning.
+                    let result = if current {
+                        reader.read(unsafe { pipe.get_mut() })
+                    } else {
+                        RichRead::Finished(None)
+                    };
+                    match result {
+                        RichRead::Pending => PostAction::Continue,
+                        RichRead::Finished(value) => {
+                            if let Some(pending) = state.plain_pending.as_mut() {
+                                pending.reader = None;
+                            }
+                            state.finish_plain_read(value);
+                            PostAction::Remove
+                        }
+                    }
+                });
+            let Ok(token) = inserted else {
+                return false;
+            };
+            if let Some(pending) = self.plain_pending.as_mut() {
+                pending.reader = Some(token);
+            }
+            true
+        }
+
+        fn stop_rich_readers(&mut self) {
+            if let Some(pending) = self.rich_pending.take() {
+                for token in [pending.html_reader, pending.plain_reader, pending.timer]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.loop_handle.remove(token);
+                }
+            }
+        }
+
+        fn invalidate_rich(&mut self) {
+            self.finish_plain_read(None);
+            self.rich.invalidate();
+            self.stop_rich_readers();
+            self.rich_seat = None;
+        }
+
+        fn invalidate_rich_seat(&mut self, seat: &WlSeat) {
+            if self.rich_seat.as_ref() == Some(seat)
+                || self
+                    .plain_pending
+                    .as_ref()
+                    .is_some_and(|pending| &pending.seat == seat)
+            {
+                self.invalidate_rich();
+            }
+        }
+
+        fn activate_rich_seat(&mut self, seat: &WlSeat) -> bool {
+            if !self.seats.get(seat).is_some_and(|data| data.keyboard_focus)
+                || self.rich_active_seat.as_ref() == Some(seat)
+            {
+                return false;
+            }
+            self.invalidate_rich();
+            self.rich_active_seat = Some(seat.clone());
+            true
+        }
+
+        fn deactivate_rich_seat(&mut self, seat: &WlSeat) {
+            if self.rich_active_seat.as_ref() == Some(seat) {
+                self.rich_active_seat = None;
+            }
+            self.invalidate_rich_seat(seat);
+        }
+
+        fn finish_rich_part(&mut self, part: RichPart, value: Option<String>, generation: u64) {
+            let Some(pending) = self.rich_pending.as_mut() else {
+                return;
+            };
+            // This callback returns Remove for its own source. Other readers
+            // and the deadline are explicitly removed on completion/refusal.
+            *pending.reader(part) = None;
+            match part {
+                RichPart::Html => {
+                    pending.html = value.filter(|html| !html.is_empty());
+                    if pending.html.is_none() {
+                        self.invalidate_rich();
+                        return;
+                    }
+                    pending.html_done = true;
+                }
+                RichPart::Plain => {
+                    pending.plain = value;
+                    pending.plain_done = true;
+                }
+            }
+            if pending.html_done && pending.plain_done {
+                let offer = pending.html.take().map(|html| crate::RichTextOffer {
+                    html,
+                    plain: pending.plain.take(),
+                });
+                self.stop_rich_readers();
+                if let Some(offer) = offer {
+                    self.rich.publish(generation, offer);
+                }
+            }
+        }
+
+        fn register_rich_reader(
+            &mut self,
+            pipe: sctk::data_device_manager::ReadPipe,
+            part: RichPart,
+            generation: u64,
+        ) -> bool {
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return false;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return false;
+            }
+            let mut reader = RichPipe::new(part);
+            let inserted = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    if state.rich.generation() != generation {
+                        return PostAction::Remove;
+                    }
+                    let Some(pending) = state.rich_pending.as_ref() else {
+                        return PostAction::Remove;
+                    };
+                    if tilo_clock::now() >= pending.deadline {
+                        state.invalidate_rich();
+                        return PostAction::Remove;
+                    }
+                    // SAFETY: this source owns the nonblocking pipe throughout
+                    // this callback, and the borrow ends before returning.
+                    let result = reader.read(unsafe { pipe.get_mut() });
+                    if state
+                        .rich_pending
+                        .as_ref()
+                        .is_none_or(|pending| tilo_clock::now() >= pending.deadline)
+                    {
+                        state.invalidate_rich();
+                        return PostAction::Remove;
+                    }
+                    match result {
+                        RichRead::Pending => PostAction::Continue,
+                        RichRead::Finished(value) => {
+                            state.finish_rich_part(part, value, generation);
+                            PostAction::Remove
+                        }
+                    }
+                });
+            let Ok(token) = inserted else {
+                return false;
+            };
+            if let Some(pending) = self.rich_pending.as_mut() {
+                *pending.reader(part) = Some(token);
+                true
+            } else {
+                self.loop_handle.remove(token);
+                false
+            }
+        }
+
+        fn rich_selection_event(&mut self, conn: &Connection, device: &WlDataDevice) {
+            if let Some(data) = self.seats.values_mut().find(|data| {
+                data.data_device
+                    .as_ref()
+                    .is_some_and(|data| data.inner() == device)
+            }) {
+                // Selection precedes Enter. Retain offer identity, including
+                // NULL; reading still requires this seat's keyboard focus.
+                data.rich_offer_seen = true;
+            }
+            self.read_selection_rich(conn, device);
+        }
+
+        fn read_selection_rich(&mut self, conn: &Connection, device: &WlDataDevice) {
+            let Some(seat) = self.seats.iter().find_map(|(seat, data)| {
+                data.data_device
+                    .as_ref()
+                    .filter(|data| data.inner() == device)
+                    .map(|_| seat.clone())
+            }) else {
+                return;
+            };
+            // A stale seat must neither clear another seat's offer nor use
+            // pointer/touch focus to authorize a keyboard clipboard read.
+            if self.rich_active_seat.as_ref() != Some(&seat)
+                || !self
+                    .seats
+                    .get(&seat)
+                    .is_some_and(|data| data.keyboard_focus && data.rich_offer_seen)
+            {
+                self.invalidate_rich_seat(&seat);
+                return;
+            }
+            let Some(offer) = device
+                .data::<sctk::data_device_manager::data_device::DataDeviceData>()
+                .and_then(sctk::data_device_manager::data_device::DataDeviceData::selection_offer)
+            else {
+                self.invalidate_rich_seat(&seat);
+                return;
+            };
+            self.invalidate_rich();
+            let (html, plain) = offer.with_mime_types(|types| {
+                (
+                    types.iter().any(|mime| mime == "text/html"),
+                    ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
+                        .into_iter()
+                        .find(|mime| types.iter().any(|offered| offered == mime)),
+                )
+            });
+            if !html {
+                return;
+            }
+            let Ok(html_pipe) = offer.receive("text/html".into()) else {
+                return;
+            };
+            let plain_pipe = plain.and_then(|mime| offer.receive(mime.into()).ok());
+            let generation = self.rich.generation();
+            let now = tilo_clock::now();
+            let deadline = now.checked_add(self.rich_read_budget).unwrap_or(now);
+            self.rich_seat = Some(seat);
+            self.rich_pending = Some(PendingRich {
+                deadline,
+                html: None,
+                plain: None,
+                html_done: false,
+                plain_done: plain_pipe.is_none(),
+                html_reader: None,
+                plain_reader: None,
+                timer: None,
+            });
+            let timer = self.loop_handle.insert_source(
+                calloop::timer::Timer::from_deadline(deadline),
+                move |_, (), state| {
+                    if state.rich.generation() == generation {
+                        if let Some(pending) = state.rich_pending.as_mut() {
+                            pending.timer = None;
+                        }
+                        state.invalidate_rich();
+                    }
+                    calloop::timer::TimeoutAction::Drop
+                },
+            );
+            let Ok(timer) = timer else {
+                self.invalidate_rich();
+                return;
+            };
+            if let Some(pending) = self.rich_pending.as_mut() {
+                pending.timer = Some(timer);
+            }
+            if !self.register_rich_reader(html_pipe, RichPart::Html, generation) {
+                self.invalidate_rich();
+                return;
+            }
+            if let Some(pipe) = plain_pipe
+                && !self.register_rich_reader(pipe, RichPart::Plain, generation)
+            {
+                self.finish_rich_part(RichPart::Plain, None, generation);
+            }
+            if conn.flush().is_err() {
+                self.invalidate_rich();
             }
         }
     }
@@ -528,7 +1395,10 @@ mod image_worker_impl {
             _: f64,
         ) {
         }
-        fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+        fn selection(&mut self, conn: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+            self.read_selection_image(conn, device);
+            self.rich_selection_event(conn, device);
+        }
         fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     }
 
@@ -572,6 +1442,7 @@ mod image_worker_impl {
                 Capability::Keyboard => {
                     data.keyboard = Some(seat.get_keyboard(qh, seat.clone()));
                     if data.data_device.is_none() {
+                        data.rich_offer_seen = false;
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));
                     }
@@ -579,6 +1450,7 @@ mod image_worker_impl {
                 Capability::Pointer => {
                     data.pointer = self.seat_registry.get_pointer(qh, &seat).ok();
                     if data.data_device.is_none() {
+                        data.rich_offer_seen = false;
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));
                     }
@@ -586,6 +1458,7 @@ mod image_worker_impl {
                 Capability::Touch => {
                     data.touch = self.seat_registry.get_touch(qh, &seat).ok();
                     if data.data_device.is_none() {
+                        data.rich_offer_seen = false;
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));
                     }
@@ -602,14 +1475,21 @@ mod image_worker_impl {
         ) {
             if let Some(data) = self.seats.get_mut(&seat) {
                 match capability {
-                    Capability::Keyboard => data.keyboard = None,
+                    Capability::Keyboard => {
+                        data.keyboard = None;
+                        data.keyboard_focus = false;
+                    }
                     Capability::Pointer => data.pointer = None,
                     Capability::Touch => data.touch = None,
                     _ => {}
                 }
             }
+            if capability == Capability::Keyboard {
+                self.deactivate_rich_seat(&seat);
+            }
         }
         fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+            self.deactivate_rich_seat(&seat);
             self.seats.remove(&seat);
         }
     }
@@ -733,7 +1613,7 @@ mod image_worker_impl {
             _: &WlKeyboard,
             event: <WlKeyboard as Proxy>::Event,
             seat: &WlSeat,
-            _: &Connection,
+            conn: &Connection,
             _: &QueueHandle<Self>,
         ) {
             use sctk::reexports::client::protocol::wl_keyboard::Event;
@@ -744,19 +1624,62 @@ mod image_worker_impl {
                 Event::Key { serial, .. } | Event::Modifiers { serial, .. } => {
                     data.latest_serial = serial;
                     state.latest_seat = Some(seat.clone());
+                    if state.activate_rich_seat(seat) {
+                        let device = state
+                            .seats
+                            .get(seat)
+                            .and_then(|data| data.data_device.as_ref())
+                            .map(|data| data.inner().clone());
+                        if let Some(device) = device {
+                            state.read_selection_rich(conn, &device);
+                        }
+                    }
                 }
                 Event::Enter { serial, .. } => {
                     data.latest_serial = serial;
                     data.has_focus = true;
+                    data.keyboard_focus = true;
                     state.latest_seat = Some(seat.clone());
+                    state.activate_rich_seat(seat);
+                    // The selection was delivered before Enter. A same-client
+                    // surface switch may retain that offer without resending it.
+                    let device = state
+                        .seats
+                        .get(seat)
+                        .filter(|data| data.rich_offer_seen)
+                        .and_then(|data| data.data_device.as_ref())
+                        .map(|data| data.inner().clone());
+                    if let Some(device) = device {
+                        state.read_selection_rich(conn, &device);
+                    }
                 }
                 Event::Leave { .. } => {
                     data.latest_serial = 0;
                     data.has_focus = false;
+                    data.keyboard_focus = false;
+                    state.deactivate_rich_seat(seat);
                 }
                 _ => {}
             }
             state.publish_current();
+        }
+    }
+
+    impl
+        Dispatch<
+            sctk::reexports::client::protocol::wl_callback::WlCallback,
+            std::sync::mpsc::Sender<()>,
+        > for State
+    {
+        fn event(
+            _: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            reply: &std::sync::mpsc::Sender<()>,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let _ = reply.send(());
         }
     }
 
@@ -770,7 +1693,44 @@ mod image_worker_impl {
 
     delegate_seat!(State);
     delegate_pointer!(State);
-    delegate_data_device!(State);
+    // Keep SCTK's offer/source bookkeeping and child-object initialization.
+    // Its pinned 0.20 handler omits DataDeviceHandler::selection for NULL,
+    // although NULL must cancel the rich cache and both pending readers.
+    sctk::reexports::client::delegate_dispatch!(State: [
+        sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager: sctk::globals::GlobalData
+    ] => DataDeviceManagerState);
+    sctk::reexports::client::delegate_dispatch!(State: [
+        WlDataOffer: DataOfferData
+    ] => DataDeviceManagerState);
+    sctk::reexports::client::delegate_dispatch!(State: [
+        WlDataSource: sctk::data_device_manager::data_source::DataSourceData
+    ] => DataDeviceManagerState);
+
+    impl Dispatch<WlDataDevice, DataDeviceData> for State {
+        sctk::reexports::client::event_created_child!(State, WlDataDevice, [
+            0 => (WlDataOffer, DataOfferData::default())
+        ]);
+
+        fn event(
+            state: &mut Self,
+            device: &WlDataDevice,
+            event: sctk::reexports::client::protocol::wl_data_device::Event,
+            data: &DataDeviceData,
+            conn: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            let cleared = matches!(
+                event,
+                sctk::reexports::client::protocol::wl_data_device::Event::Selection { id: None }
+            );
+            <DataDeviceManagerState as Dispatch<WlDataDevice, DataDeviceData, Self>>::event(
+                state, device, event, data, conn, qh,
+            );
+            if cleared {
+                state.rich_selection_event(conn, device);
+            }
+        }
+    }
     delegate_registry!(State);
     delegate_touch!(State);
 }
@@ -778,17 +1738,39 @@ mod image_worker_impl {
 fn publication_worker(
     connection: smithay_client_toolkit::reexports::client::Connection,
     commands: smithay_client_toolkit::reexports::calloop::channel::Channel<ClipboardCommand>,
+    pasted: PastedImage,
+    rich: Arc<RichClipboard>,
 ) {
-    image_worker_impl::run(connection, commands);
+    image_worker_impl::run(connection, commands, pasted, rich, CLIPBOARD_READ_BUDGET);
 }
 
 impl ClipboardBackend for WaylandClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        if target == ClipboardTarget::Primary {
+            let _ = reply.send(self.text(target));
+        } else {
+            let now = tilo_clock::now();
+            let deadline = now
+                .checked_add(tilo_clock::Duration::from_secs(2))
+                .unwrap_or(now);
+            if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
+                let _ = reply.send(None);
+            }
+        }
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {
+                let deadline = publication_deadline();
                 let (reply, result) = std::sync::mpsc::channel();
-                let ok = self
-                    .send_publication(ClipboardCommand::SetText(text.as_bytes().to_vec(), reply));
+                let ok = self.send_publication(ClipboardCommand::SetText(
+                    text.as_bytes().to_vec(),
+                    reply,
+                    deadline,
+                ));
                 if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
                     *cache = Some(text.to_owned());
                 }
@@ -821,9 +1803,25 @@ impl ClipboardBackend for WaylandClipboard {
         let Some(png) = encode_png(width, height, rgba) else {
             return false;
         };
+        let deadline = publication_deadline();
         let (reply, result) = std::sync::mpsc::channel();
-        self.send_publication(ClipboardCommand::SetImage(png, reply))
+        self.send_publication(ClipboardCommand::SetImage(png, reply, deadline))
             && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+    }
+
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        if !self
+            .publication
+            .alive
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
+        self.rich.read()
+    }
+
+    fn image(&self) -> Option<ClipboardImage> {
+        self.pasted.lock().ok()?.clone()
     }
 
     fn name(&self) -> &'static str {
@@ -928,18 +1926,37 @@ fn begin_external_refresh(inflight: &std::sync::atomic::AtomicBool) -> bool {
 
 impl Drop for WaylandClipboard {
     fn drop(&mut self) {
-        let _ = self.publication.sender.send(ClipboardCommand::Exit);
-        if let Ok(mut thread) = self.publication.thread.lock()
-            && let Some(thread) = thread.take()
-        {
-            let _ = join_bounded(thread, CLIPBOARD_SHUTDOWN_BUDGET);
-        }
+        self.rich.invalidate();
+        self.publication.shut_down();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_cache_refuses_old_generations_and_never_waits_for_its_lock() {
+        let cache = RichClipboard::new();
+        let offer = crate::RichTextOffer {
+            html: "<b>文🙂</b>".into(),
+            plain: Some("文🙂".into()),
+        };
+        let first = cache.generation();
+        cache.publish(first, offer.clone());
+        assert_eq!(cache.read(), Some(offer.clone()));
+        {
+            let _held = cache.offer.lock().expect("cache lock");
+            assert!(cache.read().is_none());
+        }
+        cache.invalidate();
+        cache.publish(first, offer.clone());
+        assert!(cache.read().is_none());
+        cache.publish(cache.generation(), offer.clone());
+        assert_eq!(cache.read(), Some(offer));
+        cache.invalidate();
+        assert!(cache.read().is_none());
+    }
 
     #[test]
     fn clipboard_images_encode_as_bounded_lossless_png() {
@@ -1000,21 +2017,36 @@ mod tests {
                 "a slow external owner must not make paste return an unrelated cached value"
             );
         }
-        // phase: shutdown_join_is_bounded_when_a_protocol_worker_is_stuck
+        // phase: shutdown_returns_only_after_the_worker_has_stopped
         {
-            // The worker stays blocked until this test releases it, so a
-            // `join_bounded` that returns at all has given up on its own budget.
-            let (release, stuck) = std::sync::mpsc::channel::<()>();
+            // A worker slower to stop than the old fixed budget: shutting
+            // down still waits for it, since it would use the display after.
+            let (sender, commands) =
+                smithay_client_toolkit::reexports::calloop::channel::channel::<ClipboardCommand>();
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_stopped = Arc::clone(&stopped);
             let worker = std::thread::spawn(move || {
-                let _ = stuck.recv();
+                loop {
+                    match commands.try_recv() {
+                        Ok(ClipboardCommand::Exit)
+                        | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                worker_stopped.store(true, std::sync::atomic::Ordering::Release);
             });
-            assert!(!join_bounded(worker, std::time::Duration::from_millis(2)));
-            drop(release);
-
-            let finished = std::thread::spawn(|| {});
+            let publication = PublicationClipboard {
+                sender,
+                thread: std::sync::Mutex::new(Some(worker)),
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            };
+            publication.shut_down();
             assert!(
-                join_bounded(finished, tilo_test_env::hang_bound()),
-                "a worker that exits is joined within the budget"
+                stopped.load(std::sync::atomic::Ordering::Acquire),
+                "shutting down returned while the worker could still use the display"
             );
         }
         // phase: source_payload_rejects_unadvertised_mime_without_falling_back_to_text
@@ -1036,4 +2068,78 @@ mod tests {
             assert!(payload.bytes_for_mime("application/octet-stream").is_none());
         }
     }
+
+    #[test]
+    fn rich_pipe_preserves_utf8_and_refuses_invalid_or_oversized_payloads() {
+        use image_worker_impl::{RichPart, RichPipe, RichRead};
+        for (bytes, accepted) in [
+            ("Ä😀\n".as_bytes().to_vec(), true),
+            (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES], true),
+            (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES + 1], false),
+            (vec![0xff, 0xfe], false),
+        ] {
+            let mut reader = RichPipe::new(RichPart::Html);
+            let mut input = std::io::Cursor::new(&bytes);
+            let mut finished = false;
+            for _ in 0..20 {
+                if let RichRead::Finished(value) = reader.read(&mut input) {
+                    assert_eq!(value.is_some(), accepted);
+                    if let Some(value) = value {
+                        assert_eq!(value.as_bytes(), bytes);
+                    }
+                    finished = true;
+                    break;
+                }
+            }
+            assert!(finished, "bounded fixture must finish without a busy loop");
+        }
+    }
+
+    #[test]
+    fn rich_pipe_bounds_callback_bytes_and_interrupted_syscalls() {
+        use image_worker_impl::{RichPart, RichPipe, RichRead};
+        struct Interrupted(usize);
+        impl std::io::Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(1);
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
+        }
+        let mut reader = RichPipe::new(RichPart::Plain);
+        let mut input = std::io::Cursor::new(vec![b'p'; 100_000]);
+        assert!(matches!(reader.read(&mut input), RichRead::Pending));
+        assert_eq!(input.position(), 65_536);
+        let RichRead::Finished(value) = reader.read(&mut input) else {
+            panic!("remaining bytes and EOF");
+        };
+        assert_eq!(value.unwrap().len(), 100_000);
+
+        let mut interrupted = Interrupted(0);
+        assert!(matches!(
+            RichPipe::new(RichPart::Html).read(&mut interrupted),
+            RichRead::Pending
+        ));
+        assert_eq!(interrupted.0, 8, "signals cannot monopolize the event loop");
+    }
+
+    #[test]
+    fn rich_pipe_retains_partial_utf8_across_readiness_callbacks() {
+        use image_worker_impl::{RichPart, RichPipe, RichRead};
+        use std::io::Write as _;
+        let (mut source, mut sink) = std::os::unix::net::UnixStream::pair().unwrap();
+        sink.set_nonblocking(true).unwrap();
+        let mut reader = RichPipe::new(RichPart::Html);
+        source.write_all(&[0xf0, 0x9f]).unwrap();
+        assert!(matches!(reader.read(&mut sink), RichRead::Pending));
+        source.write_all(&[0x98, 0x80]).unwrap();
+        drop(source);
+        let RichRead::Finished(value) = reader.read(&mut sink) else {
+            panic!("closed producer must complete");
+        };
+        assert_eq!(value.as_deref(), Some("😀"));
+    }
 }
+
+#[cfg(test)]
+#[path = "wayland_protocol_tests.rs"]
+mod protocol_tests;

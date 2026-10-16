@@ -12,6 +12,28 @@ pub(crate) fn emit_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(write_json(prefix, row));
 }
 
+#[cfg(feature = "native")]
+/// Join render phases to physical input despite namespace-local PID collisions.
+pub(crate) fn emit_timing_json(prefix: &str, row: serde_json::Value) {
+    panic_on_error(timing_row(row).and_then(|row| write_json(prefix, row)));
+}
+
+#[cfg(feature = "native")]
+fn timing_row(mut row: serde_json::Value) -> io::Result<serde_json::Value> {
+    let identity = row.as_object_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "render timing must be an object",
+        )
+    })?;
+    identity.insert("process_id".into(), serde_json::json!(std::process::id()));
+    identity.insert(
+        "observer_session".into(),
+        serde_json::json!(crate::native_scenario::observer_session_id()),
+    );
+    Ok(row)
+}
+
 #[allow(
     clippy::panic,
     reason = "preserve synchronous stderr failure policy; a failed benchmark trace must not silently qualify"
@@ -35,7 +57,63 @@ fn write_json_with<W: Write>(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    const CAPTURED: &str = r###"tilo-native-frame {"cpu_frame_id":4,"frame_commit_us":8415,"input_ids":[0],"state":{"app":"dev.tilo.file-explorer","content_rect":[212.0,56.0,788.0,40892.0],"directory":"/Users/xaver/dev/tilo-macos-shell/target/runtime-proof/file-explorer-native-t8p2snbi/fixture","entry_count":1200,"has_error":false,"hash_algorithm":"sha256","is_loading":false,"last_cursor":[350.0,200.0],"offset_units":"pixels","offset_x":0.0,"offset_y":0.0,"order_hash":"b8b390ea86922b9297a211bf10ab47e3a9cff0c70b81a976448714323f35f863","primary_index":null,"ready":true,"root_rect":[0.0,0.0,800.0,600.0],"selected_indices":[],"selected_names":[],"sort_by":"Name","sort_order":"Ascending","thumbnail_pending":0,"view_id":"file_view","view_mode":"List","viewport_rect":[212.0,56.0,788.0,596.0]}}
+
+    #[test]
+    fn non_object_timing_rows_fail_before_printing() {
+        for row in [
+            serde_json::Value::Null,
+            serde_json::json!([11]),
+            serde_json::json!(11),
+        ] {
+            assert_eq!(
+                timing_row(row).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn timing_rows_keep_frame_and_sandbox_lifetime_through_serialization() {
+        let mut output = Vec::new();
+        for frame in [11, 12] {
+            write_json_with(
+                "tilo-native-worker",
+                timing_row(
+                    serde_json::json!({"cpu_frame_id": frame, "render_end_host_hi_s": null}),
+                )
+                .unwrap(),
+                || &mut output,
+            )
+            .unwrap();
+        }
+        let output = String::from_utf8(output).unwrap();
+        let rows: Vec<serde_json::Value> = output
+            .lines()
+            .map(|line| {
+                let json = line.strip_prefix("tilo-native-worker ").unwrap();
+                serde_json::from_str(json).unwrap()
+            })
+            .collect();
+        assert_eq!(rows.len(), 2);
+        for (row, frame) in rows.iter().zip([11, 12]) {
+            assert_eq!(row.get("cpu_frame_id"), Some(&serde_json::json!(frame)));
+            assert_eq!(
+                row.get("process_id"),
+                Some(&serde_json::json!(std::process::id()))
+            );
+            assert_eq!(
+                row.get("observer_session"),
+                Some(&serde_json::json!(
+                    crate::native_scenario::observer_session_id()
+                ))
+            );
+            assert_eq!(
+                row.get("render_end_host_hi_s"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+    }
+    const CAPTURED: &str = r###"tilo-native-frame {"cpu_frame_id":4,"frame_commit_us":8415,"input_ids":[0],"state":{"app":"dev.tilo.file-explorer","content_rect":[212.0,56.0,788.0,40892.0],"directory":"/tmp/file-explorer-native-t8p2snbi/fixture","entry_count":1200,"has_error":false,"hash_algorithm":"sha256","is_loading":false,"last_cursor":[350.0,200.0],"offset_units":"pixels","offset_x":0.0,"offset_y":0.0,"order_hash":"b8b390ea86922b9297a211bf10ab47e3a9cff0c70b81a976448714323f35f863","primary_index":null,"ready":true,"root_rect":[0.0,0.0,800.0,600.0],"selected_indices":[],"selected_names":[],"sort_by":"Name","sort_order":"Ascending","thumbnail_pending":0,"view_id":"file_view","view_mode":"List","viewport_rect":[212.0,56.0,788.0,596.0]}}
 tilo-native-main-stages {"after_accessibility_host_hi_s":67936.09460075002,"after_accessibility_host_lo_s":67936.09460075002,"after_damage_mark_drawn_host_hi_s":67936.09460033335,"after_damage_mark_drawn_host_lo_s":67936.09460029168,"after_debug_outlines_host_hi_s":67936.09459866668,"after_debug_outlines_host_lo_s":67936.09459862502,"after_hud_request_host_hi_s":67936.09460087502,"after_hud_request_host_lo_s":67936.09460087502,"after_native_frame_log_host_hi_s":67936.09459862502,"after_native_frame_log_host_lo_s":67936.09459858335,"after_native_redraw_log_host_hi_s":67936.09463987501,"after_native_redraw_log_host_lo_s":67936.09463983335,"after_profiler_commit_host_hi_s":67936.09407504168,"after_profiler_commit_host_lo_s":67936.09407495835,"before_profiler_commit_host_hi_s":67936.09405400002,"before_profiler_commit_host_lo_s":67936.09405379168,"cpu_frame_id":4,"host_clock":"mach_absolute_seconds"}
 tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presented_time_s":0.0,"worker_frame_ix":1,"worker_id":1}
 "###;

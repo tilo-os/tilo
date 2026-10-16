@@ -1,13 +1,14 @@
 use super::PresenceCtx;
+use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::UserId;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
+    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
 
@@ -74,16 +75,13 @@ fn marker_pigment(c: Color) -> Color {
     Color::from_rgba8(ch(rgba.r), ch(rgba.g), ch(rgba.b), rgba.a)
 }
 
-/// Deterministic per-user colour via [`PresenceCtx::color_for`], falling
-/// back to `theme.accent_primary` only on the all-zero (hash-lands-on-black)
-/// case. Every collab affordance resolves through this so they all agree on
-/// a peer's colour.
+/// A peer's colour as this theme paints it: their identity colour
+/// ([`PresenceCtx::color_for`]) carried at the theme's presence lightness and
+/// chroma, so every participant is equally loud on every material. Every
+/// collab affordance resolves through this so they all agree on a peer's
+/// colour.
 pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Color {
-    let (r, g, b) = ctx.color_for(user);
-    if r == 0 && g == 0 && b == 0 {
-        return theme.accent_primary;
-    }
-    Color::from_rgb8(r, g, b)
+    theme.tokens.colors.presence.of_rgb(ctx.color_for(user))
 }
 
 impl PresenceCtx {
@@ -101,12 +99,18 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
         if self.is_agent(user) {
-            draw_agent_diamond(
+            draw_agent_identity_mark(
                 scene,
                 transform,
-                Point::new(rect.center().x, rect.y0 - 3.0),
-                4.5,
+                Rect::new(
+                    rect.center().x - 4.5,
+                    rect.y0 - 7.5,
+                    rect.center().x + 4.5,
+                    rect.y0 + 1.5,
+                ),
                 color,
+                theme,
+                AgentIdentityStyle::Solid,
             );
         }
     }
@@ -130,7 +134,7 @@ impl PresenceCtx {
     /// doc, so it's an Automerge mark (`local_author` /
     /// `RichTextLine::author_runs`). **Silently a no-op if
     /// `set_local_author` was never called** — looks exactly like a network
-    /// fault. Set by `apps/notes`/`apps/chat`; `qdoc` has no per-run author
+    /// fault. Set by `apps/notes`/`apps/chat`; `tilo-doc` has no per-run author
     /// field yet.
     pub fn draw_peer_authorship(
         &self,
@@ -143,30 +147,6 @@ impl PresenceCtx {
         for r in rects {
             scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, r);
         }
-    }
-
-    /// `kurbo::Affine` composition below is plain f64 matrix math with no
-    /// panic path; `arithmetic_side_effects` flags the `*` operator
-    /// overload anyway.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
-    )]
-    pub fn draw_peer_pointer(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        transform: Affine,
-        user: &UserId,
-        pos: (f32, f32),
-    ) {
-        let color = color_for(self, user, theme);
-        let t = transform * Affine::translate((f64::from(pos.0), f64::from(pos.1)));
-        let halo = Circle::new(Point::ORIGIN, 9.0);
-        scene.fill(Fill::NonZero, t, color.with_alpha_factor(0.22), None, &halo);
-        let dot = Circle::new(Point::ORIGIN, 5.0);
-        scene.fill(Fill::NonZero, t, color, None, &dot);
-        scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
     }
 
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
@@ -328,6 +308,50 @@ impl PresenceCtx {
         draw_name_chip_in(ctx, color, &name, chip);
     }
 
+    /// Semantic actions label the actual control beside it, not in the row
+    /// above it: that row often contains a notice explaining whether the action
+    /// is available. Ordinary peer selections retain their existing name chips.
+    pub(crate) fn draw_action_outline_labeled_within(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        user: &UserId,
+        label: &str,
+        rect: Rect,
+        radius: f64,
+        bounds: Rect,
+    ) {
+        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
+        let gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let right = (bounds.x1 - rect.x1 - gap).max(0.0);
+        let left = (rect.x0 - bounds.x0 - gap).max(0.0);
+        let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
+        let (budget, x, y) = if right >= preferred_w {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left >= preferred_w {
+            (left, rect.x0 - gap - preferred_w, rect.y0)
+        } else if rect.y1 + gap + preferred_h <= bounds.y1 {
+            (bounds.width(), rect.x0, rect.y1 + gap)
+        } else if right >= left && right > 0.0 {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left > 0.0 {
+            (left, bounds.x0, rect.y0)
+        } else {
+            (bounds.width(), rect.x0, rect.y0)
+        };
+        let (label, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
+        if w <= 0.0 || h > bounds.height() {
+            return;
+        }
+        let x = x.min(bounds.x1 - w).max(bounds.x0);
+        let y = y.min(bounds.y1 - h).max(bounds.y0);
+        draw_name_chip_in(
+            ctx,
+            color_for(self, user, ctx.theme),
+            &label,
+            Rect::new(x, y, x + w, y + h),
+        );
+    }
+
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
     /// they inserted. `spans` pairs each rect with its fade alpha.
     ///
@@ -400,21 +424,20 @@ const AGENT_GLYPH_W: f64 = 14.0;
 /// and a theme with a larger base — and the renderer factor covers the
 /// host-palette convention that scales the renderer instead.
 pub(crate) fn label_magnification(theme: &Theme, _text_renderer: &TextRenderer) -> f64 {
-    // The theme's resolved type step already carries the text (and UI)
-    // scale, and every label here is drawn at `renderer_type_size`, so the
-    // glyphs land at exactly that resolved size whether or not the renderer
-    // is scaled to match. The magnification is therefore the type step's
-    // ratio alone; multiplying by the renderer's scale as well doubled the
-    // pads at 2x (X1).
-    let default_sm = crate::tokens::typography::TypeScale::default().sm;
-    let type_ratio = theme.tokens.typography.scale.sm / default_sm;
+    // The theme's resolved role already carries the text (and UI) scale, and
+    // every label here is drawn in that resolved style, so the glyphs land
+    // at exactly that size whether or not the renderer is scaled to match.
+    // The magnification is therefore the role's ratio alone; multiplying by
+    // the renderer's scale as well doubled the pads at 2x (X1).
+    let stock = crate::tokens::Typography::default().size(TextRole::Caption);
+    let type_ratio = theme.tokens.typography.size(TextRole::Caption) / stock;
     f64::from(type_ratio).max(0.5)
 }
 
-/// Peer name type size: `scale.sm`, not `scale.xs` — xs measured ~34x15px
-/// with ~8px of glyph, present but not readable for a whole-session label.
-pub(crate) fn pill_label_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.sm
+/// Peer name type: a caption, the smallest role, still readable for a
+/// whole-session label.
+pub(crate) fn pill_label_style(theme: &Theme) -> crate::text_render::TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 /// Pill size for `label`, padding included — shared so callers size their
@@ -434,13 +457,13 @@ fn peer_pill_size_for(
     label: &str,
     is_agent: bool,
 ) -> (f64, f64) {
-    let size = renderer_type_size(text_renderer, pill_label_size(theme));
+    let style = pill_label_style(theme);
     // Both axes come from the same measurement the painter draws with, so
     // the pill fits its label at every renderer text scale; the horizontal
     // insets grow with the label's magnification so a 2× name is not pinned
     // into 1× pads.
     let k = label_magnification(theme, text_renderer);
-    let (tw, th) = text_renderer.measure(label, size, None);
+    let (tw, th) = text_renderer.measure_style(label, None, &style);
     (
         f64::from(tw) + (PILL_PAD_X * 2.0 + if is_agent { AGENT_GLYPH_W } else { 0.0 }) * k,
         f64::from(th) + PILL_PAD_Y * 2.0,
@@ -602,6 +625,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
 /// Paint pointers, then tethers, then pills — in that layer order so a
 /// later peer's halo can't wash over an earlier peer's name. `viewport`
 /// bounds the pills; positions are assumed already filtered to it.
+///
+/// Returns the bounds, in scene coordinates, of everything painted: each
+/// pointer's halo, each tether and each pill with its shadow.
 pub fn draw_peer_cursors(
     scene: &mut Scene,
     transform: Affine,
@@ -609,9 +635,10 @@ pub fn draw_peer_cursors(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if peers.is_empty() {
-        return;
+        return painted;
     }
     let requests: Vec<PillRequest> = peers
         .iter()
@@ -624,8 +651,9 @@ pub fn draw_peer_cursors(
 
     for p in peers {
         let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
-            draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+            draw_peer_dot(scene, transform, theme, p.pos, p.color, p.is_agent);
         });
     }
 
@@ -640,6 +668,7 @@ pub fn draw_peer_cursors(
         line.move_to(from);
         line.line_to(to);
         let bounds = Rect::from_points(from, to).inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             scene.stroke(
                 &Stroke::new(1.5),
@@ -653,6 +682,7 @@ pub fn draw_peer_cursors(
 
     for (p, place) in peers.iter().zip(&placements) {
         let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             draw_peer_pill_kind(
                 scene,
@@ -666,10 +696,14 @@ pub fn draw_peer_cursors(
             );
         });
     }
+    painted
 }
 
-/// Room around a pointer's centre that covers its halo, shadow and ring.
-const FADE_DOT_BOUNDS: f64 = 96.0;
+/// Room around a pointer's centre that covers its halo (the widest of what
+/// [`draw_peer_dot`] paints, `RING_R + 3`), shadow and ring, with two
+/// pixels for antialiasing: where the mark repaints when it moves, or when
+/// a scroll copies beneath it.
+const FADE_DOT_BOUNDS: f64 = 2.0 * (RING_R + 3.0 + 2.0);
 /// Room around a pill or tether for its stroke and shadow.
 const FADE_EDGE: f64 = 8.0;
 
@@ -715,6 +749,7 @@ fn faded(
 fn draw_peer_dot(
     scene: &mut Scene,
     transform: Affine,
+    theme: &Theme,
     pos: (f64, f64),
     peer: Color,
     is_agent: bool,
@@ -735,29 +770,20 @@ fn draw_peer_dot(
         &Circle::new(Point::ORIGIN, RING_R - 0.5),
     );
     if is_agent {
-        draw_agent_diamond(scene, t, Point::ORIGIN, DOT_R + 1.0, peer);
+        let radius = DOT_R + 1.0;
+        draw_agent_identity_mark(
+            scene,
+            t,
+            Rect::new(-radius, -radius, radius, radius),
+            peer,
+            theme,
+            AgentIdentityStyle::Solid,
+        );
     } else {
         let dot = Circle::new(Point::ORIGIN, DOT_R);
         scene.fill(Fill::NonZero, t, peer, None, &dot);
         scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
     }
-}
-
-fn draw_agent_diamond(
-    scene: &mut Scene,
-    transform: Affine,
-    center: Point,
-    radius: f64,
-    color: Color,
-) {
-    let mut diamond = BezPath::new();
-    diamond.move_to((center.x, center.y - radius));
-    diamond.line_to((center.x + radius, center.y));
-    diamond.line_to((center.x, center.y + radius));
-    diamond.line_to((center.x - radius, center.y));
-    diamond.close_path();
-    scene.fill(Fill::NonZero, transform, color, None, &diamond);
-    scene.stroke(&Stroke::new(1.5), transform, Color::WHITE, None, &diamond);
 }
 
 #[allow(
@@ -774,8 +800,8 @@ fn draw_peer_pill_kind(
     peer: Color,
     is_agent: bool,
 ) {
-    let label_size = renderer_type_size(text_renderer, pill_label_size(theme));
-    let radius = f64::from(theme.tokens.radii.sm);
+    let label_style = pill_label_style(theme);
+    let radius = f64::from(theme.tokens.radii.detail);
     let shadow = RoundedRect::from_rect(
         rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
         radius,
@@ -795,44 +821,35 @@ fn draw_peer_pill_kind(
     let k = label_magnification(theme, text_renderer);
     let text_x = rect.x0 + (PILL_PAD_X + if is_agent { AGENT_GLYPH_W } else { 0.0 }) * k;
     if is_agent {
-        // A tiny processor glyph: outlined square, two status dots. Unlike an
-        // "agent" suffix, it remains recognizable when the name is elided.
+        // The same processor mark used by every agent identity surface.
+        // Unlike an "agent" suffix, it remains recognizable when elided.
         let badge = Rect::new(
             rect.x0 + 5.0 * k,
             rect.center().y - 4.5 * k,
             rect.x0 + 14.0 * k,
             rect.center().y + 4.5 * k,
         );
-        let ink = contrast_ink(peer);
-        scene.stroke(
-            &Stroke::new(1.2 * k),
+        draw_agent_identity_mark(
+            scene,
             transform,
-            ink,
-            None,
-            &RoundedRect::from_rect(badge, 2.0 * k),
+            badge,
+            peer,
+            theme,
+            AgentIdentityStyle::Solid,
         );
-        for y in [badge.y0 + 3.0 * k, badge.y1 - 3.0 * k] {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ink,
-                None,
-                &Circle::new((badge.center().x, y), 0.8 * k),
-            );
-        }
     }
     // Centre the measured line box in whatever rect the placer handed us,
     // rather than pinning it to the top pad: a caller-supplied rect may be
     // taller than the pill asked for.
-    let (_, th) = text_renderer.measure(label, label_size, None);
+    let (_, th) = text_renderer.measure_style(label, None, &label_style);
     let text_y = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        label_size,
         contrast_ink(peer),
         transform * Affine::translate((text_x, text_y)),
         None,
+        &label_style,
     );
 }
 
@@ -913,14 +930,14 @@ const CHIP_GAP: f64 = 2.0;
 /// lane area that clips its contents, a viewport edge — needs this before it
 /// can decide where the chip goes.
 fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f64, f64) {
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     // Height from the measured line box, not the font size: the box is a
     // quarter taller than the size and carries the renderer's text scale,
-    // so sizing from `label_size` clipped descenders at 1× and lost the
+    // so sizing from `label_style` clipped descenders at 1× and lost the
     // whole label below the chip at 2×. The side pads scale with the label
     // for the same reason (`label_magnification`).
     let k = label_magnification(theme, text_renderer);
-    let (tw, th) = text_renderer.measure(name, label_size, None);
+    let (tw, th) = text_renderer.measure_style(name, None, &label_style);
     (
         f64::from(tw) + CHIP_PAD_X * 2.0 * k,
         f64::from(th) + CHIP_PAD_Y * 2.0,
@@ -947,29 +964,26 @@ fn chip_fitting(
         clippy::cast_possible_truncation,
         reason = "a pixel budget well inside f32 range"
     )]
-    let label = text_renderer.elide_to_width(name, theme.tokens.typography.scale.xs, budget as f32);
+    let label =
+        text_renderer.elide_to_width_style(name, budget as f32, &theme.text(TextRole::Caption));
     let (w, h) = chip_size(theme, text_renderer, &label);
     (label, w.min(max_w), h)
 }
 
 /// Paint the chip into a rectangle the caller has already chosen.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
-)]
 fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect: Rect) {
     let theme = ctx.theme;
     // Solid fill in the peer's colour so the chip reads as "them".
-    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.sm), color);
+    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.detail), color);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
-    let label_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     let pad_x = CHIP_PAD_X * label_magnification(theme, ctx.text);
-    let (_, th) = ctx.text.measure(name, label_size, None);
+    let (_, th) = ctx.text.measure_style(name, None, &label_style);
     let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
     ctx.text(
         name,
-        &TextStyle::new(label_size),
+        &label_style.clone(),
         contrast_ink(color),
         Point::new(chip_rect.x0 + pad_x, text_y),
         None,
@@ -1107,15 +1121,15 @@ fn draw_edge_mist(
     let Some((tag_rect, label, pad)) = mist_tag(text_renderer, theme, band, mist.edge, name) else {
         return;
     };
-    let tag = RoundedRect::from_rect(tag_rect, f64::from(theme.tokens.radii.sm));
+    let tag = RoundedRect::from_rect(tag_rect, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, Affine::IDENTITY, peer, None, &tag);
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         &label,
-        theme.tokens.typography.scale.xs,
         contrast_ink(peer),
         Affine::translate((tag_rect.x0 + pad, tag_rect.y0 + pad / 2.0)),
         None,
+        &theme.text(TextRole::Caption),
     );
 }
 
@@ -1140,7 +1154,7 @@ fn mist_tag(
     name: &str,
 ) -> Option<(Rect, String, f64)> {
     use super::geom::MistEdge;
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     // The band is fixed chrome, so — unlike a pill's — the tag's pad does
     // not grow with the type: in a 44 px band a scaled pad would leave the
     // label no room at all.
@@ -1154,7 +1168,7 @@ fn mist_tag(
         clippy::cast_possible_truncation,
         reason = "a pixel budget well inside f32 range"
     )]
-    let label = text_renderer.elide_to_width(name, label_size, budget as f32);
+    let label = text_renderer.elide_to_width_style(name, budget as f32, &label_style);
     // A tag that keeps no letter of the name says nothing the mist's colour
     // does not already say; leave it out rather than paint a lone ellipsis.
     if label.trim_end_matches('…').is_empty() {
@@ -1162,7 +1176,7 @@ fn mist_tag(
     }
     // Sized from the measured line box so the tag holds its label at every
     // text scale (see `chip_size`).
-    let (tw, th) = text_renderer.measure(&label, label_size, None);
+    let (tw, th) = text_renderer.measure_style(&label, None, &label_style);
     let tag_w = (f64::from(tw) + pad * 2.0).min(max_tag_w);
     let tag_h = f64::from(th) + pad;
     // A top/bottom band is only as deep as a side band is wide; a line box
@@ -1185,6 +1199,9 @@ fn mist_tag(
 /// peers get moving dots and collision-free name pills; off-screen peers
 /// become directional edge mist. This is the compositor-facing sibling of
 /// [`draw_remote_presence`], which resolves cursors from a [`PresenceCtx`].
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]).
 pub fn draw_peer_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1192,11 +1209,15 @@ pub fn draw_peer_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
     let mut on_screen = Vec::new();
+    let mut painted = Vec::new();
     for peer in peers {
         let target = Point::new(peer.pos.0, peer.pos.1);
         if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
+            // Drawn untransformed; the rail and the name tag stay inside
+            // the band.
+            painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
             faded(scene, Affine::IDENTITY, peer.opacity, viewport, |scene| {
                 draw_edge_mist(
                     scene,
@@ -1212,13 +1233,24 @@ pub fn draw_peer_presence(
             on_screen.push(peer.clone());
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 /// The one call the app makes each frame to render all cross-process peer
 /// presence: on-screen peers get a dot + pill, off-screen peers get an edge
 /// mist. `viewport` is the visible rect in the same (logical) space as
 /// cursor positions.
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]), so the frame damages only those.
 pub fn draw_remote_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1226,9 +1258,10 @@ pub fn draw_remote_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if presence.remote_cursors.is_empty() {
-        return;
+        return painted;
     }
     // Split first, draw after: the on-screen peers are laid out together
     // so their names cannot land on top of each other.
@@ -1252,6 +1285,9 @@ pub fn draw_remote_presence(
         let peer = peer_of(presence, cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
+                // Drawn untransformed, inside the band (as in
+                // `draw_peer_presence`).
+                painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
                 draw_edge_mist(
                     scene,
                     text_renderer,
@@ -1265,7 +1301,15 @@ pub fn draw_remote_presence(
             None => on_screen.push(peer),
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 #[cfg(test)]
@@ -1273,6 +1317,54 @@ mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
+
+    #[test]
+    fn action_labels_preserve_the_notice_above_the_actual_control() {
+        let presence = PresenceCtx::empty();
+        let user = UserId("charlie".into());
+        let viewport = Rect::new(20.0, 20.0, 480.0, 180.0);
+        for theme in [Theme::default(), Theme::dark().with_text_scale(2.0)] {
+            for control in [
+                Rect::new(40.0, 60.0, 100.0, 90.0),
+                Rect::new(400.0, 60.0, 460.0, 90.0),
+                Rect::new(100.0, 60.0, 400.0, 90.0),
+            ] {
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                presence.draw_action_outline_labeled_within(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                    &user,
+                    "Rename (Applying) - Quill",
+                    control,
+                    f64::from(theme.tokens.radii.detail),
+                    viewport,
+                );
+                let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);
+                let mut label_pixels = 0;
+                for y in 0..200 {
+                    for x in 0..500 {
+                        let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 500, x, y);
+                        if r == 0 && g == 0 && b == 0 {
+                            continue;
+                        }
+                        let point = Point::new(f64::from(x), f64::from(y));
+                        assert!(viewport.contains(point), "activity escaped its surface");
+                        assert!(
+                            y >= 59,
+                            "activity painted over the notice above the control"
+                        );
+                        if !control.inflate(2.0, 2.0).contains(point) {
+                            label_pixels += 1;
+                        }
+                    }
+                }
+                assert!(
+                    label_pixels > 100,
+                    "the action label must actually be painted"
+                );
+            }
+        }
+    }
 
     #[test]
     #[allow(
@@ -1285,24 +1377,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn pointers_and_carets_paint_in_the_peer_colour_with_their_marker() {
-        // phase: peer_pointer_paints_peer_color_at_center
-        // "alice" maps to the pinned pink (0xec, 0x48, 0x99): the dot center
-        // should read red-high / green-low / blue-mid.
-        {
-            let ctx = PresenceCtx::empty();
-            let theme = Theme::default();
-            let mut scene = Scene::new();
-            let user = UserId("alice".to_string());
-            ctx.draw_peer_pointer(&mut scene, &theme, Affine::IDENTITY, &user, (40.0, 40.0));
-
-            let mut r = OffscreenRenderer::new(80, 80);
-            let rgba = r.render(&scene, Color::BLACK);
-            let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 40);
-            assert!(
-                red > 150 && green < 150 && blue > 70,
-                "expected alice's pink pointer at center, got ({red},{green},{blue})"
-            );
-        }
         // phase: only_a_pointer_this_layer_owns_reaches_the_screen
         // "One person, one pointer": painted once when this layer owns it, not
         // at all when the compositor overlay does. Both halves are asserted in
@@ -1373,7 +1447,7 @@ mod tests {
                 "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
             );
         }
-        // phase: agent_caret_has_a_non_text_diamond_identity_marker
+        // phase: agent_caret_has_the_shared_non_text_identity_marker
         {
             let theme = Theme::default();
             let agent = UserId("peer@agent".to_string());
@@ -1392,7 +1466,7 @@ mod tests {
             let agent_pixels = render(&agent_ctx);
             let person_pixels = render(&person_ctx);
 
-            // Three pixels above the ordinary caret, only the agent's diamond
+            // Three pixels above the ordinary caret, only the agent's processor
             // marker occupies this point. This remains distinguishable without
             // colour perception and before any label is painted.
             let (ar, ag, ab, _) = OffscreenRenderer::sample(&agent_pixels, 80, 31, 37);
@@ -2140,9 +2214,9 @@ mod tests {
             // Control step, not caption — names are on screen for a whole
             // session.
             assert_eq!(
-                pill_label_size(&theme),
-                theme.tokens.typography.scale.sm,
-                "a peer's name is a control label, not a caption",
+                pill_label_style(&theme),
+                theme.text(TextRole::Caption),
+                "a peer's name is a caption in the theme's face",
             );
 
             let (w, h) = peer_pill_size(&mut tr, &theme, "quinten");
@@ -2364,38 +2438,29 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-                let (_, label_h) = tr.measure(
-                    "Alice",
-                    renderer_type_size(&tr, pill_label_size(&theme)),
-                    None,
-                );
+                let (_, label_h) = tr.measure_style("Alice", None, &pill_label_style(&theme));
                 assert!(
                     (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
                     "at {scale}x the pill is {pill_h} tall around a {label_h} label"
                 );
                 let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
-                let (_, chip_label_h) = tr.measure(
-                    "Alice",
-                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-                    None,
-                );
+                let (_, chip_label_h) =
+                    tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
                 assert!(
                     (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
                     "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
                 );
             }
         }
-        // phase: the_default_pill_height_is_unchanged_at_one_x
-        // Re-deriving the pad from the line box must not have changed the pill
-        // every consumer already lays out around: `scale.sm` at 1× is still an
-        // 18 px pill.
+        // phase: the_default_pill_is_one_caption_line_plus_its_pads
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
             assert!(
-                (pill_h - 18.0).abs() < 1e-6,
-                "pill height {pill_h}; the 1x default is 18px"
+                (pill_h - (line + PILL_PAD_Y * 2.0)).abs() < 1e-3,
+                "pill height {pill_h}; one caption line is {line}"
             );
         }
         // phase: pill_and_chip_side_insets_scale_with_the_label
@@ -2405,7 +2470,7 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
-            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (tw, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
             assert!(
                 (pw - (f64::from(tw) + PILL_PAD_X * 2.0)).abs() < 1e-6,
@@ -2416,7 +2481,7 @@ mod tests {
                 (aw - pw - AGENT_GLYPH_W).abs() < 1e-6,
                 "1x agent pill adds exactly the glyph room"
             );
-            let (ctw, _) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+            let (ctw, _) = tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
             let (cw, _) = chip_size(&theme, &mut tr, "Alice");
             assert!((cw - (f64::from(ctw) + CHIP_PAD_X * 2.0)).abs() < 1e-6);
 
@@ -2425,11 +2490,7 @@ mod tests {
             // renderer-relative size the painter uses (X1) and paints at 2x.
             let theme = Theme::dark().with_text_scale(2.0);
             tr.set_text_scale(2.0);
-            let (tw2, _) = tr.measure(
-                "Alice",
-                renderer_type_size(&tr, pill_label_size(&theme)),
-                None,
-            );
+            let (tw2, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             assert!(
                 tw2 > tw * 1.5,
                 "the 2x label ({tw2}) must be about twice the 1x label ({tw})"
@@ -2441,11 +2502,7 @@ mod tests {
             );
             let (aw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
             assert!((aw2 - pw2 - AGENT_GLYPH_W * 2.0).abs() < 1e-6);
-            let (ctw2, _) = tr.measure(
-                "Alice",
-                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-                None,
-            );
+            let (ctw2, _) = tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
             let (cw2, _) = chip_size(&theme, &mut tr, "Alice");
             assert!((cw2 - (f64::from(ctw2) + CHIP_PAD_X * 4.0)).abs() < 1e-6);
         }
@@ -2507,7 +2564,7 @@ mod tests {
         {
             let theme = Theme::dark().with_ui_scale(2.0);
             let mut tr = TextRenderer::new();
-            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (tw, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
             assert!(
                 (pw - (f64::from(tw) + PILL_PAD_X * 4.0)).abs() < 1e-6,

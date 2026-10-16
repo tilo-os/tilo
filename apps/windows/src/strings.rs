@@ -1,21 +1,15 @@
 //! Fluent strings for the Windows compatibility manager.
-use std::cell::Cell;
-use ui::i18n::I18nManager;
 
-const EN_US: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
-thread_local! { static LOADED: Cell<bool> = const { Cell::new(false) }; }
-
-/// Resolve a Windows Apps Fluent key, registering the bundled English fallback
-/// per render thread before lookup.
+/// Resolve a Windows Apps Fluent key.
 pub fn t(key: &str) -> String {
-    LOADED.with(|loaded| {
-        if !loaded.replace(true) {
-            I18nManager::init("en-US");
-            I18nManager::add_resource("en-US", EN_US.to_string());
-        }
-    });
-    I18nManager::lookup(key, None)
+    CATALOG.t(key)
+}
+
+/// Resolve `key` with one named variable (`{ $name }` in the message).
+pub fn format(key: &str, name: &str, value: &str) -> String {
+    CATALOG.t_args(key, &[(name, value.into())])
 }
 
 #[cfg(test)]
@@ -36,7 +30,7 @@ mod tests {
             "windows-suspend-appliance",
             "windows-resume-appliance",
             "windows-shutdown-appliance",
-            "windows-connect-temporarily",
+            "windows-connect-for-activation",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }

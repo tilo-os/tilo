@@ -145,7 +145,7 @@ fi
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
   'snapshot signing configures the KMS provider from its trusted key reference'
 oidc_fixture="$(mktemp -d)"
-printf '{"value":"e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature"}\n' \
+printf '{"value":"e30.eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOiJ0aWxvLXJlbGVhc2Utc2lnbmluZyIsInN1YiI6InRlc3Qtc3ViamVjdCJ9.signature"}\n' \
   > "$oidc_fixture/token&audience=tilo-release-signing"
 aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
   AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
@@ -157,10 +157,37 @@ aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/e
     "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
     cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
 rm -rf -- "$oidc_fixture"
-[ "$aws_config" = 'Using Forgejo OIDC subject: test-subject
-eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature' ] \
+[ "$aws_config" = 'Using OIDC subject: test-subject
+OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing
+eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:e30.eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOiJ0aWxvLXJlbGVhc2Utc2lnbmluZyIsInN1YiI6InRlc3Qtc3ViamVjdCJ9.signature' ] \
   && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
   || bad 'AWS KMS setup does not configure Forgejo web identity safely'
+# Run the KMS setup against a Forgejo token whose payload is $1 (base64url).
+oidc_identity() {
+  identity_fixture="$(mktemp -d)"
+  printf '{"value":"e30.%s.signature"}\n' "$1" > "$identity_fixture/token&audience=tilo-release-signing"
+  COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+    AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
+    ACTIONS_ID_TOKEN_REQUEST_URL="file://$identity_fixture/token" \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token RUNNER_TEMP="$identity_fixture" \
+    sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" 2>&1
+  identity_status=$?
+  rm -rf -- "$identity_fixture"
+  return "$identity_status"
+}
+# {"iss":"https://forge.example/api/actions","aud":["tilo-release-signing"],"sub":"test-subject"}
+if identity="$(oidc_identity eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOlsidGlsby1yZWxlYXNlLXNpZ25pbmciXSwic3ViIjoidGVzdC1zdWJqZWN0In0)" \
+   && printf '%s\n' "$identity" | grep -Fxq 'OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing'; then
+  ok 'AWS KMS setup names the issuer and list-form audience STS validates'
+else
+  bad 'AWS KMS setup does not name the issuer and list-form audience STS validates'
+fi
+# {"iss":"https://forge.example/api/actions","sub":"test-subject"}
+if oidc_identity eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJzdWIiOiJ0ZXN0LXN1YmplY3QifQ >/dev/null; then
+  bad 'a Forgejo token without an audience is accepted'
+else
+  ok 'a Forgejo token without an audience fails closed'
+fi
 if COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
    AWS_SIGNING_ROLE_ARN='arn:aws:iam::999999999999:role/release' \
    ACTIONS_ID_TOKEN_REQUEST_URL=unused ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused \
@@ -198,10 +225,12 @@ has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArc
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
 has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
+has "$repo/os/dev/await-rpm-snapshot.sh" 'resolve="$repo/os/dev/resolve-rpm-snapshot.sh"' \
+  'waiting for an in-flight snapshot still resolves through the verified resolver'
 for consumer in "$image_workflow" "$relay_workflow"; do
   resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
   if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
-    && grep -Fq './os/dev/resolve-rpm-snapshot.sh' <<<"$resolver_job" \
+    && grep -Fq './os/dev/await-rpm-snapshot.sh' <<<"$resolver_job" \
     && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
     && ! grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' <<<"$resolver_job" \
     && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then

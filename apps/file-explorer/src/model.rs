@@ -1,108 +1,34 @@
 use chrono::{DateTime, Local};
 use host_fs::attributes as xattr;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
+
+use fs_protocol::projection::{
+    MAX_RECORD_INDEX_ENTRIES, MAX_RECORD_INDEX_PAGE_BYTES, MAX_RECORD_INDEX_XATTR_BYTES,
+    RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
+    RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR, RECORD_INDEX_XATTR,
+    RecordIndexEntryV1, RecordIndexExactV2, RecordIndexManifestV2, RecordIndexManifestV3,
+    RecordIndexPageV2, RecordIndexPageV3, RecordIndexProjectionV1, valid_record_index_revision,
+};
+use fs_protocol::{
+    AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
+    HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, RECORD_ID_XATTR, Residency,
+    SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, ShareProjectionV1, SyncState, THUMB_XATTR,
+};
 
 /// The Tilo collaborative FUSE mount. Per `fs.service` the daemon mounts
 /// at `/var/workspace` (the older `/workspace` was a bug in this app).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// The extended-attribute the Tilo FUSE driver answers with an entry's sync
-/// state. Kept in lock-step with `fs::SYNC_XATTR`.
-pub const SYNC_XATTR: &str = "user.tilo.sync";
-
-/// The Tilo FUSE **sync / hydration state** of an entry, read live from the
-/// driver via the [`SYNC_XATTR`] extended attribute. The collaborative FS
-/// projects a peer's file metadata immediately but only hydrates the bytes on
-/// first read, so a workspace file is one of:
-///
-/// * [`Local`](SyncState::Local) — content is on disk; opening it is instant.
-/// * [`Projected`](SyncState::Projected) — metadata only; opening it hydrates
-///   from a peer.
-/// * [`Downloading`](SyncState::Downloading) — a hydration fetch is in flight.
-///
-/// `Entry::sync_state` is `None` for anything that isn't on a workspace mount
-/// (an ordinary local file carries no such attribute).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncState {
-    Local,
-    Projected,
-    Downloading,
-}
-
-impl SyncState {
-    /// Parse the xattr value the driver returns.
-    pub fn from_xattr(bytes: &[u8]) -> Option<Self> {
-        match std::str::from_utf8(bytes).ok()?.trim() {
-            "local" => Some(SyncState::Local),
-            "projected" => Some(SyncState::Projected),
-            "downloading" => Some(SyncState::Downloading),
-            _ => None,
-        }
-    }
-}
-
-/// Read the Tilo sync state of `path` from its [`SYNC_XATTR`] extended attribute.
-/// `None` when the attribute is absent (an ordinary file, off any workspace
-/// mount) or unreadable. This is a single `getxattr` — the same call
-/// `getfattr -n user.tilo.sync <path>` makes.
+/// Read the Tilo sync state of `path` from its [`fs_protocol::SYNC_XATTR`]
+/// extended attribute. `None` when the attribute is absent (an ordinary file,
+/// off any workspace mount) or unreadable. This is a single `getxattr` — the
+/// same call `getfattr -n user.tilo.sync <path>` makes.
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     match xattr::get(path, SYNC_XATTR) {
         Ok(Some(bytes)) => SyncState::from_xattr(&bytes),
         _ => None,
     }
-}
-
-/// The extended attribute the Tilo FUSE driver answers with a file's **thumbnail**
-/// (a small PNG the host generates as metadata, ahead of / independent of the
-/// content). Kept in lock-step with `fs::THUMB_XATTR`.
-pub const THUMB_XATTR: &str = "user.tilo.thumb";
-
-/// Raw 32-byte content/manifest identity exposed by the Tilo FUSE driver.
-/// Using this instead of `(path, mtime, size)` makes preview cache entries
-/// survive renames and deduplicate identical content across folders and peers.
-pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
-
-/// Raw 16-byte stable collaborative-record UUID.
-pub const RECORD_ID_XATTR: &str = "user.tilo.record-id";
-pub const METADATA_XATTR: &str = "user.tilo.metadata";
-pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
-pub const RECORD_INDEX_XATTR: &str = "user.tilo.record-index";
-pub const RECORD_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
-pub const RECORD_INDEX_V3_XATTR: &str = "user.tilo.record-index.v3";
-pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.";
-pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
-pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
-const RECORD_INDEX_V2_VERSION: u16 = 2;
-// Must match the mount authority's portable, single-xattr page contract.
-const RECORD_INDEX_PAGE_ENTRIES: usize = 32;
-const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
-pub const AVAILABILITY_XATTR: &str = "user.tilo.availability";
-pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
-pub const PIN_XATTR: &str = "user.tilo.pin";
-pub const SHARE_XATTR: &str = "user.tilo.share";
-pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
-pub const HISTORY_XATTR: &str = "user.tilo.history";
-pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
-
-/// Fetch a bounded immutable version preview from the collaborative
-/// filesystem. Binary/invalid UTF-8 versions intentionally return `None`.
-pub fn read_history_text_preview(
-    path: &Path,
-    version_id: collab_types::FileVersionId,
-) -> Option<String> {
-    let name = format!(
-        "{}{}",
-        collab_types::HISTORY_PREVIEW_XATTR_PREFIX,
-        version_id.0
-    );
-    let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.chars().any(|character| character == '\0')).then_some(text)
 }
 
 /// Read the daemon's non-committing classification for one open conflict.
@@ -111,319 +37,51 @@ pub fn read_history_text_preview(
 pub fn read_merge_preflight(
     path: &Path,
     conflict_id: uuid::Uuid,
-) -> Option<collab_types::MergePreflightProjectionV1> {
+) -> Option<fs_protocol::MergePreflightProjectionV1> {
     let name = format!(
         "{}{}",
-        collab_types::MERGE_PREFLIGHT_XATTR_PREFIX,
+        fs_protocol::MERGE_PREFLIGHT_XATTR_PREFIX,
         conflict_id
     );
     let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > collab_types::MAX_MERGE_PREFLIGHT_BYTES {
+    if bytes.len() > fs_protocol::MAX_MERGE_PREFLIGHT_BYTES {
         return None;
     }
-    let projection: collab_types::MergePreflightProjectionV1 =
+    let projection: fs_protocol::MergePreflightProjectionV1 =
         serde_json::from_slice(&bytes).ok()?;
     (projection.conflict_id == conflict_id && projection.validate().is_ok()).then_some(projection)
 }
-pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
-pub const MAX_COLLAB_PROJECTION_BYTES: usize = 16 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetadataProjection {
-    pub schema_version: u16,
-    pub record_id: collab_types::FileRecordId,
-    pub properties: collab_types::FilePropertiesV1,
+pub fn read_metadata(path: &Path) -> Option<MetadataProjectionV1> {
+    MetadataProjectionV1::parse_xattr(&xattr::get(path, METADATA_XATTR).ok()??).ok()
 }
 
-impl MetadataProjection {
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > MAX_METADATA_XATTR_BYTES {
-            return None;
-        }
-        let value: Self = serde_json::from_slice(bytes).ok()?;
-        if value.schema_version != 1
-            || value.record_id.0.is_nil()
-            || value.properties.validate().is_err()
-        {
-            return None;
-        }
-        Some(value)
+/// Fluent key for the user-facing provenance label. Keeping the wire value
+/// out of presentation lets every history surface share one localized
+/// vocabulary without changing signed metadata.
+pub fn provenance_key(provenance: &fs_protocol::FileProvenance) -> &'static str {
+    use fs_protocol::FileProvenance;
+    match provenance {
+        FileProvenance::Create => "files-history-action-created",
+        FileProvenance::Edit => "files-history-action-edited",
+        FileProvenance::Rename => "files-history-action-renamed",
+        FileProvenance::Move => "files-history-action-moved",
+        FileProvenance::Delete => "files-history-action-deleted",
+        FileProvenance::ConflictResolution => "files-history-action-conflict-resolved",
+        FileProvenance::Restore { .. } => "files-history-action-restored",
     }
 }
 
-pub fn read_metadata(path: &Path) -> Option<MetadataProjection> {
-    MetadataProjection::parse(&xattr::get(path, METADATA_XATTR).ok()??)
+pub fn read_share(path: &Path) -> Option<ShareProjectionV1> {
+    ShareProjectionV1::parse_xattr(&xattr::get(path, SHARE_XATTR).ok()??).ok()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FilePermission {
-    View,
-    Edit,
+pub fn read_history(path: &Path) -> Option<HistoryProjectionV1> {
+    HistoryProjectionV1::parse_xattr(&xattr::get(path, HISTORY_XATTR).ok()??).ok()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum ShareSubject {
-    Person { person: [u8; 32] },
-    BearerLink,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShareGrantStatus {
-    Active,
-    Expired,
-    Revoked,
-    Exhausted,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "mirrors the versioned, redundant share projection contract"
-)]
-pub struct ShareGrantProjection {
-    pub grant_id: String,
-    pub subject: ShareSubject,
-    pub permission: FilePermission,
-    pub expires_at_ms: Option<u64>,
-    pub revoked: bool,
-    pub expired: bool,
-    pub used: bool,
-    pub exhausted: bool,
-    pub status: ShareGrantStatus,
-    pub redemptions: u32,
-    pub max_redemptions: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShareProjection {
-    pub schema_version: u16,
-    pub record_id: String,
-    pub observed_at_ms: u64,
-    pub grants: Vec<ShareGrantProjection>,
-}
-
-impl ShareProjection {
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > MAX_COLLAB_PROJECTION_BYTES {
-            return None;
-        }
-        let value: Self = serde_json::from_slice(bytes).ok()?;
-        if value.schema_version != 1 || value.grants.len() > 32 {
-            return None;
-        }
-        Some(value)
-    }
-
-    pub fn active_grants(&self) -> usize {
-        self.grants
-            .iter()
-            .filter(|grant| grant.status == ShareGrantStatus::Active)
-            .count()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryActor {
-    pub person: [u8; 32],
-    pub device: [u8; 32],
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryVersion {
-    pub id: String,
-    pub record_id: String,
-    pub parents: Vec<String>,
-    pub actor: HistoryActor,
-    pub timestamp_ms: u64,
-    pub content_hash: Option<[u8; 32]>,
-    pub metadata_hash: [u8; 32],
-    pub provenance: serde_json::Value,
-}
-
-impl HistoryVersion {
-    /// Fluent key for the user-facing provenance label. Keeping the wire value
-    /// out of presentation lets every history surface share one localized
-    /// vocabulary without changing signed metadata.
-    pub fn provenance_key(&self) -> &'static str {
-        match &self.provenance {
-            serde_json::Value::String(value) => match value.as_str() {
-                "Create" => "files-history-action-created",
-                "Edit" => "files-history-action-edited",
-                "Rename" => "files-history-action-renamed",
-                "Move" => "files-history-action-moved",
-                "Delete" => "files-history-action-deleted",
-                "ConflictResolution" => "files-history-action-conflict-resolved",
-                _ => "files-history-action-changed",
-            },
-            serde_json::Value::Object(value) if value.contains_key("Restore") => {
-                "files-history-action-restored"
-            }
-            _ => "files-history-action-changed",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryProjection {
-    pub schema_version: u16,
-    pub record_id: String,
-    pub total_versions: u64,
-    pub versions_truncated: bool,
-    pub heads: Vec<String>,
-    pub versions: Vec<HistoryVersion>,
-    pub conflicts_truncated: bool,
-    pub conflicts: Vec<collab_types::FileConflictV1>,
-}
-
-impl HistoryProjection {
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > MAX_COLLAB_PROJECTION_BYTES {
-            return None;
-        }
-        let value: Self = serde_json::from_slice(bytes).ok()?;
-        let record_id = uuid::Uuid::parse_str(&value.record_id).ok()?;
-        if value.schema_version != 1
-            || value.versions.len() > 12
-            || value.conflicts.len() > 8
-            || value.heads.len() > collab_types::files::MAX_CONFLICT_VERSIONS
-            || value.total_versions < value.versions.len() as u64
-            || value.versions.iter().any(|version| {
-                version.record_id != value.record_id
-                    || version.parents.len() > collab_types::files::MAX_VERSION_PARENTS
-                    || version.parents.contains(&version.id)
-            })
-            || value
-                .conflicts
-                .iter()
-                .any(|conflict| conflict.record_id.0 != record_id || conflict.validate().is_err())
-        {
-            return None;
-        }
-        Some(value)
-    }
-
-    pub fn open_conflicts(&self) -> impl Iterator<Item = &collab_types::FileConflictV1> {
-        self.conflicts
-            .iter()
-            .filter(|conflict| conflict.status == collab_types::ConflictStatus::Open)
-    }
-}
-
-pub fn read_share(path: &Path) -> Option<ShareProjection> {
-    let bytes = xattr::get(path, SHARE_XATTR).ok()??;
-    ShareProjection::parse(&bytes)
-}
-
-pub fn read_history(path: &Path) -> Option<HistoryProjection> {
-    let bytes = xattr::get(path, HISTORY_XATTR).ok()??;
-    HistoryProjection::parse(&bytes)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
-pub enum Residency {
-    NotResident,
-    Partial { resident_bytes: u64 },
-    Resident { bytes: u64 },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferPhase {
-    Idle,
-    Queued,
-    Downloading,
-    Uploading,
-    Verifying,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferProgress {
-    pub completed_bytes: u64,
-    pub total_bytes: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectedTransfer {
-    pub phase: TransferPhase,
-    pub progress: Option<TransferProgress>,
-    pub last_error: Option<String>,
-    pub last_error_at_ms: Option<u64>,
-    pub error_truncated: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AvailabilityPolicy {
-    Automatic,
-    Pinned,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
-pub enum ReplicaEvidence {
-    Unknown,
-    Known { reachable: u32, durable: u32 },
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AvailabilityFreshness {
-    pub metadata_observed_at_ms: Option<u64>,
-    pub local_verified_at_ms: Option<u64>,
-    pub replicas_observed_at_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AvailabilityProjection {
-    pub schema_version: u16,
-    pub record_id: String,
-    pub current_version: Option<String>,
-    pub residency: Residency,
-    pub transfer: ProjectedTransfer,
-    pub policy: AvailabilityPolicy,
-    #[serde(default)]
-    pub policy_inherited: bool,
-    pub replicas: ReplicaEvidence,
-    pub freshness: AvailabilityFreshness,
-}
-
-impl AvailabilityProjection {
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > MAX_AVAILABILITY_XATTR_BYTES {
-            return None;
-        }
-        let value: Self = serde_json::from_slice(bytes).ok()?;
-        if value.schema_version != 1
-            || value.transfer.last_error.is_some() != value.transfer.last_error_at_ms.is_some()
-            || value
-                .transfer
-                .progress
-                .is_some_and(|p| p.total_bytes.is_some_and(|total| p.completed_bytes > total))
-        {
-            return None;
-        }
-        Some(value)
-    }
-
-    pub fn safely_replicated(&self) -> bool {
-        matches!(self.replicas, ReplicaEvidence::Known { durable, .. } if durable > 0)
-    }
-}
-
-pub fn read_availability(path: &Path) -> Option<AvailabilityProjection> {
-    let bytes = xattr::get(path, AVAILABILITY_XATTR).ok()??;
-    AvailabilityProjection::parse(&bytes)
+pub fn read_availability(path: &Path) -> Option<AvailabilityProjectionV1> {
+    AvailabilityProjectionV1::parse_xattr(&xattr::get(path, AVAILABILITY_XATTR).ok()??).ok()
 }
 
 pub fn read_content_hash(path: &Path) -> Option<[u8; 32]> {
@@ -463,7 +121,7 @@ pub struct WorkspaceRecordIndexPager {
     roots: Vec<PathBuf>,
     root_index: usize,
     cursor: Option<RecordIndexCursor>,
-    opaque_cursor: Option<(String, String, Option<collab_types::FileRecordId>)>,
+    opaque_cursor: Option<(String, String, Option<fs_protocol::FileRecordId>)>,
     discovered: bool,
     reset_pending: bool,
     observed_generation: Option<String>,
@@ -488,7 +146,7 @@ struct TestV2Source {
 struct RecordIndexCursor {
     revision: String,
     offset: usize,
-    last_record_id: Option<collab_types::FileRecordId>,
+    last_record_id: Option<fs_protocol::FileRecordId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -497,67 +155,6 @@ pub struct WorkspaceRecord {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexProjection {
-    schema_version: u16,
-    truncated: bool,
-    records: Vec<RecordIndexEntry>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexEntry {
-    record_id: collab_types::FileRecordId,
-    path: String,
-    is_dir: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexManifestV2 {
-    schema_version: u16,
-    revision: String,
-    records: usize,
-    page_entries: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexPageV2 {
-    schema_version: u16,
-    revision: String,
-    offset: usize,
-    next_offset: Option<usize>,
-    records: Vec<RecordIndexEntry>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexManifestV3 {
-    schema_version: u16,
-    revision: String,
-    initial_cursor: String,
-    page_entries: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexPageV3 {
-    schema_version: u16,
-    revision: String,
-    next_cursor: Option<String>,
-    records: Vec<RecordIndexEntry>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordIndexExactV2 {
-    schema_version: u16,
-    revision: String,
-    record: RecordIndexEntry,
 }
 
 fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
@@ -573,13 +170,9 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
     Some(root.join(path))
 }
 
-fn read_record_index_projection(root: &Path) -> Option<RecordIndexProjection> {
+fn read_record_index_projection(root: &Path) -> Option<RecordIndexProjectionV1> {
     let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;
     parse_record_index_projection(root, &bytes)
-}
-
-fn valid_record_index_revision(revision: &str) -> bool {
-    revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
@@ -628,7 +221,7 @@ fn read_record_index_manifest_v3(root: &Path) -> Option<RecordIndexManifestV3> {
         return None;
     }
     let value: RecordIndexManifestV3 = serde_json::from_slice(&bytes).ok()?;
-    (value.schema_version == 3
+    (value.schema_version == RECORD_INDEX_V3_VERSION
         && valid_record_index_revision(&value.revision)
         && uuid::Uuid::parse_str(&value.initial_cursor).is_ok()
         && value.page_entries == RECORD_INDEX_PAGE_ENTRIES)
@@ -646,7 +239,7 @@ fn read_record_index_page_v3(
         return None;
     }
     let value: RecordIndexPageV3 = serde_json::from_slice(&bytes).ok()?;
-    (value.schema_version == 3
+    (value.schema_version == RECORD_INDEX_V3_VERSION
         && value.revision == manifest.revision
         && value.records.len() <= manifest.page_entries
         && value
@@ -743,11 +336,11 @@ fn root_generation(root: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjection> {
+fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjectionV1> {
     if bytes.len() > MAX_RECORD_INDEX_XATTR_BYTES {
         return None;
     }
-    let projection: RecordIndexProjection = serde_json::from_slice(bytes).ok()?;
+    let projection: RecordIndexProjectionV1 = serde_json::from_slice(bytes).ok()?;
     if projection.schema_version != 1 || projection.records.len() > MAX_RECORD_INDEX_ENTRIES {
         return None;
     }
@@ -765,7 +358,7 @@ fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordInde
 
 fn project_record_entries(
     root: &Path,
-    entries: Vec<RecordIndexEntry>,
+    entries: Vec<RecordIndexEntryV1>,
 ) -> (Vec<WorkspaceRecord>, bool) {
     let mut truncated = false;
     let mut records = Vec::with_capacity(entries.len());
@@ -876,8 +469,8 @@ impl WorkspaceRecordIndexPager {
                 .checked_add(RECORD_INDEX_PAGE_ENTRIES)?
                 .min(source.records);
             let records = ((offset + 1)..=end)
-                .map(|ordinal| RecordIndexEntry {
-                    record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
+                .map(|ordinal| RecordIndexEntryV1 {
+                    record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
                     path: if ordinal == source.records {
                         "/late-target.txt".into()
                     } else {
@@ -919,6 +512,12 @@ impl WorkspaceRecordIndexPager {
     /// Cheap, periodic manifest/root-set poll. It never reads record pages;
     /// a changed or vanished authority withdraws the retained index before a
     /// fresh bounded page is admitted on the next idle turn.
+    /// Whether there is any root whose generation [`Self::poll_generation`]
+    /// watches; without one, polling it is a no-op.
+    pub fn has_roots(&self) -> bool {
+        !self.source_roots.is_empty() || !self.roots.is_empty()
+    }
+
     pub fn poll_generation(&mut self) -> bool {
         const ROOT_WATCH_BUDGET: usize = 8;
         let mut roots = self.source_roots.clone();
@@ -1258,7 +857,7 @@ pub fn is_workspace_path(path: &Path) -> bool {
 
 /// Whether `path` is one of `roots` or nested under one. Pure over an explicit
 /// root list so the containment logic is testable without the environment.
-fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+pub(crate) fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 
@@ -1325,13 +924,15 @@ pub struct Entry {
     /// Stable collaborative record identity; survives rename and move.
     pub record_id: Option<[u8; 16]>,
     /// Rich, honest availability state. `None` falls back to legacy sync state.
-    pub availability: Option<AvailabilityProjection>,
+    pub availability: Option<AvailabilityProjectionV1>,
     /// Redacted authority-backed recipients and bearer-link state.
-    pub share: Option<ShareProjection>,
+    pub share: Option<ShareProjectionV1>,
     /// Recent immutable versions and first-class conflicts.
-    pub history: Option<HistoryProjection>,
+    pub history: Option<HistoryProjectionV1>,
     /// Useful media/document facts from signed metadata; no payload read.
-    pub rich_metadata: Option<MetadataProjection>,
+    pub rich_metadata: Option<MetadataProjectionV1>,
+    /// Object observed by the listing, used only as a stale-view precondition.
+    pub observed: Option<host_fs::ObservedObject>,
 }
 
 impl Entry {
@@ -1378,6 +979,12 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
         Some(t) => crate::i18n::format_datetime(t),
         None => "—".to_string(),
     }
+}
+
+/// Locale-sensitive modified date without the time of day, for a narrow
+/// column; `None` when unknown.
+pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
+    modified.map(crate::i18n::format_date)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1507,6 +1114,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             share,
             history,
             rich_metadata,
+            observed: meta
+                .as_ref()
+                .and_then(host_fs::ObservedObject::from_metadata),
         });
     }
     Ok(out)
@@ -1529,7 +1139,13 @@ pub fn initial_path() -> PathBuf {
     // override means there is no workspace: test/alternate environments often
     // have an unrelated `/workspace` (for example, the CI checkout mount), and
     // must be able to keep Files from mistaking it for user content.
-    if let Some(root) = workspace_roots().into_iter().next() {
+    //
+    // Only a configured mount: `~/Shared`, where what others share with this
+    // person arrives, is listed beside them in the sidebar but is not where a
+    // window opens. The session mounts it whether or not anything was ever
+    // shared, so opening on it greeted every fresh desktop with an empty
+    // folder instead of the person's home.
+    if let Some(root) = workspace_record_authority_roots().into_iter().next() {
         return root;
     }
     // `/workspace` predates `TILO_WORKSPACE_ROOTS`; retain it only when no
@@ -1567,131 +1183,17 @@ pub fn user_home() -> Option<PathBuf> {
 mod sync_state_tests {
     use super::*;
 
-    /// Metadata, xattr state, availability and share/history projections are bounded, validated and keep unknown distinct.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
+    /// History provenance renders through the shared localized vocabulary.
     #[test]
-    fn xattr_and_availability_projections_are_bounded() {
-        // --- phase: metadata_projection_is_bounded_and_validated ---
-        {
-            let projection = MetadataProjection {
-                schema_version: 1,
-                record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(7)),
-                properties: collab_types::FilePropertiesV1 {
-                    schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
-                    image_width: Some(800),
-                    image_height: Some(600),
-                    duration_ms: None,
-                    page_count: None,
-                    codec: Some("png".into()),
-                    container: Some("png".into()),
-                },
-            };
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert_eq!(MetadataProjection::parse(&bytes), Some(projection));
-            assert!(MetadataProjection::parse(&vec![b' '; MAX_METADATA_XATTR_BYTES + 1]).is_none());
-        }
-
-        // --- phase: from_xattr_parses_the_three_states_and_rejects_junk ---
-        {
-            assert_eq!(SyncState::from_xattr(b"local"), Some(SyncState::Local));
-            assert_eq!(
-                SyncState::from_xattr(b"projected"),
-                Some(SyncState::Projected)
-            );
-            assert_eq!(
-                SyncState::from_xattr(b"downloading"),
-                Some(SyncState::Downloading)
-            );
-            // Trailing whitespace/newline (some xattr tools append one) is tolerated.
-            assert_eq!(SyncState::from_xattr(b"local\n"), Some(SyncState::Local));
-            assert_eq!(SyncState::from_xattr(b"bogus"), None);
-            assert_eq!(SyncState::from_xattr(&[0xff, 0xfe]), None);
-        }
-
-        // --- phase: availability_parser_keeps_unknown_distinct_from_known_zero_and_is_bounded ---
-        {
-            let unknown = AvailabilityProjection::parse(&availability_json(
-                &serde_json::json!({"state": "unknown"}),
-            ))
-            .unwrap();
-            assert_eq!(unknown.replicas, ReplicaEvidence::Unknown);
-            assert!(!unknown.safely_replicated());
-
-            let zero = AvailabilityProjection::parse(&availability_json(
-                &serde_json::json!({"state": "known", "reachable": 0, "durable": 0}),
-            ))
-            .unwrap();
-            assert_eq!(
-                zero.replicas,
-                ReplicaEvidence::Known {
-                    reachable: 0,
-                    durable: 0
-                }
-            );
-            assert!(!zero.safely_replicated());
-            assert!(
-                AvailabilityProjection::parse(&vec![b' '; MAX_AVAILABILITY_XATTR_BYTES + 1])
-                    .is_none()
-            );
-        }
-
-        // --- phase: share_and_history_projections_are_bounded_and_actionable ---
-        {
-            let share = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "observed_at_ms": 10,
-                "grants": [{
-                    "grant_id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
-                    "subject": {"kind": "person", "person": vec![1; 32]},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": null
-                }]
-            }))
-            .unwrap();
-            let share = ShareProjection::parse(&share).unwrap();
-            assert_eq!(share.active_grants(), 1);
-
-            let history = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 1,
-                "versions_truncated": false,
-                "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
-                "versions": [{
-                    "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": null,
-                    "metadata_hash": vec![3; 32],
-                    "provenance": "Create"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": []
-            }))
-            .unwrap();
-            let history = HistoryProjection::parse(&history).unwrap();
-            assert_eq!(
-                crate::i18n::t(history.versions[0].provenance_key()),
-                "Created"
-            );
-            assert!(ShareProjection::parse(&vec![b' '; MAX_COLLAB_PROJECTION_BYTES + 1]).is_none());
-            assert!(
-                HistoryProjection::parse(&vec![b' '; MAX_COLLAB_PROJECTION_BYTES + 1]).is_none()
-            );
-        }
+    fn provenance_labels_are_localized() {
+        assert_eq!(
+            crate::i18n::t(provenance_key(&fs_protocol::FileProvenance::Create)),
+            "Created"
+        );
+        let restored = fs_protocol::FileProvenance::Restore {
+            from: fs_protocol::FileVersionId(uuid::Uuid::from_u128(1)),
+        };
+        assert_eq!(provenance_key(&restored), "files-history-action-restored");
     }
 
     /// Real sync-state and thumbnail xattrs round-trip and hashes and record ids require their exact raw widths.
@@ -1864,7 +1366,7 @@ mod sync_state_tests {
                     .availability
                     .as_ref()
                     .map(|a| a.replicas),
-                Some(ReplicaEvidence::Unknown)
+                Some(fs_protocol::ProjectedReplicaEvidence::Unknown)
             );
             assert_eq!(
                 entries
@@ -1873,7 +1375,7 @@ mod sync_state_tests {
                     .unwrap()
                     .share
                     .as_ref()
-                    .map(ShareProjection::active_grants),
+                    .map(ShareProjectionV1::active_grants),
                 Some(0)
             );
             assert_eq!(
@@ -2031,8 +1533,6 @@ mod sync_state_tests {
 
         // --- phase: revisioned_workspace_pager_is_one_page_bounded_and_indexes_later_rows_incrementally ---
         {
-            use ui::search::SearchProvider as _;
-
             let root = tempfile::tempdir().unwrap();
             // An injected FUSE page source models dozens of pages without trying
             // to store them as host xattrs (which many filesystems reject long
@@ -2048,9 +1548,16 @@ mod sync_state_tests {
                 "one step cannot materialise the whole index"
             );
             assert!(!first.complete);
-            let provider =
-                crate::search_provider::CollaborativeRecordSearchProvider::new(&first.records);
-            assert!(provider.search("late-target").is_empty());
+            let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
+            let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
+                ui::search::SearchProvider::search(
+                    &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+                        provider.entries(),
+                    ),
+                    "late-target",
+                )
+            };
+            assert!(found(&provider).is_empty());
 
             let mut indexed = first.records.len();
             while pager.has_more() {
@@ -2068,11 +1575,10 @@ mod sync_state_tests {
             );
             assert_eq!(indexed, records, "every page is indexed exactly once");
             assert!(
-                provider
-                    .search("late-target")
+                found(&provider)
                     .iter()
                     .any(|hit| hit.title == "late-target.txt"),
-                "later pages enter the retained search catalogue without a full refresh"
+                "later pages enter the search entries without a full refresh"
             );
         }
     }

@@ -3,11 +3,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -42,6 +37,7 @@ fn strip(salt: u64, counter: u64, label: &str) -> Strip {
             active_tab: id + 2,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
             tabs: vec![Tab {
                 id: id + 2,
                 title: label.into(),
@@ -57,7 +53,7 @@ fn strip(salt: u64, counter: u64, label: &str) -> Strip {
 fn admitted_projection_keeps_local_view_and_unpublished_content_but_removes_foreign() {
     let room = RoomId::new();
     let mut workspace = Workspace::new(WorkspaceId::from(100), "A");
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips = vec![strip(2, 10, "Remote"), strip(1, 20, "Private")];
     workspace.strips[0].window_groups[0].width = WindowWidth::Fraction(70);
     workspace.strips[0].window_groups[0].maximized = true;
@@ -103,7 +99,7 @@ fn projection_orders_ties_by_id_and_never_publishes_view_or_prejoin_ids() {
     let room = RoomId::new();
     let mut tree = DesktopTree::default();
     let mut ws = Workspace::new(WorkspaceId::from(1), "room");
-    ws.room = room;
+    ws.set_room(room);
     tree.workspaces.push(ws);
     merge(&mut tree, room, &doc, 3);
     assert_eq!(

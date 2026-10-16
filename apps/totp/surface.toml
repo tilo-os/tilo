@@ -1,0 +1,38 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "totp.vault"
+label = "Accounts"
+version = 1
+fields = [
+  { path = "accounts", type = "Collection<StoredAccount>", stored = "collection" },
+  { path = "accounts.*.issuer", type = "String", label = true },
+  { path = "accounts.*.label", type = "String" },
+  { path = "accounts.*.algorithm", type = "Algorithm" },
+  { path = "accounts.*.digits", type = "u8" },
+  { path = "accounts.*.period", type = "u32" },
+  { path = "accounts.*.color", type = "u8" },
+]
+
+[[resources.verbs]]
+id = "move-up"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-down"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+

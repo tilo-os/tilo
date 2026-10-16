@@ -58,11 +58,13 @@
 //! route to any resolver, so it never supplies an address for a
 //! name-scoped grant.
 //!
-//! An **address literal** is matched against the allowlist as that
-//! literal — never a hostname entry, since "this address is currently
-//! that name" isn't verifiable and accepting it would make every
-//! name-scoped grant bypassable by resolving first. Fail-closed,
-//! deliberately.
+//! An **address literal** never matches a hostname entry, since "this
+//! address is currently that name" isn't verifiable and accepting it
+//! would make every name-scoped grant bypassable by resolving first. Nor
+//! is an address a grant: the allowlist is an [`EgressPolicy`] read
+//! through the one grant grammar (`collab_types::caps::NetHostPattern`,
+//! the same one environments' `tilo-egress` reads), which refuses IP
+//! literals, so only `*` reaches an address. Fail-closed, deliberately.
 //!
 //! ## DNS is egress
 //!
@@ -89,6 +91,14 @@
 //! reachable, since it becomes `--share-net` in production. IPv4-mapped
 //! IPv6 forms are folded to v4, so `::ffff:127.0.0.1` is loopback too.
 //!
+//! That last case is the one place an app's grant reaches further than
+//! the same grant does for an environment, whose `*` keeps a namespace of
+//! its own (`tilo-egress`). It is kept on purpose: apps whose manifests
+//! say `host` take OAuth redirects on a loopback listener the host's
+//! browser must reach, and the gate carries TCP only. The grammar and the
+//! decision are shared; the backend differs
+//! (`docs/architecture/security.md`).
+//!
 //! ## A refusal looks like an absence of network
 //!
 //! A denied destination answers SOCKS5 `HOST_UNREACHABLE` and HTTP
@@ -113,7 +123,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use collab_types::caps::host_covers;
+pub use collab_types::caps::{EgressPolicy, NetHostPattern};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, oneshot};
@@ -187,6 +197,11 @@ impl EgressDecision {
     /// | `off` / `host` | `["*"]` | unrestricted |
     /// | `off` / `host` | `[h…]` | filtered to `h…` |
     /// | `allowlist = [c…]` | any grant | filtered to the `c…` that grant permits |
+    /// | any | only non-hosts (`10.0.0.5`) | blocked |
+    ///
+    /// Grants and manifest entries are both read through the one grant
+    /// grammar ([`EgressPolicy::from_grants`]), the same one environments
+    /// get: `*.example.com` is the domain, and an IP literal is ignored.
     ///
     /// **The user's decision replaces the manifest's**, it does not union
     /// with it — a union would leave `host` unrestricted no matter how
@@ -194,108 +209,70 @@ impl EgressDecision {
     /// manifest allowlist**: an out-of-surface grant is dropped with a
     /// warning, not silently widened.
     pub fn resolve(net_mode: &str, manifest_hosts: &[String], granted_hosts: &[String]) -> Self {
-        let manifest_is_allowlist = net_mode == "allowlist";
+        let declared = || EgressPolicy::from_grants(manifest_hosts.iter().map(String::as_str));
 
         if granted_hosts.is_empty() {
             return match net_mode {
                 // `dns-only` grants no host egress, listed explicitly rather than
                 // falling into "not off means unrestricted".
                 "off" | "dns-only" => EgressDecision::Blocked,
-                "allowlist" => EgressPolicy::new(manifest_hosts.to_vec()).into_decision(),
-                // Any other mode is the historical "share the host
-                // network" spelling.
-                _ => EgressDecision::Unrestricted,
+                "allowlist" => decision_of(declared()),
+                "host" => EgressDecision::Unrestricted,
+                // A spelling this launcher does not know is not a policy it
+                // can enforce. The only safe reading of "allow-list" or
+                // "Off" is no egress — not the host network.
+                other => {
+                    tracing::warn!(
+                        mode = other,
+                        "unknown [sandbox.net].mode; the app gets no network"
+                    );
+                    EgressDecision::Blocked
+                }
             };
         }
 
+        // Read through the one grammar: a grant that is not a host (an IP
+        // literal, junk) is dropped with a warning, so it narrows. A user
+        // whose every grant was refused gets no network, not the manifest's.
+        let granted = EgressPolicy::from_grants(granted_hosts.iter().map(String::as_str));
+
         // An explicit manifest allowlist is exhaustive, so the effective set
-        // is the declared entries the grant permits — not the grant filtered
-        // against the list, which lets a `*` grant narrow instead of matching
-        // nothing.
-        if manifest_is_allowlist {
-            let kept: Vec<String> = manifest_hosts
-                .iter()
-                .filter(|c| granted_hosts.iter().any(|g| host_covers(g, c)))
-                .cloned()
-                .collect();
-            for declared in manifest_hosts {
-                if !kept.contains(declared) {
+        // is the declared entries the grant covers in full — not the grant
+        // filtered against the list, which lets a `*` grant narrow instead of
+        // matching nothing.
+        if net_mode == "allowlist" {
+            let EgressPolicy::Hosts(declared) = declared() else {
+                // A manifest allowlist of `*` declares nothing to cap with.
+                return decision_of(granted);
+            };
+            let mut kept = Vec::new();
+            for pattern in declared {
+                if EgressPolicy::hosts(vec![pattern.clone()]).within(&granted) {
+                    kept.push(pattern);
+                } else {
                     tracing::info!(
-                        host = %declared,
+                        host = %pattern,
                         "endpoint declared by the package is not covered by the user's network \
                          grant; the app cannot reach it"
                     );
                 }
             }
-            return EgressPolicy::new(kept).into_decision();
+            return decision_of(EgressPolicy::hosts(kept));
         }
 
         // No enumeration to cap against: `off` and `host` declare
         // nothing specific, so the grant stands as written.
-        let mut kept: Vec<String> = Vec::new();
-        for host in granted_hosts {
-            if !kept.iter().any(|k| k == host) {
-                kept.push(host.clone());
-            }
-        }
-        EgressPolicy::new(kept).into_decision()
+        decision_of(granted)
     }
 }
 
-/// An allowlist of host patterns, and the decision function over it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EgressPolicy {
-    allow: Vec<String>,
-}
-
-impl EgressPolicy {
-    pub fn new(allow: Vec<String>) -> Self {
-        Self { allow }
-    }
-
-    /// The patterns, for logging and tests.
-    pub fn hosts(&self) -> &[String] {
-        &self.allow
-    }
-
-    /// Does any pattern permit `host`? Uses
-    /// `collab_types::caps::host_covers`, the same matcher
-    /// `decide_capability` uses.
-    pub fn permits(&self, host: &str) -> bool {
-        self.allow.iter().any(|p| host_covers(p, host))
-    }
-
-    /// An allowlist containing `*` is not an allowlist.
-    pub fn is_unrestricted(&self) -> bool {
-        self.allow.iter().any(|p| p == "*")
-    }
-
-    /// Does the allowlist name `host` **exactly**, not merely cover it?
-    /// The narrower question device-local egress turns on — `*` and
-    /// `.example.com` cover a host without pointing at one machine; only a
-    /// literal entry does.
-    pub fn names_exactly(&self, host: &str) -> bool {
-        self.allow
-            .iter()
-            .any(|p| p != "*" && !p.starts_with('.') && p.eq_ignore_ascii_case(host))
-    }
-
-    /// May a connection to `host` land on an address of *this device*?
-    /// Only when the user pointed at that host specifically, or the
-    /// allowlist is `*` (included since in production a `*` grant becomes
-    /// `--share-net`, reaching the loopback like any other process).
-    pub fn permits_device_local(&self, host: &str) -> bool {
-        self.is_unrestricted() || self.names_exactly(host)
-    }
-
-    fn into_decision(self) -> EgressDecision {
-        if self.allow.is_empty() {
-            EgressDecision::Blocked
-        } else if self.is_unrestricted() {
-            EgressDecision::Unrestricted
-        } else {
-            EgressDecision::Filtered(self)
-        }
+/// What outbound access a policy alone amounts to: nothing, everything
+/// (`*`, which for an app is `--share-net`), or a gate.
+fn decision_of(policy: EgressPolicy) -> EgressDecision {
+    match policy {
+        EgressPolicy::Any => EgressDecision::Unrestricted,
+        EgressPolicy::Hosts(ref hosts) if hosts.is_empty() => EgressDecision::Blocked,
+        filtered @ EgressPolicy::Hosts(_) => EgressDecision::Filtered(filtered),
     }
 }
 
@@ -401,7 +378,7 @@ impl NetGate {
 
         tracing::info!(
             socket = %socket_path.display(),
-            hosts = ?policy.hosts(),
+            hosts = ?policy.describe(),
             "egress gate listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
@@ -465,7 +442,7 @@ impl LoopbackGate {
             let _entered = runtime.enter();
             tokio::net::TcpListener::from_std(listener).map_err(bind_error)?
         };
-        tracing::info!(%addr, hosts = ?policy.hosts(), "loopback egress gate listening");
+        tracing::info!(%addr, hosts = ?policy.describe(), "loopback egress gate listening");
         let (stats, stop) = serve_gate(runtime, listener, policy, MAX_CONNECTIONS);
         Ok(LoopbackGate {
             addr,
@@ -964,7 +941,7 @@ async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
         tracing::warn!(
             host = %key,
             port = dest.port(),
-            allow = ?policy.hosts(),
+            allow = ?policy.describe(),
             "egress DENIED: the app asked for a host it was not granted"
         );
         // `HOST_UNREACHABLE`, not `NOT_ALLOWED`: told there's no route (a state
@@ -1085,7 +1062,7 @@ async fn open_http<C: AsyncRead + AsyncWrite + Unpin>(
         tracing::warn!(
             host = %key,
             port = req.dest.port(),
-            allow = ?policy.hosts(),
+            allow = ?policy.describe(),
             "egress DENIED: the app asked for a host it was not granted"
         );
         // `502`, not `403`: same reasoning as the SOCKS5 reply code — makes a
@@ -1170,7 +1147,7 @@ fn admit_resolved(addr: SocketAddr, key: &str, policy: &EgressPolicy) -> io::Res
     tracing::warn!(
         host = %key,
         addr = %addr.ip(),
-        allow = ?policy.hosts(),
+        allow = ?policy.describe(),
         "egress DROPPED: the host resolves to this device, and the grant does not name \
          it exactly. Device-local services are behind the same decision as the rest of \
          the network."
@@ -1345,6 +1322,16 @@ mod tests {
                 EgressDecision::Unrestricted
             );
         }
+        // Phase `an_unknown_mode_is_blocked_not_shared`.
+        {
+            for spelling in ["allow-list", "Off", "none", "allowlist ", ""] {
+                assert_eq!(
+                    EgressDecision::resolve(spelling, &["a.example".into()], &[]),
+                    EgressDecision::Blocked,
+                    "{spelling:?} is not a policy this launcher knows; it must not share the host network"
+                );
+            }
+        }
         // Phase `no_manifest_network_and_no_grant_is_blocked`.
         {
             assert_eq!(
@@ -1398,7 +1385,7 @@ mod tests {
             let policy = decision
                 .policy()
                 .unwrap_or_else(|| panic!("expected the declared endpoints, got {decision:?}"));
-            assert_eq!(policy.hosts(), weather.as_slice());
+            assert_eq!(policy.describe(), weather);
             assert!(
                 !decision.shares_host_network(),
                 "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
@@ -1414,8 +1401,8 @@ mod tests {
             let decision = EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]));
             let policy = decision.policy().expect("filtered");
             assert_eq!(
-                policy.hosts(),
-                ["tile.openstreetmap.org", "nominatim.openstreetmap.org"]
+                policy.describe(),
+                ["nominatim.openstreetmap.org", "tile.openstreetmap.org"]
             );
             assert!(
                 !policy.permits("overpass-api.de"),
@@ -1451,26 +1438,133 @@ mod tests {
             // The bypass this closes: resolving the allowed name yourself then
             // asking the gate for the address would make every name-scoped grant
             // an any-host grant.
-            let policy = EgressPolicy::new(v(&["mail.example.com"]));
+            let policy = EgressPolicy::from_grants(["mail.example.com"]);
             assert!(policy.permits("mail.example.com"));
             assert!(
                 !policy.permits("93.184.216.34"),
                 "an address literal must not satisfy a hostname allowlist entry"
             );
-            // An entry that IS a literal still works, for a grant the user
-            // actually phrased that way.
-            let by_addr = EgressPolicy::new(v(&["93.184.216.34"]));
-            assert!(by_addr.permits("93.184.216.34"));
+            // An entry that IS a literal is not a host in the one grammar
+            // (`collab_types::caps::NetHostPattern`): refused, so it covers
+            // nothing, not even itself — the same answer an environment gets.
+            let by_addr = EgressPolicy::from_grants(["93.184.216.34"]);
+            assert!(!by_addr.permits("93.184.216.34"));
+            assert_eq!(by_addr, EgressPolicy::none());
         }
         // Phase `subdomain_grants_use_the_shared_matcher`.
         {
             // `.example.com` is `host_covers`' suffix form, the same spelling the
             // compositor evaluates — asserted so a matcher change shows up here.
-            let policy = EgressPolicy::new(v(&[".example.com"]));
+            let policy = EgressPolicy::from_grants([".example.com"]);
             assert!(policy.permits("example.com"));
             assert!(policy.permits("mail.example.com"));
             assert!(!policy.permits("example.com.evil.net"));
             assert!(!policy.permits("notexample.com"));
+        }
+    }
+
+    #[test]
+    fn a_star_dot_grant_covers_the_domain_for_apps() {
+        // `*.example.com` is how environments, the permissions UI and users
+        // spell a domain grant. Read as an exact name it covered nothing, and
+        // the app looked offline.
+        let decision = EgressDecision::resolve("host", &[], &v(&["*.example.com"]));
+        let policy = decision
+            .policy()
+            .unwrap_or_else(|| panic!("a domain grant must be filtered, got {decision:?}"));
+        assert!(policy.permits("a.example.com"));
+        assert!(policy.permits("example.com"));
+        assert!(!policy.permits("example.com.evil.net"));
+        assert!(!decision.shares_host_network());
+        // And it caps a manifest allowlist like the `.` spelling does.
+        let decision = EgressDecision::resolve(
+            "allowlist",
+            &v(&["imap.fastmail.com", "evil.example"]),
+            &v(&["*.fastmail.com"]),
+        );
+        let policy = decision
+            .policy()
+            .unwrap_or_else(|| panic!("expected the covered endpoint, got {decision:?}"));
+        assert_eq!(policy.describe(), ["imap.fastmail.com"]);
+        // Legacy spellings read the same: case and a trailing dot.
+        let decision = EgressDecision::resolve("off", &[], &v(&["Example.COM."]));
+        assert!(decision.policy().is_some_and(|p| p.permits("example.com")));
+    }
+
+    #[test]
+    fn an_address_grant_is_refused_for_apps() {
+        // Hosts are granted by name, for apps as for environments: an IP
+        // literal grant is ignored (with a warning), so it narrows. Every
+        // grant refused means no network, not the manifest's.
+        for mode in ["off", "host"] {
+            assert_eq!(
+                EgressDecision::resolve(mode, &[], &v(&["10.0.0.5"])),
+                EgressDecision::Blocked,
+                "manifest {mode}"
+            );
+            assert_eq!(
+                EgressDecision::resolve(mode, &[], &v(&["[::1]"])),
+                EgressDecision::Blocked,
+                "manifest {mode}"
+            );
+        }
+        let decision = EgressDecision::resolve("off", &[], &v(&["192.168.1.1", "example.com"]));
+        let policy = decision
+            .policy()
+            .unwrap_or_else(|| panic!("the named grant must survive, got {decision:?}"));
+        assert_eq!(policy.describe(), ["example.com"]);
+        assert!(!policy.permits("192.168.1.1"));
+    }
+
+    /// The one place apps and environments still differ, on purpose: `*`
+    /// keeps `--share-net` for an app, so it reaches this device's loopback;
+    /// an environment's `*` keeps a namespace of its own. The grammar and the
+    /// policy are the same (`EgressPolicy::Any`); the backend is not. Apps
+    /// whose manifests say `host` (Music, Mail) take OAuth redirects on a
+    /// loopback listener the host's browser must reach, and the gate carries
+    /// TCP only. See `docs/architecture/security.md`.
+    #[test]
+    fn a_star_grant_keeps_the_host_network_for_apps_deliberately() {
+        let decision = EgressDecision::resolve("off", &[], &v(&["*"]));
+        assert_eq!(decision, EgressDecision::Unrestricted);
+        assert!(decision.shares_host_network());
+        assert_eq!(EgressPolicy::from_grants(["*"]), EgressPolicy::Any);
+        // A gate standing in for `*` must not be stricter than the
+        // `--share-net` it stands in for.
+        assert!(EgressPolicy::Any.permits_device_local("localhost"));
+    }
+
+    /// Apps and environments answer every row of the shared vector file
+    /// identically: this is the app side, through the production decision
+    /// (`tilo-egress`'s `environment_egress_answers_every_shared_vector` is
+    /// the other).
+    #[test]
+    fn app_egress_answers_every_shared_vector() {
+        let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");
+        let rows: Vec<(&str, &str, bool)> = vectors
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(
+                |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                    [grant, host, "yes"] => (grant, host, true),
+                    [grant, host, "no"] => (grant, host, false),
+                    _ => panic!("malformed vector line {line:?}"),
+                },
+            )
+            .collect();
+        assert!(rows.len() > 20, "the vector file was read: {rows:?}");
+        for (grant, host, covered) in rows {
+            let decision = EgressDecision::resolve("off", &[], &v(&[grant]));
+            let reaches = match &decision {
+                EgressDecision::Blocked => false,
+                EgressDecision::Unrestricted => true,
+                EgressDecision::Filtered(policy) => policy.permits(host),
+            };
+            assert_eq!(
+                reaches, covered,
+                "an app granted {grant:?} asking for {host:?}: {decision:?}"
+            );
         }
     }
 
@@ -1493,8 +1587,8 @@ mod tests {
             let socket = dir.path().join("gate.sock");
             let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = service.local_addr().unwrap().port();
-            let gate =
-                NetGate::start_limited(&socket, EgressPolicy::new(v(&["localhost"])), 1).unwrap();
+            let gate = NetGate::start_limited(&socket, EgressPolicy::from_grants(["localhost"]), 1)
+                .unwrap();
 
             // The one slot: a tunnel that stays open.
             let mut first = std::os::unix::net::UnixStream::connect(&socket).unwrap();
@@ -1559,7 +1653,7 @@ mod tests {
             let socket = dir.path().join("gate.sock");
             let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = service.local_addr().unwrap().port();
-            let _gate = NetGate::start(&socket, EgressPolicy::new(v(&["localhost"]))).unwrap();
+            let _gate = NetGate::start(&socket, EgressPolicy::from_grants(["localhost"])).unwrap();
 
             // Greeting, request and payload in one write, as an optimistic
             // client sends them.
@@ -1593,7 +1687,7 @@ mod tests {
                 let _ = s.write_all(b"LOCAL-SERVICE");
             }
         });
-        let gate = LoopbackGate::start(EgressPolicy::new(v(&["localhost"]))).unwrap();
+        let gate = LoopbackGate::start(EgressPolicy::from_grants(["localhost"])).unwrap();
         assert!(gate.local_addr().ip().is_loopback());
         let connect = |target: &str| {
             let mut client = TcpStream::connect(gate.local_addr()).unwrap();
@@ -1767,7 +1861,7 @@ mod tests {
             );
             // And it is still matched as a literal, so it cannot satisfy a
             // hostname grant.
-            let policy = EgressPolicy::new(v(&["example.com"]));
+            let policy = EgressPolicy::from_grants(["example.com"]);
             assert!(!policy.permits(&req.dest.host_key()));
         }
         // Phase `a_malformed_head_parses_to_nothing_rather_than_a_default_host`.
@@ -1827,7 +1921,7 @@ mod tests {
         }
         // Phase `only_an_exact_grant_or_the_wildcard_reaches_this_device`.
         {
-            let suffix = EgressPolicy::new(v(&[".localhost"]));
+            let suffix = EgressPolicy::from_grants([".localhost"]);
             assert!(
                 suffix.permits("localhost"),
                 "the suffix pattern does cover the name — the access decision is unchanged"
@@ -1837,12 +1931,12 @@ mod tests {
                 "but covering a name is not naming it, so it must not reach the device itself"
             );
 
-            let exact = EgressPolicy::new(v(&["localhost"]));
+            let exact = EgressPolicy::from_grants(["localhost"]);
             assert!(exact.permits_device_local("localhost"));
 
             // A wildcard allowlist becomes `--share-net` in production; the gate
             // must not be stricter than the sandbox it stands in for.
-            assert!(EgressPolicy::new(v(&["*"])).permits_device_local("localhost"));
+            assert!(EgressPolicy::from_grants(["*"]).permits_device_local("localhost"));
 
             // An exact grant for one host does not carry device-local access
             // for a different one.
@@ -1863,7 +1957,7 @@ mod tests {
 
             let dest = Destination::Domain("localhost".to_string(), port);
 
-            let suffix = EgressPolicy::new(v(&[".localhost"]));
+            let suffix = EgressPolicy::from_grants([".localhost"]);
             let err = connect_upstream(&dest, &suffix)
                 .expect_err("a suffix grant must not reach this device");
             assert_eq!(
@@ -1872,7 +1966,7 @@ mod tests {
                 "and the failure must look like an absence of network, not a refusal: {err}"
             );
 
-            let exact = EgressPolicy::new(v(&["localhost"]));
+            let exact = EgressPolicy::from_grants(["localhost"]);
             let mut stream = connect_upstream(&dest, &exact)
                 .expect("an exact grant for a device-local host must reach it");
             let mut buf = Vec::new();

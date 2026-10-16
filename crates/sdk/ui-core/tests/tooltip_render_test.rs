@@ -9,15 +9,11 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -29,16 +25,9 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::tooltip;
 use tilo_ui::widget::{Button, Widget};
 
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
-
 fn render_case(theme: &Theme, bg: Color, name: &str) {
     let (canvas_w, canvas_h) = (360u32, 150u32);
-    let Some(mut renderer) = try_new_renderer(canvas_w, canvas_h) else {
+    let Some(mut renderer) = OffscreenRenderer::try_new(canvas_w, canvas_h).ok() else {
         eprintln!("no wgpu adapter — skipping tooltip render ({name})");
         return;
     };
@@ -53,17 +42,17 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         Rect::new(120.0, 24.0, 160.0, 60.0),
     ];
     let mut buttons = [
-        Button::new("search", "", None)
+        Button::new("search", "")
             .with_icon(Icon::Search)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("Search"),
-        Button::new("add", "", None)
+        Button::new("add", "")
             .with_icon(Icon::Plus)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("New folder"),
-        Button::new("more", "", None)
+        Button::new("more", "")
             .with_icon(Icon::MoreHorizontal)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("View options"),
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {

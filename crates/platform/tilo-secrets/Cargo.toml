@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "App-scoped secret storage on Linux, macOS and the web: the Secret Service, the Keychain, and WebCrypto-wrapped IndexedDB."
+description = "App-scoped secret storage on Linux, macOS, Windows and the web: the Secret Service, the Keychain, Credential Manager, and WebCrypto-wrapped IndexedDB."
 repository.workspace = true
 homepage.workspace = true
 
@@ -15,9 +15,18 @@ path = "src/lib.rs"
 [dependencies]
 # Desktop backends block on IPC; the async API runs them on the app runtime's
 # blocking pool.
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 # Secret bytes are wiped from memory when dropped.
 zeroize.workspace = true
+
+# A machine without a keychain keeps its secrets in sealed owner-only files.
+[target.'cfg(unix)'.dependencies]
+hex.workspace = true
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+sha2.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 # The freedesktop Secret Service, spoken directly: no `secret-tool` process.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -27,6 +36,10 @@ zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 
+# The user's Credential Manager, which encrypts with their DPAPI key.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
 # A non-extractable AES-GCM key and the ciphertext, both in IndexedDB.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.108"
@@ -35,6 +48,8 @@ js-sys = "=0.3.85"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

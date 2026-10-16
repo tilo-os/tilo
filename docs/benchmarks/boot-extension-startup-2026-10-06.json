@@ -1,0 +1,1655 @@
+{
+  "date": "2026-10-06",
+  "measurement": "production offline extension activation and matched disposable TCG boots",
+  "source_base": "88a46ec509a3acb3a572c3f2e2c18af28f175000",
+  "helper_sha256": {
+    "baseline": "d71b7649366490eb960135ee2aa39b57b0490cf87702f491ff5d76ea75bc6ec7",
+    "candidate": "86c7f482747aefb7e39062174c8db95931ebaefb168db7f3c579c2fabd83cbe7"
+  },
+  "image": {
+    "baseline_developer_digest": "sha256:6487357d669c2a63392505ac13a214054047e6461c5dc2b5cd795c438e3f3c59",
+    "baseline_config": "4bc9254c3c9ec225260d40e7e221aa557bcfa5e71c117e7598e2665051d673c5",
+    "extension_config": "8df29d6a351af19bc4d09d2bc4a80175ef1aced3610d4beddf6c2d74e04e723a",
+    "native_binary_source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+    "assembly_tool_source": "5ee600c90d677e991084009601c7222f0091eab8",
+    "source_date_epoch": 1791316579,
+    "changed_content": "only /usr/libexec/tilo-extension; native binaries and network units held constant"
+  },
+  "native": {
+    "baseline": {
+      "stage": "production empty extension activation",
+      "samples_ms": [
+        317.698734,
+        73.109398,
+        75.538022,
+        75.590492,
+        77.753295,
+        86.032767,
+        78.994437,
+        75.742594,
+        75.687513,
+        73.874235,
+        78.842445,
+        78.558612,
+        117.313623,
+        81.389271,
+        81.830645,
+        106.183681,
+        100.551054,
+        106.280572,
+        95.949958,
+        90.555694,
+        83.494372,
+        114.820838,
+        95.015149,
+        76.538842,
+        73.217188,
+        78.014487,
+        70.614662,
+        73.35364,
+        73.053437,
+        74.935116,
+        71.117657,
+        71.763814,
+        70.075287,
+        74.976126,
+        76.055727,
+        77.939897,
+        73.862585,
+        95.18268,
+        113.585616,
+        132.746979
+      ],
+      "sample_count": 40,
+      "median_ms": 77.977192,
+      "p95_nearest_rank_ms": 117.313623,
+      "min_ms": 70.075287,
+      "max_ms": 317.698734
+    },
+    "candidate": {
+      "stage": "production empty extension activation",
+      "samples_ms": [
+        48.967742,
+        49.68592,
+        51.573479,
+        53.766522,
+        54.881823,
+        47.868891,
+        49.793942,
+        63.36599,
+        78.073331,
+        62.668113,
+        61.079717,
+        58.066546,
+        52.010894,
+        83.412936,
+        77.032451,
+        85.041163,
+        89.495858,
+        68.312712,
+        47.081033,
+        46.027062,
+        49.741721,
+        48.286675,
+        48.140465,
+        44.471736,
+        58.096897,
+        46.181904,
+        43.340424,
+        43.482816,
+        42.441115,
+        42.045282,
+        40.89738,
+        40.00096,
+        39.87816,
+        42.452146,
+        42.041891,
+        41.938841,
+        40.249283,
+        43.430475,
+        42.063532,
+        42.091212
+      ],
+      "sample_count": 40,
+      "median_ms": 48.213570000000004,
+      "p95_nearest_rank_ms": 83.412936,
+      "min_ms": 39.87816,
+      "max_ms": 89.495858
+    }
+  },
+  "boots": [
+    {
+      "boot_id": "101ecda8-4dfa-4acc-98e8-9a7b0a99e9b6",
+      "uptime_s": 83.42,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket system.slice basic.target sysinit.target local-fs.target",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "37170678",
+          "ExecMainStartTimestampMonotonic": "31918817",
+          "ExecMainExitTimestampMonotonic": "37168424",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1729848000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target systemd-journald.socket local-fs.target basic.target system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "33032094",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "31573150",
+          "ExecMainExitTimestampMonotonic": "33030305",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "298183000"
+        },
+        "systemd-logind.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target var.mount systemd-remount-fs.service basic.target nss-user-lookup.target dbus.socket system.slice systemd-logind-varlink.socket tmp.mount systemd-journald.socket modprobe@drm.service systemd-tmpfiles-setup.service user.slice -.mount",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "34704922",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33098379",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "683249000"
+        },
+        "upower.service": {
+          "Requires": "sysinit.target dbus.socket system.slice",
+          "After": "systemd-journald.socket systemd-tmpfiles-setup.service system.slice tmp.mount dbus.socket sysinit.target var.mount systemd-remount-fs.service basic.target -.mount",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "36836568",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "32058418",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "558322000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket remote-fs.target nss-user-lookup.target authselect-apply-changes.service system.slice systemd-userdb-load-credentials.service network.target basic.target sssd.service systemd-pcrphase.service home.mount sysinit.target rpm-ostree-fix-shadow-mode.service systemd-homed-activate.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "36161631",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "35983708",
+          "ExecMainExitTimestampMonotonic": "36159702",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "66751000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "firewalld.service NetworkManager.service",
+          "After": "chronyd.service NetworkManager.service tilo-network-start.timer firewalld.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "35954799",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target basic.target system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "31658700",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "31654910",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4526653000"
+        },
+        "NetworkManager.service": {
+          "Requires": "firewalld.service sysinit.target dbus.socket system.slice",
+          "After": "dbus.socket dbus-broker.service basic.target sysinit.target systemd-journald.socket network-pre.target system.slice firewalld.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "35945675",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "31672507",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "914706000"
+        },
+        "greetd.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket systemd-user-sessions.service system.slice tilo-device-key-init.service basic.target tilo-extension-activate.service getty@tty1.service plymouth-quit-wait.service sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "37211767",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "37199494",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "191920000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 7.357s (kernel) + 10.918s (initrd) + 21.503s (userspace) = 39.779s \ngraphical.target reached after 18.939s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.935s\n\u2514\u2500plymouth-quit-wait.service @17.914s +313ms\n  \u2514\u2500systemd-user-sessions.service @17.714s +171ms\n    \u2514\u2500network.target @17.676s\n      \u2514\u2500NetworkManager.service @13.399s +4.269s\n        \u2514\u2500network-pre.target @13.384s\n          \u2514\u2500firewalld.service @13.382s\n            \u2514\u2500basic.target @13.285s\n              \u2514\u2500dbus-broker.service @12.957s +322ms\n                \u2514\u2500dbus.socket @12.713s +2ms\n                  \u2514\u2500sysinit.target @12.675s\n                    \u2514\u2500systemd-update-done.service @12.596s +76ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.341s +240ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.727s +1.556s\n                          \u2514\u2500local-fs.target @10.616s\n                            \u2514\u2500run-user-974.mount @19.691s\n                              \u2514\u2500swap.target @9.925s\n                                \u2514\u2500dev-zram0.swap @9.790s +118ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.618s +143ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        17.16796875,
+        22.72119140625,
+        23.2744140625
+      ],
+      "variant": "baseline",
+      "index": 0,
+      "host_start_to_input_ready_s": 83.47781127601047,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 5.249607,
+      "activation_cpu_s": 1.729848
+    },
+    {
+      "boot_id": "c18b7a82-3889-467d-b67e-d8dc4f692068",
+      "uptime_s": 79.08,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "system.slice sysinit.target basic.target local-fs.target systemd-journald.socket",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "33577688",
+          "ExecMainStartTimestampMonotonic": "29206452",
+          "ExecMainExitTimestampMonotonic": "33574714",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1273866000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "local-fs.target sysinit.target system.slice systemd-journald.socket basic.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "30174759",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28858739",
+          "ExecMainExitTimestampMonotonic": "30169977",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "297052000"
+        },
+        "systemd-logind.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "tmp.mount systemd-journald.socket user.slice basic.target system.slice -.mount systemd-remount-fs.service systemd-logind-varlink.socket var.mount systemd-tmpfiles-setup.service sysinit.target modprobe@drm.service dbus.socket nss-user-lookup.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "32044627",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "30237533",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "728520000"
+        },
+        "upower.service": {
+          "Requires": "sysinit.target dbus.socket system.slice",
+          "After": "system.slice dbus.socket tmp.mount systemd-tmpfiles-setup.service basic.target systemd-journald.socket -.mount systemd-remount-fs.service var.mount sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33327394",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29322891",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "505526000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "nss-user-lookup.target network.target rpm-ostree-fix-shadow-mode.service sssd.service sysinit.target basic.target systemd-pcrphase.service authselect-apply-changes.service systemd-journald.socket system.slice home.mount systemd-userdb-load-credentials.service systemd-homed-activate.service remote-fs.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "33408997",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33218343",
+          "ExecMainExitTimestampMonotonic": "33403484",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "68733000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "NetworkManager.service firewalld.service",
+          "After": "chronyd.service NetworkManager.service firewalld.service tilo-network-start.timer",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "33182578",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "basic.target system.slice sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "28944145",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28940470",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4513060000"
+        },
+        "NetworkManager.service": {
+          "Requires": "sysinit.target system.slice dbus.socket firewalld.service",
+          "After": "dbus-broker.service firewalld.service network-pre.target basic.target dbus.socket systemd-journald.socket system.slice sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33174932",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28957909",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "956039000"
+        },
+        "greetd.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "tilo-device-key-init.service getty@tty1.service basic.target tilo-extension-activate.service sysinit.target systemd-journald.socket system.slice systemd-user-sessions.service plymouth-quit-wait.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33830294",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33824655",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "179679000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 5.198s (kernel) + 10.300s (initrd) + 20.975s (userspace) = 36.474s \ngraphical.target reached after 18.355s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.331s\n\u2514\u2500plymouth-quit-wait.service @17.938s +293ms\n  \u2514\u2500systemd-user-sessions.service @17.726s +183ms\n    \u2514\u2500network.target @17.680s\n      \u2514\u2500NetworkManager.service @13.463s +4.212s\n        \u2514\u2500network-pre.target @13.446s\n          \u2514\u2500firewalld.service @13.444s\n            \u2514\u2500basic.target @13.349s\n              \u2514\u2500dbus-broker.service @13.030s +313ms\n                \u2514\u2500dbus.socket @12.761s +2ms\n                  \u2514\u2500sysinit.target @12.723s\n                    \u2514\u2500systemd-update-done.service @12.642s +77ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.400s +228ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.738s +1.604s\n                          \u2514\u2500local-fs.target @10.635s\n                            \u2514\u2500run-user-974.mount @19.200s\n                              \u2514\u2500swap.target @9.877s\n                                \u2514\u2500dev-zram0.swap @9.740s +114ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.549s +174ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        9.58642578125,
+        19.08544921875,
+        21.95263671875
+      ],
+      "variant": "extension",
+      "index": 1,
+      "host_start_to_input_ready_s": 78.6149592489819,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 4.368262,
+      "activation_cpu_s": 1.273866
+    },
+    {
+      "boot_id": "5bd84090-f7e7-4c32-a320-6a927796fe2a",
+      "uptime_s": 74.07,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "system.slice basic.target local-fs.target systemd-journald.socket sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "32079958",
+          "ExecMainStartTimestampMonotonic": "27367377",
+          "ExecMainExitTimestampMonotonic": "32076478",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1353245000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target basic.target system.slice local-fs.target systemd-journald.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "28330763",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27035114",
+          "ExecMainExitTimestampMonotonic": "28328880",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "294218000"
+        },
+        "systemd-logind.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "tmp.mount var.mount -.mount user.slice sysinit.target system.slice basic.target nss-user-lookup.target systemd-logind-varlink.socket modprobe@drm.service systemd-tmpfiles-setup.service systemd-journald.socket systemd-remount-fs.service dbus.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "30378308",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28418768",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "708847000"
+        },
+        "upower.service": {
+          "Requires": "system.slice sysinit.target dbus.socket",
+          "After": "system.slice systemd-remount-fs.service basic.target tmp.mount -.mount var.mount sysinit.target systemd-tmpfiles-setup.service systemd-journald.socket dbus.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "31774693",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27442322",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "528708000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-pcrphase.service rpm-ostree-fix-shadow-mode.service authselect-apply-changes.service sssd.service systemd-homed-activate.service remote-fs.target nss-user-lookup.target network.target systemd-userdb-load-credentials.service sysinit.target basic.target system.slice systemd-journald.socket home.mount",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "31473506",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "31225078",
+          "ExecMainExitTimestampMonotonic": "31466415",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "73087000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "firewalld.service NetworkManager.service",
+          "After": "firewalld.service tilo-network-start.timer NetworkManager.service chronyd.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "31208833",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target basic.target system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "27132522",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27128462",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4367606000"
+        },
+        "NetworkManager.service": {
+          "Requires": "firewalld.service dbus.socket sysinit.target system.slice",
+          "After": "network-pre.target dbus-broker.service dbus.socket systemd-journald.socket basic.target sysinit.target system.slice firewalld.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "31200835",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27142262",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "906494000"
+        },
+        "greetd.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "system.slice tilo-device-key-init.service tilo-extension-activate.service sysinit.target getty@tty1.service systemd-journald.socket plymouth-quit-wait.service basic.target systemd-user-sessions.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "32107953",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "32102989",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "187728000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 4.473s (kernel) + 10.206s (initrd) + 20.602s (userspace) = 35.283s \ngraphical.target reached after 17.713s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @17.427s\n\u2514\u2500plymouth-quit-wait.service @16.818s +366ms\n  \u2514\u2500systemd-user-sessions.service @16.552s +240ms\n    \u2514\u2500network.target @16.526s\n      \u2514\u2500NetworkManager.service @12.465s +4.055s\n        \u2514\u2500network-pre.target @12.454s\n          \u2514\u2500firewalld.service @12.452s\n            \u2514\u2500basic.target @12.343s\n              \u2514\u2500dbus-broker.service @12.082s +254ms\n                \u2514\u2500dbus.socket @11.815s +2ms\n                  \u2514\u2500sysinit.target @11.776s\n                    \u2514\u2500systemd-update-done.service @11.697s +75ms\n                      \u2514\u2500systemd-journal-catalog-update.service @11.482s +202ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @9.761s +1.660s\n                          \u2514\u2500local-fs.target @9.661s\n                            \u2514\u2500run-user-974.mount @18.421s\n                              \u2514\u2500swap.target @8.775s\n                                \u2514\u2500dev-zram0.swap @8.663s +99ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @8.504s +141ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        8.42822265625,
+        15.84619140625,
+        20.49609375
+      ],
+      "variant": "extension",
+      "index": 2,
+      "host_start_to_input_ready_s": 74.5042629679956,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 4.709101,
+      "activation_cpu_s": 1.353245
+    },
+    {
+      "boot_id": "6ea2d6c9-ad5b-40cb-8724-a0c0174d18e3",
+      "uptime_s": 84.77,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket local-fs.target basic.target system.slice sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "34467353",
+          "ExecMainStartTimestampMonotonic": "28993745",
+          "ExecMainExitTimestampMonotonic": "34465604",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1836171000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket system.slice local-fs.target sysinit.target basic.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "29705897",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28661282",
+          "ExecMainExitTimestampMonotonic": "29701598",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "307230000"
+        },
+        "systemd-logind.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "nss-user-lookup.target systemd-tmpfiles-setup.service basic.target systemd-remount-fs.service user.slice dbus.socket systemd-logind-varlink.socket system.slice var.mount modprobe@drm.service -.mount tmp.mount sysinit.target systemd-journald.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "32219747",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29784127",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "724187000"
+        },
+        "upower.service": {
+          "Requires": "system.slice sysinit.target dbus.socket",
+          "After": "system.slice basic.target -.mount sysinit.target var.mount systemd-remount-fs.service tmp.mount systemd-journald.socket systemd-tmpfiles-setup.service dbus.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "34147815",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29123339",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "586417000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "authselect-apply-changes.service home.mount sysinit.target systemd-pcrphase.service systemd-homed-activate.service nss-user-lookup.target sssd.service basic.target rpm-ostree-fix-shadow-mode.service systemd-journald.socket remote-fs.target network.target system.slice systemd-userdb-load-credentials.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "33475704",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33240245",
+          "ExecMainExitTimestampMonotonic": "33471205",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "71956000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "NetworkManager.service firewalld.service",
+          "After": "firewalld.service tilo-network-start.timer NetworkManager.service chronyd.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "33208733",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target system.slice basic.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "28752945",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28749130",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4844685000"
+        },
+        "NetworkManager.service": {
+          "Requires": "sysinit.target dbus.socket firewalld.service system.slice",
+          "After": "sysinit.target firewalld.service basic.target system.slice dbus-broker.service network-pre.target systemd-journald.socket dbus.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33200306",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28764323",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1009432000"
+        },
+        "greetd.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "systemd-journald.socket tilo-extension-activate.service plymouth-quit-wait.service system.slice sysinit.target basic.target getty@tty1.service systemd-user-sessions.service tilo-device-key-init.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "34496250",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "34491543",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "191138000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 4.555s (kernel) + 10.979s (initrd) + 21.487s (userspace) = 37.022s \ngraphical.target reached after 18.964s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.961s\n\u2514\u2500plymouth-quit-wait.service @17.966s +300ms\n  \u2514\u2500systemd-user-sessions.service @17.712s +228ms\n    \u2514\u2500network.target @17.670s\n      \u2514\u2500NetworkManager.service @13.235s +4.429s\n        \u2514\u2500network-pre.target @13.220s\n          \u2514\u2500firewalld.service @13.217s\n            \u2514\u2500basic.target @13.115s\n              \u2514\u2500dbus-broker.service @12.830s +278ms\n                \u2514\u2500dbus.socket @12.546s +2ms\n                  \u2514\u2500sysinit.target @12.505s\n                    \u2514\u2500systemd-update-done.service @12.415s +85ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.178s +222ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.380s +1.730s\n                          \u2514\u2500local-fs.target @10.275s\n                            \u2514\u2500run-user-974.mount @19.708s\n                              \u2514\u2500swap.target @9.450s\n                                \u2514\u2500dev-zram0.swap @9.319s +107ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.133s +165ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        14.9111328125,
+        15.517578125,
+        19.9150390625
+      ],
+      "variant": "baseline",
+      "index": 3,
+      "host_start_to_input_ready_s": 86.37106370800757,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 5.471859,
+      "activation_cpu_s": 1.836171
+    },
+    {
+      "boot_id": "b11f8dff-5aa9-4094-b761-7ffcb365b2b4",
+      "uptime_s": 80.93,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "local-fs.target basic.target sysinit.target systemd-journald.socket system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "33121548",
+          "ExecMainStartTimestampMonotonic": "28006997",
+          "ExecMainExitTimestampMonotonic": "33119266",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1682768000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "sysinit.target basic.target systemd-journald.socket system.slice local-fs.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "29107726",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27679590",
+          "ExecMainExitTimestampMonotonic": "29103857",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "285030000"
+        },
+        "systemd-logind.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "-.mount basic.target modprobe@drm.service systemd-logind-varlink.socket tmp.mount dbus.socket systemd-journald.socket sysinit.target systemd-remount-fs.service nss-user-lookup.target var.mount system.slice user.slice systemd-tmpfiles-setup.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "31319126",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29183755",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "722589000"
+        },
+        "upower.service": {
+          "Requires": "sysinit.target system.slice dbus.socket",
+          "After": "system.slice systemd-journald.socket sysinit.target basic.target tmp.mount dbus.socket systemd-remount-fs.service var.mount systemd-tmpfiles-setup.service -.mount",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33294581",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "28061975",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "564002000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "systemd-homed-activate.service authselect-apply-changes.service sysinit.target systemd-userdb-load-credentials.service systemd-pcrphase.service nss-user-lookup.target sssd.service basic.target rpm-ostree-fix-shadow-mode.service network.target home.mount system.slice remote-fs.target systemd-journald.socket",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "31971415",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "31801171",
+          "ExecMainExitTimestampMonotonic": "31969720",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "70520000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "firewalld.service NetworkManager.service",
+          "After": "tilo-network-start.timer NetworkManager.service firewalld.service chronyd.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "31783190",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "basic.target system.slice sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "27766344",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27761553",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4584643000"
+        },
+        "NetworkManager.service": {
+          "Requires": "system.slice dbus.socket sysinit.target firewalld.service",
+          "After": "dbus.socket network-pre.target systemd-journald.socket sysinit.target basic.target system.slice dbus-broker.service firewalld.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "31770727",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "27779542",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "940799000"
+        },
+        "greetd.service": {
+          "Requires": "system.slice sysinit.target",
+          "After": "tilo-extension-activate.service tilo-device-key-init.service system.slice systemd-user-sessions.service getty@tty1.service basic.target systemd-journald.socket plymouth-quit-wait.service sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33156816",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33151771",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "180072000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 5.175s (kernel) + 10.315s (initrd) + 20.292s (userspace) = 35.782s \ngraphical.target reached after 17.816s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @17.666s\n\u2514\u2500plymouth-quit-wait.service @16.506s +250ms\n  \u2514\u2500systemd-user-sessions.service @16.319s +161ms\n    \u2514\u2500network.target @16.288s\n      \u2514\u2500NetworkManager.service @12.293s +3.986s\n        \u2514\u2500network-pre.target @12.278s\n          \u2514\u2500firewalld.service @12.275s\n            \u2514\u2500basic.target @12.173s\n              \u2514\u2500dbus-broker.service @11.909s +258ms\n                \u2514\u2500dbus.socket @11.670s +2ms\n                  \u2514\u2500sysinit.target @11.631s\n                    \u2514\u2500systemd-update-done.service @11.551s +76ms\n                      \u2514\u2500systemd-journal-catalog-update.service @11.314s +223ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @9.540s +1.709s\n                          \u2514\u2500local-fs.target @9.431s\n                            \u2514\u2500run-user-974.mount @18.504s\n                              \u2514\u2500swap.target @8.779s\n                                \u2514\u2500dev-zram0.swap @8.661s +101ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @8.483s +152ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        15.78564453125,
+        16.04248046875,
+        19.66015625
+      ],
+      "variant": "baseline",
+      "index": 4,
+      "host_start_to_input_ready_s": 81.38842699897941,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 5.112269,
+      "activation_cpu_s": 1.682768
+    },
+    {
+      "boot_id": "af4b1a8d-642c-4b87-8fa7-a75ee47f52c1",
+      "uptime_s": 79.8,
+      "units": {
+        "tilo-extension-activate.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "system.slice systemd-journald.socket sysinit.target basic.target local-fs.target",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ActiveEnterTimestampMonotonic": "0",
+          "InactiveEnterTimestampMonotonic": "33726591",
+          "ExecMainStartTimestampMonotonic": "29917273",
+          "ExecMainExitTimestampMonotonic": "33724140",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "1294108000"
+        },
+        "authselect-apply-changes.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "sysinit.target basic.target local-fs.target systemd-journald.socket system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "30815984",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29488695",
+          "ExecMainExitTimestampMonotonic": "30812813",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "304330000"
+        },
+        "systemd-logind.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "nss-user-lookup.target systemd-journald.socket systemd-logind-varlink.socket dbus.socket basic.target systemd-tmpfiles-setup.service modprobe@drm.service sysinit.target systemd-remount-fs.service -.mount tmp.mount var.mount user.slice system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "32646872",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "30892176",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "717380000"
+        },
+        "upower.service": {
+          "Requires": "sysinit.target system.slice dbus.socket",
+          "After": "systemd-tmpfiles-setup.service sysinit.target systemd-journald.socket basic.target -.mount var.mount system.slice dbus.socket systemd-remount-fs.service tmp.mount",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "34392960",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "30013929",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "526562000"
+        },
+        "systemd-user-sessions.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "network.target nss-user-lookup.target systemd-journald.socket systemd-pcrphase.service systemd-userdb-load-credentials.service home.mount remote-fs.target basic.target rpm-ostree-fix-shadow-mode.service sysinit.target systemd-homed-activate.service sssd.service system.slice authselect-apply-changes.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "exited",
+          "ActiveEnterTimestampMonotonic": "34033647",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "33876275",
+          "ExecMainExitTimestampMonotonic": "34030736",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "64399000"
+        },
+        "tilo-network-start.service": {
+          "LoadState": "not-found"
+        },
+        "tilo-network-start.target": {
+          "Requires": "NetworkManager.service firewalld.service",
+          "After": "chronyd.service tilo-network-start.timer firewalld.service NetworkManager.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "active",
+          "ActiveEnterTimestampMonotonic": "33840215",
+          "InactiveEnterTimestampMonotonic": "0"
+        },
+        "firewalld.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "basic.target system.slice sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "29579562",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29574716",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "4385426000"
+        },
+        "NetworkManager.service": {
+          "Requires": "dbus.socket system.slice sysinit.target firewalld.service",
+          "After": "sysinit.target systemd-journald.socket dbus.socket basic.target network-pre.target firewalld.service dbus-broker.service system.slice",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "33827809",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "29593516",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "948190000"
+        },
+        "greetd.service": {
+          "Requires": "sysinit.target system.slice",
+          "After": "tilo-device-key-init.service getty@tty1.service systemd-user-sessions.service basic.target plymouth-quit-wait.service tilo-extension-activate.service system.slice systemd-journald.socket sysinit.target",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ActiveEnterTimestampMonotonic": "34308195",
+          "InactiveEnterTimestampMonotonic": "0",
+          "ExecMainStartTimestampMonotonic": "34298771",
+          "ExecMainExitTimestampMonotonic": "0",
+          "ExecMainStatus": "0",
+          "CPUUsageNSec": "193579000"
+        }
+      },
+      "boot": {
+        "status": 0,
+        "stdout": "Startup finished in 5.268s (kernel) + 10.843s (initrd) + 21.081s (userspace) = 37.194s \ngraphical.target reached after 18.387s in userspace.\n",
+        "stderr": ""
+      },
+      "critical_chain": {
+        "status": 0,
+        "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.195s\n\u2514\u2500plymouth-quit-wait.service @17.948s +195ms\n  \u2514\u2500systemd-user-sessions.service @17.767s +153ms\n    \u2514\u2500network.target @17.723s\n      \u2514\u2500NetworkManager.service @13.488s +4.227s\n        \u2514\u2500network-pre.target @13.470s\n          \u2514\u2500firewalld.service @13.467s\n            \u2514\u2500basic.target @13.363s\n              \u2514\u2500dbus-broker.service @13.089s +268ms\n                \u2514\u2500dbus.socket @12.792s +2ms\n                  \u2514\u2500sysinit.target @12.752s\n                    \u2514\u2500systemd-update-done.service @12.668s +80ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.446s +208ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.735s +1.666s\n                          \u2514\u2500local-fs.target @10.621s\n                            \u2514\u2500run-user-974.mount @19.068s\n                              \u2514\u2500swap.target @9.615s\n                                \u2514\u2500dev-zram0.swap @9.494s +105ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.290s +187ms\n                                    \u2514\u2500dev-zram0.device\n",
+        "stderr": ""
+      },
+      "failed": {
+        "status": 0,
+        "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+        "stderr": ""
+      },
+      "cycles": {
+        "status": 1,
+        "stdout": "-- No entries --\n",
+        "stderr": ""
+      },
+      "host_load_before": [
+        10.06591796875,
+        13.7861328125,
+        18.46533203125
+      ],
+      "variant": "extension",
+      "index": 5,
+      "host_start_to_input_ready_s": 78.44874922299641,
+      "poll_interval_s": 0.25,
+      "request_timeout_s": 0.25,
+      "acceleration": "tcg",
+      "vcpu": 4,
+      "memory_mib": 4096,
+      "resolution": "1280x720",
+      "cache": "fresh COW guest disk; shared host caches not flushed",
+      "activation_elapsed_s": 3.806867,
+      "activation_cpu_s": 1.294108
+    }
+  ],
+  "rejected_network_candidate": {
+    "verdict": "reverted; slower input readiness",
+    "boots": [
+      {
+        "boot_id": "1cb4f47d-0638-4682-8a72-91df0f72130f",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "rpm-ostree-fix-shadow-mode.service systemd-userdb-load-credentials.service network.target remote-fs.target sssd.service systemd-journald.socket basic.target home.mount sysinit.target systemd-pcrphase.service system.slice nss-user-lookup.target authselect-apply-changes.service systemd-homed-activate.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "33363338",
+            "ExecMainStartTimestampMonotonic": "33187374",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "LoadState": "not-found"
+          },
+          "tilo-network-start.target": {
+            "Requires": "NetworkManager.service firewalld.service",
+            "After": "NetworkManager.service chronyd.service firewalld.service tilo-network-start.timer",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "33166348"
+          },
+          "firewalld.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "sysinit.target system.slice basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "28879533",
+            "ExecMainStartTimestampMonotonic": "28875749",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "firewalld.service system.slice dbus.socket sysinit.target",
+            "After": "system.slice firewalld.service network-pre.target dbus.socket sysinit.target basic.target dbus-broker.service systemd-journald.socket",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "33155430",
+            "ExecMainStartTimestampMonotonic": "28890670",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "system.slice tilo-extension-activate.service plymouth-quit-wait.service tilo-device-key-init.service sysinit.target basic.target systemd-journald.socket systemd-user-sessions.service getty@tty1.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "34759358",
+            "ExecMainStartTimestampMonotonic": "34751571",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 4.514s (kernel) + 11.177s (initrd) + 21.547s (userspace) = 37.239s \ngraphical.target reached after 19.070s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @19.067s\n\u2514\u2500plymouth-quit-wait.service @17.695s +304ms\n  \u2514\u2500systemd-user-sessions.service @17.502s +168ms\n    \u2514\u2500network.target @17.471s\n      \u2514\u2500NetworkManager.service @13.207s +4.256s\n        \u2514\u2500network-pre.target @13.189s\n          \u2514\u2500firewalld.service @13.187s\n            \u2514\u2500basic.target @13.093s\n              \u2514\u2500dbus-broker.service @12.833s +255ms\n                \u2514\u2500dbus.socket @12.545s +2ms\n                  \u2514\u2500sysinit.target @12.505s\n                    \u2514\u2500systemd-update-done.service @12.423s +78ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.214s +194ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.514s +1.656s\n                          \u2514\u2500local-fs.target @10.399s\n                            \u2514\u2500run-user-974.mount @19.763s\n                              \u2514\u2500swap.target @9.672s\n                                \u2514\u2500dev-zram0.swap @9.555s +102ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.395s +138ms\n                                    \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          13.58935546875,
+          18.5048828125,
+          19.7734375
+        ],
+        "variant": "baseline",
+        "index": 0,
+        "host_start_to_input_ready_s": 81.3647289609944,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      },
+      {
+        "boot_id": "cd249fac-b33b-48c1-9f22-32a5d743be00",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-homed-activate.service authselect-apply-changes.service network.target system.slice basic.target systemd-pcrphase.service home.mount systemd-userdb-load-credentials.service systemd-journald.socket sysinit.target remote-fs.target sssd.service nss-user-lookup.target rpm-ostree-fix-shadow-mode.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "32497504",
+            "ExecMainStartTimestampMonotonic": "32230312",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-journald.socket basic.target systemd-user-sessions.service sysinit.target system.slice",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "33164108",
+            "ExecMainStartTimestampMonotonic": "32550996",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.target": {
+            "Requires": "firewalld.service NetworkManager.service",
+            "After": "firewalld.service NetworkManager.service chronyd.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "35704169"
+          },
+          "firewalld.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "sysinit.target system.slice basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "33041737",
+            "ExecMainStartTimestampMonotonic": "33034911",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "system.slice sysinit.target dbus.socket firewalld.service",
+            "After": "dbus.socket sysinit.target basic.target network-pre.target system.slice firewalld.service systemd-journald.socket dbus-broker.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "35690506",
+            "ExecMainStartTimestampMonotonic": "33063120",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-user-sessions.service tilo-device-key-init.service getty@tty1.service basic.target system.slice systemd-journald.socket sysinit.target tilo-extension-activate.service plymouth-quit-wait.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "36312604",
+            "ExecMainStartTimestampMonotonic": "36302649",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 6.448s (kernel) + 10.789s (initrd) + 21.591s (userspace) = 38.829s \ngraphical.target reached after 19.078s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @19.074s\n\u2514\u2500plymouth-quit-wait.service @15.289s +335ms\n  \u2514\u2500systemd-user-sessions.service @15.020s +239ms\n    \u2514\u2500nss-user-lookup.target @14.905s\n      \u2514\u2500authselect-apply-changes.service @13.298s +1.599s\n        \u2514\u2500basic.target @13.286s\n          \u2514\u2500dbus-broker.service @12.997s +282ms\n            \u2514\u2500dbus.socket @12.715s +2ms\n              \u2514\u2500sysinit.target @12.677s\n                \u2514\u2500systemd-update-done.service @12.588s +86ms\n                  \u2514\u2500systemd-journal-catalog-update.service @12.372s +202ms\n                    \u2514\u2500systemd-tmpfiles-setup.service @10.592s +1.735s\n                      \u2514\u2500local-fs.target @10.457s\n                        \u2514\u2500run-user-974.mount @19.848s\n                          \u2514\u2500swap.target @9.761s\n                            \u2514\u2500dev-zram0.swap @9.621s +126ms\n                              \u2514\u2500systemd-zram-setup@zram0.service @9.456s +142ms\n                                \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          11.08447265625,
+          16.185546875,
+          18.80419921875
+        ],
+        "variant": "candidate",
+        "index": 1,
+        "host_start_to_input_ready_s": 89.67172182101058,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      },
+      {
+        "boot_id": "44014069-53b3-42bd-82da-6ee4dfebae8a",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "rpm-ostree-fix-shadow-mode.service systemd-homed-activate.service sssd.service basic.target nss-user-lookup.target systemd-userdb-load-credentials.service systemd-pcrphase.service systemd-journald.socket network.target home.mount system.slice remote-fs.target sysinit.target authselect-apply-changes.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "36401758",
+            "ExecMainStartTimestampMonotonic": "36236103",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-journald.socket sysinit.target basic.target system.slice systemd-user-sessions.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "36851523",
+            "ExecMainStartTimestampMonotonic": "36447197",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.target": {
+            "Requires": "firewalld.service NetworkManager.service",
+            "After": "firewalld.service chronyd.service NetworkManager.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "39595919"
+          },
+          "firewalld.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "system.slice sysinit.target basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "36699696",
+            "ExecMainStartTimestampMonotonic": "36694688",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "system.slice sysinit.target dbus.socket firewalld.service",
+            "After": "dbus.socket network-pre.target sysinit.target systemd-journald.socket system.slice basic.target firewalld.service dbus-broker.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "39589848",
+            "ExecMainStartTimestampMonotonic": "36714590",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-journald.socket plymouth-quit-wait.service systemd-user-sessions.service basic.target system.slice tilo-extension-activate.service tilo-device-key-init.service getty@tty1.service sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "39865867",
+            "ExecMainStartTimestampMonotonic": "39860388",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 10.733s (kernel) + 10.675s (initrd) + 21.200s (userspace) = 42.609s \ngraphical.target reached after 20.312s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.457s\n\u2514\u2500tilo-device-key-init.service @13.583s +2.191s\n  \u2514\u2500basic.target @13.317s\n    \u2514\u2500dbus-broker.service @13.059s +251ms\n      \u2514\u2500dbus.socket @12.818s +2ms\n        \u2514\u2500sysinit.target @12.781s\n          \u2514\u2500systemd-update-done.service @12.703s +74ms\n            \u2514\u2500systemd-journal-catalog-update.service @12.480s +209ms\n              \u2514\u2500systemd-tmpfiles-setup.service @10.739s +1.698s\n                \u2514\u2500local-fs.target @10.623s\n                  \u2514\u2500run-user-974.mount @19.245s\n                    \u2514\u2500swap.target @9.975s\n                      \u2514\u2500dev-zram0.swap @9.859s +104ms\n                        \u2514\u2500systemd-zram-setup@zram0.service @9.673s +161ms\n                          \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          20.64453125,
+          17.85595703125,
+          19.09814453125
+        ],
+        "variant": "candidate",
+        "index": 2,
+        "host_start_to_input_ready_s": 90.79706673600595,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      },
+      {
+        "boot_id": "98c6e31f-9289-4544-89cf-1bb64261d976",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-homed-activate.service home.mount basic.target authselect-apply-changes.service network.target nss-user-lookup.target systemd-userdb-load-credentials.service system.slice sssd.service systemd-pcrphase.service rpm-ostree-fix-shadow-mode.service remote-fs.target systemd-journald.socket sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "34037225",
+            "ExecMainStartTimestampMonotonic": "33828066",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "LoadState": "not-found"
+          },
+          "tilo-network-start.target": {
+            "Requires": "firewalld.service NetworkManager.service",
+            "After": "chronyd.service firewalld.service tilo-network-start.timer NetworkManager.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "33792079"
+          },
+          "firewalld.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "sysinit.target system.slice basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "29577193",
+            "ExecMainStartTimestampMonotonic": "29572882",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "firewalld.service sysinit.target system.slice dbus.socket",
+            "After": "systemd-journald.socket network-pre.target system.slice dbus-broker.service firewalld.service sysinit.target dbus.socket basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "33784756",
+            "ExecMainStartTimestampMonotonic": "29589649",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "systemd-journald.socket getty@tty1.service basic.target tilo-device-key-init.service plymouth-quit-wait.service sysinit.target system.slice systemd-user-sessions.service tilo-extension-activate.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "35132631",
+            "ExecMainStartTimestampMonotonic": "35126638",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 4.677s (kernel) + 11.573s (initrd) + 21.639s (userspace) = 37.891s \ngraphical.target reached after 18.886s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @18.881s\n\u2514\u2500plymouth-quit-wait.service @17.829s +285ms\n  \u2514\u2500systemd-user-sessions.service @17.581s +204ms\n    \u2514\u2500network.target @17.538s\n      \u2514\u2500NetworkManager.service @13.340s +4.192s\n        \u2514\u2500network-pre.target @13.327s\n          \u2514\u2500firewalld.service @13.325s\n            \u2514\u2500basic.target @13.226s\n              \u2514\u2500dbus-broker.service @12.946s +273ms\n                \u2514\u2500dbus.socket @12.656s +2ms\n                  \u2514\u2500sysinit.target @12.616s\n                    \u2514\u2500systemd-update-done.service @12.529s +83ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.291s +224ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.532s +1.693s\n                          \u2514\u2500local-fs.target @10.428s\n                            \u2514\u2500run-user-974.mount @19.757s\n                              \u2514\u2500swap.target @9.763s\n                                \u2514\u2500dev-zram0.swap @9.613s +137ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.415s +176ms\n                                    \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          38.27783203125,
+          23.8994140625,
+          21.07568359375
+        ],
+        "variant": "baseline",
+        "index": 3,
+        "host_start_to_input_ready_s": 82.88417769098305,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      },
+      {
+        "boot_id": "f2d15f6d-f0da-4c2a-b17c-867e6109e022",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "home.mount authselect-apply-changes.service rpm-ostree-fix-shadow-mode.service systemd-userdb-load-credentials.service basic.target systemd-pcrphase.service network.target sysinit.target system.slice systemd-homed-activate.service sssd.service remote-fs.target systemd-journald.socket nss-user-lookup.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "36236792",
+            "ExecMainStartTimestampMonotonic": "36003239",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "LoadState": "not-found"
+          },
+          "tilo-network-start.target": {
+            "Requires": "NetworkManager.service firewalld.service",
+            "After": "chronyd.service tilo-network-start.timer firewalld.service NetworkManager.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "35984134"
+          },
+          "firewalld.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "system.slice basic.target sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "30597551",
+            "ExecMainStartTimestampMonotonic": "30593529",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "firewalld.service system.slice sysinit.target dbus.socket",
+            "After": "dbus-broker.service firewalld.service systemd-journald.socket basic.target network-pre.target sysinit.target dbus.socket system.slice",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "35975605",
+            "ExecMainStartTimestampMonotonic": "30609282",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "sysinit.target system.slice",
+            "After": "plymouth-quit-wait.service sysinit.target systemd-journald.socket tilo-device-key-init.service systemd-user-sessions.service tilo-extension-activate.service basic.target system.slice getty@tty1.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "36640264",
+            "ExecMainStartTimestampMonotonic": "36634715",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 5.560s (kernel) + 11.212s (initrd) + 22.796s (userspace) = 39.569s \ngraphical.target reached after 20.535s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @19.867s\n\u2514\u2500plymouth-quit-wait.service @19.489s +278ms\n  \u2514\u2500systemd-user-sessions.service @19.237s +226ms\n    \u2514\u2500network.target @19.209s\n      \u2514\u2500NetworkManager.service @13.844s +5.357s\n        \u2514\u2500network-pre.target @13.826s\n          \u2514\u2500firewalld.service @13.824s\n            \u2514\u2500basic.target @13.718s\n              \u2514\u2500dbus-broker.service @13.408s +303ms\n                \u2514\u2500dbus.socket @13.074s +3ms\n                  \u2514\u2500sysinit.target @13.029s\n                    \u2514\u2500systemd-update-done.service @12.916s +107ms\n                      \u2514\u2500systemd-journal-catalog-update.service @12.672s +228ms\n                        \u2514\u2500systemd-tmpfiles-setup.service @10.809s +1.810s\n                          \u2514\u2500local-fs.target @10.683s\n                            \u2514\u2500run-user-974.mount @20.844s\n                              \u2514\u2500swap.target @9.745s\n                                \u2514\u2500dev-zram0.swap @9.613s +112ms\n                                  \u2514\u2500systemd-zram-setup@zram0.service @9.427s +161ms\n                                    \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          32.78271484375,
+          26.681640625,
+          22.39013671875
+        ],
+        "variant": "baseline",
+        "index": 4,
+        "host_start_to_input_ready_s": 86.92954837399884,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      },
+      {
+        "boot_id": "3aa15921-3519-41ed-9ff6-1b63fadaefc4",
+        "units": {
+          "systemd-user-sessions.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "rpm-ostree-fix-shadow-mode.service system.slice systemd-journald.socket systemd-homed-activate.service remote-fs.target basic.target sysinit.target network.target sssd.service authselect-apply-changes.service home.mount systemd-pcrphase.service nss-user-lookup.target systemd-userdb-load-credentials.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "32056478",
+            "ExecMainStartTimestampMonotonic": "31724108",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "system.slice systemd-user-sessions.service systemd-journald.socket sysinit.target basic.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "ActiveEnterTimestampMonotonic": "32631793",
+            "ExecMainStartTimestampMonotonic": "32228739",
+            "ExecMainStatus": "0"
+          },
+          "tilo-network-start.target": {
+            "Requires": "NetworkManager.service firewalld.service",
+            "After": "firewalld.service chronyd.service NetworkManager.service",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "active",
+            "ActiveEnterTimestampMonotonic": "35539222"
+          },
+          "firewalld.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "system.slice basic.target sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "32530774",
+            "ExecMainStartTimestampMonotonic": "32526308",
+            "ExecMainStatus": "0"
+          },
+          "NetworkManager.service": {
+            "Requires": "dbus.socket firewalld.service system.slice sysinit.target",
+            "After": "basic.target system.slice firewalld.service dbus-broker.service systemd-journald.socket network-pre.target dbus.socket sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "35534016",
+            "ExecMainStartTimestampMonotonic": "32548886",
+            "ExecMainStatus": "0"
+          },
+          "greetd.service": {
+            "Requires": "system.slice sysinit.target",
+            "After": "basic.target systemd-user-sessions.service systemd-journald.socket tilo-device-key-init.service system.slice getty@tty1.service tilo-extension-activate.service plymouth-quit-wait.service sysinit.target",
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "ActiveEnterTimestampMonotonic": "36629552",
+            "ExecMainStartTimestampMonotonic": "36619464",
+            "ExecMainStatus": "0"
+          }
+        },
+        "boot": {
+          "status": 0,
+          "stdout": "Startup finished in 4.581s (kernel) + 11.167s (initrd) + 23.547s (userspace) = 39.296s \ngraphical.target reached after 20.886s in userspace.\n",
+          "stderr": ""
+        },
+        "critical_chain": {
+          "status": 0,
+          "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngreetd.service @20.880s\n\u2514\u2500plymouth-quit-wait.service @16.444s +424ms\n  \u2514\u2500systemd-user-sessions.service @15.990s +317ms\n    \u2514\u2500nss-user-lookup.target @15.892s\n      \u2514\u2500authselect-apply-changes.service @13.861s +2.020s\n        \u2514\u2500basic.target @13.849s\n          \u2514\u2500dbus-broker.service @13.471s +373ms\n            \u2514\u2500dbus.socket @13.199s +2ms\n              \u2514\u2500sysinit.target @13.134s\n                \u2514\u2500systemd-update-done.service @13.030s +97ms\n                  \u2514\u2500systemd-journal-catalog-update.service @12.767s +247ms\n                    \u2514\u2500systemd-tmpfiles-setup.service @10.107s +2.615s\n                      \u2514\u2500local-fs.target @10.013s\n                        \u2514\u2500run-user-974.mount @21.768s\n                          \u2514\u2500swap.target @9.379s\n                            \u2514\u2500dev-zram0.swap @9.234s +123ms\n                              \u2514\u2500systemd-zram-setup@zram0.service @9.053s +162ms\n                                \u2514\u2500dev-zram0.device\n",
+          "stderr": ""
+        },
+        "failed": {
+          "status": 0,
+          "stdout": "UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\n",
+          "stderr": ""
+        },
+        "cycles": {
+          "status": 1,
+          "stdout": "-- No entries --\n",
+          "stderr": ""
+        },
+        "host_load_before": [
+          20.0849609375,
+          24.29150390625,
+          22.01220703125
+        ],
+        "variant": "candidate",
+        "index": 5,
+        "host_start_to_input_ready_s": 85.06599910600926,
+        "poll_interval_s": 0.25,
+        "request_timeout_s": 0.25,
+        "acceleration": "tcg",
+        "vcpu": 4,
+        "memory_mib": 4096,
+        "resolution": "1280x720",
+        "cache": "fresh COW guest disk; shared host caches not flushed"
+      }
+    ]
+  },
+  "limits": [
+    "Native before-40 then after-40; warm host files allowed, shared host noise.",
+    "Both VM disks assembled with identical canonical tilo-vm tooling; fresh COW and private NVRAM per run; shared host caches not flushed.",
+    "TCG software emulation, no KVM or hardware GPU; older developer native binaries, not current main or signed shipping image.",
+    "Whole boot differences include variable unchanged kernel/initrd work and cannot be attributed entirely to lazy imports.",
+    "No physical-device reboot/deployment; no whole-app first-frame measurement."
+  ]
+}

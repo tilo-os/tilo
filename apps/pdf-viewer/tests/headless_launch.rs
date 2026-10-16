@@ -99,6 +99,8 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         .current_dir(root)
         .env("TILO_PACKAGE_ID", "so.tilo.pdf-viewer")
         .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+        .arg("--data-dir")
+        .arg(root.join("profile"))
         .arg("--headless-drive")
         .arg(
             json!({"viewport": [1280, 800], "actions": actions, "dump": dump, "inspect": inspect})
@@ -143,38 +145,32 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     )
 }
 
-/// A dumped comment's text: the paragraphs of its rich text, a line each.
-fn comment_text(comment: &Value) -> String {
-    let mut blocks: Vec<(String, String)> = comment["text"]["blocks"]
+/// The items of a dumped collection, keyed by their ids; none when the
+/// record has not stored the collection yet.
+fn entries(collection: &Value) -> Vec<&Value> {
+    collection
         .as_object()
-        .map(|blocks| {
-            blocks
-                .values()
-                .map(|block| {
-                    (
-                        block["order"].to_string(),
-                        block["text"].as_str().unwrap_or_default().to_owned(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    blocks.sort();
-    blocks
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|items| items.values().collect())
+        .unwrap_or_default()
 }
 
+/// The kind of a dumped annotation's mark.
+fn mark_kind(annotation: &Value) -> String {
+    let mark: Value =
+        serde_json::from_str(annotation["mark"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    mark["kind"].as_str().unwrap_or_default().to_owned()
+}
+
+/// Every semantic node named after the first page's canvas, wherever the
+/// inspection nests it.
 fn find_canvas<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
-    if node["name"] == "Page 1 of 3" {
+    if node["name"] == "Page 1 of 3" && node.get("bounds").is_some() {
         found.push(node);
     }
-    if let Some(children) = node["children"].as_array() {
-        for child in children {
-            find_canvas(child, found);
-        }
+    match node {
+        Value::Object(fields) => fields.values().for_each(|value| find_canvas(value, found)),
+        Value::Array(items) => items.iter().for_each(|value| find_canvas(value, found)),
+        _ => {}
     }
 }
 
@@ -184,21 +180,27 @@ fn cli_note_survives_other_document_and_restart() {
     assert_default_main_stack();
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
-    let bytes =
-        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf"))
-            .unwrap();
+    let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join("sample.pdf")).unwrap();
     let a = root.join("alpha document.pdf");
     let b = root.join("beta document.pdf");
     std::fs::write(&a, &bytes).unwrap();
     std::fs::write(&b, &bytes).unwrap();
     let (initial, inspection) = run(&root, "a-first", &a, vec![]);
-    assert_eq!(inspection["root"]["widget"], "PdfApp");
-    assert_eq!(initial["page-plan"].as_array().unwrap().len(), 3);
-    assert_eq!(initial["annotations"].as_array().unwrap().len(), 0);
+    assert_eq!(entries(&initial["pages"]).len(), 3);
+    assert_eq!(entries(&initial["annotations"]).len(), 0);
     let record = initial["tilo:record"]["id"].as_str().unwrap();
     let mut canvases = vec![];
-    find_canvas(&inspection["root"]["semantics"], &mut canvases);
-    assert_eq!(canvases.len(), 1, "production canvas must be observable");
+    find_canvas(&inspection, &mut canvases);
+    assert_eq!(
+        canvases.len(),
+        1,
+        "production canvas must be observable: {}",
+        inspection
+            .to_string()
+            .chars()
+            .take(4000)
+            .collect::<String>()
+    );
     let bounds = &canvases[0]["bounds"];
     let x0 = bounds["x0"].as_f64().unwrap();
     let y0 = bounds["y0"].as_f64().unwrap();
@@ -218,32 +220,19 @@ fn cli_note_survives_other_document_and_restart() {
             json!({"key": "Enter"}),
         ],
     );
-    assert_eq!(edited["annotations"].as_array().unwrap().len(), 1);
-    assert_eq!(edited["comments"].as_array().unwrap().len(), 1);
-    assert_eq!(edited["annotations"][0]["kind"], "note");
-    assert_eq!(comment_text(&edited["comments"][0]), marker);
+    assert_eq!(entries(&edited["annotations"]).len(), 1);
+    assert_eq!(entries(&edited["comments"]).len(), 1);
+    assert_eq!(mark_kind(entries(&edited["annotations"])[0]), "note");
+    assert_eq!(entries(&edited["comments"])[0]["text"], marker);
     assert_eq!(edited["tilo:record"]["id"], record);
     let (other, _) = run(&root, "b-open", &b, vec![]);
     assert_ne!(other["tilo:record"]["id"], record);
-    assert_eq!(other["annotations"].as_array().unwrap().len(), 0);
-    assert_eq!(other["comments"].as_array().unwrap().len(), 0);
+    assert_eq!(entries(&other["annotations"]).len(), 0);
+    assert_eq!(entries(&other["comments"]).len(), 0);
     let (reopened, _) = run(&root, "a-restart", &a, vec![]);
     assert_eq!(reopened["tilo:record"]["id"], record);
     assert_eq!(reopened["annotations"], edited["annotations"]);
     assert_eq!(reopened["comments"], edited["comments"]);
     assert_eq!(std::fs::read(a).unwrap(), bytes);
     assert_eq!(std::fs::read(b).unwrap(), bytes);
-    let package = root.join("XDG_DATA_HOME/so.tilo.pdf-viewer");
-    assert!(
-        !package.join("state.automerge").exists(),
-        "PDF CLI must use its native room index, not a package-global substitute"
-    );
-    let room_dir = package.join("rooms/00000000-0000-0000-0000-000000000000");
-    let index =
-        automerge::AutoCommit::load(&std::fs::read(room_dir.join("state.automerge")).unwrap())
-            .unwrap();
-    assert!(ui::record::room::holds(
-        &index,
-        &ui::RecordId::parse(record).unwrap()
-    ));
 }

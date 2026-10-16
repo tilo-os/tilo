@@ -15,13 +15,13 @@
 //! changing them afterwards — so a set icon outlives its protocol objects.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use smithay::reexports::wayland_protocols::xdg::toplevel_icon::v1::server::{
     xdg_toplevel_icon_manager_v1::{self, XdgToplevelIconManagerV1},
     xdg_toplevel_icon_v1::{self, XdgToplevelIconV1},
 };
-use smithay::reexports::wayland_server::backend::{ClientId, GlobalId, ObjectId};
+use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
@@ -29,9 +29,10 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::wayland::compositor as wl_compositor;
 use ui::icons::{AppImage, AppImageSource};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use crate::compositor::state::State;
+use tilo_lock::MutexRecover as _;
 
 /// Edges the compositor tells clients it prefers: the tab pill at 1× to 3×.
 pub const PREFERRED_SIZES: [i32; 3] = [16, 32, 48];
@@ -45,11 +46,6 @@ const MANAGER_VERSION: u32 = 1;
 /// must keep alive while their icon object lives.
 #[derive(Debug)]
 pub struct ToplevelIconManager {
-    #[allow(
-        dead_code,
-        reason = "held so the global's identity lives as long as the compositor state"
-    )]
-    global: GlobalId,
     /// `(buffer, icon)` for every buffer added to a live icon object.
     watched: Vec<(ObjectId, XdgToplevelIconV1)>,
 }
@@ -57,8 +53,8 @@ pub struct ToplevelIconManager {
 /// Advertise the `xdg_toplevel_icon_manager_v1` global, telling clients the
 /// sizes the tab pill paints at.
 pub fn manager(display: &DisplayHandle) -> ToplevelIconManager {
+    display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ());
     ToplevelIconManager {
-        global: display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ()),
         watched: Vec::new(),
     }
 }
@@ -128,9 +124,7 @@ impl IconObject {
     fn freeze(&self) -> Option<Arc<FrozenIcon>> {
         self.frozen
             .get_or_init(|| {
-                let contents = std::mem::take(
-                    &mut *self.contents.lock().unwrap_or_else(PoisonError::into_inner),
-                );
+                let contents = std::mem::take(&mut *self.contents.lock_recover());
                 let icon = if contents.images.is_empty() {
                     contents.name.map(ToplevelIcon::Named)
                 } else {
@@ -218,7 +212,7 @@ impl Dispatch<XdgToplevelIconManagerV1, ()> for State {
                         .data_map
                         .insert_if_missing_threadsafe(PendingIcon::default);
                     if let Some(pending) = states.data_map.get::<PendingIcon>() {
-                        *pending.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(change);
+                        *pending.0.lock_recover() = Some(change);
                     }
                 });
             }
@@ -249,10 +243,7 @@ impl Dispatch<XdgToplevelIconV1, IconObject> for State {
                     immutable();
                     return;
                 }
-                data.contents
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .name = Some(icon_name);
+                data.contents.lock_recover().name = Some(icon_name);
             }
             xdg_toplevel_icon_v1::Request::AddBuffer { buffer, scale } => {
                 if data.is_frozen() {
@@ -280,7 +271,7 @@ impl Dispatch<XdgToplevelIconV1, IconObject> for State {
                 let Some(image) = client_image(&buffer) else {
                     return;
                 };
-                let mut contents = data.contents.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut contents = data.contents.lock_recover();
                 let replaced = contents
                     .images
                     .iter()
@@ -336,7 +327,7 @@ fn next_serial() -> u64 {
 /// Record `icon` for `surface_id`, or forget it with `None`. Returns whether
 /// that changed what the window shows.
 pub fn set(surface_id: u64, object: u64, icon: Option<ToplevelIcon>) -> bool {
-    let mut store = store().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = store().lock_recover();
     match icon {
         Some(icon) => {
             if store
@@ -361,17 +352,13 @@ pub fn set(surface_id: u64, object: u64, icon: Option<ToplevelIcon>) -> bool {
 
 /// Forget a destroyed window's icon.
 pub fn forget(surface_id: u64) {
-    store()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(&surface_id);
+    store().lock_recover().remove(&surface_id);
 }
 
 /// The icon a window set for itself, if any.
 pub fn current(surface_id: u64) -> Option<ToplevelIcon> {
     store()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .get(&surface_id)
         .map(|entry| entry.icon.clone())
 }
@@ -401,11 +388,7 @@ impl AppImageSource for ClientPixels {
 /// The artwork for a window's own icon: pixels directly, a name through the
 /// icon theme.
 pub fn app_image(surface_id: u64) -> Option<AppImage> {
-    let entry = store()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&surface_id)
-        .cloned()?;
+    let entry = store().lock_recover().get(&surface_id).cloned()?;
     match entry.icon {
         ToplevelIcon::Named(name) => crate::app_icons::themed(&name),
         ToplevelIcon::Pixels(images) => Some(AppImage::new(ClientPixels {
@@ -419,13 +402,10 @@ pub fn app_image(surface_id: u64) -> Option<AppImage> {
 /// window's icon changed, so the caller can repaint its tab.
 pub fn sync(surface: &WlSurface, surface_id: u64) -> bool {
     let pending = wl_compositor::with_states(surface, |states| {
-        states.data_map.get::<PendingIcon>().and_then(|pending| {
-            pending
-                .0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-        })
+        states
+            .data_map
+            .get::<PendingIcon>()
+            .and_then(|pending| pending.0.lock_recover().take())
     });
     match pending {
         None => false,
@@ -441,14 +421,8 @@ fn client_image(buffer: &WlBuffer) -> Option<ImageData> {
     if width == 0 || width != height || width > MAX_EDGE {
         return None;
     }
-    Some(ImageData {
-        data: Blob::new(Arc::new(rgba)),
-        format: ImageFormat::Rgba8,
-        // `wl_shm` ARGB is premultiplied.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    })
+    // `wl_shm` ARGB is premultiplied.
+    Some(ui::raster::rgba8_premultiplied(rgba, width, height))
 }
 
 #[cfg(test)]
@@ -456,17 +430,11 @@ mod tests {
     use super::*;
 
     fn square(edge: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
-                0;
-                usize::try_from(edge.pow(2).saturating_mul(4))
-                    .unwrap()
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: edge,
-            height: edge,
-        }
+        ui::raster::rgba8_premultiplied(
+            vec![0; usize::try_from(edge.pow(2).saturating_mul(4)).unwrap()],
+            edge,
+            edge,
+        )
     }
 
     #[test]

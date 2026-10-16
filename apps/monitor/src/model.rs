@@ -22,8 +22,10 @@ pub struct ProcessInfo {
     pub ppid: Option<u32>,
     pub name: String,
     pub user: String,
-    /// CPU usage as a percentage of a single core (so > 100 on a busy
-    /// multi-threaded process — matches `top`/`htop` semantics).
+    /// CPU usage as a share of the whole machine, in percent: a process
+    /// keeping one of eight cores busy reads 12.5. The processes' shares add
+    /// up to the machine's total load, so a summed subtree never reads more
+    /// than the whole machine.
     pub cpu: f32,
     /// Resident memory (RSS) in bytes — physical pages the process holds.
     pub mem_bytes: u64,
@@ -140,8 +142,7 @@ impl MonitorModel {
     )]
     pub fn sample() -> Self {
         // ---- per-core history: a few cores hot, most idle-ish -------
-        let core_base = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
-        let cores: Vec<f32> = core_base.to_vec();
+        let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
         // Synthesise wavy histories so the charts read as "alive".
         let cpu_hist = RollingSeries::from_samples(
@@ -200,7 +201,7 @@ impl MonitorModel {
 
         let metrics = Metrics {
             cpu_brand: "AMD Ryzen 7 7840U w/ Radeon 780M".into(),
-            host: "quos-workstation".into(),
+            host: "tilo-workstation".into(),
             kernel: "Linux 7.0.9".into(),
             cores,
             mem_total,
@@ -226,6 +227,33 @@ impl MonitorModel {
             processes: sample_processes(),
             process_status: ProcessDataStatus::Ready,
         }
+    }
+
+    /// The sample machine a screenshot `scenario` shows: the sample, with no
+    /// processes for the empty, loading and refused process lists, and with
+    /// many cores for `resources-many`.
+    pub fn scenario(scenario: Option<&str>) -> Self {
+        let mut model = Self::sample();
+        let status = match scenario {
+            Some("empty") => ProcessDataStatus::Empty,
+            Some("process-loading") => ProcessDataStatus::Loading,
+            Some("process-permission-error") => ProcessDataStatus::PermissionDenied,
+            Some("resources-many") => {
+                // 24 cores so the grid wraps to several rows — the card must
+                // grow to hold them and the page must scroll on a short shot.
+                model.metrics.cores = (0..24)
+                    .map(|i| {
+                        let t = i as f32;
+                        (30.0 + 55.0 * (t * 0.7).sin() + 20.0 * (t * 0.3).cos()).clamp(2.0, 99.0)
+                    })
+                    .collect();
+                return model;
+            }
+            _ => return model,
+        };
+        model.processes.clear();
+        model.process_status = status;
+        model
     }
 
     /// Empty model used as the initial state for the live sampler before
@@ -263,8 +291,11 @@ impl MonitorModel {
     }
 }
 
+/// The sample machine's per-core load, in percent.
+const SAMPLE_CORE_LOAD: [f32; 8] = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
+
 /// One sample-data process row, as `(name, parent, user, cpu, mem_MiB,
-/// threads, status, kernel)`. `parent` is `""` for a forest root.
+/// threads, status, kernel)`; `cpu` is per core, as `top` reads it. `parent` is `""` for a forest root.
 type SampleRow = (
     &'static str,
     &'static str,
@@ -287,14 +318,12 @@ type SampleRow = (
 /// which is what a real renderer fan-out looks like.
 const SAMPLE_ROWS: &[SampleRow] = &[
     // ---- the user session, rooted at the compositor ----------------
-    ("shell", "", "quinten", 14.6, 412, 24, "Running", false),
-    (
-        "browser", "shell", "quinten", 12.3, 643, 14, "Running", false,
-    ),
+    ("shell", "", "ada", 14.6, 412, 24, "Running", false),
+    ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
     (
         "Web Content",
         "browser",
-        "quinten",
+        "ada",
         31.8,
         988,
         22,
@@ -304,7 +333,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     (
         "Web Content",
         "browser",
-        "quinten",
+        "ada",
         48.1,
         1210,
         19,
@@ -314,70 +343,55 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     (
         "GPU Process",
         "browser",
-        "quinten",
+        "ada",
         9.4,
         512,
         8,
         "Running",
         false,
     ),
-    ("code", "shell", "quinten", 6.4, 420, 18, "Sleeping", false),
+    ("code", "shell", "ada", 6.4, 420, 18, "Sleeping", false),
     (
         "rust-analyzer",
         "code",
-        "quinten",
+        "ada",
         63.9,
         2680,
         12,
         "Running",
         false,
     ),
-    ("cargo", "code", "quinten", 11.2, 140, 4, "Running", false),
-    ("rustc", "cargo", "quinten", 88.7, 760, 1, "Running", false),
-    (
-        "firefox", "shell", "quinten", 47.1, 2210, 51, "Running", false,
-    ),
-    (
-        "terminal", "shell", "quinten", 3.2, 142, 6, "Sleeping", false,
-    ),
-    ("fish", "terminal", "quinten", 0.4, 28, 1, "Sleeping", false),
-    ("monitor", "shell", "quinten", 5.7, 96, 5, "Running", false),
+    ("cargo", "code", "ada", 11.2, 140, 4, "Running", false),
+    ("rustc", "cargo", "ada", 88.7, 760, 1, "Running", false),
+    ("blender", "shell", "ada", 47.1, 2210, 51, "Running", false),
+    ("terminal", "shell", "ada", 3.2, 142, 6, "Sleeping", false),
+    ("fish", "terminal", "ada", 0.4, 28, 1, "Sleeping", false),
+    ("monitor", "shell", "ada", 5.7, 96, 5, "Running", false),
     (
         "file-explorer",
         "shell",
-        "quinten",
+        "ada",
         1.1,
         188,
         8,
         "Sleeping",
         false,
     ),
-    (
-        "Xwayland", "shell", "quinten", 4.3, 176, 5, "Running", false,
-    ),
+    ("Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false),
     // ---- the system service tree, rooted at systemd ----------------
     ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
     ("tilo-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
     (
         "iroh-node",
         "tilo-fs",
-        "quinten",
+        "ada",
         6.1,
         310,
         16,
         "Running",
         false,
     ),
-    (
-        "gossip",
-        "iroh-node",
-        "quinten",
-        2.2,
-        88,
-        6,
-        "Running",
-        false,
-    ),
+    ("gossip", "iroh-node", "ada", 2.2, 88, 6, "Running", false),
     (
         "systemd-journald",
         "systemd",
@@ -399,12 +413,12 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         false,
     ),
     (
-        "systemd-resolved",
+        "rtkit-daemon",
         "systemd",
-        "systemd+",
-        0.3,
-        22,
-        2,
+        "rtkit",
+        0.1,
+        4,
+        3,
         "Sleeping",
         false,
     ),
@@ -441,13 +455,11 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         "Sleeping",
         false,
     ),
-    (
-        "pipewire", "systemd", "quinten", 2.4, 64, 4, "Sleeping", false,
-    ),
+    ("pipewire", "systemd", "ada", 2.4, 64, 4, "Sleeping", false),
     (
         "wireplumber",
         "pipewire",
-        "quinten",
+        "ada",
         1.3,
         52,
         4,
@@ -457,22 +469,20 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     (
         "pulseaudio",
         "systemd",
-        "quinten",
+        "ada",
         0.9,
         41,
         3,
         "Sleeping",
         false,
     ),
-    (
-        "podman", "systemd", "quinten", 0.5, 64, 7, "Sleeping", false,
-    ),
-    ("conmon", "podman", "quinten", 0.1, 14, 1, "Sleeping", false),
-    ("swaybg", "shell", "quinten", 0.2, 44, 2, "Sleeping", false),
+    ("podman", "systemd", "ada", 0.5, 64, 7, "Sleeping", false),
+    ("conmon", "podman", "ada", 0.1, 14, 1, "Sleeping", false),
+    ("swaybg", "shell", "ada", 0.2, 44, 2, "Sleeping", false),
     (
         "gnome-keyring-d",
         "systemd",
-        "quinten",
+        "ada",
         0.1,
         19,
         3,
@@ -560,7 +570,7 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
         ppid,
         name: name.to_string(),
         user: user.to_string(),
-        cpu,
+        cpu: cpu / SAMPLE_CORE_LOAD.len() as f32,
         mem_bytes,
         virt_bytes,
         threads,
@@ -593,8 +603,8 @@ fn sample_cmdline(name: &str, user: &str) -> String {
         "rust-analyzer" => "/usr/bin/rust-analyzer --log-file /tmp/ra.log".into(),
         "cargo" => "/usr/bin/cargo build --release -p ui".into(),
         "rustc" => "/usr/bin/rustc --edition 2024 --crate-type lib src/lib.rs".into(),
-        "firefox" => format!("/usr/lib/firefox/firefox -P {user}"),
-        "terminal" => "/usr/bin/terminal --shots off".into(),
+        "blender" => format!("/usr/bin/blender /home/{user}/Projects/studio.blend"),
+        "terminal" => "/usr/bin/terminal".into(),
         "monitor" => "/usr/bin/monitor".into(),
         "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
         "tilo-fs" => "/usr/bin/tilo-fs --mount /var/workspace --cache /var/cache/tilo-fs".into(),

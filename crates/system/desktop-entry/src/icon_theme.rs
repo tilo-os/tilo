@@ -25,7 +25,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
+use tilo_lock::MutexRecover as _;
 
 /// The theme every inheritance chain ends in.
 pub const FALLBACK_THEME: &str = "hicolor";
@@ -88,20 +89,20 @@ impl IconSearchPath {
     /// The current session's search path, Flatpak exports included.
     pub fn system() -> Self {
         let mut path = Self::default();
-        if let Some(home) = xdg_paths::home() {
+        if let Some(home) = tilo_paths::home() {
             path.push_base(home.join(".icons"));
         }
-        if let Some(data_home) = xdg_paths::xdg::data_home() {
+        if let Some(data_home) = tilo_paths::xdg::data_home() {
             path.push_base(data_home.join("icons"));
         }
-        let data_dirs = xdg_paths::xdg::data_dirs();
+        let data_dirs = tilo_paths::xdg::data_dirs();
         for dir in &data_dirs {
             path.push_base(dir.join("icons"));
         }
         // Appended like the `applications` directories in `scan`: a session
         // that already lists the exports keeps their place, and a hand-installed
         // icon still overrides an exported one.
-        if let Some(data_home) = xdg_paths::xdg::data_home() {
+        if let Some(data_home) = tilo_paths::xdg::data_home() {
             path.push_base(data_home.join("flatpak/exports/share/icons"));
         }
         path.push_base(PathBuf::from("/var/lib/flatpak/exports/share/icons"));
@@ -389,16 +390,11 @@ impl IconLookup {
         }
         let name = clean_name(name)?;
         let key = (name.to_string(), size, scale);
-        if let Some(hit) = self
-            .memo
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-        {
+        if let Some(hit) = self.memo.lock_recover().get(&key) {
             return hit.clone();
         }
         let found = self.find_uncached(name, size, scale);
-        let mut memo = self.memo.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut memo = self.memo.lock_recover();
         if memo.len() >= MEMO_LIMIT {
             memo.clear();
         }
@@ -493,18 +489,12 @@ impl IconLookup {
     }
 
     fn theme(&self, name: &str) -> Option<Arc<Theme>> {
-        if let Some(known) = self
-            .themes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(name)
-        {
+        if let Some(known) = self.themes.lock_recover().get(name) {
             return known.clone();
         }
         let loaded = self.load_theme(name).map(Arc::new);
         self.themes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(name.to_string(), loaded.clone());
         loaded
     }
@@ -544,7 +534,7 @@ fn shared() -> &'static Mutex<Option<Shared>> {
 /// installed or removed, since that is when new icons appear.
 pub fn system_lookup() -> Arc<IconLookup> {
     let generation = crate::cache::cached_scan_generation();
-    let mut guard = shared().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = shared().lock_recover();
     if let Some(current) = guard.as_ref()
         && current.generation == generation
     {

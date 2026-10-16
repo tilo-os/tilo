@@ -8,10 +8,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -20,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;
 use collab_types::{
-    ArtifactId, AttestationId, ChannelEvent, ChannelId, Ed25519PublicKey, OpClass, Signature,
+    ArtifactId, AttestationId, ChannelEvent, ChannelId, Ed25519PublicKey, OpKind, Signature,
     SignedOp, SpaceId, generate_keypair, sign_event, sign_op, verify_event, verify_op,
 };
 
@@ -30,13 +26,13 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-fn unsigned_op(author: Ed25519PublicKey, payload: &[u8], op_class: OpClass) -> SignedOp {
+fn unsigned_op(author: Ed25519PublicKey, payload: &[u8], kind: OpKind) -> SignedOp {
     SignedOp::new_unsigned(
         payload.to_vec(),
         ArtifactId::new(),
         author,
         AttestationId::new(),
-        op_class,
+        kind,
         t(10),
         1,
     )
@@ -106,7 +102,7 @@ fn an_event_signature_verifies_under_its_signer_only() {
 fn a_signed_op_verifies_only_under_its_author_and_while_untampered() {
     // Case: sign op then verify; the placeholder signature does not verify.
     let (sk, pk) = generate_keypair();
-    let mut op = unsigned_op(pk, b"automerge change", OpClass::Splice);
+    let mut op = unsigned_op(pk, b"automerge change", OpKind::Change);
     assert!(verify_op(&op).is_err());
     sign_op(&mut op, &sk).unwrap();
     assert!(verify_op(&op).is_ok());
@@ -115,7 +111,7 @@ fn a_signed_op_verifies_only_under_its_author_and_while_untampered() {
     // the same signature because Ed25519 is deterministic and the signed view
     // omits the signature field.
     let (sk, pk) = generate_keypair();
-    let mut op = unsigned_op(pk, b"x", OpClass::Splice);
+    let mut op = unsigned_op(pk, b"x", OpKind::Change);
     sign_op(&mut op, &sk).unwrap();
     let first = op.signature;
     sign_op(&mut op, &sk).unwrap();
@@ -127,22 +123,22 @@ fn a_signed_op_verifies_only_under_its_author_and_while_untampered() {
     // pk_b.
     let (sk_a, _pk_a) = generate_keypair();
     let (_sk_b, pk_b) = generate_keypair();
-    let mut op = unsigned_op(pk_b, b"x", OpClass::Splice);
+    let mut op = unsigned_op(pk_b, b"x", OpKind::Change);
     sign_op(&mut op, &sk_a).unwrap();
     assert!(verify_op(&op).is_err());
 
     // Cases: tampering with a signed field after signing breaks verification.
     let tamper_author: fn(&mut SignedOp) = |op| op.author = generate_keypair().1;
-    // Lying about op class — the op_class field is covered by the signature.
-    let tamper_op_class: fn(&mut SignedOp) = |op| op.op_class = OpClass::Splice;
+    // Lying about op class — the kind field is covered by the signature.
+    let tamper_op_class: fn(&mut SignedOp) = |op| op.kind = OpKind::Compaction;
     let tamper_attestation: fn(&mut SignedOp) = |op| op.attestation_id = AttestationId::new();
-    for (case, op_class, tamper) in [
-        ("author", OpClass::Splice, tamper_author),
-        ("op class", OpClass::Comment, tamper_op_class),
-        ("attestation id", OpClass::Splice, tamper_attestation),
+    for (case, kind, tamper) in [
+        ("author", OpKind::Change, tamper_author),
+        ("op kind", OpKind::Change, tamper_op_class),
+        ("attestation id", OpKind::Change, tamper_attestation),
     ] {
         let (sk, pk) = generate_keypair();
-        let mut op = unsigned_op(pk, b"x", op_class);
+        let mut op = unsigned_op(pk, b"x", kind);
         sign_op(&mut op, &sk).unwrap();
         assert!(verify_op(&op).is_ok(), "case {case}");
         tamper(&mut op);

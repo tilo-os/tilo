@@ -1,0 +1,21 @@
+# The spacing ratchet for shell: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+crates/session/shell/src/bin/shots/scenario.rs pixel_const 1
+crates/session/shell/src/bluetooth_prompt.rs literal_gap 1
+crates/session/shell/src/bluetooth_prompt.rs pixel_const 1
+crates/session/shell/src/compositor/backend/drm/access_keys.rs pixel_const 3
+crates/session/shell/src/compositor/backend/drm/gestures.rs pixel_const 1
+crates/session/shell/src/compositor/capture.rs pixel_const 2
+crates/session/shell/src/compositor/drag_feedback.rs pixel_const 9
+crates/session/shell/src/compositor/lock_screen.rs pixel_const 3
+crates/session/shell/src/onboarding_view.rs literal_gap 1
+crates/session/shell/src/onboarding_view.rs pixel_const 11
+crates/session/shell/src/shell/capture_surface.rs pixel_const 4
+crates/session/shell/src/shell/color_pipeline.rs pixel_const 1
+crates/session/shell/src/shell/frame.rs pixel_const 1
+crates/session/shell/src/shell/hdr_surface.rs pixel_const 1
+crates/session/shell/src/shell/input_policy.rs pixel_const 1
+crates/session/shell/src/shell/overlay_host/mod.rs pixel_const 8
+crates/session/shell/src/shell/quick_settings/root.rs pixel_const 2
+crates/session/shell/src/shell/speaker_calibration.rs pixel_const 2

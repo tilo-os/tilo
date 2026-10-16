@@ -15,7 +15,7 @@
 //! * `query.player(id).await` → `VideoPlayer` whose `audio_streams` carry
 //!   directly-playable googlevideo URLs. With no `BotGuard` configured rustypipe
 //!   uses the iOS/TV player clients, which return stream URLs **without a
-//!   `PoToken`** (see [`crate::backend::potoken`]).
+//!   `PoToken`**, so the client is built with `no_botguard`.
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution
 //! first queries the keyless Android VR `InnerTube` client directly, then falls
@@ -29,11 +29,10 @@ use rustypipe::model::{
     MusicPlaylistItem, Thumbnail, TrackItem,
 };
 
-use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
     HomeItem, HomeItemKind, HomeSection, MusicBackend, PlaylistHit, PlaylistPage, ResolveOutcome,
-    ResolvedStream, SearchBundle, SearchKind, SearchOutcome, SearchTop, TrackHit,
+    ResolvedStream, SearchBundle, SearchOutcome, SearchTop, TrackHit,
 };
 
 /// No metadata or player request may monopolise Music's serial background
@@ -52,52 +51,26 @@ const DESCRIPTION_LIMIT: usize = 16 * 1024;
 pub struct RustyPipeBackend {
     rp: RustyPipe,
     rt: &'static ui::rt::AppRuntime,
-    potoken_desc: &'static str,
 }
 
 impl RustyPipeBackend {
-    /// Construct with the default (null) `PoToken` provider — audio resolves via
-    /// the iOS/TV player clients, no token needed.
+    /// Audio resolves via the iOS/TV player clients, which need no `PoToken`,
+    /// so rustypipe's `BotGuard` path stays disabled.
     ///
     /// # Errors
     ///
     /// Returns a [`BackendError`] if the app runtime or the rustypipe
     /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
-        Self::with_potoken(&NullPoToken)
-    }
-
-    /// Construct with an explicit `PoToken` provider. A provider that cannot
-    /// stream keeps rustypipe's `BotGuard` path disabled (`no_botguard`).
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] if the app runtime cannot be started or the
-    /// rustypipe client fails to build.
-    pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
-
-        let potoken_desc = if provider.can_stream() {
-            "youtube-music (live, botguard)"
-        } else {
-            "youtube-music (live)"
-        };
-
         // rustypipe's reqwest client takes the process-default TLS provider.
         tilo_net::install_crypto_provider();
-        let mut builder = RustyPipe::builder().storage_dir(cache_dir());
-        if !provider.can_stream() {
-            builder = builder.no_botguard();
-        }
-        let rp = builder
+        let rp = RustyPipe::builder()
+            .storage_dir(cache_dir())
+            .no_botguard()
             .build()
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
-
-        Ok(Self {
-            rp,
-            rt,
-            potoken_desc,
-        })
+        Ok(Self { rp, rt })
     }
 
     fn block<F, T, E>(&self, operation: &str, fut: F) -> Result<T, BackendError>
@@ -296,10 +269,7 @@ fn track_home_item(it: TrackItem) -> HomeItem {
 
 fn album_home_item(a: AlbumItem) -> HomeItem {
     let artist = artists_name(&a.artists, a.by_va);
-    let subtitle = match a.year {
-        Some(y) => format!("{artist} \u{00b7} {y}"),
-        None => artist.clone(),
-    };
+    let subtitle = artist.clone();
     HomeItem {
         id: a.id,
         title: a.name,
@@ -387,9 +357,44 @@ fn map_stream(video_id: &str, s: &AudioStream) -> ResolvedStream {
     }
 }
 
+/// Standard `YouTube` audio itags, best-decodable first: m4a/AAC 128k (any
+/// stock `GStreamer` decodes it), then webm/opus 160k. Present for effectively
+/// every track, so the proxy is probed directly without first asking the
+/// (often Cloudflare-gated) metadata endpoint for the itag list.
+const KNOWN_AUDIO_ITAGS: &[(u32, &str, &str, &str, u32)] = &[
+    // (itag, mime, codec, format, bitrate)
+    (
+        140,
+        "audio/mp4; codecs=\"mp4a.40.2\"",
+        "mp4a",
+        "m4a",
+        128_000,
+    ),
+    (251, "audio/webm; codecs=\"opus\"", "opus", "webm", 160_000),
+];
+
+/// A fully-rangeable Invidious-proxied audio stream for `video_id`, when an
+/// instance's proxy serves real media within the budget.
+async fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
+    let (url, &(itag, mime, codec, format, bitrate)) =
+        tilo_invidious::first_serving(video_id, KNOWN_AUDIO_ITAGS, |f| f.0).await?;
+    Some(ResolvedStream {
+        video_id: video_id.to_string(),
+        url,
+        mime: mime.to_string(),
+        codec: codec.to_string(),
+        format: format.to_string(),
+        bitrate,
+        itag,
+        size_bytes: 0,
+        duration_ms: 0,
+        fallback_url: None,
+    })
+}
+
 impl MusicBackend for RustyPipeBackend {
-    fn name(&self) -> &str {
-        self.potoken_desc
+    fn name(&self) -> &'static str {
+        "youtube-music (live)"
     }
 
     fn is_live(&self) -> bool {
@@ -457,62 +462,6 @@ impl MusicBackend for RustyPipeBackend {
         Ok(bundle)
     }
 
-    fn search_more(&self, query: &str, kind: SearchKind) -> Result<SearchBundle, BackendError> {
-        let q = self.rp.query();
-        let mut bundle = SearchBundle::default();
-        match kind {
-            SearchKind::Songs => {
-                let res =
-                    self.block("song search", async { q.music_search_tracks(query).await })?;
-                bundle.tracks = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_track_item)
-                    .collect();
-            }
-            SearchKind::Albums => {
-                let res =
-                    self.block("album search", async { q.music_search_albums(query).await })?;
-                bundle.albums = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_album_hit)
-                    .collect();
-            }
-            SearchKind::Artists => {
-                let res = self.block("artist search", async {
-                    q.music_search_artists(query).await
-                })?;
-                bundle.artists = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_artist_hit)
-                    .collect();
-            }
-            SearchKind::Playlists => {
-                // Community playlists give the richest, most Spotify-like set of
-                // human-made playlists for a query.
-                let res = self.block("playlist search", async {
-                    q.music_search_playlists(query, true).await
-                })?;
-                bundle.playlists = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_playlist_hit)
-                    .collect();
-            }
-        }
-        Ok(bundle)
-    }
-
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         // Prefer the independent full-track resolver before asking InnerTube's
         // player endpoint. YouTube can reject rustypipe's iOS/TV player client
@@ -552,7 +501,7 @@ impl MusicBackend for RustyPipeBackend {
         // proxy genuinely serves media (validated). Public instances are mostly
         // dead / anti-bot-gated, so this usually returns `None`.
         // The direct URL is always carried as the engine's fallback too.
-        if let Some(mut proxy) = crate::backend::proxy::resolve_rangeable(video_id) {
+        if let Some(mut proxy) = self.rt.block_on(resolve_rangeable(video_id)).ok().flatten() {
             proxy.duration_ms = direct.duration_ms;
             if proxy.size_bytes == 0 {
                 proxy.size_bytes = direct.size_bytes;
@@ -665,6 +614,7 @@ impl MusicBackend for RustyPipeBackend {
             tracks,
             albums,
             similar,
+            provider_followed: None,
         })
     }
 
@@ -705,8 +655,7 @@ impl MusicBackend for RustyPipeBackend {
             },
             |c| c.name.clone(),
         );
-        let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
-        let subtitle = format!("{owner} \u{00b7} {count} songs");
+        let subtitle = owner;
         let description = bounded_text(
             pl.description
                 .as_ref()
@@ -738,10 +687,6 @@ mod bounded_transport_tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn live_transport_is_bounded_utf8_safe_and_signature_capable() {
         // Phase `native_quickjs_bindings_execute_stream_signature_operations`.
         #[cfg(all(windows, target_arch = "aarch64"))]

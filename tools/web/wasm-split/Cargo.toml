@@ -1,0 +1,33 @@
+# Splits the browser desktop bundle into a start module and per-app modules;
+# run through split.sh beside it. A build tool
+# with its own lock file, outside the workspace (see PROVENANCE.md).
+[package]
+name = "tilo-wasm-split"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "wasm-split"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+id-arena = "2.2.1"
+itertools = "0.14.0"
+rayon = "1.10.0"
+serde_json = "1"
+tracing = "0.1.41"
+walrus = { version = "0.23.3", features = ["parallel"] }
+wasmparser = "0.235.0"
+
+[dev-dependencies]
+# Runs the split modules in the tests, linked as the page links them.
+wasmi = { version = "=1.1.0", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[workspace]

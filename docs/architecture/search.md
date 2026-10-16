@@ -7,7 +7,7 @@ result or runs an action. Two entry points:
 
 - **Ctrl+K** — per-app: the overlay pre-scoped to the active app's resources +
   actions.
-- **Super+Space** (or Super+K) — global: shell-level, all apps + full-text FS.
+- **Super+Space** — global: shell-level, all apps + full-text FS.
 
 ## Resources
 
@@ -99,9 +99,14 @@ row may say are in [search-and-history-views.md](../search-and-history-views.md)
 
 ## Architecture
 
-- **App providers** implement `ui::search::SearchProvider` and are exposed by
-  the app widget. Providers return bounded, paged results with stable resource
-  addresses and activation data.
+- **An app's search source** is its resource's: the framework indexes the
+  resource's `SearchEntry` values (`Resource::search`) together with what its
+  surfaces show beside the document (`ResourceSurface::search_entries`: a
+  page's text, live processes, history), and answers bounded, paged queries
+  with stable action addresses. An entry carries how its hit reads (result
+  group, subtitle, icon, boost) and may carry long prose as a body read in
+  place, whose segments can be hits of their own (a reading location). A
+  content widget publishes no search provider of its own.
 - **Shared desktop search** lives in `crates/session/desktop-search`: the
   result kinds, the per-provider field scores on the shared ranker, the
   cross-provider merge and kind grouping, portable providers (applications

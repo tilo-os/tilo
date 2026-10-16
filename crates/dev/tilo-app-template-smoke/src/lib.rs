@@ -17,19 +17,11 @@ starter-greeting = Hallo, { $name }!\n\
 starter-greeting-empty = Wen sollen wir begrüßen?\n\
 starter-clear = Leeren\n";
 
-    pub const IDS: &[&str] = &["de-DE", "en-US"];
-
-    pub fn install() {
-        if let Err(error) =
-            ui::i18n::I18nManager::install_system("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
-        {
-            eprintln!("localization catalog: {error}");
-        }
-    }
-}
-
-fn install_catalog() {
-    locales::install();
+    /// Two templates' history verbs share a message id; the first one wins,
+    /// as when a catalog repeats a message.
+    pub static CATALOG: ui::i18n::EmbeddedCatalog =
+        ui::i18n::EmbeddedCatalog::new("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
+            .with_system_locale();
 }
 
 /// The application id every included template runs under.

@@ -26,8 +26,8 @@ use sctk::subcompositor::SubcompositorState;
 use crate::platform_impl::wayland::event_loop::sink::EventSink;
 use crate::platform_impl::wayland::output::MonitorHandle;
 use crate::platform_impl::wayland::seat::{
-    PointerConstraintsState, PointerGesturesState, RelativePointerState, TextInputState,
-    WinitPointerData, WinitPointerDataExt, WinitSeatState,
+    PointerConstraintsState, PointerGesturesState, RelativePointerState, TabletState,
+    TextInputState, WinitPointerData, WinitPointerDataExt, WinitSeatState,
 };
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
@@ -47,6 +47,9 @@ pub struct WinitState {
 
     /// The compositor state which is used to create new windows and regions.
     pub compositor_state: Arc<CompositorState>,
+
+    pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
+    pub private_text_input: Option<super::types::tilo_text_input::PrivateTextInputManager>,
 
     /// The state of the subcompositor.
     pub subcompositor_state: Option<Arc<SubcompositorState>>,
@@ -103,6 +106,9 @@ pub struct WinitState {
     /// Pointer constraints to handle pointer locking and confining.
     pub pointer_constraints: Option<Arc<PointerConstraintsState>>,
 
+    /// Pen tablets.
+    pub tablet: Option<TabletState>,
+
     /// Viewporter state on the given window.
     pub viewporter_state: Option<ViewporterState>,
 
@@ -142,7 +148,7 @@ impl WinitState {
             Err(e) => {
                 tracing::warn!("Subcompositor protocol not available, ignoring CSD: {e:?}");
                 None
-            },
+            }
         };
 
         let output_state = OutputState::new(globals, queue_handle);
@@ -169,25 +175,32 @@ impl WinitState {
         // back through this channel, on the event-loop thread, as events.
         let dnd = match crate::platform_impl::wayland::seat::DndState::new(globals, queue_handle) {
             Some((dnd, channel)) => {
-                let inserted = loop_handle.insert_source(channel, |event, _, winit_state: &mut WinitState| {
-                    if let calloop::channel::Event::Msg(payload) = event {
-                        winit_state.deliver_dnd(payload);
-                    }
-                });
+                let inserted =
+                    loop_handle.insert_source(channel, |event, _, winit_state: &mut WinitState| {
+                        if let calloop::channel::Event::Msg(payload) = event {
+                            winit_state.deliver_dnd(payload);
+                        }
+                    });
                 match inserted {
                     Ok(_) => Some(dnd),
                     Err(e) => {
                         tracing::warn!("could not register the drag-and-drop channel, drops are disabled: {e:?}");
                         None
-                    },
+                    }
                 }
-            },
+            }
             None => None,
         };
 
         Ok(Self {
             registry_state,
             compositor_state: Arc::new(compositor_state),
+            presentation: super::types::wp_presentation::PresentationState::bind(
+                globals,
+                queue_handle,
+            )
+            .ok()
+            .map(Arc::new),
             subcompositor_state: subcompositor_state.map(Arc::new),
             output_state,
             seat_state,
@@ -204,6 +217,11 @@ impl WinitState {
             viewporter_state,
             fractional_scaling_manager,
             kwin_blur_manager: KWinBlurManager::new(globals, queue_handle).ok(),
+            private_text_input: super::types::tilo_text_input::PrivateTextInputManager::bind(
+                globals,
+                queue_handle,
+            )
+            .ok(),
 
             seats,
             text_input_state: TextInputState::new(globals, queue_handle).ok(),
@@ -213,6 +231,7 @@ impl WinitState {
             pointer_constraints: PointerConstraintsState::new(globals, queue_handle)
                 .map(Arc::new)
                 .ok(),
+            tablet: TabletState::new(globals, queue_handle).ok(),
             pointer_surfaces: Default::default(),
 
             monitors: Arc::new(Mutex::new(monitors)),
@@ -247,7 +266,8 @@ impl WinitState {
             {
                 pos
             } else {
-                self.window_compositor_updates.push(WindowCompositorUpdate::new(window_id));
+                self.window_compositor_updates
+                    .push(WindowCompositorUpdate::new(window_id));
                 self.window_compositor_updates.len() - 1
             };
 
@@ -268,7 +288,9 @@ impl WinitState {
     }
 
     pub fn queue_close(updates: &mut Vec<WindowCompositorUpdate>, window_id: WindowId) {
-        let pos = if let Some(pos) = updates.iter().position(|update| update.window_id == window_id)
+        let pos = if let Some(pos) = updates
+            .iter()
+            .position(|update| update.window_id == window_id)
         {
             pos
         } else {
@@ -302,12 +324,15 @@ impl WindowHandler for WinitState {
     ) {
         let window_id = super::make_wid(window.wl_surface());
 
-        let pos = if let Some(pos) =
-            self.window_compositor_updates.iter().position(|update| update.window_id == window_id)
+        let pos = if let Some(pos) = self
+            .window_compositor_updates
+            .iter()
+            .position(|update| update.window_id == window_id)
         {
             pos
         } else {
-            self.window_compositor_updates.push(WindowCompositorUpdate::new(window_id));
+            self.window_compositor_updates
+                .push(WindowCompositorUpdate::new(window_id));
             self.window_compositor_updates.len() - 1
         };
 
@@ -341,7 +366,10 @@ impl OutputHandler for WinitState {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-        self.monitors.lock().unwrap().push(MonitorHandle::new(output));
+        self.monitors
+            .lock()
+            .unwrap()
+            .push(MonitorHandle::new(output));
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, updated: WlOutput) {
@@ -451,7 +479,12 @@ pub struct WindowCompositorUpdate {
 
 impl WindowCompositorUpdate {
     fn new(window_id: WindowId) -> Self {
-        Self { window_id, resized: false, scale_changed: false, close_window: false }
+        Self {
+            window_id,
+            resized: false,
+            scale_changed: false,
+            close_window: false,
+        }
     }
 }
 

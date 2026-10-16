@@ -3,16 +3,15 @@
 //! which?" while arranging them in Settings.
 //!
 //! Settings asks through [`IdentifyRequest`]; the numbers come from
-//! [`display_numbers`], the same numbering the Settings arrangement canvas
-//! shows.
+//! [`display_numbers`] for a local setup, or from the current shared display
+//! order when a native monitor matches its observed stable identity.
 
 use std::time::{Duration, Instant};
 
 use settings_store::display_identify::{IDENTIFY_MS, IdentifyRequest, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Rect};
 
 use ui::i18n::ArgValue;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -20,6 +19,7 @@ use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::OutputGeometry;
+use ui::TextRole;
 
 /// One display's identify card.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +58,25 @@ impl DisplayIdentify {
             now,
         );
         true
+    }
+
+    /// Number this device's displays by their place in the person's shared
+    /// display order, which spans all of their devices.
+    pub(crate) fn number_by_shared_order(
+        &mut self,
+        outputs: &[OutputGeometry],
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        let shown = outputs
+            .iter()
+            .filter(|output| output.width > 0.0 && output.height > 0.0);
+        for (label, output) in self.labels.iter_mut().zip(shown) {
+            if let Some(shared) = layout.displays.iter().find(|display| {
+                !output.monitor.is_empty() && display.local && display.output == output.monitor
+            }) {
+                label.number = shared.order.saturating_add(1);
+            }
+        }
     }
 
     /// Label every output for `duration`. Outputs the compositor's snapshot
@@ -145,26 +164,11 @@ impl DisplayIdentify {
         now: Instant,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         for label in self.labels(now) {
             let side = (label.output.height() * 0.28).clamp(120.0, 260.0);
             let card = Rect::from_center_size(label.output.center(), (side * 1.25, side));
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
-            ui::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &RoundedRect::from_rect(card, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &RoundedRect::from_rect(card, radius),
-            );
+            ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
             let number = label.number.to_string();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -190,17 +194,22 @@ impl DisplayIdentify {
             );
             #[allow(clippy::cast_possible_truncation, reason = "card width fits f32")]
             let name_width = (card.width() - 32.0) as f32;
-            let name = text_renderer.elide_to_width(&label.name, type_scale.lg, name_width);
-            let (lw, _) = text_renderer.measure(&name, type_scale.lg, None);
-            text_renderer.draw_text(
+            let name = text_renderer.elide_to_width_style(
+                &label.name,
+                name_width,
+                &type_scale.style(TextRole::Heading),
+            );
+            let (lw, _) =
+                text_renderer.measure_style(&name, None, &type_scale.style(TextRole::Heading));
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.lg,
                 colors.text_dim,
                 transform.pre_translate(
                     (card.center().x - f64::from(lw) / 2.0, card.y1 - side * 0.22).into(),
                 ),
                 None,
+                &type_scale.style(TextRole::Heading),
             );
         }
     }
@@ -280,5 +289,83 @@ mod tests {
         assert_eq!(labels[0].number, 2);
         assert_eq!(labels[1].number, 1, "the built-in panel below is display 1");
         assert_eq!(labels[1].output, Rect::new(0.0, 1080.0, 1920.0, 2160.0));
+    }
+
+    #[test]
+    fn numbers_follow_the_persons_shared_display_order() {
+        use settings_store::person_displays::{
+            ArrangedDisplay, Arrangement, DeviceOutput, Layout, PersonDevice,
+        };
+        let output = |id: &str, x: i32| DeviceOutput {
+            id: id.into(),
+            name: id.into(),
+            builtin: false,
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            mode_width: 1920,
+            mode_height: 1080,
+            refresh_mhz: 60_000,
+            scale_milli: 1000,
+            connected: true,
+            enabled: true,
+        };
+        let device = |id: &str, local, outputs| PersonDevice {
+            device: id.into(),
+            label: id.into(),
+            local,
+            online: true,
+            outputs,
+        };
+        // The Pi's screen comes first in the person's order.
+        let layout = Layout::resolve(
+            &[
+                device(
+                    "laptop",
+                    true,
+                    vec![output("left", 0), output("right", 1920)],
+                ),
+                device("pi", false, vec![output("hdmi", 0)]),
+            ],
+            &Arrangement {
+                displays: vec![ArrangedDisplay {
+                    device: "pi".into(),
+                    output: "hdmi".into(),
+                    enabled: true,
+                    order: 0,
+                    placed: true,
+                    x: -1920,
+                    y: 0,
+                    rev: 1,
+                }],
+            },
+        );
+        let mut outputs = [
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 1080.0),
+        ];
+        outputs[0].monitor = "left".into();
+        outputs[1].monitor = "right".into();
+        let mut identify = DisplayIdentify::default();
+        let now = Instant::now();
+        identify.start(&outputs, None, Duration::from_secs(3), now);
+        identify.number_by_shared_order(&outputs, &layout);
+        let numbers: Vec<_> = identify
+            .labels(now)
+            .iter()
+            .map(|label| label.number)
+            .collect();
+        assert_eq!(numbers, [2, 3]);
+        assert_eq!(identify.labels(now)[0].output, outputs[0].rect());
+        outputs[0].monitor = "unobserved-monitor".into();
+        identify.start(&outputs, None, Duration::from_secs(3), now);
+        identify.number_by_shared_order(&outputs, &layout);
+        assert_eq!(
+            identify.labels(now)[0].number,
+            1,
+            "geometry cannot substitute for a stable monitor identity"
+        );
+        assert_eq!(identify.labels(now)[1].number, 3);
     }
 }

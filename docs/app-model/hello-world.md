@@ -18,9 +18,9 @@ You need:
 
 - `bubblewrap` (`sudo dnf install bubblewrap` on Fedora). The launcher
   invokes it under the hood.
-- A checkout of the Tilo repo (for the workspace path to `runtime`). Once
-  a crates.io release exists this will simplify to
-  `runtime = "<version>"`.
+- A checkout of the Tilo repo (for the workspace paths to the runtime
+  crates). Once a crates.io release exists these will simplify to version
+  requirements.
 
 Add the release binaries to your PATH, e.g.:
 
@@ -38,7 +38,7 @@ $ cargo new --bin my-example-hello
 note: see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 ```
 
-## Step 2: depend on `runtime`
+## Step 2: depend on the runtime crates
 
 Edit `my-example-hello/Cargo.toml`:
 
@@ -53,7 +53,10 @@ name = "my-example-hello"
 path = "src/main.rs"
 
 [dependencies]
-runtime = { path = "/path/to/tilo/crates/runtime/runtime" }
+runtime-portal = { path = "/path/to/tilo/crates/runtime/runtime-portal" }
+runtime-collab = { path = "/path/to/tilo/crates/runtime/runtime-collab" }
+runtime-fs = { path = "/path/to/tilo/crates/runtime/runtime-fs" }
+runtime-identity = { path = "/path/to/tilo/crates/runtime/runtime-identity" }
 ```
 
 ## Step 3: write a `main.rs`
@@ -61,24 +64,27 @@ runtime = { path = "/path/to/tilo/crates/runtime/runtime" }
 `my-example-hello/src/main.rs`:
 
 ```rust
-use runtime::{collab, fs, identity, is_tilo_native};
+use runtime_collab as collab;
+use runtime_fs as fs;
+use runtime_identity as identity;
+use runtime_portal::{NotAvailable, is_tilo_native};
 
 fn main() {
     println!("my-example-hello: running as Tilo-native = {}", is_tilo_native());
 
     match collab::try_connect() {
         Ok(_) => println!("  collab  : connected"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  collab  : not available (graceful)"),
+        Err(NotAvailable::ServiceFdMissing) => println!("  collab  : not available (graceful)"),
         Err(e) => println!("  collab  : unavailable ({e:?})"),
     }
     match fs::try_connect() {
         Ok(_) => println!("  fs      : connected"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  fs      : not available (graceful)"),
+        Err(NotAvailable::ServiceFdMissing) => println!("  fs      : not available (graceful)"),
         Err(e) => println!("  fs      : unavailable ({e:?})"),
     }
     match identity::load() {
         Ok(_) => println!("  identity: loaded"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  identity: not available (graceful)"),
+        Err(NotAvailable::ServiceFdMissing) => println!("  identity: not available (graceful)"),
         Err(e) => println!("  identity: unavailable ({e:?})"),
     }
 
@@ -99,7 +105,7 @@ Verify the binary:
 
 ```
 $ ls -la target/release/my-example-hello
--rwxr-xr-x. 2 quinten quinten 3075216  4. Jul 16:49 target/release/my-example-hello
+-rwxr-xr-x. 2 you you 3075216  4. Jul 16:49 target/release/my-example-hello
 ```
 
 3 MB. That's a stripped release build; running under `tilo-install` on

@@ -5,7 +5,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 containerfile="$repo/os/Containerfile"
 tmpfiles="$repo/os/usr/lib/tmpfiles.d/tilo.conf"
-user_tmpfiles="$repo/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf"
+user_tmpfiles="$repo/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf"
 helper="$repo/os/usr/libexec/tilo-system-extension-activate"
 userspace="$repo/os/usr/lib/systemd/system/tilo-system-extension-userspace.service"
 boot="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service"
@@ -42,7 +42,7 @@ for source in \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/tilo-local-model.service /usr/lib/systemd/system/tilo-local-model.service' \
     'os/usr/lib/systemd/user/tilo-models.service /usr/lib/systemd/user/tilo-models.service' \
-    'os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' \
+    'os/usr/share/user-tmpfiles.d/tilo-model-manager.conf /usr/share/user-tmpfiles.d/tilo-model-manager.conf' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket /usr/lib/systemd/system/tilo-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service /usr/lib/systemd/system/tilo-system-extension-dispatcher@.service' \
     'os/usr/libexec/tilo-system-extension-dispatch /usr/libexec/tilo-system-extension-dispatch' \
@@ -105,6 +105,10 @@ need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo
 need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
+# A dev image runs the production sandbox: no drop-in may loosen user units.
+if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
+    bad 'the dev image ships user-unit drop-ins that change the production sandbox'
+fi
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
 need "$user_model" 'StateDirectory=tilo containers' 'model manager does not provision its persistent roots without a helper process'
 need "$gateway" 'ConfigurationDirectory=tilo' 'model gateway does not provision its private configuration root'
@@ -131,8 +135,7 @@ need "$user_model_socket" 'Backlog=16' 'model manager activation queue is unboun
 need "$user_model_socket" 'Service=tilo-models.service' 'model activation socket starts the wrong service'
 need "$user_model_socket" 'PartOf=tilo-graphical-session.target' 'model activation socket can outlive a Tilo session'
 need "$user_model_socket" 'WantedBy=tilo-graphical-session.target' 'model activation socket starts outside a Tilo session'
-need "$user_model_source" 'std::env::var("LISTEN_PID")' 'model manager ignores systemd socket activation'
-need "$user_model_source" 'actual.as_pathname() != Some(expected)' 'model manager accepts a listener at an unexpected path'
+need "$user_model_source" 'activated_socket(socket)' 'model manager ignores systemd socket activation'
 need "$user_model_source" 'bounded_command::run_prepared(' 'model manager trusts unbounded runtime helpers'
 if grep -Fq '.output()' "$user_model_source"; then
     bad 'model manager can allocate unbounded helper output'
@@ -150,8 +153,7 @@ need "$model_gateway_socket" 'Backlog=16' 'hosted-model activation queue is unbo
 need "$model_gateway_socket" 'Service=tilo-model-gateway.service' 'hosted-model socket starts the wrong service'
 need "$model_gateway_socket" 'PartOf=tilo-graphical-session.target' 'hosted-model socket can outlive a Tilo session'
 need "$model_gateway_socket" 'WantedBy=tilo-graphical-session.target' 'hosted-model socket starts outside a Tilo session'
-need "$model_gateway_source" 'std::env::var("LISTEN_PID")' 'hosted-model gateway ignores systemd socket activation'
-need "$model_gateway_source" 'actual.as_pathname() != Some(expected)' 'hosted-model gateway accepts a listener at an unexpected path'
+need "$model_gateway_source" 'activated_socket(socket)' 'hosted-model gateway ignores systemd socket activation'
 need "$model_gateway" 'RuntimeDirectoryPreserve=yes' 'hosted-model shutdown can remove sibling service sockets'
 need "$model_gateway" 'PrivateDevices=yes' 'hosted-model gateway has ambient device access'
 need "$model_gateway" 'PrivateIPC=yes' 'hosted-model gateway shares host IPC objects'
@@ -183,6 +185,7 @@ need "$socket" 'Backlog=16' 'desktop request activation queue is unbounded'
 need "$socket" 'MaxConnections=16' 'desktop request socket can fan out unbounded root workers'
 need "$dispatcher" 'StandardInput=socket' 'dispatcher does not receive only its socket request'
 need "$dispatcher" 'PrivateNetwork=yes' 'dispatcher can reach a network'
+need "$dispatcher" 'TimeoutStartSec=30s' 'an idle request connection can hold a dispatcher instance forever'
 need "$dispatcher" 'ReadWritePaths=/run/tilo/system-extension-api /run/tilo/system-extensions /var/lib/tilo/system-extensions' 'dispatcher receives a broad writable root'
 need "$dispatch_helper" 'userspace-stage)' 'dispatcher has no fixed userspace verb'
 need "$dispatch_helper" 'boot-stage)' 'dispatcher has no fixed boot verb'

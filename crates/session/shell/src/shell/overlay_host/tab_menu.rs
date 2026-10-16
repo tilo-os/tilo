@@ -46,6 +46,12 @@ pub(crate) struct TabMenuLayer {
 }
 
 impl TabMenuLayer {
+    /// Every pixel the menu painted in its last draw, in the coordinates it
+    /// was drawn in; nothing while it is closed.
+    pub(crate) fn painted_bounds(&self, theme: &ui::theme::Theme) -> Vec<Rect> {
+        self.menu.painted_bounds(theme)
+    }
+
     /// Open for `target`, a tab in a group of `tab_count`, at the pointer.
     pub(crate) fn open(
         &mut self,
@@ -70,6 +76,10 @@ impl TabMenuLayer {
         // metrics.
         self.menu
             .open_anchored(Rect::new(at.x, at.y, at.x, at.y), viewport);
+    }
+
+    pub(crate) fn focus_first_action(&mut self) {
+        self.menu.focus_first_action();
     }
 
     pub(crate) fn close(&mut self) {
@@ -166,6 +176,10 @@ impl ShellLayer for TabMenuLayer {
     /// closes this menu and falls through so the tab bar under the pointer
     /// can open its own in the same dispatch.
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
+        // Holding the opening chord must preserve the armed row.
+        if cx.shortcut == Some(settings_store::hardware::ShortcutAction::TabMenu) {
+            return Routed::Consumed;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -232,21 +246,12 @@ impl ShellLayer for TabMenuLayer {
         if !self.is_open() {
             return;
         }
-        // Settle the rows at the live text metrics before reading the rect
-        // (`ContextMenu::draw` does the same), so the shadow follows exactly
-        // the outline the widget is about to paint.
-        self.menu.layout_within(cx.text_renderer, cx.theme);
-        let rect = self.menu.get_rect();
-        // A popover is a Panel (HIG §9.1): `e4`, following the radius the
-        // shared widget paints itself with (`radii.md` today — F4-16).
-        ui::surface::shadow(
-            cx.scene,
-            cx.transform,
-            rect,
-            f64::from(cx.theme.tokens.radii.md),
-            &cx.theme.tokens.elevation.e4,
-        );
-        self.menu.draw(
+        // The menu is a floating Panel: this layer is the shell's top layer,
+        // so it paints its whole Panel (shadow, material, rows) here.
+        let anchor = Rect::new(self.anchor.x, self.anchor.y, self.anchor.x, self.anchor.y);
+        self.menu
+            .constrain_to(cx.geometry.display_for(Some(anchor)));
+        self.menu.draw_overlay(
             cx.scene,
             cx.transform,
             cx.text_renderer,

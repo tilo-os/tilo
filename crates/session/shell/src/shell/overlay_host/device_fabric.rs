@@ -83,6 +83,7 @@ pub struct GamepadAuthorizationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
+    pub displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub bluetooth_handoffs: Vec<crate::shell::device_fabric_runtime::BluetoothHandoffStatusView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
@@ -100,16 +101,22 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
-    pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
-    pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
-    pub display_mirror_available: bool,
+    /// Boots of the person's devices waiting for `device.unlock` here.
+    pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
+    /// Move a peer's native screens from an exact observed revision.
+    MoveDisplay(settings_store::device_displays::DeviceDisplayMove),
     Snapshot,
     /// Bypass presentation caching for semantic action revalidation.
     SnapshotFresh,
+    /// Wake the sleeping device `device` names (its label or id) through a
+    /// device awake on its LAN.
+    WakeDevice {
+        device: String,
+    },
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
@@ -207,16 +214,6 @@ pub enum DeviceFabricUiAction {
     StopRemoteCapture {
         session_id: [u8; 16],
     },
-    RequestDisplayMirror {
-        target: crate::shell::personal_continuity::DeviceId,
-    },
-    ResolveDisplayMirror {
-        session_id: [u8; 16],
-        approved: bool,
-    },
-    StopDisplayMirror {
-        session_id: [u8; 16],
-    },
     RequestPhoneTethering {
         phone: crate::shell::personal_continuity::DeviceId,
     },
@@ -226,6 +223,15 @@ pub enum DeviceFabricUiAction {
     },
     DisconnectPhoneTethering {
         request_id: [u8; 16],
+    },
+    /// The owner's `device.unlock` decision for a waiting boot.
+    AuthorizeDeviceUnlock {
+        request_digest: [u8; 32],
+        approved: bool,
+    },
+    /// Remove a device from the person's fleet.
+    RemoveDevice {
+        device: crate::shell::personal_continuity::DeviceId,
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
@@ -287,9 +293,6 @@ pub(super) enum DeviceFabricPaneRow {
     RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
-    DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
-    DisplayMirrorSource,
-    DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -396,22 +399,6 @@ pub(super) fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::RemoteCaptureDegraded),
-        )
-        .chain(
-            view.display_mirror_consents
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::DisplayMirrorConsent),
-        )
-        .chain(
-            view.display_mirror_available
-                .then_some(DeviceFabricPaneRow::DisplayMirrorSource),
-        )
-        .chain(
-            view.display_mirrors
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::DisplayMirrorStatus),
         )
         .chain(
             realtime
@@ -523,7 +510,7 @@ pub(super) fn speaker_group_summary(
         .members
         .iter()
         .filter(|member| {
-            member.state == crate::shell::speaker_group::SpeakerMemberState::AwaitingConsent
+            member.state == crate::shell::speaker_group::SpeakerMemberStatus::AwaitingConsent
         })
         .count();
     let counts: [(&str, ui::i18n::ArgValue); 3] = [
@@ -559,20 +546,6 @@ pub(super) const fn remote_capture_kind_key(
         crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
             "remote-input-scanner"
         }
-    }
-}
-
-/// The catalogue key of the reason, as the `$reason` of a sentence.
-pub(super) const fn display_mirror_failure_key(
-    failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
-) -> &'static str {
-    use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
-    match failure {
-        DisplayMirrorFailure::Denied => "mirror-failure-denied",
-        DisplayMirrorFailure::PeerOffline => "mirror-failure-peer-offline",
-        DisplayMirrorFailure::TimedOut => "mirror-failure-timed-out",
-        DisplayMirrorFailure::Transport => "mirror-failure-transport",
-        DisplayMirrorFailure::Policy => "mirror-failure-policy",
     }
 }
 

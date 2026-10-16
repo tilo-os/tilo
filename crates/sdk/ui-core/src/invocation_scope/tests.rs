@@ -293,60 +293,6 @@ fn causal_scope_worker_effect_rechecks_original_caller_and_retires_same_job() {
     assert!(b.check().is_ok());
 }
 
-// Internal SDK queue fixture built from the same real record loan/scope path.
-// This is not exposed by the library or used to qualify a native final owner.
-pub(crate) fn queued_document_fixture() -> (
-    RouteSpec,
-    collab_types::DocumentMutation,
-    DocumentAuthorization,
-    Arc<AtomicU64>,
-    crate::bound_dispatch::legacy_document_tests::Fixture,
-) {
-    let fixture = fixture(958);
-    let now = Arc::new(AtomicU64::new(99));
-    let caller = scope(&fixture, 8, "original-queue-caller", 100, &now);
-    let before = fixture
-        .store
-        .read(&fixture.checkout.id, |doc| doc.base_heads())
-        .unwrap();
-    fixture
-        .store
-        .with_checked(&fixture.checkout.id, |doc| {
-            caller.with_document_mutation(doc, |doc| {
-                doc.put(ROOT, "queued", true).unwrap();
-                Ok(())
-            })
-        })
-        .unwrap()
-        .unwrap();
-    let (mutation, authorization, _) = publication(&fixture, &before).unwrap();
-    (
-        caller.lease.route.clone(),
-        mutation,
-        authorization,
-        now,
-        fixture,
-    )
-}
-pub(crate) fn queued_next_edit(
-    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
-    time: &Arc<AtomicU64>,
-) -> bool {
-    let next = scope(fixture, 9, "next-caller", 200, time);
-    fixture
-        .store
-        .with_checked(&fixture.checkout.id, |doc| {
-            next.with_document_mutation(doc, |doc| {
-                doc.put(ROOT, "next", true).unwrap();
-                Ok(())
-            })
-        })
-        .unwrap()
-        .unwrap();
-    let (mutation, authorization, _) = publication(fixture, &[]).unwrap();
-    authorization.check(&next.lease.route, &mutation).is_ok()
-}
-
 #[test]
 fn causal_scope_observes_only_newly_applied_remote_range_without_laundering_local_edits() {
     for unscoped_local in [false, true] {
@@ -401,7 +347,7 @@ fn causal_scope_required_unadapted_handler_refuses_before_start_and_cancel_fence
         type_id: "controlled.effect".into(),
         payload: vec![],
     };
-    let result = crate::bound_dispatch::legacy_document::invoke_legacy_effect_scoped(
+    let result = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
         &mut fixture.tile,
         &fixture.target,
         job.invocation(),
@@ -604,4 +550,19 @@ fn invoker_scope_nests_and_gates_remote_view_operations() {
         assert_eq!(super::current_participant(), Some(participant));
     }
     assert_eq!(super::current_invoker(), None);
+}
+
+/// Reading a document changes nobody's view: an admitted agent may run the
+/// app's declared read, though not another View operation.
+#[test]
+fn a_declared_document_read_is_no_view_move_for_a_remote_actor() {
+    use tilo_actions::ActionContract;
+    let mut read = ActionContract::view();
+    read.tags.push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
+    assert!(super::view_operation_permitted("agent:a", "me", &read));
+    assert!(!super::view_operation_permitted(
+        "agent:a",
+        "me",
+        &ActionContract::view()
+    ));
 }

@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "tilo-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
+description = "tilo-agent: a headless participant that runs broker-leased tasks through the actions the session's apps publish to it."
 
 [lib]
 name = "tilo_agent"
@@ -27,30 +27,17 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # `TILO_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# The word processor's exported actions, shared with the toolbar.
-word-processor = { path = "../word-processor" }
-# Chat conversation types and actions. Live media features remain disabled for
-# this headless participant.
-chat = { path = "../chat", default-features = false }
-# Image editor types and actions, including cross-app image references.
-photos = { path = "../photos" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # The transform action names shortcuts lower their `Ai` steps to.
 tilo-automation = { path = "../../crates/collab/automation" }
-# The selected-resource address carried by chat messages.
-tilo-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
-qdoc = { path = "../../crates/doc/qdoc" }
-tilo-content = { path = "../../crates/system/content" }
-tilo-resource = { path = "../../crates/sdk/tilo-resource" }
-automerge.workspace = true
-tilo-automerge.workspace = true
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
+tilo-content = { path = "../../crates/system/content", features = ["device"] }
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
@@ -60,14 +47,18 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-hex.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+
+# The broker tests (typed_peer and the tests built on it) drive the shell's
+# in-process broker, which runs on Linux.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 
 [[test]]
 name = "it"

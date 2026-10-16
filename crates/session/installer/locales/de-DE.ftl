@@ -1,0 +1,25 @@
+installer-welcome-title = Willkommen bei Tilo
+installer-welcome-note = Vor der Installation prüfen wir deine Auswahl. Auf deinen Laufwerken ändert sich nichts, bis du bestätigst.
+installer-keyboard-note = Wähle die Belegung deiner Tastatur. Du kannst sie später ändern.
+installer-account-name = Dein Name (optional)
+installer-account-name-note = Verwende den Namen, den andere sehen sollen. Dein Benutzername zur Anmeldung kann anders sein.
+installer-account-username = Benutzername
+installer-account-username-note = Wird zur Anmeldung und für dein persönliches Verzeichnis verwendet.
+installer-account-password = Dein Passwort
+installer-account-password-note = Es schützt deine Dateien. Verwende mindestens 15 Zeichen, zum Beispiel mehrere nicht zusammengehörige Wörter.
+installer-account-password-confirm = Gib dein Passwort erneut ein
+installer-account-pin = Deine Start-PIN
+installer-account-pin-note = Verwende mindestens 6 Ziffern. Dein Computer begrenzt falsche Versuche. Bewahre den Wiederherstellungsschlüssel für Hardwareänderungen auf.
+installer-account-pin-confirm = Gib deine Start-PIN erneut ein
+installer-storage-no-drives = Noch sind keine Laufwerke verfügbar. Prüfe, ob das Laufwerk angeschlossen ist, und aktualisiere die Laufwerksliste. Es wurde nichts geändert.
+installer-storage-erase-warning = Damit wird alles auf dem ausgewählten Laufwerk ersetzt, einschließlich anderer Betriebssysteme und Dateien. Sichere alles, was du behalten möchtest. Nichts wird gelöscht, bis du die Installation geprüft und bestätigt hast.
+installer-storage-keep-guidance = Behalte dein anderes Betriebssystem und seine Dateien. Tilo braucht mindestens 35 GiB nicht zugewiesenen Speicherplatz oder geeignete leere Partitionen. Vorhandene Partitionen werden niemals verkleinert oder verschoben. Falls der Platz nicht reicht, kannst du sicher zurückgehen und in deinem anderen Betriebssystem Platz schaffen.
+
+installer-media-title = Mehr Video- und Audioformate abspielen
+installer-media-note = Wird von den Herausgebern der Formate auf diesen Computer geladen, sobald er online ist. Du kannst es in den Einstellungen ausschalten.
+installer-media-install = Installieren
+installer-media-skip = Nicht jetzt
+installer-media-chosen = Ausgewählt: wird installiert, sobald das neue System online ist
+installer-media-undo = Rückgängig
+installer-media-next = Weiter
+installer-media-back = Zurück

@@ -27,6 +27,7 @@ fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
             active_tab: 1,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         },
         WindowGroup {
             id: 200,
@@ -34,6 +35,7 @@ fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
             active_tab: 3,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         },
     ];
     tree.seed_doc_from_cache();
@@ -48,10 +50,25 @@ fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
     assert!(tabs_of(&tree.desktop, &elsewhere).is_empty());
     assert_eq!(tabs_of(&tree.desktop, &request), [1, 3]);
 
+    for surface in [501, 503] {
+        crate::shell::foreign::store().note_adopted(surface);
+    }
     let chrome = ChromeState::new(tree);
     let tabs = tabs_of(&chrome.borrow().tree().desktop, &request);
     for tab in tabs {
         crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab).unwrap();
+    }
+    assert_eq!(
+        tabs_of(&chrome.borrow().tree().desktop, &request),
+        [1, 3],
+        "clients may defer their close decisions"
+    );
+    for surface in [501, 503] {
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            surface,
+        );
+        crate::shell::foreign::store().forget(surface);
     }
     let left = chrome
         .borrow()

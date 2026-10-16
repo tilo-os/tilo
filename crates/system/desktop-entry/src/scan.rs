@@ -24,6 +24,12 @@ use crate::locale::locale_candidates;
 /// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
 /// are matched against.
 pub const CURRENT_DESKTOP: &str = "tilo";
+/// Desktops Tilo is compatible with for menu visibility. GNOME-only
+/// applications would otherwise vanish because we do not *be* GNOME. Menus only:
+/// autostart matches Tilo's own name, see [`crate::autostart::AUTOSTART_DESKTOPS`].
+pub fn current_desktops() -> Vec<String> {
+    vec![CURRENT_DESKTOP.to_string(), "GNOME".to_string()]
+}
 
 /// What a scan turned up, plus what it declined and why. The counters are not decoration:
 /// "the app I installed is not in the palette" has half a dozen legitimate causes
@@ -82,16 +88,16 @@ pub fn application_dirs() -> Vec<PathBuf> {
         }
     };
 
-    if let Some(home) = xdg_paths::xdg::data_home() {
+    if let Some(home) = tilo_paths::xdg::data_home() {
         push(home.join("applications"));
     }
-    for base in xdg_paths::xdg::data_dirs() {
+    for base in tilo_paths::xdg::data_dirs() {
         push(base.join("applications"));
     }
     // Flatpak's exports. Appended, not prepended: the dedup above keeps their real precedence if
     // the session already listed them, and appending is correct otherwise — a hand-installed
     // entry should override an export.
-    if let Some(home) = xdg_paths::home() {
+    if let Some(home) = tilo_paths::home() {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
     push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
@@ -100,7 +106,7 @@ pub fn application_dirs() -> Vec<PathBuf> {
 
 /// Scan the XDG application directories of the current environment.
 pub fn scan() -> Scan {
-    scan_dirs(&application_dirs(), &[CURRENT_DESKTOP.to_string()])
+    scan_dirs(&application_dirs(), &current_desktops())
 }
 
 /// Scan an explicit list of `applications` directories, in precedence order, filtering for

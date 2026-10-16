@@ -3,7 +3,12 @@
     clippy::disallowed_methods,
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
+mod audio;
+pub mod install;
 mod protocol;
+pub mod runtime;
+mod shared;
+pub use shared::serve_shared_until_idle;
 
 use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
@@ -14,18 +19,40 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
-use super::{FrameSlot, KeyInput, MouseButton, WebViewCommand, WebViewEngine, WebViewEvent};
+use super::{
+    FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand, WebViewEngine,
+    WebViewEvent,
+};
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
+
+const MAX_OWNED_NAVIGATIONS: usize = 32;
+
+#[derive(Default)]
+struct NavigationRequests {
+    last_id: u32,
+    pending: HashMap<u32, String>,
+}
 
 #[derive(Default)]
 struct Shared {
+    audio: audio::PageAudio,
+    text_input: Mutex<super::text_input::Transactions>,
+    native_edit_history: AtomicBool,
+    guarded_edit_history: AtomicBool,
+    native_caret_text_input: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     uri: Mutex<String>,
+    navigations: Mutex<NavigationRequests>,
+    navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Set on the owner for another process's tab: its host events and
+    /// frames go to that process instead of this endpoint.
+    remote: Option<Arc<shared::Outbox>>,
 }
 
 impl Shared {
@@ -38,7 +65,108 @@ impl Shared {
         }
     }
 
+    fn admit_navigation(&self, request_id: u32, uri: String) -> Result<(), String> {
+        let mut owners = self
+            .navigations
+            .lock()
+            .map_err(|_| "Navigation owners unavailable")?;
+        let events = self
+            .events
+            .lock()
+            .map_err(|_| "Navigation outcomes unavailable")?;
+        if self.failed.load(Ordering::Acquire) || self.stopping.load(Ordering::Acquire) {
+            return Err("Chromium is unavailable".into());
+        }
+        if request_id <= owners.last_id {
+            return Err("Navigation request IDs must increase without reuse".into());
+        }
+        let completed = events
+            .iter()
+            .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+            .count();
+        if owners.pending.len() + completed >= MAX_OWNED_NAVIGATIONS {
+            return Err("Navigation outcome capacity reached".into());
+        }
+        owners.last_id = request_id;
+        owners.pending.insert(request_id, uri);
+        Ok(())
+    }
+
+    fn cancel_navigation(&self, request_id: u32) {
+        let mut owners = self.navigations.lock_recover();
+        owners.pending.remove(&request_id);
+        let mut events = self.events.lock_recover();
+        events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
+    }
+
+    fn fail_navigations(&self, message: &str) {
+        let pending: Vec<_> = self
+            .navigations
+            .lock_recover()
+            .pending
+            .iter()
+            .map(|(&id, uri)| (id, uri.clone()))
+            .collect();
+        for (request_id, uri) in pending {
+            self.event(WebViewEvent::NavigationOutcome {
+                request_id,
+                uri,
+                error: Some(message.into()),
+            });
+        }
+    }
+
+    fn complete_navigation(&self, event: WebViewEvent) {
+        let WebViewEvent::NavigationOutcome { request_id, .. } = &event else {
+            return;
+        };
+        // Reserve the queue slot before send; hold ownership through enqueue
+        // so an admission cannot race a completing request's reservation.
+        let mut owners = self.navigations.lock_recover();
+        if owners.pending.remove(request_id).is_none() {
+            return;
+        }
+        let mut events = self.events.lock_recover();
+        if events.len() >= 512 {
+            if let Some(index) = events.iter().position(|event| {
+                !matches!(
+                    event,
+                    WebViewEvent::NavigationOutcome { .. }
+                        | WebViewEvent::LoadFinished
+                        | WebViewEvent::LoadFinishedAt { .. }
+                        | WebViewEvent::LoadFailed { .. }
+                )
+            }) {
+                events.remove(index);
+            }
+        }
+        events.push_back(event);
+        drop(events);
+        drop(owners);
+        self.wake();
+    }
+
     fn event(&self, event: WebViewEvent) {
+        if matches!(event, WebViewEvent::NavigationOutcome { .. }) {
+            self.complete_navigation(event);
+            return;
+        }
+        if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
+            self.stopping.store(true, Ordering::Release);
+        }
+        if matches!(
+            event,
+            WebViewEvent::RendererTerminated | WebViewEvent::TabClosed | WebViewEvent::TabDetached
+        ) {
+            self.text_input.lock_recover().unavailable();
+        }
+        // Renderer termination is visual: the host names each affected owner
+        // explicitly. Its delayed generic event cannot invalidate a recovery
+        // command admitted after the corresponding owned failure.
+        if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
+            self.fail_navigations("The native browser document became unavailable");
+        }
+
         if let WebViewEvent::UriChanged(uri) = &event
             && let Ok(mut current) = self.uri.lock()
         {
@@ -83,6 +211,7 @@ impl Shared {
                         WebViewEvent::LoadFinished
                             | WebViewEvent::LoadFinishedAt { .. }
                             | WebViewEvent::LoadFailed { .. }
+                            | WebViewEvent::NavigationOutcome { .. }
                     )
                 })
             {
@@ -95,6 +224,8 @@ impl Shared {
 
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
+            self.fail_navigations(&message);
+            self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
             self.event(WebViewEvent::LoadFailed {
                 uri,
@@ -114,12 +245,16 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
-const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
-const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
-const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
-const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
-#[cfg(unix)]
-const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+/// A private window's disposable root is a temp directory named with this
+/// prefix that holds [`PRIVATE_ROOT_MARKER`] reading
+/// [`PRIVATE_ROOT_MARKER_CONTENT`]; only such a root is ever removed.
+pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
+pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
+pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
+/// The engine helper's pid, written once it runs inside the root.
+pub const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
+/// Writers hold this file shared and cleanup holds it exclusive.
+pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);
 impl PrivateRootCleanup {
@@ -135,7 +270,9 @@ impl Drop for PrivateRootCleanup {
     }
 }
 
-fn owned_private_root(root: &Path) -> bool {
+/// Whether `root` is a private window root Browser allocated: a real
+/// directory with the prefix and an intact marker, never a symlink.
+pub fn is_owned_private_root(root: &Path) -> bool {
     std::fs::symlink_metadata(root)
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
         && root
@@ -147,6 +284,14 @@ fn owned_private_root(root: &Path) -> bool {
         })
         && std::fs::read_to_string(root.join(PRIVATE_ROOT_MARKER))
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
+}
+
+/// Remove a private window's disposable root that no engine will use, if it
+/// is one Browser owns.
+pub fn release_private_root(root: &Path) {
+    if is_owned_private_root(root) {
+        cleanup_private_root(root);
+    }
 }
 
 fn cleanup_private_root(root: &Path) {
@@ -171,7 +316,7 @@ fn cleanup_private_root(root: &Path) {
             }
         }
     };
-    if owned_private_root(root)
+    if is_owned_private_root(root)
         && let Err(error) = std::fs::remove_dir_all(root)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -200,17 +345,49 @@ struct Runtime {
     routes: Routes,
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
+    /// The profile socket this process serves its host on.
+    server: std::sync::OnceLock<Arc<shared::Server>>,
+    /// Set when another process's host runs this profile.
+    link: Option<shared::ClientLink>,
+}
+impl Runtime {
+    /// Reserves a tab within the host's shared capacity and asks the host to
+    /// create it. `announce` runs before any host event for the tab can be
+    /// routed.
+    fn admit_tab(&self, shared: &Arc<Shared>, announce: impl FnOnce(u32)) -> Result<u32, String> {
+        let mut routes = self.routes.lock().map_err(|_| "Tab routes unavailable")?;
+        if routes.len() >= 32 {
+            return Err("At most 32 tabs can be open".into());
+        }
+        let tab = self.next_tab.fetch_add(1, Ordering::Relaxed);
+        if tab > i32::MAX as u32 {
+            return Err("Tab identity exhausted".into());
+        }
+        routes.insert(tab, Arc::downgrade(shared));
+        if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
+            routes.remove(&tab);
+            return Err(error.into());
+        }
+        announce(tab);
+        drop(routes);
+        Ok(tab)
+    }
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.process.stopping.store(true, Ordering::Release);
+        if self.link.is_some() {
+            // The command writer sends what is queued, then hangs up; the
+            // owner closes whatever this process left open.
+            self.tx.close();
+            return;
+        }
+        if let Some(server) = self.server.get() {
+            server.stop();
+        }
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
-        if let Some(supervisor) = self
-            .supervisor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        if let Some(supervisor) = self.supervisor.lock_recover().take()
             && supervisor.thread().id() != std::thread::current().id()
         {
             let _ = supervisor.join();
@@ -218,9 +395,7 @@ impl Drop for Runtime {
     }
 }
 fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
-    let mut events = queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut events = queue.lock_recover();
     if let WebViewEvent::DownloadUpdated { id, .. } = &event {
         events.retain(
             |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
@@ -236,8 +411,7 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
 
 fn fail_routes(routes: &Routes, message: &str) {
     let endpoints: Vec<_> = routes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .values()
         .filter_map(Weak::upgrade)
         .collect();
@@ -248,50 +422,64 @@ fn fail_routes(routes: &Routes, message: &str) {
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
+fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
+    if let Some(shared) = route(routes, tab) {
+        if let Some(outbox) = &shared.remote {
+            outbox.frame(tab, frame);
+            return;
+        }
+        if let Ok(mut slot) = shared.frames.lock() {
+            if let Some(previous) = slot.as_ref()
+                && previous.width == frame.width
+                && previous.height == frame.height
+                && previous.rgba == frame.rgba
+            {
+                super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
+                return;
+            }
+            *slot = Some(frame);
+        }
+        shared.wake();
+    }
+}
 
-/// Error-only surface used when a real engine cannot start. It never renders a
-/// page and repeats the diagnostic on navigation so the browser's normal error
-/// presentation remains actionable.
+/// Error-only surface used when the engine is not installed or cannot start.
+/// It never renders a page and answers navigation with its message, which is
+/// written for the person using the app.
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
-    _private_root: PrivateRootCleanup,
 }
 
 impl UnavailableEngine {
     pub fn new(message: String) -> Arc<Self> {
-        Self::build(message, None)
-    }
-
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not an owned Browser directory.
-    pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
-            return Err("Private Chromium root is not owned by Browser".into());
-        }
-        Ok(Self::build(message, Some(root.to_owned())))
-    }
-
-    fn build(message: String, private_root: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             message,
             shared: Shared {
+                audio: audio::PageAudio::default(),
+                text_input: Mutex::default(),
+                native_edit_history: AtomicBool::new(false),
+                guarded_edit_history: AtomicBool::new(false),
+                native_caret_text_input: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
                 uri: Mutex::new(String::new()),
+                navigations: Mutex::default(),
+                navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                remote: None,
             },
-            _private_root: PrivateRootCleanup(private_root),
         })
     }
 }
 
 impl WebViewEngine for UnavailableEngine {
+    fn navigate_owned(&self, _request_id: u32, _command: NavigationCommand) -> Result<(), String> {
+        Err(self.message.clone())
+    }
     fn send(&self, command: WebViewCommand) {
         match command {
             WebViewCommand::Navigate(uri) => self.shared.event(WebViewEvent::LoadFailed {
@@ -303,6 +491,18 @@ impl WebViewEngine for UnavailableEngine {
                     request_id,
                     result: Err(super::PageFailure::new("unavailable", self.message.clone())),
                 })
+            }
+            WebViewCommand::PaintCapture { request_id } => {
+                self.shared.event(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot: None,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, .. } => {
+                self.shared.event(WebViewEvent::PaintResource {
+                    request_id,
+                    bytes: None,
+                });
             }
             _ => {}
         }
@@ -325,32 +525,25 @@ impl WebViewEngine for UnavailableEngine {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("TILO_CHROMIUM_HOST") {
-        return Ok(path.into());
-    }
-    #[cfg(test)]
-    let executable = std::env::var_os("TILO_TEST_CHROMIUM_DISCOVERY_EXE")
-        .map(PathBuf::from)
-        .map_or_else(std::env::current_exe, Ok)
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(test))]
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let binary_name = if cfg!(target_os = "macos") {
-        "Browser Engine.app/Contents/MacOS/tilo-chromium-host"
-    } else {
-        "tilo-chromium-host"
-    };
-    for parent in executable.ancestors().skip(1).take(4) {
-        for candidate in [
-            parent.join("chromium").join(binary_name),
-            parent.join("Frameworks").join(binary_name),
-        ] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
+    runtime::locate().map_err(|missing| {
+        tracing::warn!(hint = %missing.developer_hint(), "Chromium engine runtime missing");
+        runtime::NOT_INSTALLED_MESSAGE.to_owned()
+    })
+}
+
+/// Every thread the Chromium transport runs is named and spawned here.
+fn spawn_named(
+    name: &str,
+    work: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name(name.into()).spawn(work)
+}
+
+/// The profile directory, created and canonicalized: the host requires an
+/// absolute profile, and every process must name one profile identically.
+fn prepare_profile(profile: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
+    profile.canonicalize().map_err(|error| error.to_string())
 }
 
 fn spawn_command_writer(
@@ -359,21 +552,19 @@ fn spawn_command_writer(
     writer_shared: Arc<Shared>,
     writer_routes: Routes,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-commands".into())
-        .spawn(move || {
-            let mut writer = stdin;
-            while let Some(command) = rx.pop() {
-                if let Err(error) = protocol::write_json(&mut writer, &command) {
-                    writer_shared.fail(format!("Chromium command channel closed: {error}"));
-                    fail_routes(
-                        &writer_routes,
-                        &format!("Chromium command channel closed: {error}"),
-                    );
-                    break;
-                }
+    spawn_named("chromium-commands", move || {
+        let mut writer = stdin;
+        while let Some(command) = rx.pop() {
+            if let Err(error) = protocol::write_json(&mut writer, &command) {
+                writer_shared.fail(format!("Chromium command channel closed: {error}"));
+                fail_routes(
+                    &writer_routes,
+                    &format!("Chromium command channel closed: {error}"),
+                );
+                break;
             }
-        })
+        }
+    })
 }
 
 fn spawn_frame_reader(
@@ -382,64 +573,58 @@ fn spawn_frame_reader(
     reader_routes: Routes,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     ready_tx: std::sync::mpsc::SyncSender<()>,
+    hub: Arc<shared::Hub>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-frames".into())
-        .spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                match protocol::read_packet(&mut reader) {
-                    Ok(Some(protocol::Packet::Frame(frame))) => {
-                        if let Some(shared) = route(&reader_routes, 1) {
-                            if let Ok(mut slot) = shared.frames.lock() {
-                                *slot = Some(frame);
-                            }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
-                        if let Some(shared) = route(&reader_routes, tab) {
-                            if let Ok(mut slot) = shared.frames.lock() {
-                                *slot = Some(frame);
-                            }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::Json(value))) => {
-                        if let Err(error) =
-                            route_native_event(&value, &reader_routes, &download_events, &ready_tx)
-                        {
-                            reader_shared.fail(format!("Invalid Chromium event: {error}"));
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        reader_shared.fail("Chromium engine disconnected".into());
+    spawn_named("chromium-frames", move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            match protocol::read_packet(&mut reader) {
+                Ok(Some(protocol::Packet::Frame(frame))) => {
+                    deliver_frame(&reader_routes, 1, frame);
+                }
+                Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
+                    deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::Json(value))) => {
+                    if let Err(error) =
+                        route_native_event(&value, &reader_routes, &download_events, &ready_tx)
+                    {
+                        reader_shared.fail(format!("Invalid Chromium event: {error}"));
                         break;
                     }
-                    Err(error) => {
-                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
-                        break;
+                    if matches!(
+                        value.get("event").and_then(Value::as_str),
+                        Some("download_prompt" | "download" | "download_runtime" | "ready")
+                    ) {
+                        hub.broadcast(&value);
                     }
                 }
+                Ok(None) => {
+                    reader_shared.fail("Chromium engine disconnected".into());
+                    break;
+                }
+                Err(error) => {
+                    reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                    break;
+                }
             }
-            queue_download_event(
-                &download_events,
-                WebViewEvent::DownloadRuntime {
-                    admitted: 0,
-                    detached: 0,
-                    accepting: false,
-                    error: "Chromium engine disconnected".into(),
-                },
-            );
-            fail_routes(&reader_routes, "Chromium engine disconnected");
-        })
+        }
+        queue_download_event(
+            &download_events,
+            WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: "Chromium engine disconnected".into(),
+            },
+        );
+        fail_routes(&reader_routes, "Chromium engine disconnected");
+        hub.close_all();
+    })
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
-    slot.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    slot.lock_recover().take()
 }
 
 fn supervise_child(
@@ -502,15 +687,46 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, String>>()
 }
 
+/// The engine host process. It is not one of the toolkit's thin binaries: it
+/// loads CEF from beside itself and the rest from the system, so the library
+/// path the launcher points at the app's own runtime bundle does not apply to
+/// it. Nor does the hardened allocator the launcher preloads into the app:
+/// Chromium brings its own (PartitionAlloc) and frees through glibc's
+/// internals, so a preloaded allocator aborts the host at start.
+fn host_command(host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command.env_remove("LD_LIBRARY_PATH");
+    command.env_remove("LD_PRELOAD");
+    command
+}
+
+/// Engine audio switches.
+///
+/// A governed (sandboxed) app is given no PipeWire/Pulse socket and no
+/// `/dev/snd`; its sound goes through the host's output service, which
+/// Chromium cannot speak. `--tilo-audio-bridge` makes the host take every
+/// page's PCM itself (CEF's audio handler) and send it here, to play through
+/// that service (see `audio`). Chromium then opens no device, so it does not
+/// probe the PulseAudio and ALSA endpoints the sandbox withholds; while the
+/// service is unavailable the PCM is dropped, which keeps media
+/// playing silently as the fake audio manager would. An app that is not
+/// governed keeps Chromium's own audio.
+fn host_audio_switches(governed: bool) -> &'static [&'static str] {
+    if governed {
+        &["--tilo-audio-bridge"]
+    } else {
+        &[]
+    }
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
-    let profile = profile.canonicalize().map_err(|error| error.to_string())?;
-    let mut command = Command::new(host);
+    let mut command = host_command(host);
+    command.args(host_audio_switches(media::audio_output::is_governed()));
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -622,7 +838,7 @@ impl ChromiumEngine {
     ///
     /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
+        if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
         }
         Self::with_host_extensions(host, &root.join("chromium"), &[], Some(root.to_owned()))
@@ -636,6 +852,22 @@ impl ChromiumEngine {
     ) -> Result<Arc<Self>, String> {
         let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
+        // A host needs its profile to itself: join the host already running
+        // it, or become the process that runs it.
+        let profile = &prepare_profile(profile)?;
+        let claim = match shared::claim(profile)? {
+            shared::Role::Owner(claim) => Some(claim),
+            shared::Role::Alone => None,
+            shared::Role::Client(stream) => {
+                cleanup_on_error.disarm();
+                return shared::connect(stream);
+            }
+            shared::Role::Busy(error) => {
+                // Another process may still be using the private root.
+                cleanup_on_error.disarm();
+                return Err(error);
+            }
+        };
         let mut child = launch_host(host, profile, &extensions, private_root.as_deref())?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
@@ -647,15 +879,7 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err("Chromium stdout unavailable".into());
         };
-        let shared = Arc::new(Shared {
-            open_tabs: Mutex::default(),
-            frames: Arc::new(Mutex::new(None)),
-            events: Mutex::new(VecDeque::new()),
-            waker: Mutex::new(None),
-            uri: Mutex::new(String::new()),
-            stopping: AtomicBool::new(false),
-            failed: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared::default());
         let tx = Arc::new(CommandQueue::default());
         let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
         let download_events = Arc::new(Mutex::new(VecDeque::new()));
@@ -666,7 +890,10 @@ impl ChromiumEngine {
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
             download_events: download_events.clone(),
+            server: std::sync::OnceLock::new(),
+            link: None,
         });
+        let hub = Arc::new(shared::Hub::default());
         let rx = tx.clone();
         let (ready_tx, ready_rx) = sync_channel(1);
         let writer_shared = shared.clone();
@@ -685,6 +912,7 @@ impl ChromiumEngine {
             reader_routes,
             download_events,
             ready_tx,
+            hub.clone(),
         ) {
             tx.close();
             let _ = child.kill();
@@ -698,27 +926,47 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(format!("Chromium did not initialize: {error}"));
         }
+        let served = claim
+            .as_ref()
+            .map(|claim| claim.serve(Arc::downgrade(&runtime), &hub))
+            .transpose();
+        let server = match served {
+            Ok(server) => {
+                if let Some(server) = &server {
+                    let _ = runtime.server.set(server.clone());
+                }
+                server
+            }
+            Err(error) => {
+                shared.stopping.store(true, Ordering::Release);
+                tx.close();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let child = Arc::new(Mutex::new(Some(child)));
         let supervisor_child = child.clone();
         let supervisor_shared = shared.clone();
         let supervisor_queue = tx.clone();
         let wait_for_private_cleanup = private_root.is_some();
         let supervisor_private_root = private_root;
-        let supervisor = std::thread::Builder::new()
-            .name("chromium-supervisor".into())
-            .spawn(move || {
-                let Some(child) = take_supervisor_child(&supervisor_child) else {
-                    supervisor_shared.fail("Chromium supervisor lost process ownership".into());
-                    supervisor_queue.close();
-                    return;
-                };
-                supervise_child(
-                    child,
-                    &supervisor_shared,
-                    &supervisor_queue,
-                    supervisor_private_root.as_deref(),
-                );
-            });
+        let supervisor = spawn_named("chromium-supervisor", move || {
+            let Some(child) = take_supervisor_child(&supervisor_child) else {
+                supervisor_shared.fail("Chromium supervisor lost process ownership".into());
+                supervisor_queue.close();
+                return;
+            };
+            supervise_child(
+                child,
+                &supervisor_shared,
+                &supervisor_queue,
+                supervisor_private_root.as_deref(),
+            );
+            if let Some(claim) = claim {
+                claim.release_after_exit(server.as_ref());
+            }
+        });
         let supervisor = match supervisor {
             Ok(supervisor) => supervisor,
             Err(error) => {
@@ -731,10 +979,7 @@ impl ChromiumEngine {
             }
         };
         if wait_for_private_cleanup {
-            *runtime
-                .supervisor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(supervisor);
+            *runtime.supervisor.lock_recover() = Some(supervisor);
         }
         cleanup_on_error.disarm();
         Ok(Arc::new(Self {
@@ -747,6 +992,84 @@ impl ChromiumEngine {
 }
 
 impl WebViewEngine for ChromiumEngine {
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
+            return false;
+        }
+        let direction = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
+        };
+        self.tx
+            .push(json!({"op":"edit_history","tab":self.tab,"direction":direction}))
+            .is_ok()
+    }
+
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.supports_text_input() && self.shared.guarded_edit_history.load(Ordering::Acquire)
+    }
+
+    fn supports_text_input(&self) -> bool {
+        !self.shared.failed.load(Ordering::Acquire) && !self.shared.stopping.load(Ordering::Acquire)
+    }
+
+    fn text_input(
+        &self,
+        request: super::text_input::Request,
+    ) -> Option<super::text_input::Receipt> {
+        if self.shared.failed.load(Ordering::Acquire)
+            || self.shared.stopping.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let (receipt, mut value) = self.shared.text_input.lock().ok()?.admit(request)?;
+        value["tab"] = json!(self.tab);
+        if value["action"] == "prepare_text_input"
+            && self.shared.native_caret_text_input.load(Ordering::Acquire)
+        {
+            value["native_caret"] = json!(true);
+        }
+        if self.tx.push(value).is_err() {
+            receipt.complete(Err(super::text_input::Failure::Rejected));
+        }
+        Some(receipt)
+    }
+
+    fn navigate_owned(&self, request_id: u32, command: NavigationCommand) -> Result<(), String> {
+        if !super::navigation_request_id(request_id) || !command.valid() {
+            return Err("Invalid owned navigation request".into());
+        }
+        // Serialize reservation+enqueue with cancellation; neither waits for
+        // CEF work, only the bounded command queue insertion.
+        let _ordering = self
+            .shared
+            .navigation_commands
+            .lock()
+            .map_err(|_| "Navigation command ordering unavailable")?;
+        let uri = match &command {
+            NavigationCommand::Navigate { url } => url.clone(),
+            _ => self
+                .shared
+                .uri
+                .lock()
+                .map(|uri| uri.clone())
+                .unwrap_or_default(),
+        };
+        self.shared.admit_navigation(request_id, uri)?;
+        let Some(mut wire) = encode_command(WebViewCommand::ScopedNavigation {
+            request_id,
+            command,
+        }) else {
+            self.shared.cancel_navigation(request_id);
+            return Err("Invalid internal owned navigation command".into());
+        };
+        wire["tab"] = json!(self.tab);
+        if let Err(error) = self.tx.push(wire) {
+            self.shared.cancel_navigation(request_id);
+            return Err(format!("Navigation was not queued: {error}"));
+        }
+        Ok(())
+    }
     fn create_tab(&self) -> Result<super::SharedEngine, String> {
         let waker = self
             .shared
@@ -754,28 +1077,14 @@ impl WebViewEngine for ChromiumEngine {
             .lock()
             .map_err(|_| "Tab wake callback unavailable")?
             .clone();
-        let mut routes = self
-            .runtime
-            .routes
-            .lock()
-            .map_err(|_| "Tab routes unavailable")?;
-        if routes.len() >= 32 {
-            return Err("At most 32 tabs can be open".into());
-        }
-        let tab = self.runtime.next_tab.fetch_add(1, Ordering::Relaxed);
-        if tab > i32::MAX as u32 {
-            return Err("Tab identity exhausted".into());
-        }
         let shared = Arc::new(Shared {
             waker: Mutex::new(waker),
             ..Shared::default()
         });
-        routes.insert(tab, Arc::downgrade(&shared));
-        if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
-            routes.remove(&tab);
-            return Err(error.into());
-        }
-        drop(routes);
+        let tab = match &self.runtime.link {
+            Some(link) => link.create_tab(&self.tx, shared.clone())?,
+            None => self.runtime.admit_tab(&shared, |_| {})?,
+        };
         Ok(Arc::new(Self {
             tx: self.tx.clone(),
             shared,
@@ -795,12 +1104,7 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared
-            .open_tabs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.shared.open_tabs.lock_recover().drain(..).collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -808,6 +1112,35 @@ impl WebViewEngine for ChromiumEngine {
     }
 
     fn send(&self, command: WebViewCommand) {
+        match command {
+            WebViewCommand::ScopedNavigation {
+                request_id,
+                command,
+            } => {
+                if let Err(error) = self.navigate_owned(request_id, command) {
+                    tracing::error!(request_id, %error, "Owned navigation was not admitted; use navigate_owned to observe refusal");
+                }
+                return;
+            }
+            WebViewCommand::CancelScopedNavigation { request_id } => {
+                let _ordering = self.shared.navigation_commands.lock_recover();
+                self.shared.cancel_navigation(request_id);
+                let error = if super::navigation_request_id(request_id) {
+                    self.tx.push(json!({"op":"cancel_navigation","tab":self.tab,"request_id":request_id})).err()
+                } else {
+                    None
+                };
+                // Failure wakes arbitrary callers, which may enqueue another
+                // command. Preserve ordering without running callbacks under it.
+                drop(_ordering);
+                if let Some(error) = error {
+                    self.shared
+                        .fail(format!("Navigation cancellation was not queued: {error}"));
+                }
+                return;
+            }
+            _ => {}
+        }
         let navigation = match &command {
             WebViewCommand::Navigate(uri) => Some(uri.clone()),
             _ => None,
@@ -924,11 +1257,7 @@ impl Drop for ChromiumEngine {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
         let retire = {
-            let mut routes = self
-                .runtime
-                .routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut routes = self.runtime.routes.lock_recover();
             if let Some(route) = routes.get_mut(&self.tab) {
                 *route = Weak::new();
                 true
@@ -987,6 +1316,24 @@ fn route_native_event(
         }
     };
     if let Some(shared) = endpoint {
+        if matches!(event_name, "ready" | "tab_ready") {
+            shared.native_caret_text_input.store(
+                value["native_caret_text_input"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.guarded_edit_history.store(
+                value["guarded_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.native_edit_history.store(
+                value["native_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+        }
+        if let Some(outbox) = &shared.remote {
+            outbox.event(value.clone());
+            return Ok(());
+        }
         if event_name == "open_tab"
             && let Some(url) = value.get("url").and_then(Value::as_str)
         {
@@ -1005,6 +1352,18 @@ fn route_native_event(
             }
             drop(requests);
             shared.wake();
+        }
+        if matches!(event_name, "audio_start" | "audio" | "audio_stop") {
+            shared.audio.event(event_name, value);
+            return Ok(());
+        }
+        if matches!(event_name, "closed" | "tab_detached") {
+            shared.audio.stop();
+        }
+        if event_name == "text_input_result" {
+            shared.text_input.lock_recover().reply(value);
+            shared.wake();
+            return Ok(());
         }
         if let Some(event) = decode_event(value) {
             shared.event(event);
@@ -1160,6 +1519,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
+        "devtools_result" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+                && value["body"]
+                    .as_str()
+                    .is_some_and(|body| body.len() <= 1024 * 1024)
+        }
         "context_closed" | "permission_closed" => valid_id(value),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
@@ -1175,6 +1543,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_f64()
             .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
         "fullscreen" => value["fullscreen"].is_boolean(),
+        "audio_start" | "audio" | "audio_stop" => audio::valid_event(event, value),
         "renderer_terminated" => value
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
@@ -1203,7 +1572,30 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|error| error.len() <= 1024)
         }
-        "ready" => text("cef_version") && text("chromium_version"),
+        "ready" => {
+            value
+                .get("native_caret_text_input")
+                .is_none_or(Value::is_boolean)
+                && text("cef_version")
+                && text("chromium_version")
+                && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
+        "tab_ready" => {
+            value
+                .get("native_caret_text_input")
+                .is_none_or(Value::is_boolean)
+                && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()
@@ -1214,6 +1606,17 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_f64()
             .is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n)),
         "loaded" => text("url") && value["status"].as_i64().is_some(),
+        "navigation_outcome" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["url"].as_str().is_some_and(|uri| uri.len() <= 65536)
+                && value.get("error").is_none_or(|error| {
+                    error
+                        .as_str()
+                        .is_some_and(|message| !message.is_empty() && message.len() <= 4096)
+                })
+        }
         "navigation_history" => {
             value["request_id"]
                 .as_u64()
@@ -1229,7 +1632,13 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 })
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
-        "page_result" => super::page::decode_result(value).is_some(),
+        "page_result" | "text_input_result" => super::page::decode_result(value).is_some(),
+        "paint_snapshot" | "paint_resource" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+        }
         "error" => text("url") && text("message"),
         _ => true,
     };
@@ -1242,9 +1651,29 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::ScopedNavigation {
+            request_id,
+            command,
+        } => super::navigation_request_id(*request_id) && command.valid(),
+        WebViewCommand::CancelScopedNavigation { request_id } => {
+            super::navigation_request_id(*request_id)
+        }
         WebViewCommand::Credentials(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
+        }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && method.len() <= 128
+                && params.is_object()
+                && params.to_string().len() <= 64 * 1024
+                && session.as_ref().is_none_or(|session| session.len() <= 128)
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             *request_id > 0
@@ -1276,7 +1705,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
-        WebViewCommand::RequestNavigationHistory { request_id, .. } => {
+        WebViewCommand::RequestNavigationHistory { request_id, .. }
+        | WebViewCommand::PaintCapture { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -1290,11 +1720,23 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             request_id,
             request,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
+        WebViewCommand::PaintResource { request_id, url } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !url.is_empty()
+                && url.len() <= 1 << 20
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
         WebViewCommand::Navigate(url) => url.len() <= 65536,
+        WebViewCommand::StartDownload { uri } => {
+            uri.len() <= 8192
+                && url::Url::parse(uri).ok().is_some_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host().is_some()
+                })
+        }
         WebViewCommand::Key {
             key: KeyInput::Character(text),
             ..
@@ -1318,25 +1760,11 @@ struct CommandQueue {
 }
 impl CommandQueue {
     fn push(&self, value: Value) -> Result<(), &'static str> {
-        // Count encoded bytes without allocating a second command buffer.
-        struct Counter(usize);
-        impl std::io::Write for Counter {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_add(data.len())
-                    .ok_or_else(|| std::io::Error::other("command byte count overflow"))?;
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut count = Counter(0);
-        serde_json::to_writer(&mut count, &value).map_err(|_| "encoding failed")?;
-        if count.0 >= protocol::MAX_PACKET as usize {
-            return Err("command too large");
-        }
+        let encoded = match runtime_collab::wire_json_len(&value) {
+            usize::MAX => return Err("encoding failed"),
+            bytes if bytes >= protocol::MAX_PACKET as usize => return Err("command too large"),
+            bytes => bytes,
+        };
         let mut state = self.state.lock().map_err(|_| {
             self.ready.notify_all();
             "command channel poisoned"
@@ -1368,16 +1796,16 @@ impl CommandQueue {
         } else {
             (4160, 96 * 1024 * 1024)
         };
-        if state.0.len() >= items || state.1.saturating_add(count.0) > bytes {
+        if state.0.len() >= items || state.1.saturating_add(encoded) > bytes {
             // Input saturation is not a navigation failure. The caller logs the
             // rejected operation; protocol/lifecycle errors have their own path.
             return Err("command queue capacity reached");
         }
         state.1 = state
             .1
-            .checked_add(count.0)
+            .checked_add(encoded)
             .ok_or("command byte count overflow")?;
-        state.0.push_back((value, count.0));
+        state.0.push_back((value, encoded));
         drop(state);
         self.ready.notify_one();
         Ok(())
@@ -1397,10 +1825,7 @@ impl CommandQueue {
         }
     }
     fn close(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .2 = true;
+        self.state.lock_recover().2 = true;
         self.ready.notify_all();
     }
 }
@@ -1414,6 +1839,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
+        "devtools_result" => WebViewEvent::DevToolsResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            ok: value["ok"].as_bool()?,
+            body: value["body"].as_str()?.into(),
+        },
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
@@ -1497,6 +1927,14 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
                 })
                 .collect::<Option<Vec<_>>>()?,
         },
+        "navigation_outcome" => {
+            validate_event(value).ok()?;
+            WebViewEvent::NavigationOutcome {
+                request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+                uri: value["url"].as_str()?.into(),
+                error: value.get("error").and_then(Value::as_str).map(String::from),
+            }
+        }
         "loaded" => WebViewEvent::LoadFinishedAt {
             uri: value.get("url")?.as_str()?.to_owned(),
         },
@@ -1508,6 +1946,30 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "paint_snapshot" => WebViewEvent::PaintSnapshot {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            snapshot: value["ok"]
+                .as_bool()?
+                .then(|| value["snapshot"].as_str().map(str::to_owned))
+                .flatten(),
+        },
+        "paint_resource" => WebViewEvent::PaintResource {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            bytes: value["ok"]
+                .as_bool()?
+                .then(|| {
+                    let content = value["content"].as_str()?;
+                    if value["base64"].as_bool().unwrap_or(false) {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(content)
+                            .ok()
+                    } else {
+                        Some(content.as_bytes().to_vec())
+                    }
+                })
+                .flatten(),
+        },
         "error" => WebViewEvent::LoadFailed {
             uri: value["url"].as_str().unwrap_or_default().into(),
             error: value["message"].as_str()?.into(),
@@ -1533,6 +1995,29 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Credentials(request) => request.encode()?,
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
+        WebViewCommand::ScopedNavigation {
+            request_id,
+            command,
+        } => {
+            let mut fields = match command {
+                NavigationCommand::Navigate { url } => json!({"command":"navigate","url":url}),
+                NavigationCommand::Back => json!({"command":"back"}),
+                NavigationCommand::Forward => json!({"command":"forward"}),
+                NavigationCommand::Reload => json!({"command":"reload"}),
+                NavigationCommand::HistoryEntry {
+                    history_request_id,
+                    id,
+                } => {
+                    json!({"command":"history_entry","history_request_id":history_request_id,"id":id})
+                }
+            };
+            fields["op"] = json!("scoped_navigation");
+            fields["request_id"] = json!(request_id);
+            fields
+        }
+        WebViewCommand::CancelScopedNavigation { request_id } => {
+            json!({"op":"cancel_navigation","request_id":request_id})
+        }
         WebViewCommand::RequestNavigationHistory {
             request_id,
             direction,
@@ -1579,6 +2064,18 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
         }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            let mut command = json!({"op":"devtools_call","request_id":request_id,"method":method,"params":params});
+            if let Some(session) = session {
+                command["session"] = json!(session);
+            }
+            command
+        }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             json!({"op":"site_status","request_id":request_id,"origin":origin})
         }
@@ -1620,8 +2117,16 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
-        WebViewCommand::StartDownload { .. }
-        | WebViewCommand::SetDownloadDestination { .. }
+        WebViewCommand::PaintCapture { request_id } => json!({
+            "op": "paint_capture",
+            "request_id": request_id,
+            "styles": tilo_paint_stream::snapshot::COMPUTED_STYLES,
+        }),
+        WebViewCommand::PaintResource { request_id, url } => {
+            json!({"op":"paint_resource","request_id":request_id,"url":url})
+        }
+        WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
+        WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }
         | WebViewCommand::SetContentFilter(_)
         | WebViewCommand::SetContentFilters { .. } => {

@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "host-storage")]
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +168,9 @@ pub enum UserWorkspaceChoice {
     PersonalDefault,
     App(String),
 }
+
+/// The settings section holding a person's [`PersonalDefaults`].
+pub const PERSONAL_DEFAULTS_SECTION: &str = "default_apps";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonalDefaults {
@@ -379,51 +380,38 @@ impl PersonalDefaults {
         Ok(())
     }
 
+    /// The person's defaults, from their settings: the
+    /// [`PERSONAL_DEFAULTS_SECTION`] section, which follows them to each of
+    /// their devices.
     #[cfg(feature = "host-storage")]
     pub fn load() -> Self {
-        let Some(path) = personal_path() else {
-            return Self::default();
-        };
-        Self::load_at(&path)
+        Self::from_section(&settings_store::load_section(PERSONAL_DEFAULTS_SECTION))
     }
 
-    #[cfg(feature = "host-storage")]
-    pub fn load_at(path: &Path) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    #[cfg(feature = "host-storage")]
+    /// Write these defaults to the person's settings.
+    ///
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::Persist`] if no config directory is
-    /// available, or [`PersonalDefaults::save_at`] fails.
+    /// Returns [`DefaultAppError::Persist`] if the settings could not be
+    /// written.
+    #[cfg(feature = "host-storage")]
     pub fn save(&self) -> Result<(), DefaultAppError> {
-        let path = personal_path()
-            .ok_or_else(|| DefaultAppError::Persist("no config directory".into()))?;
-        self.save_at(&path)
-    }
-
-    #[cfg(feature = "host-storage")]
-    /// # Errors
-    ///
-    /// Returns [`DefaultAppError::Persist`] if `self` can't be serialised
-    /// or written to `path`.
-    pub fn save_at(&self, path: &Path) -> Result<(), DefaultAppError> {
-        let mut body =
-            serde_json::to_vec_pretty(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?;
-        body.push(b'\n');
-        atomic_file::write_creating_parent(path, &body)
+        let serde_json::Value::Object(section) =
+            serde_json::to_value(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?
+        else {
+            return Err(DefaultAppError::Persist(
+                "defaults are not an object".into(),
+            ));
+        };
+        settings_store::update_section(PERSONAL_DEFAULTS_SECTION, section)
             .map_err(|e| DefaultAppError::Persist(e.to_string()))
     }
-}
 
-#[cfg(feature = "host-storage")]
-fn personal_path() -> Option<PathBuf> {
-    let root = xdg_paths::xdg::config_home()?;
-    Some(root.join("tilo/default-apps.json"))
+    /// The defaults a settings section holds; missing or malformed reads as
+    /// none chosen.
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default()
+    }
 }
 
 /// # Errors
@@ -641,15 +629,20 @@ mod tests {
 
     #[test]
     fn defaults_persist_atomically_and_normalize_resource_identifiers() {
-        // Phase `persistence_round_trip_is_atomic_shape`.
+        // Phase `a_settings_section_round_trips`.
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join("nested/default-apps.json");
             let defaults = PersonalDefaults {
                 handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
             };
-            defaults.save_at(&path).unwrap();
-            assert_eq!(PersonalDefaults::load_at(&path), defaults);
+            let serde_json::Value::Object(section) = serde_json::to_value(&defaults).unwrap()
+            else {
+                panic!("defaults are an object");
+            };
+            assert_eq!(PersonalDefaults::from_section(&section), defaults);
+            assert_eq!(
+                PersonalDefaults::from_section(&serde_json::Map::new()),
+                PersonalDefaults::default()
+            );
         }
         // Phase `resource_identifiers_are_normalized_and_active_schemes_rejected`.
         {

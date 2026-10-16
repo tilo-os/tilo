@@ -17,6 +17,11 @@
 //!     default and allows reading the listed paths.
 //!   - Web: a page has no processes; [`confine::confine`] reports
 //!     [`confine::ConfineError::Unsupported`], and callers parse in process.
+//! - [`job`] (Linux only): run a whole command (a CI check, a shell
+//!   session) as an isolated job on a shared kernel: its own cgroup and
+//!   namespaces, no capabilities, Landlock and the CI seccomp filter; and
+//!   [`job::vm`], a command that needs real root run in a micro-VM whose QEMU
+//!   is such a job. See `docs/job-sandbox.md`.
 //! - `shm` (Unix only) — anonymous memory files.
 //!   - Linux: sealed memfds, so a reader can map what it received as
 //!     immutable bytes.
@@ -24,17 +29,9 @@
 //!     [`shm::map_sealed`] takes a private copy instead of mapping, and sizes
 //!     are rounded up to the page size, so readers carry lengths explicitly.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod confine;
+#[cfg(target_os = "linux")]
+pub mod job;
 #[cfg(unix)]
 pub mod shm;
 
@@ -47,46 +44,36 @@ pub enum Feature {
     SealedMemory,
 }
 
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    Unsupported(&'static str),
-}
+pub use tilo_platform_caps::{Availability, availability, available};
 
-/// Each feature's availability on Linux, macOS and the web, in that order.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
-    (
-        Feature::ProcessSandbox,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported("a page has no helper processes"),
-        ],
-    ),
-    (
-        Feature::SealedMemory,
-        [
-            Availability::Available,
-            Availability::Unsupported("POSIX shared memory cannot be sealed; readers copy"),
-            Availability::Unsupported("a page has no shared memory files"),
-        ],
-    ),
-];
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that order.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::ProcessSandbox => [
+                Available,
+                Available,
+                Unsupported("a page has no helper processes"),
+            ],
+            Self::SealedMemory => [
+                Available,
+                Unsupported("POSIX shared memory cannot be sealed; readers copy"),
+                Unsupported("a page has no shared memory files"),
+            ],
+        }
+    }
 
-/// Whether `feature` works on the running target.
-#[must_use]
-pub fn availability(feature: Feature) -> Availability {
-    let column = if cfg!(target_os = "linux") {
-        0
-    } else if cfg!(target_os = "macos") {
-        1
-    } else {
-        2
-    };
-    CAPABILITIES
-        .iter()
-        .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(column).copied())
-        .unwrap_or(Availability::Unsupported("unknown feature"))
+    /// Whether the feature works on the running target. Only Linux and
+    /// macOS can confine helpers; every other target reads the web column.
+    fn availability(self) -> Availability {
+        const COLUMN: usize = if cfg!(target_os = "linux") {
+            0
+        } else if cfg!(target_os = "macos") {
+            1
+        } else {
+            2
+        };
+        self.targets()[COLUMN]
+    }
 }

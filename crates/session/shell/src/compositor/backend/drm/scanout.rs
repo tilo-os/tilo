@@ -1,9 +1,25 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two dumb buffers ping-ponged via `page_flip`, falling back to `dirty_framebuffer/set_crtc`.
-//! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
-//! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
+//! two buffer rings per output, each ping-ponged by page flips. Every flip goes through
+//! [`super::kms_flip::KmsFlip`]: an atomic commit of the primary plane where the driver
+//! takes atomic, else a legacy `drmModePageFlip`:
+//!
+//! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
+//!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
+//!   and the final pass writes it into the back slot turned by the output's transform and,
+//!   in SDR, mapped through its ICC profile
+//!   ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a hardware cursor
+//!   plane, page-flip events, and the renderer on this card. Any rotation and any ICC
+//!   profile is eligible.
+//! - **Readback**: two dumb buffers allocated at modeset, falling back to
+//!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
+//!   the GPU and written on the CPU (rotated, colour-managed with qcms, swizzled from vello's
+//!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
+//!   frame failed, present this way.
+//!
+//! smithay's `DrmCompositor` drives GLES, not vello, so neither ring uses it.
 //!
 //! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
 //! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
@@ -15,6 +31,7 @@ use std::io::Read as _;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::i32_of_f64;
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -24,13 +41,19 @@ use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc, DrmModifier, PlanarBuffer};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, PageFlipFlags,
-    connector, crtc, framebuffer,
+    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, connector, crtc,
+    framebuffer,
 };
 use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 
+use super::client_scanout::{
+    ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus, OfferTarget,
+};
+use super::kms_flip::{FlipTarget, KmsFlip};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
-use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
+use super::xrgb_history::{
+    XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
+};
 use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
@@ -42,8 +65,12 @@ use super::output_signal::{
 use super::outputs::DrmOutputKey;
 use crate::shell::color_pipeline::SdrToPqEncoder;
 use settings_store::hardware::HdrUnavailable;
+use tilo_lock::MutexRecover as _;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
+/// Smallest cursor plane every driver offers; the plane actually used is the
+/// driver's preferred size (`DRM_CAP_CURSOR_WIDTH`), up to
+/// [`cursor::MAX_PIXEL_SIZE`].
 const CURSOR_DIM: u32 = cursor::PLANE_SIZE;
 
 /// The pixel formats an output's scanout buffers can use.
@@ -93,8 +120,66 @@ fn is_display_connector(interface: connector::Interface) -> bool {
     )
 }
 
+/// Outcome of [`Card::reclaim_master`].
+#[derive(Debug)]
+enum MasterReclaim {
+    /// The seat manager had already granted master; nothing was asked.
+    AlreadyHeld,
+    /// The fd was not master and `DRM_IOCTL_SET_MASTER` succeeded.
+    Acquired,
+    /// The fd is not master and the kernel refused to make it so.
+    NotGranted(std::io::Error),
+}
+
+/// Decide how to end up holding DRM master, given whether the fd already
+/// holds it. `acquire` runs only when the probe could not confirm master,
+/// so an fd the seat manager already made master never sees a
+/// `SET_MASTER` it is not permitted to issue.
+fn reclaim_master(
+    probe: std::io::Result<bool>,
+    acquire: impl FnOnce() -> std::io::Result<()>,
+) -> MasterReclaim {
+    match probe {
+        Ok(true) => return MasterReclaim::AlreadyHeld,
+        Ok(false) => {}
+        Err(e) => tracing::debug!("DRM scanout: could not probe DRM master: {e}"),
+    }
+    match acquire() {
+        Ok(()) => MasterReclaim::Acquired,
+        Err(e) => MasterReclaim::NotGranted(e),
+    }
+}
+
+/// Whether `fd` currently holds DRM master, asked the way libdrm's
+/// `drmIsMaster` does. `DRM_IOCTL_AUTH_MAGIC` is a master-only ioctl: the
+/// kernel answers a non-master with `EACCES` before it reads the token,
+/// and a master with `EINVAL` because token 0 is never issued.
+fn fd_is_drm_master(fd: BorrowedFd<'_>) -> std::io::Result<bool> {
+    // `_IOW('d', 0x11, struct drm_auth { __u32 magic; })`, identical on every Linux arch.
+    const DRM_IOCTL_AUTH_MAGIC: libc::Ioctl = 0x4004_6411;
+    let mut auth: u32 = 0;
+    // SAFETY: `fd` is a live borrowed descriptor and `auth` is a valid,
+    // writable `struct drm_auth` for the duration of the call.
+    let rc = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            DRM_IOCTL_AUTH_MAGIC,
+            std::ptr::from_mut(&mut auth),
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EINVAL) => Ok(true),
+        Some(libc::EACCES) => Ok(false),
+        _ => Err(err),
+    }
+}
+
 /// Minimal owned-fd wrapper implementing the `drm` crate's device traits; fd comes from libseat (`Session::open`), privileged + DRM master while the session is active.
-struct Card(OwnedFd);
+pub(super) struct Card(OwnedFd);
 
 impl AsFd for Card {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -114,6 +199,23 @@ impl Card {
             .map_err(|e| format!("dup card fd: {e}"))
     }
 
+    /// Make sure this fd holds DRM master, asking the kernel for it only
+    /// when it does not already.
+    ///
+    /// The seat manager owns master, not the compositor: logind opens the
+    /// node in its own process and sets master before `TakeDevice`/
+    /// `ResumeDevice` hand it over. The kernel then refuses
+    /// `DRM_IOCTL_SET_MASTER` from any other process without
+    /// `CAP_SYS_ADMIN`, with `EACCES` and even when the fd already is
+    /// master. Probing first keeps an unprivileged session from issuing
+    /// that doomed ioctl after every suspend and VT switch; the fallback
+    /// remains for seat backends that open the node in this process.
+    fn reclaim_master(&self) -> MasterReclaim {
+        reclaim_master(fd_is_drm_master(self.as_fd()), || {
+            self.acquire_master_lock()
+        })
+    }
+
     /// `dev_t` of the underlying `cardN` node for stable per-connector `OutputId`s; best-effort (`0` on `fstat` failure — connector id still disambiguates).
     fn dev_id(&self) -> u64 {
         match smithay::reexports::rustix::fs::fstat(&self.0) {
@@ -126,15 +228,21 @@ impl Card {
     }
 }
 
-/// Two compositor-owned GPU allocations that can be both rendered into and
-/// scanned out.  This is constructed as a capability probe before the Vulkan
-/// aliases exist; ordinary presentation continues using dumb buffers until
-/// the complete direct path is ready.
+/// Images in a direct output's swapchain: the one KMS shows, the one a queued
+/// flip will show, and one more the next frame renders into while that flip
+/// waits for its vblank. With two, a pending flip owns both and the renderer
+/// idles until the vblank; the third lets rendering overlap it.
+pub(super) const DIRECT_SLOTS: usize = 3;
+
+/// [`DIRECT_SLOTS`] compositor-owned GPU allocations that can be both rendered
+/// into and scanned out.  This is constructed as a capability probe before the
+/// Vulkan aliases exist; ordinary presentation continues using dumb buffers
+/// until the complete direct path is ready.
 struct GbmScanoutBuffers {
     device: GbmDevice<Card>,
-    buffers: [gbm::BufferObject<()>; 2],
-    dma_fds: [OwnedFd; 2],
-    fbs: [framebuffer::Handle; 2],
+    buffers: [gbm::BufferObject<()>; DIRECT_SLOTS],
+    dma_fds: [OwnedFd; DIRECT_SLOTS],
+    fbs: [framebuffer::Handle; DIRECT_SLOTS],
 }
 
 /// Immutable description borrowed by the Vulkan importer.  Ownership stays in
@@ -185,30 +293,40 @@ impl GbmScanoutBuffers {
                     }),
             }
         };
-        let buffers = [allocate(0)?, allocate(1)?];
+        let buffers = [allocate(0)?, allocate(1)?, allocate(2)?];
         for (index, buffer) in buffers.iter().enumerate() {
             validate_gbm_scanout_buffer(buffer, width, height, format)
                 .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))?;
         }
-        let dma_fds = [
-            buffers[0]
+        let export = |index: usize| {
+            buffers
+                .get(index)
+                .ok_or_else(|| format!("no GBM scanout buffer[{index}]"))?
                 .fd_for_plane(0)
-                .map_err(|error| format!("export GBM scanout buffer[0]: {error}"))?,
-            buffers[1]
-                .fd_for_plane(0)
-                .map_err(|error| format!("export GBM scanout buffer[1]: {error}"))?,
-        ];
-        let fb0 = device
-            .add_planar_framebuffer(&buffers[0], FbCmd2Flags::MODIFIERS)
-            .map_err(|error| format!("add GBM framebuffer[0]: {error}"))?;
-        let fb1 = match device.add_planar_framebuffer(&buffers[1], FbCmd2Flags::MODIFIERS) {
-            Ok(fb) => fb,
-            Err(error) => {
-                let _ = device.destroy_framebuffer(fb0);
-                return Err(format!("add GBM framebuffer[1]: {error}"));
+                .map_err(|error| format!("export GBM scanout buffer[{index}]: {error}"))
+        };
+        let dma_fds = [export(0)?, export(1)?, export(2)?];
+        let mut fbs = Vec::with_capacity(DIRECT_SLOTS);
+        for (index, buffer) in buffers.iter().enumerate() {
+            match device.add_planar_framebuffer(buffer, FbCmd2Flags::MODIFIERS) {
+                Ok(fb) => fbs.push(fb),
+                Err(error) => {
+                    for fb in fbs {
+                        let _ = device.destroy_framebuffer(fb);
+                    }
+                    return Err(format!("add GBM framebuffer[{index}]: {error}"));
+                }
+            }
+        }
+        let fbs = match <[framebuffer::Handle; DIRECT_SLOTS]>::try_from(fbs) {
+            Ok(fbs) => fbs,
+            Err(fbs) => {
+                for fb in fbs {
+                    let _ = device.destroy_framebuffer(fb);
+                }
+                return Err("GBM framebuffer count does not match the swapchain".to_owned());
             }
         };
-        let fbs = [fb0, fb1];
         Ok(Self {
             device,
             buffers,
@@ -243,32 +361,58 @@ impl Drop for GbmScanoutBuffers {
     }
 }
 
-/// Ownership of two renderer/KMS-shared scanout images.  `front` is the image
-/// the CRTC is known to be reading; `pending` is owned by KMS until its page
-/// flip event arrives.  Consequently there is no renderable image while a
-/// flip is pending on a two-slot swapchain.
+/// Ownership of [`DIRECT_SLOTS`] renderer/KMS-shared scanout images.  `front`
+/// is the image the CRTC is known to be reading; `pending` is owned by KMS
+/// until its page flip event arrives.  The remaining image can be rendered
+/// while a flip is pending ([`Self::overlap_slot`]), but it is queued only once
+/// that flip retired: KMS takes one flip per CRTC at a time.
+///
+/// A fullscreen client's own buffer can take the CRTC instead
+/// ([`super::client_scanout`]): while it is shown neither slot is, and the
+/// one after `front` renders next. Which client buffer is shown is the
+/// targets' [`ClientHold`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectScanoutState {
+pub(super) struct DirectScanoutState {
+    /// The slot KMS shows, or showed last before a client buffer took over.
     front: usize,
-    pending: Option<usize>,
+    pending: Option<Flip>,
+}
+
+/// What a queued page flip shows once it retires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Flip {
+    Slot(usize),
+    Client,
 }
 
 /// Imported Vulkan aliases must drop before their GBM allocation and KMS
 /// framebuffer IDs.  Field order makes that teardown relationship explicit.
 pub struct DirectScanoutTargets {
-    imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
+    imported: [ui::dmabuf_import::ImportedRenderTarget; DIRECT_SLOTS],
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
-    /// cannot change the framebuffer format, so HDR targets become visible
-    /// through one `set_crtc` before flips take over.
+    /// cannot change the framebuffer format, and the HDR signal is switched
+    /// on with it, so HDR targets become visible through one `set_crtc`
+    /// before flips take over.
     crtc_bound: bool,
+    /// KMS accepted a frame rendered into one of these targets; until then the
+    /// CRTC still shows the dumb front.
+    presented: bool,
     state: DirectScanoutState,
-    /// Complete scene revision last copied into each independent scanout
-    /// image. Sparse Vello rendering retains its own source texture, but a
-    /// partial blit is valid only when the selected GBM destination contains
-    /// the immediately preceding revision too.
-    revisions: [Option<u64>; 2],
+    /// When the pending flip was queued. An output whose flip nothing waits for (it is
+    /// slower than the output pacing the frames) is demoted once that flip is overdue.
+    flip_queued_at: Option<Instant>,
+    /// The presenter returns before this output's flip retires, so the next
+    /// frame renders into the spare slot while it is pending
+    /// ([`DirectScanoutState::overlap_slot`]). Off, a pending flip defers the
+    /// output's next frame, which is how an output slower than the loop skips
+    /// the frames it cannot show.
+    overlap: bool,
+    /// The client buffer KMS shows or has queued in place of a target, held
+    /// until the flip that replaces it retires. Dropped with the targets,
+    /// which happens only once the CRTC is back on the dumb front.
+    client: ClientHold<ClientScanout>,
 }
 
 /// Result of handing a completed imported target to KMS.
@@ -306,17 +450,27 @@ fn retirement_after_poll(
 }
 
 impl DirectScanoutTargets {
-    /// Build both targets transactionally. No CRTC state changes here.
+    /// Build both targets transactionally, the size of the output they show
+    /// (`output_size`, its extent in the scene). No CRTC state changes here.
     ///
     /// # Errors
     ///
-    /// Fails when GBM cannot allocate the scanout buffers or the renderer
-    /// cannot import either of them.
+    /// Fails when the output's extent is not the scanout mode, GBM cannot
+    /// allocate the scanout buffers, or the renderer cannot import either of
+    /// them.
     pub fn new(
         scanout: &DrmScanout,
         bridge: &VelloDrmBridge,
         format: ScanoutFormat,
+        output_size: (u32, u32),
     ) -> Result<Self, String> {
+        let mode = scanout.size();
+        if mode != output_size {
+            return Err(format!(
+                "scanout mode {}x{} is not the output's {}x{} extent",
+                mode.0, mode.1, output_size.0, output_size.1
+            ));
+        }
         let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
         let fourcc = match format {
             ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
@@ -343,17 +497,20 @@ impl DirectScanoutTargets {
                 })
                 .map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
         };
-        let imported = [import(0)?, import(1)?];
+        let imported = [import(0)?, import(1)?, import(2)?];
         Ok(Self {
             imported,
             buffers,
             format,
             crtc_bound: false,
+            presented: false,
             // The dumb-buffer front remains visible until the first complete
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
-            revisions: [None, None],
+            flip_queued_at: None,
+            overlap: false,
+            client: ClientHold::default(),
         })
     }
 
@@ -361,71 +518,149 @@ impl DirectScanoutTargets {
         self.format
     }
 
+    /// A queued flip onto one of these targets has not retired yet.
+    pub fn flip_pending(&self) -> bool {
+        self.state.pending.is_some()
+    }
+
+    /// When the pending flip was queued, while one is.
+    pub fn flip_queued_at(&self) -> Option<Instant> {
+        self.state.pending.and(self.flip_queued_at)
+    }
+
+    /// KMS has accepted a frame from these targets, so the CRTC no longer shows
+    /// the dumb front.
+    pub fn presented(&self) -> bool {
+        self.presented
+    }
+
+    /// KMS shows a client's buffer in place of these targets, or will once
+    /// its flip retires: nothing these targets hold is on screen.
+    pub fn shows_client(&self) -> bool {
+        self.client.any()
+    }
+
+    /// `frame`'s buffer is the last thing handed to KMS for this output: it
+    /// is shown, or its flip is queued. Not while a flip onto a target is
+    /// queued, even with that buffer still on screen until it retires.
+    pub fn shows_client_frame(
+        &self,
+        frame: &std::sync::Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> bool {
+        match self.state.pending {
+            Some(Flip::Slot(_)) => false,
+            Some(Flip::Client) | None => self.client.latest().is_some_and(|shown| shown.is(frame)),
+        }
+    }
+
     pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
         let index = self.state.render_slot()?;
+        self.imported.get(index).map(|target| (index, target))
+    }
+
+    /// Whether this output's next frame renders while its flip is pending.
+    pub fn overlaps(&self) -> bool {
+        self.overlap
+    }
+
+    /// Set by the presenter before each frame: see the field.
+    pub fn set_overlap(&mut self, overlap: bool) {
+        self.overlap = overlap;
+    }
+
+    /// The slot neither shown nor pending, to render while a flip is pending.
+    /// It may be queued once that flip retired ([`DirectScanoutState::submit`]).
+    pub fn overlap_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
+        let index = self.state.overlap_slot()?;
         self.imported.get(index).map(|target| (index, target))
     }
 
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
     }
-
-    pub fn previous_revision_for(&self, index: usize) -> Option<u64> {
-        self.revisions.get(index).copied().flatten()
-    }
-
-    pub fn mark_rendered(&mut self, index: usize, revision: u64) {
-        if let Some(slot) = self.revisions.get_mut(index) {
-            *slot = Some(revision);
-        }
-    }
 }
 
 impl DirectScanoutState {
-    const fn new(front: usize) -> Self {
+    pub(super) const fn new(front: usize) -> Self {
         Self {
             front,
             pending: None,
         }
     }
 
-    /// Reserve the only slot which is not currently owned by scanout.  The
-    /// caller must render successfully before handing it to [`Self::submit`].
-    fn render_slot(self) -> Option<usize> {
+    /// Reserve the slot after the front while no flip is pending.  The caller
+    /// must render successfully before handing it to [`Self::submit`].
+    pub(super) fn render_slot(self) -> Option<usize> {
         self.pending
             .is_none()
-            .then_some(1usize.saturating_sub(self.front))
+            .then_some(self.front.saturating_add(1) % DIRECT_SLOTS)
+    }
+
+    /// The slot that is neither the front nor the pending flip's, so a frame
+    /// can render while that flip waits for its vblank. While a client buffer's
+    /// flip is pending, any slot but the front qualifies.
+    pub(super) fn overlap_slot(self) -> Option<usize> {
+        let pending = match self.pending? {
+            Flip::Slot(slot) => Some(slot),
+            Flip::Client => None,
+        };
+        (1..DIRECT_SLOTS)
+            .map(|step| self.front.saturating_add(step) % DIRECT_SLOTS)
+            .find(|&slot| Some(slot) != pending)
+    }
+
+    /// Whether `slot` may hold a freshly rendered frame: KMS neither shows
+    /// it nor has it queued.
+    fn renderable(self, slot: usize) -> bool {
+        slot < DIRECT_SLOTS && slot != self.front && self.pending != Some(Flip::Slot(slot))
     }
 
     /// Transfer a successfully rendered slot to KMS.  This records ownership
     /// only after `page_flip` itself succeeds; a rejected flip remains safely
-    /// renderable on the next attempt.
-    fn submit(&mut self, slot: usize) -> bool {
-        if self.render_slot() != Some(slot) {
+    /// renderable on the next attempt. One flip at a time: a slot rendered
+    /// during a pending flip ([`Self::overlap_slot`]) waits for it to retire.
+    pub(super) fn submit(&mut self, slot: usize) -> bool {
+        if self.pending.is_some() || !self.renderable(slot) {
             return false;
         }
-        self.pending = Some(slot);
+        self.pending = Some(Flip::Slot(slot));
+        true
+    }
+
+    /// A flip onto a client's buffer was queued. Like a slot's, it owns the
+    /// CRTC until it retires.
+    pub(super) fn submit_client(&mut self) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        self.pending = Some(Flip::Client);
         true
     }
 
     /// A modeset showed `slot` directly: it is the front at once, with no
     /// flip event to wait for.
     fn present_immediately(&mut self, slot: usize) -> bool {
-        if self.render_slot() != Some(slot) {
+        if self.pending.is_some() || !self.renderable(slot) {
             return false;
         }
         self.front = slot;
         true
     }
 
-    /// Retire the queued flip.  Only now is the old front released back to the
-    /// renderer and the queued target promoted to the visible front.
-    fn complete(&mut self) -> bool {
-        let Some(front) = self.pending.take() else {
-            return false;
-        };
-        self.front = front;
-        true
+    #[cfg(test)]
+    pub(super) fn complete(&mut self) -> bool {
+        self.complete_flip().is_some()
+    }
+
+    /// Retire the queued flip, saying what it shows.  Only now is the old front
+    /// released back to the renderer and the queued target promoted to the
+    /// visible front.
+    pub(super) fn complete_flip(&mut self) -> Option<Flip> {
+        let flip = self.pending.take()?;
+        if let Flip::Slot(slot) = flip {
+            self.front = slot;
+        }
+        Some(flip)
     }
 }
 
@@ -647,6 +882,10 @@ pub struct CardHandle {
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
+///
+/// `Clone` because the runtime keeps the last forced probe's snapshots, so
+/// a settings change re-applies the arrangement without probing again.
+#[derive(Clone)]
 pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
@@ -666,6 +905,40 @@ pub struct ConnectorSnapshot {
     pub physical_mm: Option<(u32, u32)>,
     /// What the sink's EDID says it is; `None` when it exposes none.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
+    /// The mode the display configuration asks for, if any. Remembered with
+    /// a lit output so a later rescan can tell a changed request from an
+    /// unchanged one (see [`super::hotplug::retained_mode`]).
+    pub mode_intent: Option<settings_store::hardware::OutputMode>,
+    /// The display configuration names this output, so its scale and
+    /// rotation come from there (see [`super::hotplug::retained_presentation`]).
+    pub arranged: bool,
+}
+
+impl ConnectorSnapshot {
+    /// Every mode the connector advertises, in the kernel's order.
+    pub fn advertised_modes(&self) -> Vec<settings_store::hardware::OutputMode> {
+        self.modes.iter().map(output_mode).collect()
+    }
+
+    /// Drive the connector at `wanted` rather than the mode configuration
+    /// picked, when the connector still advertises exactly that mode.
+    pub fn retain_mode(&mut self, wanted: settings_store::hardware::OutputMode) -> bool {
+        let Some(found) = self.modes.iter().find(|m| output_mode(m) == wanted) else {
+            return false;
+        };
+        self.mode = *found;
+        true
+    }
+}
+
+/// A KMS mode as the display configuration names it.
+fn output_mode(mode: &Mode) -> settings_store::hardware::OutputMode {
+    let (width, height) = mode.size();
+    settings_store::hardware::OutputMode {
+        width: u32::from(width),
+        height: u32::from(height),
+        refresh_mhz: mode_refresh_mhz(mode),
+    }
 }
 
 /// A connector before the whole-seat topology resolves its persisted key.
@@ -816,21 +1089,36 @@ impl CardHandle {
         }
     }
 
-    /// Take DRM master back. Every `set_crtc` after a resume needs it, so this runs before the modeset.
+    /// Make sure DRM master is held again. Every `set_crtc` after a resume
+    /// needs it, so this runs before the modeset. The seat manager restores
+    /// master itself before announcing the session active, and suspend never
+    /// takes it away, so this is normally a probe that finds it held.
     pub fn acquire_master(&self) -> bool {
-        match self.card.acquire_master_lock() {
-            Ok(()) => {
+        match self.card.reclaim_master() {
+            MasterReclaim::AlreadyHeld => {
+                tracing::debug!("DRM scanout: DRM master held on resume");
+                true
+            }
+            MasterReclaim::Acquired => {
                 tracing::info!("DRM scanout: re-acquired DRM master");
                 true
             }
-            Err(e) => {
-                tracing::warn!("DRM scanout: acquire_master_lock on resume failed: {e}");
+            MasterReclaim::NotGranted(e) => {
+                tracing::warn!(
+                    "DRM scanout: session does not hold DRM master on resume and the seat \
+                     manager has not granted it ({e}); set_crtc may EACCES"
+                );
                 false
             }
         }
     }
 
     /// Ask the hardware what is connected now; `force_probe` is on since a hotplug event is precisely when cached connector state is stale.
+    ///
+    /// A forced probe of every connector, plus an EDID read each, is slow
+    /// (hundreds of milliseconds per DP-MST sink) and runs on the input
+    /// thread. Only startup and udev hotplug call this; everything else
+    /// reads the runtime's copy of the last result.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         let res = match self.card.resource_handles() {
             Ok(r) => r,
@@ -867,6 +1155,8 @@ impl CardHandle {
                 enabled: true,
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
                 monitor,
+                mode_intent: None,
+                arranged: false,
             });
         }
         out
@@ -916,14 +1206,13 @@ impl CardHandle {
     ) {
         let output_config = config.output_for(&config_key);
         snapshot.enabled = output_config.is_none_or(|output| output.enabled);
-        snapshot.mode = pick_configured_mode(
-            &snapshot.modes,
-            output_config.and_then(|output| output.mode),
-        )
-        .or_else(|| pick_configured_mode(&snapshot.modes, None))
-        // `connected` has already rejected an empty KMS mode table; retaining
-        // the old value here is defensive rather than inventing a mode.
-        .unwrap_or(snapshot.mode);
+        snapshot.mode_intent = output_config.and_then(|output| output.mode);
+        snapshot.arranged = output_config.is_some();
+        snapshot.mode = pick_configured_mode(&snapshot.modes, snapshot.mode_intent)
+            .or_else(|| pick_configured_mode(&snapshot.modes, None))
+            // `connected` has already rejected an empty KMS mode table; retaining
+            // the old value here is defensive rather than inventing a mode.
+            .unwrap_or(snapshot.mode);
         snapshot.config_key = config_key;
     }
 
@@ -1051,6 +1340,7 @@ impl CardHandle {
                 physical_mm: snapshot.physical_mm,
                 monitor: snapshot.monitor.clone(),
                 hdr_display: self.read_hdr_display_info(&snapshot.connector_name),
+                mode_intent: snapshot.mode_intent,
                 crtc,
                 scanout,
             }),
@@ -1101,7 +1391,7 @@ pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
         PathBuf::from("/usr/local/share/color/icc"),
         PathBuf::from("/var/lib/colord/icc"),
     ];
-    if let Some(data) = xdg_paths::xdg::data_home() {
+    if let Some(data) = tilo_paths::xdg::data_home() {
         roots.push(data.join("icc"));
         roots.push(data.join("color/icc"));
     }
@@ -1215,9 +1505,9 @@ impl HwCursor {
 
     /// Park the cursor off this output's panel; the KMS plane is per-CRTC, so a plane on an output the pointer left must be hidden or it leaves a frozen arrow.
     pub fn hide(&self) {
-        // `CURSOR_DIM` is a small compile-time constant (64), so this can never actually
-        // saturate; `try_from`/`saturating_neg` keep it defensive instead of relying on that.
-        let offset = i32::try_from(CURSOR_DIM)
+        // Past the largest plane any driver gets; `try_from`/`saturating_neg`
+        // keep it defensive instead of relying on that.
+        let offset = i32::try_from(cursor::MAX_PIXEL_SIZE)
             .unwrap_or(i32::MAX)
             .saturating_neg();
         self.move_to(offset, offset);
@@ -1231,7 +1521,19 @@ pub struct OutputCursor {
     /// `(x, y, w, h)` of the output in global coords.
     rect: (i32, i32, u32, u32),
     transform: settings_store::hardware::OutputTransform,
+    /// The output's scale: the plane's image, and so its hotspot, is drawn
+    /// at this density.
+    scale: f64,
     mover: HwCursor,
+}
+
+/// Client cursor bitmaps have already been resampled to output pixels;
+/// compositor shapes retain logical coordinates until the output is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HotspotSpace {
+    #[default]
+    Logical,
+    OutputPixels,
 }
 
 /// Routes a global pointer position to the right output's hardware cursor plane: each KMS plane
@@ -1244,8 +1546,12 @@ pub struct CursorPlanes {
     /// Pixel offset of the pointer position within the cursor image: the
     /// plane's top-left sits this far up-left of the pointer.
     hotspot: (i32, i32),
+    hotspot_space: HotspotSpace,
     /// Last global position, so a hotspot change re-places a still pointer.
     last: Option<(f64, f64)>,
+    /// The global position, shared with the presenter, which draws the
+    /// pointer into the frame on outputs without a cursor plane.
+    shared: std::sync::Arc<std::sync::Mutex<(f64, f64)>>,
 }
 
 impl CursorPlanes {
@@ -1255,16 +1561,34 @@ impl CursorPlanes {
             outputs,
             active: None,
             hotspot: (0, 0),
+            hotspot_space: HotspotSpace::Logical,
             last: None,
+            shared: std::sync::Arc::default(),
         }
     }
 
-    /// Adopt the hotspot of a newly shown cursor image.
-    pub fn set_hotspot(&mut self, hotspot: (i32, i32)) {
-        if self.hotspot == hotspot {
+    /// The pointer position as the presenter reads it.
+    pub fn shared_position(&self) -> std::sync::Arc<std::sync::Mutex<(f64, f64)>> {
+        self.shared.clone()
+    }
+
+    /// Adopt the newly shown image's hotspot in its own coordinate space.
+    pub fn set_image_hotspot(&mut self, image: &PointerImage, size: u32) {
+        let hotspot = image.bitmap(size).map_or((0, 0), |bitmap| {
+            (
+                i32::try_from(bitmap.hotspot.0).unwrap_or(0),
+                i32::try_from(bitmap.hotspot.1).unwrap_or(0),
+            )
+        });
+        let space = match image {
+            PointerImage::Client(_) => HotspotSpace::OutputPixels,
+            PointerImage::Shape(_) | PointerImage::Hidden => HotspotSpace::Logical,
+        };
+        if self.hotspot == hotspot && self.hotspot_space == space {
             return;
         }
         self.hotspot = hotspot;
+        self.hotspot_space = space;
         if let Some((x, y)) = self.last {
             self.move_to(x, y);
         }
@@ -1280,6 +1604,7 @@ impl CursorPlanes {
             id,
             rect,
             transform: settings_store::hardware::OutputTransform::Normal,
+            scale: 1.0,
             mover,
         }
     }
@@ -1323,11 +1648,30 @@ impl CursorPlanes {
         }
     }
 
+    /// Follow an output's scale, which sizes the image its plane shows.
+    pub fn set_scale(&mut self, id: OutputId, scale: f64) {
+        if let Some(output) = self.outputs.iter_mut().find(|output| output.id == id) {
+            output.scale = scale;
+        }
+        if let Some((x, y)) = self.last {
+            self.move_to(x, y);
+        }
+    }
+
+    /// The pixel offset applied by a cursor plane at this output density.
+    pub(crate) fn hotspot_pixels(&self, scale: f64) -> (i32, i32) {
+        match self.hotspot_space {
+            HotspotSpace::Logical => scaled_hotspot(self.hotspot, scale),
+            HotspotSpace::OutputPixels => self.hotspot,
+        }
+    }
+
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         self.last = Some((gx, gy));
+        *self.shared.lock_recover() = (gx, gy);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
-        let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
+        let (xi, yi) = (i32_of_f64(gx), i32_of_f64(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
             return;
         };
@@ -1354,11 +1698,27 @@ impl CursorPlanes {
             height,
             target.transform,
         );
-        target.mover.move_to(
-            x.saturating_sub(self.hotspot.0),
-            y.saturating_sub(self.hotspot.1),
-        );
+        let (hx, hy) = self.hotspot_pixels(target.scale);
+        target
+            .mover
+            .move_to(x.saturating_sub(hx), y.saturating_sub(hy));
     }
+}
+
+/// The hotspot of the 1x image at an output's `scale`, matching where the
+/// scaled rasterisation puts it.
+fn scaled_hotspot(hotspot: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a cursor hotspot is a few pixels; the rounded product is far inside i32"
+    )]
+    let scaled = |value: i32| (f64::from(value) * scale).round() as i32;
+    (scaled(hotspot.0), scaled(hotspot.1))
 }
 
 pub(crate) fn logical_to_physical_point(
@@ -1384,18 +1744,6 @@ pub(crate) fn logical_to_physical_point(
     }
 }
 
-/// Truncate a sub-pixel logical coordinate to a whole pixel. Rust's `as` cast from `f64` to
-/// `i32` already saturates to `i32::MIN`/`MAX` and maps NaN to 0 (no panic, no wraparound), so an
-/// out-of-range or NaN pointer position clamps rather than misbehaving; dropping the fractional
-/// part is the intended pixel-snapping behaviour, not a bug.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "float-to-int `as` saturates and maps NaN to 0; truncating the fractional pixel is intentional"
-)]
-fn pixel_coord(value: f64) -> i32 {
-    value as i32
-}
-
 /// Index of the first output rect containing `(xi, yi)`, or `None` in a gap between mismatched-size outputs; pure so cursor routing is unit-testable without a DRM device.
 fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<usize> {
     rects.iter().position(|&(ox, oy, ow, oh)| {
@@ -1405,6 +1753,32 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
         let y_end = oy.saturating_add(oh);
         xi >= ox && xi < x_end && yi >= oy && yi < y_end
     })
+}
+
+/// Without event cookies, a late completion after cancellation cannot be
+/// distinguished from a newer flip on the same CRTC. Once ownership becomes
+/// uncertain, only a newly established scanout can supply physical proof.
+#[derive(Clone, Copy, Debug)]
+struct PhysicalFlipIdentity {
+    eligible: bool,
+}
+
+impl Default for PhysicalFlipIdentity {
+    fn default() -> Self {
+        Self { eligible: true }
+    }
+}
+
+impl PhysicalFlipIdentity {
+    fn cancel_pending(&mut self, pending: bool) {
+        if pending {
+            self.eligible = false;
+        }
+    }
+
+    fn uncertain_completion(&mut self) {
+        self.eligible = false;
+    }
 }
 
 /// Holds one card fd as master and owns one output's scanout buffers.
@@ -1428,9 +1802,22 @@ pub struct DrmScanout {
     /// Monotonic instant at which the currently pending page flip was queued.
     /// Diagnostic only: completion clears it and logs only anomalously slow
     /// retirements, keeping the normal 144 Hz path silent.
+    flip_submission: u64,
+    physical_identity: PhysicalFlipIdentity,
     flip_queued_at: Option<std::time::Instant>,
-    /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
+    /// `CLOCK_MONOTONIC` when the pending flip was queued, the clock the
+    /// kernel stamps page-flip events with.
+    flip_queued_mono: Option<Duration>,
+    /// Whether the page-flip path is in use. Virtual connectors start `false`
+    /// because they never signal vblank; a flip there blocks in the kernel
+    /// until that wait times out and holds the DRM file description, so the
+    /// next frame cannot start. A physical connector latches this `false`
+    /// only when a flip fails as unsupported, then uses `dirty_framebuffer`.
     use_pageflip: bool,
+    /// Output-local rectangles to flush. Empty means the whole mode.
+    /// A transition that only moves the overview panel must not flush both
+    /// full scanouts: on virtio that upload is the multi-frame stall.
+    damage_clips: Vec<ClipRect>,
     width: u32,
     height: u32,
     /// Set once `dirty_framebuffer` is known to be unsupported, so we stop retrying it and use `set_crtc` to force a flush instead.
@@ -1439,7 +1826,12 @@ pub struct DrmScanout {
     cursor_buffer: Option<DumbBuffer>,
     /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
+    /// Logical cursor size (the accessibility setting).
     cursor_size: u32,
+    /// The output's scale: the cursor is drawn `cursor_size × scale` pixels.
+    cursor_scale: f64,
+    /// Side of the cursor plane buffer, in pixels.
+    cursor_dim: u32,
     /// What the pointer shows; resolved at `cursor_size` for drawn shapes.
     pointer_image: PointerImage,
     /// Opt-in bounded CPU destination-age tracker. It owns metadata only, never pixel storage.
@@ -1447,6 +1839,8 @@ pub struct DrmScanout {
     xrgb_scanout_epoch: Option<u64>,
     xrgb_software_cursor: [Option<FineDamageRect>; 2],
     xrgb_damage_requested: bool,
+    /// Dumb buffers kept mapped for the CPU renderer, by buffer slot.
+    cpu_maps: [Option<CpuMapping>; 2],
     /// The CRTC's adaptive-sync property and what was last written to it.
     adaptive_sync: AdaptiveSync,
     /// Pixel format of `buffers`. HDR swaps in a 10-bit pair.
@@ -1460,6 +1854,11 @@ pub struct DrmScanout {
     hdr_request: Option<HdrRequest>,
     /// CPU encoder for the readback path and the software cursor in HDR.
     hdr_encoder: Option<std::sync::Arc<SdrToPqEncoder>>,
+    /// The primary plane and the client buffers tried on it, for scanning a
+    /// fullscreen client's buffer out.
+    client_plane: ClientPlane,
+    /// How page flips reach KMS: every flip goes through it.
+    flip: KmsFlip,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -1545,12 +1944,13 @@ impl DrmScanout {
                 )
             })?;
         let card = Card(fd);
-        // Become DRM master so set_crtc is permitted. libseat normally grants it on the active session; acquire explicitly and log.
-        match card.acquire_master_lock() {
-            Ok(()) => tracing::info!("DRM scanout: acquired DRM master"),
-            Err(e) => {
+        // set_crtc needs DRM master. The seat manager grants it with the fd on an active session; ask the kernel only if it did not.
+        match card.reclaim_master() {
+            MasterReclaim::AlreadyHeld => tracing::info!("DRM scanout: DRM master held"),
+            MasterReclaim::Acquired => tracing::info!("DRM scanout: acquired DRM master"),
+            MasterReclaim::NotGranted(e) => {
                 tracing::warn!(
-                    "DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES"
+                    "DRM scanout: session does not hold DRM master ({e}); set_crtc may EACCES"
                 );
             }
         }
@@ -1653,9 +2053,10 @@ impl DrmScanout {
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
-            super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
+            tilo_accessibility_settings::AccessibilitySettings::load().effective_cursor_size();
+        let cursor_dim = Self::cursor_plane_dim(&card);
         let (cursor_buffer, hw_cursor_active) =
-            match Self::setup_hw_cursor(&card, crtc, cursor_size) {
+            match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim) {
                 Ok(buf) => {
                     // Centre it so a fresh boot shows the pointer before input arrives.
                     let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
@@ -1676,6 +2077,8 @@ impl DrmScanout {
                 }
             };
 
+        let use_pageflip = connector_uses_pageflip(&card, connector);
+        let flip = probe_flips(&card, connector, crtc, (width, height), use_pageflip);
         Ok(Self {
             card,
             pci_bus_id,
@@ -1686,44 +2089,73 @@ impl DrmScanout {
             fbs: [fb0, fb1],
             front: 0,
             flip_pending: false,
+            flip_submission: 0,
+            physical_identity: PhysicalFlipIdentity::default(),
             flip_queued_at: None,
-            use_pageflip: true,
+            flip_queued_mono: None,
+            use_pageflip,
+            damage_clips: Vec::new(),
             width,
             height,
             dirtyfb_unsupported: false,
             cursor_buffer,
             hw_cursor_active,
             cursor_size,
+            cursor_scale: 1.0,
+            cursor_dim,
             pointer_image: PointerImage::default(),
             xrgb_history: XrgbTargetHistory::new(2),
             xrgb_scanout_epoch: Some(1),
             xrgb_software_cursor: [None, None],
+            cpu_maps: [None, None],
+            // The CPU renderer always copies through the destination
+            // history: a full copy per frame is most of its frame time.
             xrgb_damage_requested: std::env::var("TILO_DRM_XRGB_DAMAGE")
-                .is_ok_and(|value| value == "1"),
+                .is_ok_and(|value| value == "1")
+                || super::cpu_present::cpu_render_reason().is_some(),
             adaptive_sync,
             format: ScanoutFormat::Xrgb8888,
             standby: None,
             hdr_signal,
             hdr_request: None,
             hdr_encoder: None,
+            client_plane: ClientPlane::with_plane(flip.plane().cloned()),
+            flip,
         })
     }
 
-    /// Allocate the 64×64 ARGB cursor buffer, paint the default arrow, bind via `set_cursor2` (its hotspot is the top-left tip); caller must keep the buffer alive.
+    /// The cursor plane size the driver prefers, which is also the largest
+    /// it takes: 64 where it says nothing, never more than the compositor
+    /// rasterises.
+    fn cursor_plane_dim(card: &Card) -> u32 {
+        use smithay::reexports::drm::{Device as _, DriverCapability};
+        let dim = |cap| {
+            card.get_driver_capability(cap)
+                .ok()
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(CURSOR_DIM)
+        };
+        dim(DriverCapability::CursorWidth)
+            .min(dim(DriverCapability::CursorHeight))
+            .clamp(CURSOR_DIM, cursor::MAX_PIXEL_SIZE)
+    }
+
+    /// Allocate the ARGB cursor buffer, paint the default arrow, bind via `set_cursor2` (its hotspot is the top-left tip); caller must keep the buffer alive.
     fn setup_hw_cursor(
         card: &Card,
         crtc: crtc::Handle,
         cursor_size: u32,
+        cursor_dim: u32,
     ) -> Result<DumbBuffer, String> {
         let mut cbuf = card
-            .create_dumb_buffer((CURSOR_DIM, CURSOR_DIM), DrmFourcc::Argb8888, 32)
+            .create_dumb_buffer((cursor_dim, cursor_dim), DrmFourcc::Argb8888, 32)
             .map_err(|e| format!("create cursor dumb buffer: {e}"))?;
         let pitch = cbuf.pitch() as usize;
         {
             let mut map = card
                 .map_dumb_buffer(&mut cbuf)
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
-            let arrow = cursor::bitmap(CursorShape::Default, cursor_size);
+            let arrow = cursor::bitmap(CursorShape::Default, cursor_size.min(cursor_dim));
             paint_cursor_argb(map.as_mut(), pitch, Some(&arrow));
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
@@ -1737,12 +2169,27 @@ impl DrmScanout {
     }
 
     pub fn set_cursor_size(&mut self, cursor_size: u32) {
-        let cursor_size = cursor_size.clamp(24, CURSOR_DIM);
+        let cursor_size = cursor_size.clamp(24, cursor::PLANE_SIZE);
         if self.cursor_size != cursor_size {
             self.invalidate_xrgb_history();
         }
         self.cursor_size = cursor_size;
         self.repaint_hw_cursor();
+    }
+
+    /// Draw the cursor for this output's scale.
+    pub fn set_cursor_scale(&mut self, scale: f64) {
+        if (self.cursor_scale - scale).abs() < f64::EPSILON {
+            return;
+        }
+        self.cursor_scale = scale;
+        self.invalidate_xrgb_history();
+        self.repaint_hw_cursor();
+    }
+
+    /// The cursor's side in this output's pixels; the plane bounds it.
+    fn cursor_pixel_size(&self) -> u32 {
+        cursor::pixel_size(self.cursor_size, self.cursor_scale).min(self.cursor_dim)
     }
 
     /// Show `image` as the pointer: repaint the cursor plane (and re-bind it
@@ -1757,7 +2204,7 @@ impl DrmScanout {
     }
 
     fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
-        self.pointer_image.bitmap(self.cursor_size)
+        self.pointer_image.bitmap(self.cursor_pixel_size())
     }
 
     fn cursor_hotspot(&self) -> (i32, i32) {
@@ -1807,6 +2254,11 @@ impl DrmScanout {
     /// Mode dimensions — callers size their paint buffer to this.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The mode this scanout was modeset at.
+    pub fn output_mode(&self) -> settings_store::hardware::OutputMode {
+        output_mode(&self.mode)
     }
 
     /// PCI bus identity of the KMS device which owns this output.
@@ -1964,6 +2416,7 @@ impl DrmScanout {
         std::mem::swap(&mut self.buffers, &mut pair.buffers);
         std::mem::swap(&mut self.fbs, &mut pair.fbs);
         self.standby = Some(pair);
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.format = ScanoutFormat::Xbgr2101010;
         self.front = 0;
         self.flip_pending = false;
@@ -1978,6 +2431,7 @@ impl DrmScanout {
 
     /// Return to 8-bit SDR: signal off, SDR dumb pair back on the CRTC.
     pub fn leave_hdr(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         let was_active = self.hdr_signal.enabled() || self.format.is_hdr();
         if let Err(error) = self.hdr_signal.disable(&self.card, self.connector) {
             tracing::warn!(%error, "DRM scanout: restoring SDR signalling was refused");
@@ -2081,7 +2535,9 @@ impl DrmScanout {
     /// Re-establish this output after the session regains hardware (VT switch/suspend): nothing
     /// survives — CRTC has no mode, framebuffer unbound, cursor plane reset, and the queued flip died with the master lock, leaving `flip_pending` latched forever. Best-effort throughout.
     pub fn restore(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
+        self.client_plane.forget_buffers();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
         self.flip_queued_at = None;
@@ -2194,7 +2650,9 @@ impl DrmScanout {
         // This is the single-output entry point, just like `present_into`: retire a previous
         // event before deciding whether a new history transaction may target the back buffer.
         self.drain_flip_events();
-        if !self.xrgb_damage_available() || (self.use_pageflip && self.flip_pending) {
+        if !self.xrgb_damage_available()
+            || pending_pageflip_refuses_frame(self.use_pageflip, self.flip_pending)
+        {
             return Ok(());
         }
         if !bridge.xrgb_history_available() {
@@ -2270,8 +2728,8 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        pixel_coord(px),
-                        pixel_coord(py),
+                        i32_of_f64(px),
+                        i32_of_f64(py),
                         bitmap,
                     );
                 }
@@ -2311,6 +2769,7 @@ impl DrmScanout {
                 .fb_at(idx)
                 .is_some_and(|fb| self.card.dirty_framebuffer(fb, &[clip]).is_ok());
             let flip_ok = self.flip_to(idx);
+            self.note_publish(dirty_ok, flip_ok);
             if !pageflip_history_commit_is_safe(dirty_ok, flip_ok) {
                 self.invalidate_xrgb_history();
             }
@@ -2320,6 +2779,199 @@ impl DrmScanout {
             self.invalidate_xrgb_history();
         }
         Ok(())
+    }
+
+    /// Wait for this CRTC's pending page flip. Returns how long the wait
+    /// took and the flip's queue-to-vblank latency, or `None` for the
+    /// latency when no flip was pending. `Err` when the flip did not
+    /// complete in `timeout`.
+    pub(crate) fn wait_cpu_flip(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(Duration, Option<Duration>), Duration> {
+        let started = Instant::now();
+        let deadline = started.checked_add(timeout).unwrap_or(started);
+        let mut latency = None;
+        loop {
+            if let Ok(events) = self.card.receive_events() {
+                for event in events {
+                    if let Event::PageFlip(flip) = event
+                        && flip.crtc == self.crtc
+                    {
+                        latency = self
+                            .flip_queued_mono
+                            .take()
+                            .map(|queued| flip.duration.saturating_sub(queued));
+                        self.log_flip_completion();
+                        self.flip_pending = false;
+                    }
+                }
+            }
+            if !self.use_pageflip || !self.flip_pending {
+                return Ok((started.elapsed(), latency));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(started.elapsed());
+            }
+            let timeout_ms = i32::try_from(deadline.saturating_duration_since(now).as_millis())
+                .unwrap_or(i32::MAX)
+                .max(1);
+            let mut fd = libc::pollfd {
+                fd: self.card.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `fd` points to one valid pollfd for the duration of the
+            // call and the borrowed card descriptor outlives it.
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout_ms) };
+            if ready < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return Err(started.elapsed());
+            }
+        }
+    }
+
+    /// Present the CPU renderer's screen: copy what the back buffer is
+    /// missing, by the per-buffer destination history, and queue a flip.
+    /// The caller has waited for the previous flip.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the mapping, history transaction, cursor write and flip stay ordered together, as in present_scene_damage"
+    )]
+    pub(crate) fn present_cpu(
+        &mut self,
+        cpu: &mut super::cpu_present::CpuRenderer,
+        cursor: Option<(f64, f64)>,
+    ) {
+        if self.use_pageflip && self.flip_pending {
+            return;
+        }
+        let idx = if self.use_pageflip {
+            1usize.saturating_sub(self.front)
+        } else {
+            self.front
+        };
+        let (dw, dh) = (self.width as usize, self.height as usize);
+        let hw_cursor_active = self.hw_cursor_active;
+        cpu.record_cursor(!hw_cursor_active);
+        let cursor_bitmap = self.cursor_bitmap();
+        let current_cursor = (!hw_cursor_active)
+            .then(|| software_cursor_damage_rect(cursor, dw, dh, cursor_bitmap.as_deref()))
+            .flatten();
+        let previous_cursor = (!hw_cursor_active)
+            .then(|| self.xrgb_software_cursor.get(idx).copied().flatten())
+            .flatten();
+        if current_cursor != previous_cursor {
+            for rect in [previous_cursor, current_cursor].into_iter().flatten() {
+                cpu.add_pending(rect);
+            }
+        }
+        if !cpu.has_pending() {
+            return;
+        }
+        let Some(pitch) = self.buffers.get(idx).map(|buffer| buffer.pitch() as usize) else {
+            return;
+        };
+        let identity = self
+            .xrgb_scanout_epoch
+            .map(|scanout_epoch| XrgbHistoryIdentity {
+                bridge_generation: u64::MAX,
+                bridge_epoch: cpu.generation(),
+                width: self.width,
+                height: self.height,
+                pitch,
+                targets: 2,
+                scanout_epoch,
+            });
+        let revision = cpu.presented_revision().wrapping_add(1);
+        let pending: Option<Vec<FineDamageRect>> = cpu.pending().map(<[_]>::to_vec);
+        let extra = previous_cursor.as_slice();
+        let started = Instant::now();
+        let mut fresh_mapping = false;
+        let written = (|| -> Option<(u64, usize, bool)> {
+            let handle = u32::from(self.buffers.get(idx)?.handle());
+            let len = pitch.checked_mul(dh)?;
+            let slot = self.cpu_maps.get_mut(idx)?;
+            if slot
+                .as_ref()
+                .is_none_or(|mapping| mapping.handle != handle || mapping.len != len)
+            {
+                *slot = None;
+                fresh_mapping = true;
+                match CpuMapping::new(self.card.as_fd(), handle, len) {
+                    Ok(mapping) => *slot = Some(mapping),
+                    Err(error) => {
+                        tracing::warn!("DRM scanout: mapping a dumb buffer: {error}");
+                        return None;
+                    }
+                }
+            }
+            let dst = slot.as_mut()?.bytes();
+            let transaction = self.xrgb_history.prepare(
+                idx,
+                identity,
+                revision,
+                Some(cpu.presented_revision()),
+                pending.as_deref(),
+                extra,
+            );
+            let full_rect = FineDamageRect {
+                x: 0,
+                y: 0,
+                width: self.width,
+                height: self.height,
+            };
+            let (pixels, rects, full) = match transaction.write_plan() {
+                XrgbWritePlan::Full => (cpu.copy_to_xrgb(dst, pitch, full_rect), 1, true),
+                XrgbWritePlan::Rects(rects) => (
+                    rects
+                        .iter()
+                        .map(|rect| cpu.copy_to_xrgb(dst, pitch, *rect))
+                        .sum(),
+                    rects.len(),
+                    false,
+                ),
+            };
+            if !hw_cursor_active {
+                if let Some((px, py)) = cursor
+                    && let Some(bitmap) = cursor_bitmap.as_deref()
+                {
+                    draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
+                }
+                if let Some(slot) = self.xrgb_software_cursor.get_mut(idx) {
+                    *slot = current_cursor;
+                }
+            }
+            transaction.commit(XrgbHistoryCommit::DamageAccepted);
+            Some((pixels, rects, full))
+        })();
+        let Some((pixels, rects, full)) = written else {
+            self.invalidate_xrgb_history();
+            return;
+        };
+        let copy = started.elapsed();
+        // A buffer mapped just now pays its page faults in this copy.
+        if full && !fresh_mapping {
+            cpu.measure_cached_copy_once(copy);
+        }
+        cpu.record_present(copy, pixels, rects);
+        let accepted = if self.use_pageflip {
+            let (cw, ch) = self.clip_dims();
+            let clip = ClipRect::new(0, 0, cw, ch);
+            let dirty_ok = self
+                .fb_at(idx)
+                .is_some_and(|fb| self.card.dirty_framebuffer(fb, &[clip]).is_ok());
+            let flip_ok = self.flip_to(idx);
+            pageflip_history_commit_is_safe(dirty_ok, flip_ok)
+        } else {
+            self.flush_dirty(idx)
+        };
+        if !accepted {
+            self.invalidate_xrgb_history();
+        }
+        cpu.finish_present(revision, accepted);
     }
 
     /// Present without draining DRM events first: the multi-output backend drains the shared card fd
@@ -2349,7 +3001,7 @@ impl DrmScanout {
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
     {
-        if self.use_pageflip && self.flip_pending {
+        if pending_pageflip_refuses_frame(self.use_pageflip, self.flip_pending) {
             // Previous flip not yet retired — drop this frame (natural vsync throttle); the next one supersedes it.
             return Ok(false);
         }
@@ -2397,13 +3049,13 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        (pixel_coord(px), pixel_coord(py)),
+                        (i32_of_f64(px), i32_of_f64(py)),
                         bitmap,
                         encoder,
                     ),
                     (true, None) => {}
                     (false, _) => {
-                        draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                        draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
                     }
                 }
             }
@@ -2412,12 +3064,12 @@ impl DrmScanout {
         if self.use_pageflip {
             // Best-effort CPU→host transfer before flipping: on virtual GPUs dirty_framebuffer flushes the
             // dumb buffer into the host resource (without it a bare flip presents unreceived bytes); no-op/unsupported on real GPUs.
-            let (cw, ch) = self.clip_dims();
-            let clip = ClipRect::new(0, 0, cw, ch);
-            if let Some(fb) = self.fb_at(idx) {
-                let _ = self.card.dirty_framebuffer(fb, &[clip]);
-            }
-            let _ = self.flip_to(idx);
+            let clips = self.take_dirty_clips();
+            let dirty_ok = self
+                .fb_at(idx)
+                .is_some_and(|fb| self.card.dirty_framebuffer(fb, &clips).is_ok());
+            let flip_ok = self.flip_to(idx);
+            self.note_publish(dirty_ok, flip_ok);
         } else {
             let _ = self.flush_dirty(idx);
         }
@@ -2441,6 +3093,19 @@ impl DrmScanout {
         )
     }
 
+    /// Queue a page flip onto `framebuffer`: every flip this output makes,
+    /// whichever ring or client buffer it shows ([`KmsFlip::queue`]).
+    fn queue_flip(&mut self, framebuffer: framebuffer::Handle) -> std::io::Result<()> {
+        self.flip.queue(&self.card, framebuffer)
+    }
+
+    /// Whether this output's flips may change the framebuffer's format
+    /// (they are atomic): a client buffer of another format than the
+    /// targets' can then be flipped in and out.
+    pub(super) fn flips_change_format(&self) -> bool {
+        self.flip.changes_format()
+    }
+
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
@@ -2448,14 +3113,13 @@ impl DrmScanout {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
         };
-        match self
-            .card
-            .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(fb) {
             Ok(()) => {
-                self.flip_pending = true;
+                self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
+                self.flip_queued_mono = Some(monotonic_now());
                 self.front = idx;
+                self.note_publish(false, true);
                 tracing::trace!(
                     crtc = ?self.crtc,
                     buffer = idx,
@@ -2488,27 +3152,75 @@ impl DrmScanout {
         }
     }
 
-    /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
+    /// `None` flushes the whole mode on the next present.
+    pub fn set_damage_rect(&mut self, rect: Option<(u16, u16, u16, u16)>) {
+        self.damage_clips = rect
+            .and_then(|(x, y, width, height)| damage_to_clip(x, y, width, height))
+            .map_or(Vec::new(), |clip| vec![clip]);
+    }
+
+    fn take_dirty_clips(&mut self) -> Vec<ClipRect> {
+        let clips = std::mem::take(&mut self.damage_clips);
+        if !clips.is_empty() {
+            return clips;
+        }
+        let (cw, ch) = self.clip_dims();
+        damage_to_clip(0, 0, cw, ch).map_or(Vec::new(), |clip| vec![clip])
+    }
+
     fn flush_dirty(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
+            self.note_publish(false, false);
             return false;
         }
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; falling back to set_crtc");
             self.force_flush_via_set_crtc();
+            self.note_publish(false, false);
             return false;
         };
-        let (cw, ch) = self.clip_dims();
-        let clip = ClipRect::new(0, 0, cw, ch);
-        if let Err(e) = self.card.dirty_framebuffer(fb, &[clip]) {
-            tracing::warn!("DRM scanout: dirty_framebuffer unsupported ({e}); using set_crtc");
-            self.dirtyfb_unsupported = true;
-            self.force_flush_via_set_crtc();
-            false
-        } else {
-            true
+        let clips = self.take_dirty_clips();
+        match self.card.dirty_framebuffer(fb, &clips) {
+            Ok(()) => {
+                // The clip is accepted. A virtual CRTC never delivers the
+                // page-flip event, so this return is the retirement.
+                self.note_publish(true, false);
+                true
+            }
+            Err(error) => {
+                let code = error.raw_os_error().unwrap_or(0);
+                if dirty_errno_is_transient(code) {
+                    tracing::trace!(
+                        "DRM scanout: dirty_framebuffer busy (errno {code}); not modesetting"
+                    );
+                    // set_crtc would wait for the page-flip event the busy
+                    // commit is already holding. Drop the userspace count so
+                    // the next frame can start.
+                    self.note_publish(false, false);
+                    return false;
+                }
+                tracing::warn!(
+                    "DRM scanout: dirty_framebuffer unsupported ({error}); using set_crtc"
+                );
+                self.dirtyfb_unsupported = true;
+                self.force_flush_via_set_crtc();
+                self.note_publish(false, false);
+                false
+            }
+        }
+    }
+
+    /// Record whether this publish still owns a buffer.
+    ///
+    /// `dirty_accepted` retires a virtual scanout immediately. A queued page
+    /// flip on a real connector stays in flight until its event.
+    fn note_publish(&mut self, dirty_accepted: bool, page_flip_queued: bool) {
+        let inflight = inflight_after_publish(self.use_pageflip, dirty_accepted, page_flip_queued);
+        self.flip_pending = inflight > 0;
+        if inflight == 0 {
+            self.flip_queued_at = None;
         }
     }
 
@@ -2519,7 +3231,8 @@ impl DrmScanout {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
                     self.log_flip_completion();
-                    self.flip_pending = false;
+                    self.flip_pending =
+                        inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
                 }
             }
         }
@@ -2528,15 +3241,51 @@ impl DrmScanout {
     /// Drain pending DRM events, returning the crtc of each flip completion. Every per-connector
     /// scanout dups the same open file description, so completions for all crtcs arrive on any one fd — must drain **once** and route via [`Self::mark_flip_complete`], or the first scanout wedges its siblings' `flip_pending` forever.
     pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
-        let mut done = Vec::new();
-        if let Ok(events) = self.card.receive_events() {
-            for ev in events {
-                if let Event::PageFlip(pf) = ev {
-                    done.push(pf.crtc);
-                }
-            }
-        }
-        done
+        self.poll_flip_events()
+            .into_iter()
+            .map(|event| event.crtc)
+            .collect()
+    }
+
+    fn poll_flip_events(&self) -> Vec<drm_re::control::PageFlipEvent> {
+        self.card.receive_events().map_or_else(
+            |_| Vec::new(),
+            |events| {
+                events
+                    .filter_map(|event| match event {
+                        Event::PageFlip(flip) => Some(flip),
+                        _ => None,
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    pub fn flip_submission(&self) -> u64 {
+        self.flip_submission
+    }
+
+    pub fn can_prove_physical_flip(&self) -> bool {
+        self.physical_identity.eligible
+            && matches!(
+                self.card
+                    .get_driver_capability(drm_re::DriverCapability::MonotonicTimestamp),
+                Ok(1)
+            )
+    }
+
+    /// The driver stamps page-flip events with `CLOCK_MONOTONIC`, the clock
+    /// [`Instant`] reads, so [`instant_from_monotonic`] can place them.
+    pub fn monotonic_flip_timestamps(&self) -> bool {
+        matches!(
+            self.card
+                .get_driver_capability(drm_re::DriverCapability::MonotonicTimestamp),
+            Ok(1)
+        )
+    }
+
+    pub fn invalidate_physical_feedback(&mut self) {
+        self.physical_identity.uncertain_completion();
     }
 
     /// Wait for the page-flip event for this CRTC without spinning.
@@ -2547,15 +3296,16 @@ impl DrmScanout {
     pub fn wait_flip_completions(
         &mut self,
         timeout: Duration,
-    ) -> (DirectRetirement, Vec<crtc::Handle>) {
+    ) -> (DirectRetirement, Vec<drm_re::control::PageFlipEvent>) {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
+        let mut completed = Vec::new();
         loop {
-            let completed = self.poll_flip_completions();
+            completed.extend(self.poll_flip_events());
             let now = Instant::now();
-            if let Some(retirement) = retirement_after_poll(self.crtc, &completed, now >= deadline)
-            {
+            let crtcs: Vec<_> = completed.iter().map(|event| event.crtc).collect();
+            if let Some(retirement) = retirement_after_poll(self.crtc, &crtcs, now >= deadline) {
                 return (retirement, completed);
             }
             let remaining = deadline.saturating_duration_since(now);
@@ -2588,7 +3338,7 @@ impl DrmScanout {
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
             self.log_flip_completion();
-            self.flip_pending = false;
+            self.flip_pending = inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
         }
     }
 
@@ -2613,7 +3363,11 @@ impl DrmScanout {
         targets: &mut DirectScanoutTargets,
         index: usize,
     ) -> DirectSubmit {
-        if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
+        if !self.use_pageflip
+            || self.flip_pending
+            || targets.state.pending.is_some()
+            || !targets.state.renderable(index)
+        {
             return DirectSubmit::Busy;
         }
         self.apply_adaptive_sync();
@@ -2625,13 +3379,13 @@ impl DrmScanout {
                 "direct scanout slot {index} has no KMS framebuffer"
             ));
         };
-        match self
-            .card
-            .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(framebuffer) {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
+                    self.flip_submission = self.flip_submission.wrapping_add(1);
+                    targets.presented = true;
+                    targets.flip_queued_at = Some(Instant::now());
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -2700,6 +3454,7 @@ impl DrmScanout {
             ));
         }
         targets.crtc_bound = true;
+        targets.presented = true;
         eprintln!(
             "tilo compositor: DRM HDR on connector={} path=direct format={:?}",
             u32::from(self.connector),
@@ -2717,7 +3472,109 @@ impl DrmScanout {
         if crtc == self.crtc {
             self.log_flip_completion();
             self.flip_pending = false;
-            let _ = targets.state.complete();
+            // The buffer the retired flip replaced is no longer read: a client
+            // buffer goes back to its client once nothing else holds it.
+            match targets.state.complete_flip() {
+                Some(Flip::Client) => targets.client.client_flip_retired(),
+                Some(Flip::Slot(_)) => targets.client.target_flip_retired(),
+                None => {}
+            }
+            targets.flip_queued_at = None;
+        }
+    }
+
+    /// The framebuffer `dmabuf` scans out through on this output's primary
+    /// plane, proven there by a `TEST_ONLY` commit.
+    ///
+    /// # Errors
+    ///
+    /// The plane does not take the buffer's format or modifier, the buffer
+    /// cannot be made a framebuffer, the test commit failed, or an earlier
+    /// flip of it did.
+    pub(super) fn client_framebuffer(
+        &mut self,
+        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        fourcc: DrmFourcc,
+    ) -> Result<std::sync::Arc<ClientFramebuffer>, String> {
+        self.client_plane
+            .framebuffer(&self.card, self.flip.target(), dmabuf, fourcc)
+    }
+
+    /// Refresh what this output's primary plane offers a fullscreen client
+    /// in place of `target` framebuffers on the KMS device `device`; `None`
+    /// withdraws the offer ([`super::client_scanout::ClientPlane::offer`]).
+    pub(super) fn offer_client_plane(&mut self, device: u64, target: Option<DrmFourcc>) {
+        let target = target.map(|format| OfferTarget {
+            format,
+            changes_format: self.flip.changes_format(),
+        });
+        self.client_plane
+            .offer(&self.card, self.crtc, device, target);
+    }
+
+    /// Publish this output's offer to fullscreen clients into `planes`, when
+    /// it changed since last published.
+    pub(super) fn publish_client_plane(
+        &mut self,
+        output: OutputId,
+        planes: &super::client_scanout::ClientPlanes,
+    ) {
+        self.client_plane.publish_offer(output, planes);
+    }
+
+    /// A flip of `dmabuf` failed: composite it from now on.
+    pub(super) fn refuse_client_buffer(
+        &mut self,
+        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        reason: &str,
+    ) {
+        self.client_plane.refuse(dmabuf, reason);
+    }
+
+    /// Log how client scanout went on `output` this frame, when it changed.
+    pub(super) fn note_client_scanout(&mut self, output: OutputId, status: ClientStatus) {
+        self.client_plane.note(output, status);
+    }
+
+    /// Queue a flip onto a client's buffer in place of the targets. The
+    /// targets hold the buffer from here until the flip that replaces it
+    /// retires.
+    pub(super) fn submit_client_framebuffer(
+        &mut self,
+        targets: &mut DirectScanoutTargets,
+        client: ClientScanout,
+    ) -> DirectSubmit {
+        if !self.use_pageflip || self.flip_pending || targets.state.pending.is_some() {
+            return DirectSubmit::Busy;
+        }
+        if targets.format.is_hdr() {
+            return DirectSubmit::Failed("HDR targets cannot flip to a client buffer".to_owned());
+        }
+        self.apply_adaptive_sync();
+        match self.queue_flip(client.framebuffer()) {
+            Ok(()) => {
+                self.flip_pending = true;
+                if targets.state.submit_client() {
+                    self.flip_submission = self.flip_submission.wrapping_add(1);
+                    targets.client.queued(client);
+                    targets.presented = true;
+                    targets.flip_queued_at = Some(Instant::now());
+                    DirectSubmit::Queued
+                } else {
+                    self.flip_pending = false;
+                    DirectSubmit::Failed("a flip was queued behind a pending one".to_owned())
+                }
+            }
+            Err(error) => {
+                let errno = error.raw_os_error().unwrap_or_default();
+                if errno == libc::EBUSY || errno == libc::EAGAIN {
+                    DirectSubmit::Busy
+                } else {
+                    DirectSubmit::Failed(format!(
+                        "page flip to the client buffer failed (errno {errno}): {error}"
+                    ))
+                }
+            }
         }
     }
 
@@ -2739,8 +3596,12 @@ impl DrmScanout {
     /// released. KMS retains its own framebuffer reference after a successful flip, so dropping
     /// userspace BO/FB owners first can leave the CRTC scanning an object we just destroyed.
     pub fn restore_legacy_front(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.flip_pending = false;
         self.force_flush_via_set_crtc();
+        // The dumb front is on the CRTC: no client framebuffer is shown, and
+        // the plane is asked afresh about each buffer the next time.
+        self.client_plane.forget_buffers();
         self.match_signal_to_dumb_front();
         self.invalidate_xrgb_history();
     }
@@ -2748,6 +3609,7 @@ impl DrmScanout {
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
     pub fn set_dpms(&mut self, on: bool) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         self.set_dpms_property(on);
         if on {
@@ -2840,36 +3702,12 @@ pub struct ScanoutBuild {
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     /// The sink's HDR description, when its EDID advertises PQ.
     pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    /// The configured mode this output was brought up under, if any.
+    pub mode_intent: Option<settings_store::hardware::OutputMode>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
     pub scanout: DrmScanout,
-}
-
-/// Open `card_path` once and build one [`DrmScanout`] per connected connector with a usable mode,
-/// each on a distinct crtc sharing a dup of the single card fd — required since libseat refuses a
-/// second `open` of an already-open node, and it means every crtc's flip completions arrive on one
-/// event stream, drained once and routed by crtc. A connector with no free crtc/mode is logged and
-/// skipped; `Err` only when nothing came up. The runtime normally retains the [`CardHandle`]
-/// itself and calls [`CardHandle::bring_up_all`] for every seat GPU; this helper remains a
-/// convenience for callers that need a complete one-card transaction.
-///
-/// # Errors
-///
-/// Returns `Err` if the card itself can't be opened, or if every connected connector
-/// failed to come up (each connector's own modeset failure is logged and skipped rather than
-/// propagated — this only errors when *none* came up).
-pub fn open_all_scanouts<S: Session>(
-    session: &mut S,
-    card_path: &Path,
-) -> Result<(CardHandle, Vec<ScanoutBuild>), String> {
-    let card = CardHandle::open(session, card_path)?;
-    let builds = card.bring_up_all();
-    if builds.is_empty() {
-        return Err("no connected connector could be brought up for scanout".into());
-    }
-    tracing::info!(count = builds.len(), "DRM scanout: brought up outputs");
-    Ok((card, builds))
 }
 
 /// Pick a crtc for `conn_info` not already in `used`: the current encoder's crtc if free, else one
@@ -2900,54 +3738,29 @@ fn pick_crtc(
     res.crtcs().iter().copied().find(|c| !used.contains(c))
 }
 
-/// Choose a scanout mode: trust the first *reasonable* mode (>= 1024 wide), since the kernel lists
-/// the EDID-preferred one first. The PREFERRED flag itself is not trusted — virtio-gpu flags a 640x480 default while advertising up to 5120x2160; fallback caps at 1920x1080.
+/// The plain-data view of a KMS mode the mode policy compares.
+pub(super) fn mode_info(mode: &Mode) -> super::devices::ModeInfo {
+    let (width, height) = mode.size();
+    super::devices::ModeInfo {
+        width,
+        height,
+        refresh_mhz: mode_refresh_mhz(mode),
+        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+        interlaced: mode.flags().contains(drm_re::control::ModeFlags::INTERLACE),
+    }
+}
+
+/// Choose a scanout mode by [`super::devices::select_mode`]: the configured
+/// one when still advertised, else the fastest at the native resolution.
 fn pick_configured_mode(
     modes: &[Mode],
     requested: Option<settings_store::hardware::OutputMode>,
 ) -> Option<Mode> {
-    for m in modes {
-        let (w, h) = m.size();
-        tracing::debug!(
-            w,
-            h,
-            preferred = m.mode_type().contains(ModeTypeFlags::PREFERRED),
-            "DRM scanout: candidate mode"
-        );
+    let infos: Vec<super::devices::ModeInfo> = modes.iter().map(mode_info).collect();
+    for info in &infos {
+        tracing::debug!(?info, "DRM scanout: candidate mode");
     }
-    if let Some(wanted) = requested {
-        if let Some(found) = modes.iter().find(|m| {
-            let (w, h) = m.size();
-            u32::from(w) == wanted.width
-                && u32::from(h) == wanted.height
-                // Sysfs exposes geometry but not refresh. A zero refresh in
-                // the typed contract therefore means "any advertised rate"
-                // rather than inventing a value in Settings.
-                && (wanted.refresh_mhz == 0 || mode_refresh_mhz(m) == wanted.refresh_mhz)
-        }) {
-            return Some(*found);
-        }
-        tracing::warn!(
-            ?wanted,
-            "configured DRM mode disappeared; retaining a safe advertised mode"
-        );
-    }
-    let first_reasonable = modes.first().filter(|m| m.size().0 >= 1024);
-    first_reasonable
-        .or_else(|| {
-            modes
-                .iter()
-                .filter(|m| {
-                    let (w, h) = m.size();
-                    w <= 1920 && h <= 1080
-                })
-                .max_by_key(|m| {
-                    let (w, h) = m.size();
-                    u32::from(w).saturating_mul(u32::from(h))
-                })
-        })
-        .or_else(|| modes.first())
-        .copied()
+    super::devices::select_mode(&infos, requested).and_then(|index| modes.get(index).copied())
 }
 
 /// Paint the pointer into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank (entirely, for a hidden pointer); `pitch` is the row stride in bytes.
@@ -3009,8 +3822,8 @@ fn software_cursor_damage_rect(
     let bitmap = bitmap?;
     let span_x = i32::try_from(bitmap.width).ok()?;
     let span_y = i32::try_from(bitmap.height).ok()?;
-    let x0 = pixel_coord(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
-    let y0 = pixel_coord(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
+    let x0 = i32_of_f64(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
+    let y0 = i32_of_f64(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
     let right = x0.saturating_add(span_x);
     let bottom = y0.saturating_add(span_y);
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
@@ -3032,11 +3845,201 @@ fn software_cursor_damage_rect(
     })
 }
 
+/// A dumb buffer mapped for as long as the CPU renderer writes it. Mapping
+/// it for every frame costs milliseconds: the mmap, the page faults and the
+/// TLB shootdown of the munmap, for a copy of a few hundred pixels.
+struct CpuMapping {
+    handle: u32,
+    ptr: std::ptr::NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: the mapping is shared memory of a buffer this scanout owns; the
+// pointer is only dereferenced through `&mut self`.
+unsafe impl Send for CpuMapping {}
+
+impl CpuMapping {
+    fn new(card: BorrowedFd<'_>, handle: u32, len: usize) -> std::io::Result<Self> {
+        /// `DRM_IOCTL_MODE_MAP_DUMB`: `_IOWR('d', 0xB3, struct drm_mode_map_dumb)`.
+        const MAP_DUMB: u32 = 0xC010_64B3;
+        #[repr(C)]
+        struct MapDumb {
+            handle: u32,
+            pad: u32,
+            offset: u64,
+        }
+        let mut request = MapDumb {
+            handle,
+            pad: 0,
+            offset: 0,
+        };
+        // SAFETY: the request is the kernel's `drm_mode_map_dumb` layout and
+        // lives for the call.
+        let result = unsafe { libc::ioctl(card.as_raw_fd(), MAP_DUMB.into(), &raw mut request) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let offset = libc::off_t::try_from(request.offset)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        // SAFETY: a fresh shared mapping of the buffer's fake offset on the
+        // card; the kernel checks `len` against the buffer size.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                card.as_raw_fd(),
+                offset,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        let ptr = std::ptr::NonNull::new(ptr.cast::<u8>())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        Ok(Self { handle, ptr, len })
+    }
+
+    fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: `ptr` maps `len` bytes until `drop`, and `&mut self` is
+        // the only access.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for CpuMapping {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly the mapping made in `new`.
+        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
+    }
+}
+
+/// The [`Instant`] of a `CLOCK_MONOTONIC` page-flip timestamp.
+pub fn instant_from_monotonic(timestamp: Duration) -> Instant {
+    instant_at(timestamp, Instant::now(), monotonic_now())
+}
+
+/// `timestamp` placed on the `Instant` timeline through one paired reading
+/// (`now`, `now_monotonic`) of both clocks. A timestamp from the future is
+/// clamped to `now`.
+fn instant_at(timestamp: Duration, now: Instant, now_monotonic: Duration) -> Instant {
+    now.checked_sub(now_monotonic.saturating_sub(timestamp))
+        .unwrap_or(now)
+}
+
+/// `CLOCK_MONOTONIC` now, comparable with page-flip event timestamps.
+fn monotonic_now() -> Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid timespec for the duration of the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) };
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap_or(0),
+        u32::try_from(now.tv_nsec).unwrap_or(0),
+    )
+}
+
 /// A tracked page-flip write remains reusable only if both the established transfer hint and the
 /// flip request succeeded. The caller still submits the flip after a dirtyfb failure; this helper
 /// describes only the destination-history commit decision.
 fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
     dirty_ok && flip_ok
+}
+
+/// Choose, once the CRTC is set up, how `connector`'s flips reach KMS
+/// ([`KmsFlip::probe`]), and say so in the session log.
+fn probe_flips(
+    card: &Card,
+    connector: connector::Handle,
+    crtc: crtc::Handle,
+    size: (u32, u32),
+    use_pageflip: bool,
+) -> KmsFlip {
+    let flip = KmsFlip::probe(
+        card,
+        FlipTarget { crtc, size },
+        legacy_flip_reason(use_pageflip),
+    );
+    flip.log(u32::from(connector));
+    flip
+}
+
+/// Why an output's flips stay legacy without asking the card: a connector
+/// that presents without page flips never flips, and
+/// [`super::kms_flip::KMS_ATOMIC_ENV`]`=0` asks for legacy flips.
+fn legacy_flip_reason(use_pageflip: bool) -> Option<String> {
+    if !use_pageflip {
+        return Some("the connector presents without page flips".to_owned());
+    }
+    super::kms_flip::atomic_flips_forced_off()
+        .then(|| format!("forced by {}=0", super::kms_flip::KMS_ATOMIC_ENV))
+}
+
+/// Virtual CRTCs do not signal vblank. Page-flipping one waits out the kernel
+/// helper (about 50 ms) inside the ioctl and holds the shared DRM file
+/// description, so the logic thread cannot start the next frame until that
+/// acceptance returns. Publish those scanouts with `dirty_framebuffer` on the
+/// buffer already being scanned out.
+fn pageflip_for_connector(interface: connector::Interface) -> bool {
+    !matches!(interface, connector::Interface::Virtual)
+}
+
+/// Whether this connector should queue page flips. A connector that cannot be
+/// reread keeps the physical default: dropping page flips on a real panel
+/// would tear, and a virtual connector is still reported when the card answers.
+fn connector_uses_pageflip(card: &Card, connector: connector::Handle) -> bool {
+    match card.get_connector(connector, false) {
+        Ok(info) => pageflip_for_connector(info.interface()),
+        Err(_) => true,
+    }
+}
+
+/// In-flight presents after one publish attempt.
+///
+/// A real connector's queued page flip stays in flight until
+/// [`inflight_after_page_flip_event`]. A virtual scanout has no such event:
+/// `dirty_framebuffer` retiring the clip (`dirty_accepted`) drops the count
+/// even when a flip was queued, so the next frame can start.
+fn inflight_after_publish(use_pageflip: bool, dirty_accepted: bool, page_flip_queued: bool) -> u8 {
+    let virtual_clip_retired = !use_pageflip && dirty_accepted;
+    u8::from(page_flip_queued && !virtual_clip_retired)
+}
+
+/// The page-flip event is the retirement for a connector that queued one.
+fn inflight_after_page_flip_event(inflight: u8) -> u8 {
+    inflight.saturating_sub(1)
+}
+
+/// `EBUSY` / `EAGAIN` mean a previous clip is still inside the kernel.
+/// `set_crtc` waits on that same page-flip event; a virtual CRTC never sends
+/// it, and the presenter would stay full.
+fn dirty_errno_is_transient(errno: i32) -> bool {
+    errno == libc::EBUSY || errno == libc::EAGAIN
+}
+
+/// Damage `(x, y, width, height)` as the clip `dirty_framebuffer` accepts.
+///
+/// `ClipRect` is the inclusive-origin exclusive-end rectangle `(x1, y1, x2, y2)`.
+/// Passing the width and height as the end corner publishes the wrong region
+/// whenever the transition clip does not start at the origin.
+fn damage_to_clip(x: u16, y: u16, width: u16, height: u16) -> Option<ClipRect> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x2 = x.checked_add(width)?;
+    let y2 = y.checked_add(height)?;
+    Some(ClipRect::new(x, y, x2, y2))
+}
+
+/// A page flip that the kernel has not accepted yet owns both dumb buffers.
+/// The next frame has to wait, or it would write a buffer the CRTC still
+/// scans. A virtual scanout never takes that path: `dirty_framebuffer`
+/// returns when the clip is accepted, and the following frame may start.
+fn pending_pageflip_refuses_frame(use_pageflip: bool, flip_pending: bool) -> bool {
+    inflight_after_publish(use_pageflip, !use_pageflip, flip_pending) > 0
 }
 
 /// A mapped scanout buffer becomes presentable only after the producer says
@@ -3048,6 +4051,50 @@ fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
 }
 
 #[cfg(test)]
+mod physical_identity_tests {
+    use super::PhysicalFlipIdentity;
+
+    #[test]
+    fn physical_completion_identity_stays_unavailable_after_timeout_or_pending_reset() {
+        let mut normal = PhysicalFlipIdentity::default();
+        assert!(normal.eligible);
+        normal.cancel_pending(false);
+        assert!(normal.eligible, "an idle restore has no outstanding event");
+        normal.cancel_pending(true);
+        assert!(
+            !normal.eligible,
+            "a late cancelled event cannot certify a newer frame"
+        );
+        let crtc = std::num::NonZeroU32::new(11).unwrap().into();
+        let late = [smithay::reexports::drm::control::PageFlipEvent {
+            crtc,
+            frame: 42,
+            duration: std::time::Duration::from_secs(123),
+        }];
+        assert!(
+            super::super::physical_flip_proof(
+                super::DirectRetirement::Complete,
+                &late,
+                crtc,
+                normal.eligible
+            )
+            .is_none(),
+            "even a real matching CRTC completion after cancellation cannot credit new pixels"
+        );
+        normal.cancel_pending(false);
+        assert!(
+            !normal.eligible,
+            "later idle restoration cannot erase ambiguity"
+        );
+        let mut timed_out = PhysicalFlipIdentity::default();
+        timed_out.uncertain_completion();
+        assert!(!timed_out.eligible);
+        timed_out.cancel_pending(false);
+        assert!(!timed_out.eligible);
+    }
+}
+
+#[cfg(test)]
 mod tests {
 
     fn arrow(size: u32) -> std::sync::Arc<CursorBitmap> {
@@ -3055,6 +4102,23 @@ mod tests {
     }
     use super::*;
     use ui::ColorCompat as _;
+
+    #[test]
+    fn a_flip_timestamp_lands_on_the_instant_timeline_at_its_age() {
+        let now = Instant::now();
+        let clock = Duration::from_secs(5_000);
+        let vblank = clock.checked_sub(Duration::from_micros(2_500)).unwrap();
+        assert_eq!(
+            instant_at(vblank, now, clock),
+            now.checked_sub(Duration::from_micros(2_500)).unwrap(),
+            "a vblank 2.5 ms before the paired reading is 2.5 ms before `now`"
+        );
+        assert_eq!(
+            instant_at(clock + Duration::from_millis(1), now, clock),
+            now,
+            "a stamp from the future is clamped rather than scheduling ahead of it"
+        );
+    }
 
     #[test]
     fn only_connected_real_display_connectors_with_modes_are_scanout_eligible() {
@@ -3094,6 +4158,60 @@ mod tests {
         assert!(is_display_connector(connector::Interface::HDMIA));
         assert!(!is_display_connector(connector::Interface::Writeback));
         assert!(!is_display_connector(connector::Interface::Unknown));
+    }
+
+    #[test]
+    fn virtual_scanout_presents_the_next_frame_without_waiting_for_vblank() {
+        // Phase `a_virtual_connector_publishes_without_waiting_for_vblank`.
+        assert!(
+            !pageflip_for_connector(connector::Interface::Virtual),
+            "a virtual CRTC has no vblank; page-flipping it stalls the next frame"
+        );
+        // Phase `a_panel_connector_still_waits_until_its_page_flip_is_accepted`.
+        assert!(pageflip_for_connector(connector::Interface::HDMIA));
+        assert!(pageflip_for_connector(connector::Interface::DisplayPort));
+        assert!(pageflip_for_connector(connector::Interface::USB));
+        assert!(pending_pageflip_refuses_frame(true, true));
+        assert!(!pending_pageflip_refuses_frame(true, false));
+        // The clip upload (`present_no_drain_result`) and the single-output
+        // interaction path (`present_scene_damage`) both ask this gate.
+        // Phase `a_transition_clip_starts_while_a_virtual_flip_would_still_be_pending`.
+        let virtual_pageflip = pageflip_for_connector(connector::Interface::Virtual);
+        assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
+        // Phase `an_interaction_frame_starts_before_virtual_flip_acceptance`.
+        assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
+    }
+
+    #[test]
+    fn virtual_dirty_accept_retires_without_a_page_flip_event() {
+        // Phase `an_accepted_virtual_clip_drops_the_in_flight_count`.
+        assert_eq!(
+            inflight_after_publish(false, true, true),
+            0,
+            "dirty_framebuffer acceptance retires a virtual present; the page-flip event never arrives"
+        );
+        assert_eq!(inflight_after_publish(false, true, false), 0);
+        assert!(
+            !pending_pageflip_refuses_frame(false, true),
+            "the next transition frame starts while a virtual flip would still be pending"
+        );
+        // Phase `a_real_connector_stays_in_flight_until_the_page_flip_event`.
+        assert_eq!(inflight_after_publish(true, true, true), 1);
+        assert_eq!(inflight_after_publish(true, false, true), 1);
+        assert_eq!(inflight_after_page_flip_event(1), 0);
+        assert!(pending_pageflip_refuses_frame(true, true));
+        assert!(!pending_pageflip_refuses_frame(true, false));
+        // Phase `a_busy_dirty_does_not_fall_through_to_a_blocking_modeset`.
+        assert!(dirty_errno_is_transient(libc::EBUSY));
+        assert!(dirty_errno_is_transient(libc::EAGAIN));
+        assert!(!dirty_errno_is_transient(libc::ENOSYS));
+        assert!(!dirty_errno_is_transient(0));
+        // Phase `a_transition_clip_is_the_rectangle_dirty_framebuffer_accepts`.
+        let clip = damage_to_clip(80, 40, 300, 200).expect("non-empty damage");
+        assert_eq!(
+            (clip.x1(), clip.y1(), clip.x2(), clip.y2()),
+            (80, 40, 380, 240)
+        );
     }
 
     #[test]
@@ -3201,22 +4319,61 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn direct_scanout_slots_never_reuse_busy_buffers_and_fail_safe() {
         // Phase `direct_scanout_never_renders_front_or_flip_pending_slots`.
         {
             let mut state = DirectScanoutState::new(0);
             assert_eq!(state.render_slot(), Some(1));
             assert!(state.submit(1));
-            assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
+            assert_eq!(
+                state.render_slot(),
+                None,
+                "a pending flip defers an output that does not overlap it"
+            );
+            assert_eq!(
+                state.overlap_slot(),
+                Some(2),
+                "the spare slot is neither shown nor queued"
+            );
             assert!(
                 !state.submit(0),
                 "front cannot be submitted as fresh output"
             );
             assert!(!state.submit(1), "pending slot cannot be submitted twice");
+            assert!(
+                !state.submit(2),
+                "a slot rendered during the flip waits for it to retire"
+            );
 
             assert!(state.complete());
-            assert_eq!(state.render_slot(), Some(0));
             assert_eq!(state.front, 1);
+            assert!(
+                state.submit(2),
+                "the slot rendered during the flip is queued once it retired"
+            );
+            assert_eq!(
+                state.overlap_slot(),
+                Some(0),
+                "never the front or the pending slot"
+            );
+            assert!(!state.submit(1), "the front is never queued");
+        }
+        // Phase `overlapped_rendering_never_touches_a_slot_kms_reads`.
+        {
+            // Every frame renders while the previous flip is pending, then queues once it
+            // retired: the rendered slot is never the front nor the one queued.
+            let mut state = DirectScanoutState::new(0);
+            assert!(state.submit(1));
+            for _ in 0..(DIRECT_SLOTS * 4) {
+                let slot = state
+                    .overlap_slot()
+                    .expect("a spare slot while a flip is pending");
+                assert_ne!(slot, state.front);
+                assert_ne!(Some(Flip::Slot(slot)), state.pending);
+                assert!(state.complete());
+                assert!(state.submit(slot));
+            }
         }
         // Phase `direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available`.
         {
@@ -3235,10 +4392,29 @@ mod tests {
             assert_eq!(state.render_slot(), Some(slot));
             assert_eq!(state.front, 0);
         }
-        // Phase `direct_scanout_completion_alternates_two_slots`.
+        // Phase `a_client_flip_owns_the_crtc_until_it_retires`.
         {
             let mut state = DirectScanoutState::new(0);
-            for expected in [1, 0, 1, 0] {
+            assert!(state.submit_client());
+            assert_eq!(state.render_slot(), None, "KMS owns the CRTC");
+            assert!(!state.submit_client(), "one flip at a time");
+            assert!(!state.submit(1), "no slot flip behind it");
+            assert_eq!(state.complete_flip(), Some(Flip::Client));
+            // The client's next buffer replaces it directly.
+            assert!(state.submit_client());
+            assert_eq!(state.complete_flip(), Some(Flip::Client));
+            // Compositing again renders into a slot while the client's buffer
+            // is shown, and the slot takes over once its flip retires.
+            assert_eq!(state.render_slot(), Some(1));
+            assert!(state.submit(1));
+            assert_eq!(state.complete_flip(), Some(Flip::Slot(1)));
+            assert_eq!(state.front, 1);
+            assert_eq!(state.complete_flip(), None, "duplicate completion");
+        }
+        // Phase `direct_scanout_completion_rotates_through_the_slots`.
+        {
+            let mut state = DirectScanoutState::new(0);
+            for expected in [1, 2, 0, 1] {
                 assert_eq!(state.render_slot(), Some(expected));
                 assert!(state.submit(expected));
                 assert!(state.complete());
@@ -3432,6 +4608,14 @@ mod tests {
     }
 
     #[test]
+    fn cursor_plane_hotspot_follows_the_output_scale() {
+        assert_eq!(scaled_hotspot((3, 5), 1.0), (3, 5));
+        assert_eq!(scaled_hotspot((3, 5), 2.0), (6, 10));
+        assert_eq!(scaled_hotspot((3, 5), 1.5), (5, 8));
+        assert_eq!(scaled_hotspot((3, 5), f64::NAN), (3, 5));
+    }
+
+    #[test]
     fn software_cursor_writes_clips_and_reports_damage() {
         // Phase `cursor_bitmap_writes_opaque_and_transparent_pixels`.
         {
@@ -3503,8 +4687,8 @@ mod tests {
                         pitch,
                         width,
                         height,
-                        pixel_coord(x),
-                        pixel_coord(y),
+                        i32_of_f64(x),
+                        i32_of_f64(y),
                         &arrow(48),
                     );
                 }
@@ -3538,7 +4722,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::too_many_lines,
         reason = "the cursor fixture keeps both destination-age transactions next to their exact same-staging restoration checks"
     )]
@@ -3836,6 +5019,66 @@ mod tests {
                 logical_to_physical_point(0, 0, 1080, 1920, T::Rotate270),
                 (0, 1079)
             );
+        }
+    }
+
+    #[test]
+    fn resume_keeps_logind_granted_master_without_set_master() {
+        use super::super::session::{SessionAction, SessionState};
+        // Phase `resume_from_sleep_on_a_master_fd_issues_no_set_master`.
+        {
+            // logind opened the node and keeps master across suspend. The
+            // kernel refuses SET_MASTER from this unprivileged process with
+            // EACCES even on that master fd, so the resume sequence must
+            // only probe it.
+            let session = SessionState::new_active();
+            let mut set_master_calls = 0;
+            for action in session.resume_actions() {
+                if action == SessionAction::AcquireMaster {
+                    let outcome = reclaim_master(Ok(true), || {
+                        set_master_calls += 1;
+                        Err(std::io::Error::from_raw_os_error(libc::EACCES))
+                    });
+                    assert!(matches!(outcome, MasterReclaim::AlreadyHeld));
+                }
+            }
+            assert_eq!(set_master_calls, 0);
+        }
+        // Phase `fd_without_master_still_asks_the_kernel`.
+        {
+            let mut asked = false;
+            let outcome = reclaim_master(Ok(false), || {
+                asked = true;
+                Ok(())
+            });
+            assert!(asked);
+            assert!(matches!(outcome, MasterReclaim::Acquired));
+        }
+        // Phase `refused_set_master_is_reported_not_granted`.
+        {
+            let outcome = reclaim_master(Ok(false), || {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            });
+            assert!(matches!(
+                outcome,
+                MasterReclaim::NotGranted(ref e) if e.raw_os_error() == Some(libc::EACCES)
+            ));
+        }
+        // Phase `unprobeable_fd_falls_back_to_set_master`.
+        {
+            // A non-DRM fd cannot answer the probe; that is "unknown", not "master".
+            let null = std::fs::File::open("/dev/null").expect("open /dev/null");
+            let probe = fd_is_drm_master(null.as_fd());
+            assert!(
+                probe.is_err(),
+                "a non-DRM fd must not read as master: {probe:?}"
+            );
+            let mut asked = false;
+            let _ = reclaim_master(probe, || {
+                asked = true;
+                Ok(())
+            });
+            assert!(asked);
         }
     }
 }

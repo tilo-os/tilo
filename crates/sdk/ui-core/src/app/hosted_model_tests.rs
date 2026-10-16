@@ -13,6 +13,17 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
+    // Legacy owner-route delivery is explicit; no native capture is synthesized.
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.send(request)
+    }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
     }
@@ -90,7 +101,7 @@ fn hosted_model_advances_retained_job_once_without_draw_or_private_fixture_drain
     )).count(), 1, "one actual completion emits exactly one terminal update");
 }
 
-fn hosted_directory_fixture(sync_change: std::rc::Rc<Cell<Option<&'static str>>>) -> App {
+fn hosted_directory_fixture() -> App {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(DeclaredDirectory {
@@ -98,12 +109,11 @@ fn hosted_directory_fixture(sync_change: std::rc::Rc<Cell<Option<&'static str>>>
             calls: Rc::new(Cell::new(0)),
             semantic_calls: Rc::new(Cell::new(0)),
             count: 2,
-            sync_change: Some(sync_change),
         }),
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -112,7 +122,7 @@ fn hosted_directory_fixture(sync_change: std::rc::Rc<Cell<Option<&'static str>>>
 
 #[test]
 fn hosted_directory_noop_model_keeps_revision_and_actual_cursor() {
-    let mut app = hosted_directory_fixture(Rc::new(Cell::new(None)));
+    let mut app = hosted_directory_fixture();
     let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
     assert_eq!(page.rows.len(), 1);
     assert!(!page.next_cursor.is_empty());
@@ -132,13 +142,11 @@ fn hosted_directory_noop_model_keeps_revision_and_actual_cursor() {
 #[test]
 fn hosted_directory_sync_contract_and_hierarchy_changes_invalidate_revision() {
     for change in ["changed-contract", "hierarchy"] {
-        let pending = Rc::new(Cell::new(None));
-        let mut app = hosted_directory_fixture(pending.clone());
+        let mut app = hosted_directory_fixture();
         let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
-        pending.set(Some(change));
+        // The change arrives from elsewhere; the hosted pass syncs it.
+        app.state.doc.put(ROOT, change, true).unwrap();
         app.pump_hosted_model();
-        assert!(pending.get().is_none(), "actual sync must execute");
-        assert!(app.state.doc.get(ROOT, change).unwrap().is_some());
         assert_ne!(
             app.action_directory_revision(),
             page.revision,
@@ -151,8 +159,7 @@ fn hosted_directory_sync_contract_and_hierarchy_changes_invalidate_revision() {
         if change == "hierarchy" {
             assert_eq!(current.rows.len(), 2);
         } else {
-            let contract: tilo_actions::ActionContract =
-                serde_json::from_str(&current.rows[0].visibility_contract_json).unwrap();
+            let contract = &current.rows[0].visibility.as_ref().unwrap().contract;
             assert_eq!(
                 contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
@@ -171,7 +178,7 @@ fn hosted_directory_provider_generation_change_remains_stale() {
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -193,13 +200,11 @@ fn hosted_directory_provider_generation_change_remains_stale() {
 
 #[test]
 fn hosted_directory_hidden_immediate_target_change_stays_stale() {
-    let pending = Rc::new(Cell::new(None));
-    let mut app = hosted_directory_fixture(pending.clone());
+    let mut app = hosted_directory_fixture();
     let old = app.action_directory_revision();
     let before = tilo_actions::door::survey(&app.publication_resources());
-    pending.set(Some("changed-payload"));
+    app.state.doc.put(ROOT, "changed-payload", true).unwrap();
     app.pump_hosted_model();
-    assert!(pending.get().is_none());
     assert_eq!(
         tilo_actions::door::survey(&app.publication_resources()),
         before,
@@ -235,7 +240,6 @@ fn owned_declared_directory_factory(
             calls: Rc::new(Cell::new(0)),
             semantic_calls: Rc::new(Cell::new(0)),
             count: 2,
-            sync_change: None,
         }),
         registry,
     ))
@@ -267,6 +271,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create: owned_declared_directory_factory,
     };
     let context = HostContext::prepare(
@@ -297,7 +302,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         AppConstructionInputs::controlled()
     })
     .unwrap();
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: binding.broker_route().unwrap(),
         epoch: uuid::Uuid::new_v4(),
@@ -427,13 +432,12 @@ fn hosted_directory_lazy_target_domain_versions_even_with_unchanged_search_gener
             calls: Rc::new(Cell::new(0)),
             semantic_calls: Rc::new(Cell::new(0)),
             count: 2,
-            sync_change: None,
             domain_provider: Some(provider.clone()),
         }),
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -475,8 +479,7 @@ fn hosted_directory_prompted_domain_handler_and_unknown_changes_stay_stale() {
         "unknown-domain",
         "changed-domain",
     ] {
-        let pending = Rc::new(Cell::new(None));
-        let mut app = hosted_directory_fixture(pending.clone());
+        let mut app = hosted_directory_fixture();
         app.state.doc.put(ROOT, "prompted", true).unwrap();
         app.pump_hosted_model();
         let old = app.action_directory_revision();
@@ -487,7 +490,7 @@ fn hosted_directory_prompted_domain_handler_and_unknown_changes_stay_stale() {
             "explicit stable Draft identity must progress"
         );
         let before = tilo_actions::door::survey(&app.publication_resources());
-        pending.set(Some(change));
+        app.state.doc.put(ROOT, change, true).unwrap();
         app.pump_hosted_model();
         assert_eq!(
             tilo_actions::door::survey(&app.publication_resources()),
@@ -503,7 +506,7 @@ fn hosted_directory_prompted_domain_handler_and_unknown_changes_stay_stale() {
 
 #[test]
 fn hosted_directory_registry_epoch_and_supported_large_surface() {
-    let mut app = hosted_directory_fixture(Rc::new(Cell::new(None)));
+    let mut app = hosted_directory_fixture();
     app.state.doc.put(ROOT, "wide", true).unwrap();
     app.pump_hosted_model();
     let count = tilo_actions::door::survey(&app.publication_resources()).len();
@@ -544,7 +547,7 @@ impl crate::collaboration::PeerTransport for HostedDirectoryNotificationTranspor
 }
 #[test]
 fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revision() {
-    let mut app = hosted_directory_fixture(Rc::new(Cell::new(None)));
+    let mut app = hosted_directory_fixture();
     let events = Rc::new(RefCell::new(vec![]));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
@@ -577,27 +580,21 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
 
 #[test]
 fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_restore() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
     for clock_failure in [false, true] {
-        let mut app = hosted_directory_fixture(Rc::new(Cell::new(None)));
+        let mut app = hosted_directory_fixture();
         let time = Arc::new(AtomicU64::new(100));
         let failed = Arc::new(AtomicBool::new(false));
         let sample_time = time.clone();
         let sample_failed = failed.clone();
-        app.permission_ctx = PermissionContext::from_capabilities(
-            Actor::person(None, "fixture-user"),
-            vec![
-                CapOverride::grant(
-                    Subject::person("fixture-user"),
-                    Scope::Workspace,
-                    Verb::Admin,
-                )
-                .with_expiry(110),
-            ],
+        app.permission_ctx = crate::permissions::PermissionContext::granted(
+            "fixture-user",
+            &crate::permissions::TreePath::root(),
+            crate::permissions::policy::KindSet::ALL,
+            Some(110),
         )
         .at_unix_time(100)
         .with_policy_time_sampler(Arc::new(move || {
@@ -634,15 +631,14 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         assert_ne!(app.action_directory_revision(), page.revision);
         assert!(!matches!(
             app.resolve_action_directory(&page.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }
 
 #[test]
 fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
-    let pending = Rc::new(Cell::new(None));
-    let mut app = hosted_directory_fixture(pending.clone());
+    let mut app = hosted_directory_fixture();
     let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
@@ -655,11 +651,75 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     app.publish_action_surface();
     let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
     let before = tilo_actions::door::survey(&app.publication_resources());
-    pending.set(Some("changed-payload"));
+    app.state.doc.put(ROOT, "changed-payload", true).unwrap();
     app.pump_hosted_model();
     assert_eq!(
         tilo_actions::door::survey(&app.publication_resources()),
         before
     );
     assert_ne!(app.action_directory_revision(), page.revision);
+}
+
+#[test]
+fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() {
+    let mut app = hosted_directory_fixture();
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            crate::collaboration::Collaborator {
+                id: "person:local".into(),
+                name: "Local person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            crate::collaboration::Collaborator {
+                id: "opaque-member".into(),
+                name: "Build helper".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+            crate::collaboration::Collaborator {
+                id: "agent:spoof".into(),
+                name: "A person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: false,
+            },
+        ],
+        permissions: vec![],
+    });
+    let opaque = crate::permissions::UserId("opaque-member".into());
+    let spoof = crate::permissions::UserId("agent:spoof".into());
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Agent
+    );
+    assert_eq!(
+        app.presence_ctx.participant_kind(&spoof),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![crate::collaboration::Collaborator {
+            id: "person:local".into(),
+            name: "Local person".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }],
+        permissions: vec![],
+    });
+    assert!(!app.presence_ctx.names.contains_key(&opaque));
+    assert!(!app.presence_ctx.names.contains_key(&spoof));
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![],
+        permissions: vec![],
+    });
+    assert!(app.presence_ctx.self_id().is_none());
 }

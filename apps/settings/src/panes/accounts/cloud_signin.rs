@@ -7,7 +7,9 @@
 //! steps run on worker threads; the pane's `sync` polls
 //! [`SignInFlow::poll`] and persists the [`Completed`] result through its
 //! transactional account save. The browser is opened through the desktop's
-//! URI opener (`ui::portal`), never a spawned host tool.
+//! URI opener (`ui::portal`), never a spawned host tool. Google's files-only
+//! path stays available; a separate, explicit consent action requests Gmail
+//! too and validates its mailbox before either service account is saved.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -15,10 +17,11 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
 use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthCloud};
-use ui::widget::{Row, Spacer, TextInput, TextInputKind};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
-use crate::widgets::{El, caption, card, rows, setting_row};
+use crate::i18n::t;
+use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
 
 /// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {
@@ -43,14 +46,22 @@ pub struct Completed {
     /// Non-secret connection settings merged into the account envelope.
     pub config: serde_json::Value,
     pub secret: accounts::Secret,
+    /// A mailbox validated by Gmail, only after explicit mail consent.
+    pub mail: Option<accounts::Account>,
 }
 
 enum Outcome {
-    Completed(Completed),
+    Completed(Box<Completed>),
     NeedsCode(ICloudChallenge),
     /// The code was wrong; ask again for the same challenge.
     CodeRejected(ICloudChallenge, String),
     Failed(String),
+}
+
+impl Outcome {
+    fn completed(completed: Completed) -> Self {
+        Self::Completed(Box::new(completed))
+    }
 }
 
 enum Cancel {
@@ -96,6 +107,8 @@ pub struct SignInFlow {
     /// next [`SignInFlow::poll`].
     ready: Option<Outcome>,
     message: Option<String>,
+    google_mail: bool,
+    expected_mail: Option<String>,
 }
 
 /// The account configuration of an `OAuth` sign-in: the provider and its
@@ -108,17 +121,60 @@ fn oauth_completed(
     existing_id: Option<String>,
     display_name: String,
     tokens: &account_custody::TokenSet,
+    google_mail: bool,
+    expected_mail: Option<&str>,
 ) -> Result<Outcome, CustodyError> {
-    let mount = custodian.resolve_storage(cloud, tokens)?;
-    Ok(Outcome::Completed(Completed {
+    let mount = if kind == AccountKind::Mail {
+        serde_json::Value::Null
+    } else {
+        custodian.resolve_storage(cloud, tokens)?
+    };
+    let mail = if google_mail {
+        let email = custodian.gmail_identity(tokens)?;
+        if expected_mail.is_some_and(|expected| !email.eq_ignore_ascii_case(expected)) {
+            return Err(CustodyError::SignIn(
+                "Google returned a different mailbox; sign in with this account's email address"
+                    .into(),
+            ));
+        }
+        let config = accounts::email::AccountConfig {
+            display_name: email.clone(),
+            email: email.clone(),
+            username: email.clone(),
+            imap_host: "imap.gmail.com".into(),
+            smtp_host: "smtp.gmail.com".into(),
+            smtp_port: 587,
+            auth: accounts::email::AuthMethod::OAuth,
+            ..Default::default()
+        };
+        let mut account = accounts::Account::new(accounts::AccountId::from(email.clone()), "email");
+        account.display_name = email;
+        account.set_config(&config);
+        Some(account)
+    } else {
+        None
+    };
+    Ok(Outcome::completed(Completed {
         kind,
         existing_id,
         display_name,
-        config: serde_json::json!({
-            "provider": cloud.type_id(),
-            accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
-        }),
+        config: if kind == AccountKind::Mail {
+            mail.as_ref()
+                .ok_or_else(|| CustodyError::SignIn("Gmail sign-in requires mail consent".into()))?
+                .config
+                .clone()
+        } else {
+            serde_json::json!({
+                "provider": cloud.type_id(),
+                accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
+            })
+        },
         secret: account_custody::oauth_secret(tokens),
+        mail: if kind == AccountKind::Mail {
+            None
+        } else {
+            mail
+        },
     }))
 }
 
@@ -139,12 +195,19 @@ fn icloud_config(
 
 /// Why this kind cannot start a sign-in in this build, if it cannot.
 pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<String> {
-    if let Some(cloud) = kind.oauth_cloud() {
-        return match custodian.oauth_config(cloud) {
+    let oauth_use = if kind == AccountKind::Mail {
+        Some(account_custody::OAuthUse::mail(
+            account_custody::OAuthIssuer::Google,
+        ))
+    } else {
+        kind.oauth_cloud().map(OAuthCloud::oauth_use)
+    };
+    if let Some(oauth_use) = oauth_use {
+        return match custodian.use_config(oauth_use) {
             Err(CustodyError::NotConfigured { provider, key }) => Some(format!(
                 "{provider} sign-in is not configured in this build: it needs an OAuth client \
                  ID registered with {}, provided as {key} when Tilo is built or started.",
-                cloud.sign_in_with()
+                oauth_use.issuer.label()
             )),
             _ => None,
         };
@@ -184,6 +247,11 @@ impl SignInFlow {
             stage: Stage::Form,
             ready: None,
             message: None,
+            google_mail: kind == AccountKind::Mail,
+            expected_mail: existing
+                .and_then(|account| account.config.get("email"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         }
     }
 
@@ -224,6 +292,13 @@ impl SignInFlow {
 
     /// The primary action: start the sign-in, or verify the entered code.
     pub fn submit(&mut self) {
+        if !matches!(self.stage, Stage::PastedCode { .. }) {
+            self.google_mail = self.kind == AccountKind::Mail;
+        }
+        self.submit_requested();
+    }
+
+    fn submit_requested(&mut self) {
         if self.busy() {
             return;
         }
@@ -253,7 +328,11 @@ impl SignInFlow {
             self.verify_code(challenge, apple_id);
             return;
         }
-        match self.kind.oauth_cloud() {
+        match if self.kind == AccountKind::Mail {
+            Some(OAuthCloud::GoogleDrive)
+        } else {
+            self.kind.oauth_cloud()
+        } {
             Some(cloud) => self.start_oauth(cloud),
             None if self.kind == AccountKind::Nextcloud => self.start_nextcloud(),
             None if self.kind == AccountKind::ICloudDrive => self.start_icloud(),
@@ -261,8 +340,32 @@ impl SignInFlow {
         }
     }
 
+    /// Gmail consent is available only on Google's idle sign-in form.
+    pub fn can_request_google_mail(&self) -> bool {
+        self.kind == AccountKind::GoogleDrive && matches!(self.stage, Stage::Form)
+    }
+
+    /// Explicit opt-in to the full Gmail IMAP/SMTP scope, separate from files-only consent.
+    pub fn submit_with_google_mail(&mut self) {
+        if !self.can_request_google_mail() {
+            return;
+        }
+        self.google_mail = true;
+        self.submit_requested();
+    }
+
     fn start_oauth(&mut self, cloud: OAuthCloud) {
-        let authorization = match self.custodian.begin_sign_in(cloud, None) {
+        let request = if self.kind == AccountKind::Mail {
+            self.custodian.begin_sign_in_for(
+                account_custody::OAuthUse::mail(account_custody::OAuthIssuer::Google),
+                self.expected_mail.as_deref(),
+            )
+        } else if cloud == OAuthCloud::GoogleDrive {
+            self.custodian.begin_google_sign_in(self.google_mail)
+        } else {
+            self.custodian.begin_sign_in(cloud, None)
+        };
+        let authorization = match request {
             Ok(authorization) => authorization,
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -294,9 +397,20 @@ impl SignInFlow {
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
+        let google_mail = self.google_mail;
+        let expected_mail = self.expected_mail.clone();
         std::thread::spawn(move || {
             let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
-                oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+                oauth_completed(
+                    &custodian,
+                    cloud,
+                    kind,
+                    existing_id,
+                    display_name,
+                    &tokens,
+                    google_mail,
+                    expected_mail.as_deref(),
+                )
             });
             let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
         });
@@ -330,10 +444,21 @@ impl SignInFlow {
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
+        let google_mail = self.google_mail;
+        let expected_mail = self.expected_mail.clone();
         std::thread::spawn(move || {
             let outcome =
                 Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
-                    oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+                    oauth_completed(
+                        &custodian,
+                        cloud,
+                        kind,
+                        existing_id,
+                        display_name,
+                        &tokens,
+                        google_mail,
+                        expected_mail.as_deref(),
+                    )
                 });
             let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
         });
@@ -365,7 +490,7 @@ impl SignInFlow {
                 flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
             });
             let _ = sender.send(match outcome {
-                Ok(login) => Outcome::Completed(Completed {
+                Ok(login) => Outcome::completed(Completed {
                     kind,
                     existing_id,
                     display_name: display_name.clone(),
@@ -376,6 +501,7 @@ impl SignInFlow {
                         "app_password": true,
                     }),
                     secret: accounts::Secret::password(login.app_password.as_str()),
+                    mail: None,
                 }),
                 Err(NextcloudError::Cancelled) => Outcome::Failed("sign-in was cancelled".into()),
                 Err(error) => Outcome::Failed(error.to_string()),
@@ -411,12 +537,13 @@ impl SignInFlow {
         std::thread::spawn(move || {
             let password = zeroize::Zeroizing::new(password);
             let outcome = match auth.sign_in(&apple_id, &password) {
-                Ok(ICloudSignIn::Complete(session)) => Outcome::Completed(Completed {
+                Ok(ICloudSignIn::Complete(session)) => Outcome::completed(Completed {
                     kind,
                     existing_id,
                     display_name,
                     config: icloud_config(auth.as_ref(), &apple_id),
                     secret: account_custody::icloud_secret(&apple_id, &session),
+                    mail: None,
                 }),
                 Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
                 Err(error) => Outcome::Failed(error.to_string()),
@@ -450,12 +577,13 @@ impl SignInFlow {
                 Err(ICloudAuthError::InvalidCode) => {
                     Outcome::CodeRejected(challenge, ICloudAuthError::InvalidCode.to_string())
                 }
-                Ok(session) => Outcome::Completed(Completed {
+                Ok(session) => Outcome::completed(Completed {
                     kind,
                     existing_id,
                     display_name,
                     config: icloud_config(auth.as_ref(), &apple_id),
                     secret: account_custody::icloud_secret(&apple_id, &session),
+                    mail: None,
                 }),
                 Err(error) => Outcome::Failed(error.to_string()),
             };
@@ -494,8 +622,7 @@ impl SignInFlow {
         let Stage::Waiting { urls, launch, .. } = &mut self.stage else {
             return (None, false);
         };
-        let mut changed = false;
-        if let Some(receiver) = urls
+        let changed = if let Some(receiver) = urls
             && let Ok(url) = receiver.try_recv()
         {
             *launch = Some(self.opener.open(&url));
@@ -505,8 +632,10 @@ impl SignInFlow {
                  updates when you are done."
                     .into(),
             );
-            changed = true;
-        }
+            true
+        } else {
+            false
+        };
         let mut launch_failed = None;
         if let Some(channel) = launch {
             match channel.try_recv() {
@@ -542,7 +671,7 @@ impl SignInFlow {
             Outcome::Completed(completed) => {
                 self.stage = Stage::Form;
                 self.message = Some("Saving…".into());
-                (Some(completed), true)
+                (Some(*completed), true)
             }
             Outcome::NeedsCode(challenge) => {
                 self.stage = Stage::Code {
@@ -610,7 +739,8 @@ impl SignInFlow {
     }
 
     /// The flow's card.
-    pub fn card(&self) -> El {
+    /// The sign-in card; `bind` gives each button its effect.
+    pub fn card(&self, bind: &dyn Fn(Button, super::AccountsEffect) -> Button) -> SettingsSection {
         let title = format!(
             "{} {}",
             if self.existing_id.is_some() {
@@ -624,43 +754,41 @@ impl SignInFlow {
             },
             self.kind.label()
         );
-        let mut fields: Vec<El> = Vec::new();
+        let mut fields: Vec<Item> = Vec::new();
         let unavailable = unavailable_reason(self.kind, &self.custodian);
         let waiting = self.busy();
         if let Some(reason) = &unavailable {
-            fields.push(caption(reason));
+            fields.push(note(reason));
         } else if !waiting {
             match &self.stage {
-                Stage::PastedCode { .. } => fields.push(setting_row(
+                Stage::PastedCode { .. } => fields.push(field_row(
                     "Code",
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Code from the provider")
-                            .with_placeholder("Paste the code")
-                            .with_font_size(13.0),
+                            .with_placeholder("Paste the code"),
                     ),
                 )),
-                Stage::Code { .. } => fields.push(setting_row(
+                Stage::Code { .. } => fields.push(field_row(
                     "Verification code",
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Verification code")
-                            .with_placeholder("123456")
-                            .with_font_size(13.0),
+                            .with_placeholder("123456"),
                     ),
                 )),
                 _ => self.form_fields(&mut fields),
             }
         }
         if let Some(message) = &self.message {
-            fields.push(caption(message));
+            fields.push(note(message));
         }
         if self.kind.best_effort() && unavailable.is_none() {
-            fields.push(caption(
+            fields.push(note(
                 "Best effort: Apple offers no public iCloud Drive API, so Tilo uses the one \
                  iCloud.com uses. It can change without notice. Your Apple ID password is used \
                  only to sign in and is never stored.",
@@ -673,77 +801,72 @@ impl SignInFlow {
                 (_, AccountKind::ICloudDrive) => "Sign in",
                 _ => "Continue in browser",
             };
-            buttons = buttons.push(Box::new(super::account_action_button(
-                "settings.accounts.form.save",
-                label,
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "save-form",
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::SubmitForm,
-                false,
+            buttons = buttons.push(Box::new(bind(
+                Button::new("settings.accounts.form.save", label),
+                super::AccountsEffect::SaveAccountForm,
             )));
+            if self.can_request_google_mail() {
+                fields.push(note(&t("accounts-google-mail-consent")));
+                buttons = buttons.push(Box::new(bind(
+                    Button::new(
+                        "settings.accounts.google-mail",
+                        &t("accounts-google-mail-connect"),
+                    ),
+                    super::AccountsEffect::ConnectGoogleMail,
+                )));
+            }
         }
         buttons = buttons
-            .push(Box::new(super::account_action_button(
-                "settings.accounts.form.cancel",
-                "Cancel",
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "cancel-form",
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::CancelForm,
-                false,
+            .push(Box::new(bind(
+                Button::new("settings.accounts.form.cancel", "Cancel"),
+                super::AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
-        fields.push(Box::new(buttons));
+        fields.push(row(Box::new(buttons)));
         card(&title, rows(fields))
     }
 
-    fn form_fields(&self, fields: &mut Vec<El>) {
-        fields.push(setting_row(
+    fn form_fields(&self, fields: &mut Vec<Item>) {
+        fields.push(field_row(
             "Display name",
             Box::new(
                 TextInput::from_state(&self.name)
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
                     .with_accessible_name("Display name")
-                    .with_placeholder(self.kind.label())
-                    .with_font_size(13.0),
+                    .with_placeholder(self.kind.label()),
             ),
         ));
         match self.kind {
             AccountKind::Nextcloud => {
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Server",
                     Box::new(
                         TextInput::from_state(&self.server)
                             .with_kind(TextInputKind::Url)
                             .with_id("accounts.signin.server")
                             .with_accessible_name("Server URL")
-                            .with_placeholder("https://cloud.example.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("https://cloud.example.com"),
                     ),
                 ));
-                fields.push(caption(
+                fields.push(note(
                     "Continue opens your Nextcloud's sign-in page in the browser. After you \
                      approve, Nextcloud issues an app password for this device only; you can \
                      revoke it there under Security at any time.",
                 ));
             }
             AccountKind::ICloudDrive => {
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Apple ID",
                     Box::new(
                         TextInput::from_state(&self.apple_id)
                             .with_kind(TextInputKind::Email)
                             .with_id("accounts.signin.apple-id")
                             .with_accessible_name("Apple ID")
-                            .with_placeholder("you@icloud.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("you@icloud.com"),
                     ),
                 ));
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Password",
                     Box::new(
                         TextInput::from_state(&self.password)
@@ -751,14 +874,13 @@ impl SignInFlow {
                             .with_id("accounts.signin.password")
                             .with_accessible_name("Apple ID password")
                             .with_secret(true)
-                            .with_placeholder("Password")
-                            .with_font_size(13.0),
+                            .with_placeholder("Password"),
                     ),
                 ));
             }
             _ => {
                 if let Some(cloud) = self.kind.oauth_cloud() {
-                    fields.push(caption(&format!(
+                    fields.push(note(&format!(
                         "Continue opens {}'s sign-in page in your browser. Tilo never sees your \
                          password; it keeps a revocable access grant for your files, sealed on \
                          this device.",

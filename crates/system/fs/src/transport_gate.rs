@@ -2,7 +2,7 @@
 //! release harness. It is disabled unless the daemon is explicitly launched
 //! with `TILO_FS_TRANSPORT_GATE_SOCKET`.
 
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -47,14 +47,9 @@ pub fn spawn_from_env() -> std::io::Result<(TransportGate, Option<tokio::task::J
 
 fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::JoinHandle<()>> {
     validate_private_parent(&path)?;
-    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-        if !metadata.file_type().is_socket() {
-            return Err(std::io::Error::other("transport gate path is not a socket"));
-        }
-        std::fs::remove_file(&path)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
+    listener.set_nonblocking(true)?;
+    let listener = UnixListener::from_std(listener)?;
     println!("Transport partition gate at {}", path.display());
     Ok(tokio::spawn(async move {
         loop {
@@ -64,7 +59,7 @@ fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::Joi
             let Ok(credential) = stream.peer_cred() else {
                 continue;
             };
-            if credential.uid() != unsafe { libc::geteuid() } {
+            if credential.uid() != rustix::process::geteuid().as_raw() {
                 continue;
             }
             let mut command = [0_u8; 32];

@@ -1,0 +1,93 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "chip_design.project"
+label = "Chip Design"
+version = 1
+fields = [
+  { path = "reports", type = "BTreeMap<String, Atom>", readonly = true },
+  { path = "verifications", type = "BTreeMap<String, Atom>", readonly = true },
+  { path = "nodes", type = "Keyed<OperatorNode>", stored = "keyed" },
+  { path = "nodes.*.id", type = "String", readonly = true },
+  { path = "nodes.*.kind", type = "OperatorKind", readonly = true },
+  { path = "nodes.*.shape", type = "Vec<u16>", readonly = true },
+  { path = "nodes.*.normalization_width", type = "u16", readonly = true },
+  { path = "nodes.*.output_width", type = "Option<u32>" },
+  { path = "nodes.*.x", type = "u16" },
+  { path = "nodes.*.y", type = "u16" },
+  { path = "connections", type = "Set<Connection>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "import-report"
+kind = "undoable"
+params = [
+  { name = "json", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-report"
+kind = "undoable"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-verification"
+kind = "undoable"
+params = [
+  { name = "json", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-verification"
+kind = "undoable"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-node"
+kind = "undoable"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { type = "string", enum = ["input", "gate_input", "norm_weight_input", "rms_norm", "apply_norm_weight", "silu", "multiply", "projection_input", "matrix_weight_input", "linear_projection", "add"] } },
+  { name = "shape", required = true, schema = { type = "array", items = { type = "integer", maximum = 65535, minimum = 0 } } },
+  { name = "output_width", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "x", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
+  { name = "y", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-shape"
+kind = "undoable"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "shape", required = true, schema = { type = "array", items = { type = "integer", maximum = 65535, minimum = 0 } } },
+]
+
+[[resources.verbs]]
+id = "remove-node"
+kind = "undoable"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "connect"
+kind = "undoable"
+params = [
+  { name = "from_node", required = true, schema = { type = "string" } },
+  { name = "from_port", required = true, schema = { type = "string" } },
+  { name = "to_node", required = true, schema = { type = "string" } },
+  { name = "to_port", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "disconnect"
+kind = "undoable"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "port", required = true, schema = { type = "string" } },
+]
+

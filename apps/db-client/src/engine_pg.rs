@@ -19,7 +19,7 @@ use postgres::{Client, Config, NoTls};
 use crate::engine::{MAX_QUERY_ROWS, can_retain_result_row, row_retained_bytes};
 use crate::model::{
     Cell, ColumnInfo, DatabaseSchema, ForeignKey, IndexInfo, QueryResult, RelationKind, SchemaInfo,
-    TableInfo, TypeClass,
+    TableInfo,
 };
 
 /// A live `PostgreSQL` connection. Owns the client for the session lifetime.
@@ -557,7 +557,6 @@ impl PostgresEngine {
             let nullable: String = row.try_get(2).map_err(|e| e.to_string())?;
             let default: Option<String> = row.try_get(3).ok().flatten();
             cols.push(ColumnInfo {
-                class: TypeClass::classify(&decl),
                 primary_key: pks.iter().any(|p| p == &name),
                 not_null: nullable.eq_ignore_ascii_case("NO"),
                 decl_type: decl,

@@ -11,7 +11,7 @@ INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
-TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
+TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 
 packages=()
 features=()
@@ -19,6 +19,7 @@ binary_crates=()
 binaries=()
 build_targets=()
 selected_crates=()
+app_profiles=()
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
@@ -35,6 +36,12 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         esac
     fi
     packages+=("-p" "$package")
+    # Package overrides reach both the executable and app-owned libraries.
+    # They are visible to Cargo and compiler caches before the wrapper runs;
+    # matching only the binary crate name misses differently named libraries.
+    app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
+                   --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
+                   --config "profile.$PROFILE.package.\"$package\".strip=\"symbols\"")
     features+=("$package/thin")
     binary_crates+=("${binary//-/_}")
     if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
@@ -45,6 +52,26 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
 done
 
 [ "${#packages[@]}" -gt 0 ] || { echo "no tapp applications selected" >&2; exit 1; }
+
+# Runtime engines (crates/runtime/engines/*): Rust dylibs chained on
+# the runtime, each mapped only by the app that uses it, and shipped beside
+# libruntime_dylib.so in the runtime bundle. The bundle must not depend on
+# which apps this run selects, so every engine is built every time, through
+# its `<package>-check` binary: Cargo builds a library only for a target that
+# needs it, and `--lib` would build every app's library too.
+engines=()
+for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
+    [ -f "$manifest" ] || continue
+    engine="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+    [ -n "$engine" ] || { echo "could not read the package name of $manifest" >&2; exit 1; }
+    grep -Fq "name = \"$engine-check\"" "$manifest" \
+        || { echo "runtime engine $engine has no $engine-check binary" >&2; exit 1; }
+    engines+=("$engine")
+    packages+=("-p" "$engine")
+    features+=("$engine/thin")
+    binary_crates+=("${engine//-/_}_check")
+    build_targets+=(--bin "$engine-check")
+done
 [ "${#binaries[@]}" -gt 0 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
@@ -69,12 +96,38 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
       CARGO_PROFILE_RELEASE_OPT_LEVEL CARGO_PROFILE_RELEASE_PANIC \
       CARGO_PROFILE_RELEASE_STRIP CARGO_PROFILE_RELEASE_DEBUG
+#
+# The size wrapper and the crates it applies to are Cargo configuration on the
+# command line rather than environment, so they reach rustc through any Cargo
+# front end, including one that builds on another machine and forwards only
+# its own allowlist of variables.
 cd "$REPO"
-TILO_THIN_BIN_CRATES="$thin_crates" \
-RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
-cargo build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
-    -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
+# sccache must see the real compiler after the workspace wrapper adds its
+# flags. Outside it, sccache 0.17 rejects an absolute compiler as a second
+# input; a literal compiler is cacheable but bypasses the flag-mutating wrapper.
+# Keep Cargo's compiler selection intact and route workspace calls through the
+# size wrapper before caching. The dispatcher retains native compiler caching.
+if [[ ${RUSTC_WRAPPER:-} == */sccache || ${RUSTC_WRAPPER:-} == sccache ]]; then
+    cache_path=$RUSTC_WRAPPER
+    cache_config=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$cache_path")
+    export TILO_THIN_SCCACHE="$cache_path"
+    export RUSTC_WRAPPER="$REPO/tools/ci/thin-app/sccache"
+    extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
+                      --config "env.TILO_THIN_SCCACHE.value=$cache_config"
+                      --config "env.TILO_THIN_SCCACHE.force=true")
+fi
+if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+    extra_cargo_args+=(--message-format=json-render-diagnostics)
+    # Keep the actual unit identities on the producing machine; no runtime bytes change.
+    exec 3>&1
+    exec > >(tee "$SDK_COMPILER_UNITS" >&3)
+    sdk_compiler_stream_pid=$!
+fi
+"${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
+    --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
+    "${app_profiles[@]}" -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol
 # names include crate hashes, so an app built against a second feature-unified
@@ -84,6 +137,19 @@ cargo build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_car
 # supported app argument; reaching main (any status except the loader's 127)
 # is enough for this ABI check.
 rust_target_libdir=$(rustc --print target-libdir)
+# An object's dynamic section, read whole before it is searched: with
+# pipefail, `readelf | grep -q` fails whenever grep stops at its match while
+# readelf is still writing (SIGPIPE), which reported a correctly built object
+# as wrongly built.
+dynamic_section() {
+    readelf -dW "$1"
+}
+# The shared runtime's relocations run in every app process; the
+# wrapper packs them. Without RELR it was linked without the wrapper.
+grep -Fq '(RELR)' <<<"$(dynamic_section "$TARGET_DIR/$PROFILE/libruntime_dylib.so")" || {
+    echo "libruntime_dylib.so was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
+    exit 1
+}
 for index in "${!binaries[@]}"; do
     binary=${binaries[$index]}
     crate=${selected_crates[$index]}
@@ -91,13 +157,25 @@ for index in "${!binaries[@]}"; do
     # carries its own static copy of the runtime (tens of MiB). Cargo silently
     # routes `<package>/thin` to a dependency when the package has one keyed by
     # its own name, so name the cause here rather than at the tapp size limit.
-    readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '[libruntime_dylib.so]' || {
+    binary_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$binary")
+    grep -Fq '[libruntime_dylib.so]' <<<"$binary_dynamic" || {
         echo "thin app does not link libruntime_dylib.so: $binary" >&2
         echo "its <package>/thin feature was not applied; a dependency keyed by the package's own name claims it" >&2
         exit 1
     }
+    # Only rustc-thin-app-wrapper.sh asks for packed relative relocations, so
+    # their absence means the tapp crate compiled at the profile's speed
+    # settings instead, megabytes larger and caught otherwise only at the tapp
+    # size limit.
+    grep -Fq '(RELR)' <<<"$binary_dynamic" || {
+        echo "thin app was not compiled through rustc-thin-app-wrapper.sh: $binary" >&2
+        exit 1
+    }
     set +e
-    LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
+    # Every symbol bound at exec, whatever the app was linked with: the
+    # runtime keeps only what something exported reaches, so a missing one
+    # fails here rather than at first use.
+    LD_BIND_NOW=1 LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
         "$TARGET_DIR/$PROFILE/$binary" --help \
         >/dev/null 2>"$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
     status=$?
@@ -111,5 +189,42 @@ for index in "${!binaries[@]}"; do
     rm -f "$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
 done
 
-printf 'built %s thin tapp apps with %s\n' \
-    "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"
+# Each engine must link this runtime through the wrapper and run against it.
+# The list written last is what packaging folds into the runtime bundle
+# (dist/apps/package-apps.sh, os/Containerfile, os/dev/assemble-app-runtime.py):
+# one library file name a line, beside libruntime_dylib.so.
+engine_list="$TARGET_DIR/$PROFILE/runtime-engines"
+rm -f "$engine_list"
+: > "$engine_list.partial"
+engine_count=0
+for engine in ${engines[@]+"${engines[@]}"}; do
+    library="lib${engine//-/_}.so"
+    [ -f "$TARGET_DIR/$PROFILE/$library" ] \
+        || { echo "runtime engine $engine did not produce $library" >&2; exit 1; }
+    library_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$library")
+    grep -Fq '[libruntime_dylib.so]' <<<"$library_dynamic" || {
+        echo "runtime engine $library does not link libruntime_dylib.so; it would carry its own copy of the shared crates" >&2
+        exit 1
+    }
+    grep -Fq '(RELR)' <<<"$library_dynamic" || {
+        echo "runtime engine $library was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
+        exit 1
+    }
+    LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" "$TARGET_DIR/$PROFILE/$engine-check" || {
+        echo "runtime engine $library does not run against this runtime ($engine-check failed)" >&2
+        exit 1
+    }
+    printf '%s\n' "$library" >> "$engine_list.partial"
+    engine_count=$((engine_count + 1))
+done
+mv "$engine_list.partial" "$engine_list"
+
+printf 'built %s thin tapp apps with %s and %s runtime engines\n' \
+    "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so" "$engine_count"
+
+# The producer may capture the unit stream immediately after this script exits.
+# Join its writer rather than exposing a still-being-written inventory.
+if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+    exec 1>&3 3>&-
+    wait "$sdk_compiler_stream_pid"
+fi

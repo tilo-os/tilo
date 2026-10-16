@@ -1,0 +1,8 @@
+[
+  {
+    "expect": {
+      "target": "guild-status",
+      "name": "Not connected to a Discord server yet."
+    }
+  }
+]

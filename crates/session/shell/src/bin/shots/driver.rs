@@ -16,9 +16,8 @@ use tilo_automerge::ApplyIncoming;
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
@@ -37,6 +36,8 @@ use taffy::prelude::NodeId;
 /// have to spend that time. Kept short enough that sleeping 60 frames
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
+/// How long a capture waits for pending visual work before it shows it.
+const CAPTURE_SETTLE: Duration = Duration::from_secs(5);
 
 pub struct ShellDriver {
     /// Layout + paint core, shared with the native compositor mode.
@@ -56,6 +57,12 @@ pub struct ShellDriver {
     #[cfg(target_os = "linux")]
     capture_executor: Option<CaptureExecutor>,
     lock_visual: Option<LockVisualState>,
+    /// Another device of the shown device's person, and the person's
+    /// workspace list as the shown device keeps it.
+    own_device: Option<(
+        crate::own_device::OwnDevice,
+        shell::shell::personal_workspaces::PersonalWorkspaces,
+    )>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -75,10 +82,33 @@ impl ShellDriver {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
+    /// [`Self::new`] for scene `name`. `offline` shows the session whose
+    /// collaboration service went away: its apps reach for the session's
+    /// broker at a socket nobody serves, so a room's documents lose their
+    /// route as they do when the service stops.
+    pub fn for_scene(name: &str, viewport: (u32, u32)) -> Self {
+        let broker = (name == "offline").then(|| {
+            let gone =
+                std::env::temp_dir().join(format!("tilo-shots-gone-{}", uuid::Uuid::new_v4()));
+            (gone.join("collab.sock"), gone.join("identity.sock"))
+        });
+        Self::build(WorkspaceTree::bootstrap_demo(), viewport, broker)
+    }
+
     /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        Self::build(tree, viewport, None)
+    }
+
+    /// [`Self::with_tree`], its apps reaching the session broker at
+    /// `broker`'s collaboration and identity sockets, when given.
+    fn build(
+        tree: WorkspaceTree,
+        viewport: (u32, u32),
+        broker: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    ) -> Self {
         // Boot adopts every ownerless workspace before the session ever
-        // paints (`compositor::hosted`), so a room you made is a room
+        // paints (`compositor::session_bootstrap`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
         // real machine are yours.
         // The driver then acts as that same owner in every room: the
@@ -89,7 +119,23 @@ impl ShellDriver {
         let mut tree = tree;
         tree.adopt_ownerless_workspaces(&owner);
         let hosted_tabs = hosted_app_tabs(&tree);
-        let mut fb = FrameBuilder::with_tree(tree, viewport);
+        // An owned fixture never reads the wall clock, so frames compare
+        // across minutes; it shows the time it is given, like a session
+        // shows the time it reads.
+        let mut fb = match shell::shell::hosted_inputs::HostedTileInputs::fixture()
+            .and_then(|inputs| inputs.with_fixture_clock(shots_clock()))
+            .and_then(|inputs| match broker {
+                Some((collab, identity)) => inputs.with_session_broker_at(collab, identity),
+                None => Ok(inputs),
+            }) {
+            Ok(inputs) => FrameBuilder::with_tree_and_inputs(&tree, viewport, inputs),
+            Err(error) => {
+                eprintln!(
+                    "shots: fixture inputs unavailable ({error}); the bar shows a placeholder time"
+                );
+                FrameBuilder::with_tree(tree, viewport)
+            }
+        };
         fb.with_chrome(|st| st.act_as(owner));
         // Binding a tab never creates its document: the action that opens
         // an app does. This driver opens every tab of the tree it is handed
@@ -115,6 +161,7 @@ impl ShellDriver {
             #[cfg(target_os = "linux")]
             capture_executor: None,
             lock_visual: None,
+            own_device: None,
         }
     }
 
@@ -290,7 +337,7 @@ impl ShellDriver {
         self.fb.dispatch_event(
             event,
             &self.modifiers,
-            &mut self.state,
+            &mut ui::widget::Edits::lend(&mut self.state),
             &self.root_obj,
             &mut self.focus,
         )
@@ -301,20 +348,9 @@ impl ShellDriver {
     /// `dispatch` so per-event hit-tests run in the same order they
     /// would on real hardware.
     pub fn click_at(&mut self, p: Point) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.move_cursor(p);
+        self.press();
+        self.release();
     }
 
     /// Synthesise a `MouseWheel` event at the cursor's current position
@@ -324,11 +360,7 @@ impl ShellDriver {
     /// pixel deltas should multiply by ~`1.0/16.0` first to stay
     /// concept-faithful with the strip's per-line factor.
     pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
-        self.dispatch(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        self.dispatch(&ui::synthetic_input::mouse_wheel(dx, dy));
     }
 
     /// Synthesise a `CursorMoved` event WITHOUT pressing or releasing.
@@ -337,30 +369,19 @@ impl ShellDriver {
     /// scrub-then-pause behaviour. Updates `self.last_cursor` so any
     /// follow-up `mouse_wheel()` lands at the new position.
     pub fn move_cursor(&mut self, p: Point) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::MoveTo(p).event(1.0));
     }
 
     /// Synthesise a left-button `Pressed` at the current cursor without
     /// releasing. Caller is responsible for the matching `release()`
     /// once the drag is complete.
     pub fn press(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::Press(MouseButton::Left).event(1.0));
     }
 
     /// Synthesise a left-button `Released` at the current cursor.
     pub fn release(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::Release(MouseButton::Left).event(1.0));
     }
 
     /// Press at `from`, drag through `steps` intermediate `CursorMoved`
@@ -377,29 +398,21 @@ impl ShellDriver {
     }
 
     fn drag_with_button(&mut self, from: Point, to: Point, steps: u32, button: MouseButton) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(from.x, from.y),
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
+        self.dispatch(&ui::synthetic_input::cursor_moved(from.x, from.y));
+        self.dispatch(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
             button,
-        });
+        ));
         let n = f64::from(steps.max(1));
         for s in 1..=steps.max(1) {
             let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-            self.dispatch(&WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(p.x, p.y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
         }
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
+        self.dispatch(&ui::synthetic_input::mouse_input(
+            ElementState::Released,
             button,
-        });
+        ));
     }
 
     /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
@@ -431,9 +444,9 @@ impl ShellDriver {
     pub fn step_frames(&mut self, frames: u32) {
         for _ in 0..frames {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
-            // Drive the per-frame update + redraw so animation state
-            // advances. `update` runs the per-tick reconciler too.
-            self.fb.host_mut().update(&mut self.state, &self.root_obj);
+            // Run the same readonly sync, typed settlement and update
+            // as the native compositor before painting animations.
+            self.fb.pump_apps(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
             let _ = self.paint();
@@ -442,8 +455,21 @@ impl ShellDriver {
 
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for passing it to a renderer (offscreen or live).
+    /// Draw floating chrome as under the reduced-transparency setting.
+    pub fn set_reduce_transparency(&mut self, on: bool) {
+        self.fb.set_reduce_transparency_for_shots(on);
+    }
+
+    /// The backdrops the latest [`Self::paint`] drew floating surfaces over;
+    /// see `FrameBuilder::take_backdrop`.
+    pub fn take_backdrop(&mut self) -> Option<std::sync::Arc<ui::backdrop::BackdropFrame>> {
+        self.fb.take_backdrop()
+    }
+
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
+            // The lock scene has no floating surfaces; drop any earlier frame's.
+            let _ = self.fb.take_backdrop();
             let (width, height) = self.fb.scene_size();
             let output = shell::compositor::lock_screen::LockOutput {
                 origin: (0.0, 0.0),
@@ -494,6 +520,9 @@ impl ShellDriver {
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
+            // A still shows the capture as finished: the compositor applies
+            // the worker's result on a later frame, a shot waits for it.
+            let _ = executor.finish_io_blocking(&mut self.fb);
             return scene;
         }
         self.fb.draw_capture_overlays(&mut scene);
@@ -599,13 +628,85 @@ impl ShellDriver {
         // cross-strip dispatch) is reflected in what gets captured.
         let root = self.root_obj.clone();
         self.fb.pump_apps(&mut self.state, &root);
+        // Work a person would see finish a moment after the window opened
+        // (an app's first save being confirmed, an image arriving) finishes
+        // before the capture too; what is still pending after the bound is
+        // stuck, and the shot shows it.
+        let deadline = Instant::now().checked_add(CAPTURE_SETTLE);
+        while self.fb.host().has_pending_visual_work() {
+            if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+                eprintln!(
+                    "shots: visual work still pending after {CAPTURE_SETTLE:?}; capturing it"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+            self.fb.pump_apps(&mut self.state, &root);
+            let _ = self.fb.paint_settled();
+        }
         self.fb.paint_settled()
+    }
+}
+
+/// The moment every shot shows: a weekday morning.
+fn shots_clock() -> tilo_desktop::chrome::ClockSnapshot {
+    tilo_desktop::chrome::ClockSnapshot {
+        unix_seconds: 1_700_000_000,
+        clock: "09:41".into(),
+        weekday: "Tue".into(),
+        date: "14 November".into(),
+    }
+}
+
+// Real room-owned task state qualifies catch-up review, only in shots fixtures.
+fn seed_catch_up_tasks(tree: &mut WorkspaceTree, local: &str) {
+    let workspace = tree.desktop.active;
+    for (title, status) in [
+        (
+            "Finish release notes",
+            shell::shell::state::WorkspaceTaskStatus::Done,
+        ),
+        (
+            "Check yesterday's goals",
+            shell::shell::state::WorkspaceTaskStatus::InProgress,
+        ),
+        (
+            "Review the draft result",
+            shell::shell::state::WorkspaceTaskStatus::Waiting,
+        ),
+    ] {
+        let task = tree.create_workspace_task(
+            workspace,
+            title.to_string(),
+            local.to_string(),
+            None,
+            shell::shell::state::WorkspaceTaskRoute::Manual,
+            None,
+        );
+        assert!(
+            task.is_some(),
+            "shots fixture must create real workspace work"
+        );
+        if let Some(task) = task {
+            assert!(tree.set_workspace_task_status(workspace, &task, status, local));
+        }
     }
 }
 
 /// Every tab in `tree` whose tile is an in-process app — the tabs that
 /// the production open-app actions give a scratch document when they
 /// mint them (`window_actions`).
+fn all_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.id)
+        .collect()
+}
+
 fn hosted_app_tabs(tree: &WorkspaceTree) -> Vec<u64> {
     use shell::shell::state::TileContent;
     tree.desktop
@@ -709,20 +810,16 @@ impl ShellDriver {
     /// rather than by hearsay), and two resources handed to named
     /// people.
     fn seed_shared_room(&mut self) {
-        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Scope, Subject};
+        use tilo_action_policy::Role;
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
-            let room = ws_id.raw().to_string();
-            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
-                tree.grant_in_workspace(
-                    ws_id,
-                    &owner,
-                    CapOverride::membership(Subject::person(member), room.clone(), verb),
-                );
+            for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
+                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
@@ -733,10 +830,10 @@ impl ShellDriver {
                     .push(shell::shell::state::Collaborator::new("bo", "Bo"));
             }
             for (path, who, verb) in [
-                ("/var/workspace/design", "ada", Verb::Write),
-                ("/var/workspace/brief.pdf", "bo", Verb::Read),
+                ("/var/workspace/design", "ada", Access::Write),
+                ("/var/workspace/brief.pdf", "bo", Access::Read),
             ] {
-                tree.grant_in_workspace(
+                tree.grant_sandbox_in_workspace(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
@@ -750,19 +847,120 @@ impl ShellDriver {
                 .workspaces
                 .iter()
                 .filter(|w| w.name == "Research")
-                .map(|w| (w.id, w.id.raw().to_string()))
+                .map(|w| w.id)
                 .collect();
-            for (id, room) in research {
-                for (member, verb) in [("alice", Verb::Write), ("bob", Verb::Read)] {
-                    tree.grant_in_workspace(
-                        id,
-                        &owner,
-                        CapOverride::membership(Subject::person(member), room.clone(), verb),
-                    );
+            for id in research {
+                for (member, role) in [("alice", Role::Editor), ("bob", Role::Viewer)] {
+                    let _ = tree.admit_in_workspace(id, &owner, member, role);
                 }
             }
         }
         self.with_chrome(|_| {});
+    }
+
+    /// Create the person's "Research" workspace on this device and show it.
+    pub fn seed_own_workspace_for_shots(&mut self) {
+        let handle = self.chrome_handle();
+        let tabs = {
+            let st = handle.borrow();
+            let person = st.local_user_id.clone();
+            let mut tree = st.tree_mut();
+            tree.set_salt_override(crate::own_device::SHOWN_SALT);
+            let before = all_tab_ids(&tree);
+            crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
+            let after = all_tab_ids(&tree);
+            drop(tree);
+            drop(st);
+            after
+                .into_iter()
+                .filter(|tab| !before.contains(tab))
+                .collect::<Vec<_>>()
+        };
+        self.open_tab_records(&tabs);
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// Split the outline of this device's own "Research" workspace off.
+    pub fn split_own_outline_for_shots(&mut self) {
+        let handle = self.chrome_handle();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let room = tree.desktop.room_of(tree.desktop.active);
+            if let Some(room) = room {
+                crate::own_device::split_outline(&mut tree, room, crate::own_device::SHOWN_SALT);
+            }
+            drop(tree);
+            drop(st);
+        }
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// Hold the person's laptop in memory beside this device.
+    pub fn seed_other_own_device_for_shots(&mut self) {
+        let person = self.chrome().local_user_id.clone();
+        let handle = self.chrome_handle();
+        handle
+            .borrow()
+            .tree_mut()
+            .set_salt_override(crate::own_device::SHOWN_SALT);
+        self.own_device = Some((
+            crate::own_device::OwnDevice::laptop(&person),
+            crate::own_device::board_list(),
+        ));
+    }
+
+    /// Receive the laptop's workspace list and room content, and look at
+    /// the laptop's workspace.
+    pub fn receive_from_other_own_device_for_shots(&mut self) {
+        let Some((mut laptop, mut list)) = self.own_device.take() else {
+            return;
+        };
+        let person = self.chrome().local_user_id.clone();
+        let handle = self.chrome_handle();
+        let arrived = {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let arrived = laptop.deliver(&person, &mut tree, &mut list);
+            let shown = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == laptop.room)
+                .map(|workspace| workspace.id);
+            if let Some(shown) = shown {
+                tree.desktop.set_active(shown);
+            }
+            arrived
+        };
+        // A tab arriving from another device opens its record here; the
+        // live shell fetches it from that device, a scene starts it empty.
+        self.open_tab_records(&arrived);
+        self.own_device = Some((laptop, list));
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// The laptop splits its outline off.
+    pub fn other_own_device_splits_outline_for_shots(&mut self) {
+        if let Some((laptop, _)) = self.own_device.as_mut() {
+            let room = laptop.room;
+            crate::own_device::split_outline(
+                &mut laptop.tree,
+                room,
+                crate::own_device::LAPTOP_SALT,
+            );
+        }
+    }
+
+    fn open_tab_records(&self, tabs: &[u64]) {
+        let records = self.chrome().records().clone();
+        for tab in tabs {
+            if let Err(error) =
+                shell::shell::tab_documents::create_scratch_tab_record(&records, *tab)
+            {
+                eprintln!("shots: tab {tab} has no document: {error}");
+            }
+        }
     }
 
     /// Scenario-facing wrapper for the canonical shared-workspace fixture.
@@ -777,7 +975,21 @@ impl ShellDriver {
     /// deliberately different from the principal id to guard agent typing.
     pub fn seed_agent_screen_exposure_for_shots(&self, surface_id: u64) {
         use shell::shell::chrome_state::ActiveExposure;
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        self.seed_agent_member_for_shots();
+        self.chrome_handle()
+            .borrow_mut()
+            .set_active_exposures(vec![ActiveExposure {
+                peer: 9,
+                surface: surface_id,
+                can_control: true,
+            }]);
+    }
+
+    /// An authenticated agent fixture shared by roster, settings and exposure
+    /// scenes. Sample membership stays entirely within the shots renderer.
+    fn seed_agent_member_for_shots(&self) {
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::roles::AgentPreset;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -786,26 +998,27 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace_id = tree.desktop.active;
-            let room = workspace_id.raw().to_string();
-            tree.grant_in_workspace(
-                workspace_id,
-                &owner,
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-            );
+            let changes = AgentPreset::Operator
+                .grants(
+                    &tree
+                        .room_of(workspace_id)
+                        .map(|room| room.to_string())
+                        .unwrap_or_default(),
+                    "scribe",
+                    &tilo_action_policy::Subject::person(owner.clone()),
+                )
+                .into_iter()
+                .map(tilo_action_policy::Change::Grant)
+                .collect();
+            let _ = tree.govern_in_workspace(workspace_id, &owner, changes);
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
-                workspace
-                    .collaborators
-                    .push(Collaborator::new("scribe", "Release Notes Agent").with_session(9));
+                workspace.collaborators.insert(
+                    0,
+                    Collaborator::new("scribe", "Release Notes Agent").with_session(9),
+                );
             }
         }
-        handle
-            .borrow_mut()
-            .set_active_exposures(vec![ActiveExposure {
-                peer: 9,
-                surface: surface_id,
-                can_control: true,
-            }]);
     }
 
     pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
@@ -833,7 +1046,8 @@ impl ShellDriver {
                     sequence: 1,
                     actor: tilo_actions::InteractionActor {
                         id: actor,
-                        kind: tilo_actions::InteractionActorKind::Person,
+                        kind: tilo_actions::ActorKind::Person,
+                        for_person: None,
                     },
                     phase: tilo_actions::InteractionPhase::Applying,
                     action: tilo_actions::InteractionAction {
@@ -861,7 +1075,8 @@ impl ShellDriver {
     /// proof exercise meaningful location lines instead of screenshot-only
     /// placeholder text.
     pub fn seed_crowded_workspace_for_shots(&mut self) {
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::Role;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -870,7 +1085,6 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace = tree.desktop.active;
-            let room = workspace.raw().to_string();
             let tab_ids = tree
                 .desktop
                 .active_workspace()
@@ -893,18 +1107,15 @@ impl ShellDriver {
             .into_iter()
             .enumerate()
             {
-                tree.grant_in_workspace(
+                let _ = tree.admit_in_workspace(
                     workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(id),
-                        room.clone(),
-                        if index % 3 == 2 {
-                            Verb::Read
-                        } else {
-                            Verb::Write
-                        },
-                    ),
+                    id,
+                    if index % 3 == 2 {
+                        Role::Viewer
+                    } else {
+                        Role::Editor
+                    },
                 );
                 if let Some(active) = tree.desktop.active_workspace_mut()
                     && !active.collaborators.iter().any(|person| person.id == id)
@@ -929,7 +1140,8 @@ impl ShellDriver {
     /// authority-checked path as workspace settings; the `invited` presence
     /// row is intentionally non-followable until a session arrives.
     pub fn seed_invite_pending_for_shots(&mut self) {
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::Role;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -938,15 +1150,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace = tree.desktop.active;
-            tree.grant_in_workspace(
-                workspace,
-                &owner,
-                CapOverride::membership(
-                    Subject::person("ada"),
-                    workspace.raw().to_string(),
-                    Verb::Write,
-                ),
-            );
+            let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
@@ -1046,7 +1250,8 @@ impl ShellDriver {
                         sequence: 1,
                         actor: tilo_actions::InteractionActor {
                             id: "ada".to_string(),
-                            kind: tilo_actions::InteractionActorKind::Person,
+                            kind: tilo_actions::ActorKind::Person,
+                            for_person: None,
                         },
                         phase: tilo_actions::InteractionPhase::Applying,
                         action: tilo_actions::InteractionAction {
@@ -1084,7 +1289,8 @@ impl ShellDriver {
                     sequence: 1,
                     actor: tilo_actions::InteractionActor {
                         id: "ada".to_string(),
-                        kind: tilo_actions::InteractionActorKind::Person,
+                        kind: tilo_actions::ActorKind::Person,
+                        for_person: None,
                     },
                     phase: tilo_actions::InteractionPhase::Applying,
                     action: tilo_actions::InteractionAction {
@@ -1149,10 +1355,9 @@ impl ShellDriver {
         false
     }
 
-    /// Show that presence attaches to app content. Focus the Files hosted
-    /// window and move Ada's location to its tab.
-    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
-        let target = {
+    /// Focus the active workspace's tab titled `title`, returning its id.
+    fn focus_tab_titled(&mut self, title: &str) -> Option<u64> {
+        let (strip, group, tab) = {
             let state = self.chrome();
             let tree = state.tree();
             tree.desktop.active_workspace().and_then(|ws| {
@@ -1161,17 +1366,22 @@ impl ShellDriver {
                         group
                             .tabs
                             .iter()
-                            .find(|tab| tab.title == "Files")
+                            .find(|tab| tab.title == title)
                             .map(|tab| (strip.id, group.id, tab.id))
                     })
                 })
             })
-        };
-        let Some((strip, group, files_tab)) = target else {
+        }?;
+        self.host_mut().focus_window_on_strip(strip, group, tab);
+        Some(tab)
+    }
+
+    /// Show that presence attaches to app content. Focus the Files hosted
+    /// window and move Ada's location to its tab.
+    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
+        let Some(files_tab) = self.focus_tab_titled("Files") else {
             return false;
         };
-        self.host_mut()
-            .focus_window_on_strip(strip, group, files_tab);
         self.with_chrome(|state| {
             let mut tree = state.tree_mut();
             if let Some(ada) = tree.desktop.active_workspace_mut().and_then(|ws| {
@@ -1196,7 +1406,8 @@ impl ShellDriver {
     /// path the settings panel and portal use, so this is a state the
     /// compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
-        use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
+        use tilo_action_policy::Role;
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
         {
@@ -1204,47 +1415,42 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let ws_id = tree.desktop.active;
-            let room = ws_id.raw().to_string();
-            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
-                tree.grant_in_workspace(
-                    ws_id,
-                    &owner,
-                    CapOverride::membership(Subject::person(member), room.clone(), verb),
-                );
+            for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
+                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
             }
             for (app, scope, verb, expiry) in [
                 (
                     "Files",
                     Scope::FsPath("/var/workspace".to_string()),
-                    Verb::Write,
+                    Access::Write,
                     Expiry::Never,
                 ),
                 (
                     "Terminal",
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                     Expiry::EndOfSession,
                 ),
                 (
                     "Browser",
                     Scope::NetHost("*".to_string()),
-                    Verb::Read,
+                    Access::Read,
                     Expiry::AfterUse,
                 ),
             ] {
-                tree.grant_in_workspace(
+                tree.grant_sandbox_in_workspace(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
                 );
             }
-            tree.grant_in_workspace(
+            tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::person("ada"),
                     Scope::FsPath("/var/workspace/design".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             );
         }
@@ -1255,7 +1461,7 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => Self::scene_desktop(),
+            "desktop" | "offline" => Self::scene_desktop(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -1283,12 +1489,24 @@ impl ShellDriver {
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
+            "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "dictation-consent"
+            | "dictation-listening"
+            | "dictation-finishing"
+            | "dictation-model-required" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_dictation_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("dictation shots require a debug build".into());
+            }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -1481,12 +1699,14 @@ impl ShellDriver {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
                     signal: 4,
                     secure: true,
+                    security: os_actions::WifiSecurity::Wpa2,
                     connected: true,
                 },
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
                     signal: 2,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 },
             ];
@@ -1589,11 +1809,10 @@ impl ShellDriver {
                     )
                     .as_invited(),
                 );
-                workspace.grant_capability(shell::shell::state::CapOverride::membership(
-                    shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
-                    workspace.room.to_string(),
-                    shell::shell::state::Verb::Admin,
-                ));
+                workspace.admit(
+                    hex::encode(recipient_public.as_bytes()),
+                    tilo_action_policy::Role::Editor,
+                );
                 workspace.pending_ownership_transfer =
                     collab_types::OwnershipTransferProposalV1::new(
                         workspace.room.to_string(),
@@ -1621,6 +1840,7 @@ impl ShellDriver {
 
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
+        self.seed_agent_member_for_shots();
         self.with_chrome(|st| {
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Agents;
@@ -1633,6 +1853,7 @@ impl ShellDriver {
     /// band and the Workspace activity footer row.
     fn scene_collaborators(&mut self) {
         self.seed_shared_room();
+        self.seed_agent_member_for_shots();
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
@@ -1667,6 +1888,42 @@ impl ShellDriver {
             st.bump();
         });
         self.relayout();
+    }
+
+    /// The launchpad a moment after its Notes card is clicked: Notes is
+    /// opening, and no launcher stands between the card and the app.
+    fn scene_launchpad_notes_card(&mut self) {
+        fn card_bounds(widget: &dyn Widget, card: &str) -> Option<Rect> {
+            if widget.name() == "CollaborationLaunchpad" {
+                return widget
+                    .accessibility()?
+                    .children
+                    .into_iter()
+                    .find_map(|node| {
+                        let bounds = node.bounds?;
+                        (node.name.as_deref() == Some(card))
+                            .then(|| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+                    });
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| card_bounds(child, card))
+        }
+        self.scene_launchpad();
+        let _ = self.paint_settled();
+        let card = card_bounds(self.host(), "Notes").unwrap_or(Rect::ZERO);
+        assert!(
+            card.area() > 0.0,
+            "launchpad-notes-card scene: the launchpad shows no Notes card"
+        );
+        self.click_at(card.center());
+        // The live frame loop's pump takes the card's choice from the
+        // document; `step_frames` alone only runs `update`.
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
+        self.step_frames(12);
+        self.fb.host_mut().force_palette_settled();
     }
 
     /// The invite card (`peer_sync_overlay.rs`), reached the way a person
@@ -1744,7 +2001,7 @@ impl ShellDriver {
     /// `HistoryEntry` — these are the same calls the portal, permission
     /// prompt, drop handler and settings modal make.
     fn scene_room_activity(&mut self) {
-        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Scope, Subject};
         let handle = self.chrome_handle();
         let owner = {
             let st = handle.borrow();
@@ -1755,22 +2012,22 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let ws_id = tree.desktop.active;
-            tree.grant_in_workspace(
+            tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::app("Files"),
                     Scope::FsPath("/var/workspace/design".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             );
-            let temp = tree.grant_in_workspace(
+            let temp = tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::app("Terminal"),
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             );
             tree.doc_append_tab_to_first_group_of_active_workspace(
@@ -1780,7 +2037,7 @@ impl ShellDriver {
             );
             tree.commit_room_change();
             if let Some(cap_id) = temp {
-                tree.revoke_in_workspace(ws_id, &owner, &cap_id);
+                tree.revoke_sandbox_in_workspace(ws_id, &owner, &cap_id);
             }
             if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();
@@ -1802,9 +2059,7 @@ impl ShellDriver {
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
             if peer.apply_incoming(base).is_ok() {
                 const DAY: i64 = 86_400;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                let now = tilo_clock::unix_now_i64();
                 for (days_ago, title) in
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {
@@ -1815,6 +2070,14 @@ impl ShellDriver {
                         );
                     }
                 }
+                // Tab appends are layout and omitted from the explorer feed;
+                // rename so Ada still authors a Change row and stays filterable.
+                let mut ada_desktop = tree.desktop.clone();
+                if let Some(ws) = ada_desktop.active_workspace_mut() {
+                    ws.name = "Ada's desk".into();
+                }
+                tilo_desktop_model::desktop_doc::seed(&mut peer, &ada_desktop);
+                tilo_resource::history::commit_stamped_at(&mut peer, now.saturating_sub(DAY));
                 // Synchronise through the same dependency-closed delta path
                 // used by ordinary peers. Merging the synthetic full replica
                 // directly can leave a parked dependency that only surfaces
@@ -1838,9 +2101,9 @@ impl ShellDriver {
     pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
         self.scene_room_activity();
         if !explore {
-            use collab_types::{ArtifactKind, OpClass};
+            use collab_types::ArtifactKind;
             use ui::tilo_actions::ActionContext;
-            use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+            use ui::widget::history::{HistoryEntry, HistoryEntryId};
 
             let local = shell::shell::state::local_user_id();
             self.fb
@@ -1848,12 +2111,8 @@ impl ShellDriver {
                 .room_activity_mut()
                 .open_external_entry(HistoryEntry {
                     id: HistoryEntryId([0x51; 16]),
-                    author: HistoryAuthor::new(
-                        local.clone(),
-                        ui::history_source::stable_hue(&local),
-                        ui::history_source::short_id(&local),
-                    ),
-                    op_class: OpClass::Splice,
+                    author: ui::history_source::author_for_identity(local.clone(), &local),
+                    entry_kind: ui::widget::EntryKind::Text,
                     artifact_kind: ArtifactKind::File,
                     timestamp: std::time::SystemTime::now(),
                     summary: "Updated revenue assumptions".into(),
@@ -1862,7 +2121,6 @@ impl ShellDriver {
                     redaction: None,
                     context: Some(
                         ActionContext::for_resource(
-                            "Edit assumptions",
                             "sheets:q2-finance",
                             "spreadsheet",
                             "Q2 finance report",
@@ -1914,6 +2172,7 @@ impl ShellDriver {
                 .host_mut()
                 .room_activity_mut()
                 .prepare_away_recap_for_shots(&mut *tree);
+            seed_catch_up_tasks(&mut tree, &local);
             drop(tree);
             drop(state);
         }
@@ -1965,12 +2224,19 @@ impl ShellDriver {
                 ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
             ] {
                 let context = tilo_actions::ActionContext::for_resource(
-                    action,
                     format!("shots:{group_id}"),
                     "document",
                     group_label,
                 )
                 .with_app("org.tilo.Writer", "Writer")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new(
+                        "org.tilo.Writer",
+                        "document",
+                        tilo_actions::entry::kebab(action),
+                    ),
+                    [],
+                )))
                 .with_group(group_id, group_label, "work-session");
                 let _ = tree.append_workspace_effect_receipt_for_shots(
                     workspace,
@@ -2166,26 +2432,37 @@ impl ShellDriver {
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
+        // Over a window with no document of its own, so no save status
+        // competes with the banners.
+        let _ = self.focus_tab_titled("Files");
         self.with_chrome(|st| {
-            // Severity ramp in one frame; long dismiss windows so
-            // the still-image scene captures the stack visible.
+            // What a person meets over their work: a collaborator who
+            // needs them, something shared with them, and a failure they
+            // did not cause. Long dismiss windows keep the still-image
+            // scene's stack on screen.
             st.push_notification_full(
-                Notification::new("Switched to workspace Research", "Active tab: Notes")
-                    .with_severity(NotificationSeverity::Info)
+                Notification::new("Ada mentioned you", "“Can you look at the launch notes?”")
+                    .with_app_name("Chat")
+                    .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Slow network", "Peer sync delayed; retrying")
-                    .with_severity(NotificationSeverity::Warning)
+                Notification::new("Lena shared “Q3 plan”", "You can edit it.")
+                    .with_app_name("Files")
+                    .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Permission denied", "Files cannot access /etc/shadow")
-                    .with_severity(NotificationSeverity::Error)
-                    .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                Notification::new(
+                    "Backup paused",
+                    "The backup drive was disconnected. Reconnect it to continue.",
+                )
+                .with_app_name("Backups")
+                .with_severity(NotificationSeverity::Warning)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_created_at(settled_at),
             );
         });
     }
@@ -2263,6 +2540,7 @@ impl ShellDriver {
                         active_tab: tid,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     };
                     strip.window_groups.push(group);
                 }
@@ -2348,6 +2626,7 @@ impl ShellDriver {
                     active_tab: tid,
                     width: half,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
                 strip_id = Some(strip.id);
                 sibling = Some(gid);
@@ -2409,6 +2688,7 @@ impl ShellDriver {
                             active_tab: tid,
                             width: WindowWidth::Normal,
                             maximized: false,
+                            focus_history: Vec::new(),
                         });
                         ws.strips.push(strip);
                     }
@@ -2426,6 +2706,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "offline",
         "multi-group",
         "multi-strip",
         "maximized",
@@ -2458,12 +2739,17 @@ impl ShellDriver {
         "ws-settings-agents",
         "collaborators",
         "launchpad",
+        "launchpad-notes-card",
         "peer-sync",
         "projection",
         "window-switcher",
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "dictation-consent",
+        "dictation-listening",
+        "dictation-finishing",
+        "dictation-model-required",
         "notifications",
         "notifications-one",
         "notifications-dnd",
@@ -2547,18 +2833,8 @@ impl ShellDriver {
 // `compositor::test_control` and the in-process ShellDriver share one
 // implementation. See `crates/session/shell/src/compositor/frame.rs`.
 
-/// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
-/// `key`. winit's `KeyEvent` has a `pub(crate)` field
-/// (`platform_specific`) so we zero-init the struct + overwrite the
-/// fields the shell actually reads. Same workaround the e2e harness
-/// uses (see `tests/e2e_shell_flows.rs::escape_event`).
 pub fn key_press_event(key: &Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let mut ev = ui::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
     // `text` is `Option<SmolStr>` — for ASCII characters we mirror what
     // winit normally fills so the palette's character-input branch
     // sees the same glyph it would on real hardware.
@@ -2567,11 +2843,7 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
     } else {
         None
     };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 // =====================================================================
@@ -2594,6 +2866,8 @@ mod tests {
 
     #[test]
     fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
         // Phase `driver_scene_setup_covers_catalogue`.
         // Smoke for `scene_setup` — drive every named scene and verify it
         // returns Ok, then verify a fresh driver returns Err for an

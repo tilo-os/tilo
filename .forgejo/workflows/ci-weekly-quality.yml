@@ -24,7 +24,6 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       # CI consumes diagnostics from rustc, not debugger symbols. Keeping the
@@ -35,8 +34,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -61,4 +58,13 @@ jobs:
 
       - name: Check binary sizes against budget
         run: tools/check-binary-size.sh
+
+      # Latency measurements the test suites ignore on shared runners. Their
+      # bounds are generous regression thresholds, not interactive targets;
+      # the numbers are in the log.
+      - name: Latency measurements
+        run: >-
+          bash tools/ci/measure.sh "latency measurements" --
+          cargo test --locked -p tilo-media --features realtime --test realtime --
+          --ignored --exact realtime_latency_per_frame --nocapture
 

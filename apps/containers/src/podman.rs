@@ -7,8 +7,8 @@
 //! the same CLI.
 //!
 //! When no engine is reachable (CI, or a host without podman installed) the
-//! live read returns an empty snapshot flagged `live = false`, and lifecycle
-//! actions become no-ops rather than errors. The bundled
+//! live read returns an empty snapshot flagged `live = false`. Lifecycle
+//! commands report their actual process result, including a lost engine. The bundled
 //! [`crate::model::sample_engine`] is reserved for the headless `--shots`
 //! renderer alone.
 
@@ -73,6 +73,9 @@ impl Action {
     }
 }
 
+/// What the engine reports as its connection when no podman answered.
+pub const UNREACHABLE: &str = "Podman didn't respond";
+
 /// Result of probing the engine. The UI only needs the snapshot; errors are
 /// folded into a fallback so the surface never goes blank.
 pub struct Probe {
@@ -82,8 +85,27 @@ pub struct Probe {
 /// True when a `podman` binary is on PATH and responds to `info`. Cached by
 /// the caller — this spawns a process so it isn't free.
 pub fn engine_available() -> bool {
-    run_probe("podman", &["info", "--format", "{{.Host.Arch}}"])
-        .is_some_and(|out| out.status.success())
+    engine_probe().is_ok()
+}
+
+fn engine_probe() -> Result<(), String> {
+    let output = bounded_command::run(
+        "podman",
+        &["info", "--format", "{{.Host.Arch}}"],
+        None,
+        PROBE_OUTPUT_LIMIT,
+        PROBE_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if error.is_empty() {
+        format!("Podman info exited with {}", output.status)
+    } else {
+        error
+    })
 }
 
 /// Collect a full snapshot from the live engine, or an empty snapshot when none
@@ -91,10 +113,10 @@ pub fn engine_available() -> bool {
 /// `live = false`; bundled sample data is reserved for `--shots`.
 pub fn probe() -> Probe {
     match probe_live() {
-        Some(engine) => Probe { engine },
-        None => Probe {
+        Ok(engine) => Probe { engine },
+        Err(error) => Probe {
             engine: Engine {
-                connection: "No container engine — is podman installed?".into(),
+                connection: format!("{UNREACHABLE}: {error}"),
                 live: false,
                 ..Engine::default()
             },
@@ -102,19 +124,18 @@ pub fn probe() -> Probe {
     }
 }
 
-/// Attempt a live read. Returns `None` if podman isn't usable, so the caller
-/// can fall back. Individual sub-reads degrade gracefully (an empty stats map
-/// just means the columns read zero).
-fn probe_live() -> Option<Engine> {
-    if !engine_available() {
-        return None;
-    }
-    let containers = list_containers().unwrap_or_default();
+/// Attempt a live read, preserving the actual connection failure for the UI.
+/// Failed container enumeration is not a successful empty engine. Individual sub-reads degrade gracefully (an empty stats map
+/// is reported as unavailable telemetry).
+fn probe_live() -> Result<Engine, String> {
+    engine_probe()?;
+    let containers = list_containers()
+        .ok_or_else(|| "Podman did not return a readable container list".to_owned())?;
     let images = list_images().unwrap_or_default();
     let volumes = list_volumes().unwrap_or_default();
     let distroboxes = list_distroboxes();
     let connection = podman_connection_label();
-    Some(Engine {
+    Ok(Engine {
         containers,
         images,
         volumes,
@@ -131,7 +152,7 @@ fn podman_connection_label() -> String {
             || "unknown".into(),
             |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
         );
-    format!("podman {version} · rootless")
+    format!("Podman {version}, rootless")
 }
 
 // --- podman ps -------------------------------------------------------
@@ -153,7 +174,7 @@ struct PsEntry {
     #[serde(default, rename = "CreatedAt")]
     created_at: String,
     #[serde(default, rename = "Ports")]
-    ports: Vec<PsPort>,
+    ports: Option<Vec<PsPort>>,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +205,7 @@ fn list_containers() -> Option<Vec<Container>> {
             });
             let ports = e
                 .ports
+                .unwrap_or_default()
                 .into_iter()
                 .filter(|p| p.host_port != 0)
                 .map(|p| PortMapping {
@@ -214,6 +236,7 @@ fn list_containers() -> Option<Vec<Container>> {
                 env: Vec::new(),
                 labels: Vec::new(),
                 stats: stat,
+                logs_error: None,
                 logs: Vec::new(),
             }
         })
@@ -237,7 +260,8 @@ struct StatEntry {
 }
 
 /// One-shot stats sample for every running container. Returns
-/// `(id, stats)` pairs; failures yield an empty vec (columns read zero).
+/// `(id, stats)` pairs; failures yield no samples, reported as unavailable
+/// rather than fabricated zero usage.
 fn collect_stats() -> Vec<(String, Stats)> {
     let out = match run_probe("podman", &["stats", "--no-stream", "--format", "json"]) {
         Some(o) if o.status.success() => o,
@@ -256,6 +280,7 @@ fn collect_stats() -> Vec<(String, Stats)> {
             (
                 e.id,
                 Stats {
+                    available: true,
                     cpu_percent,
                     mem_bytes,
                     mem_limit_bytes,
@@ -459,9 +484,6 @@ fn list_distroboxes() -> Vec<DistroBox> {
 /// verb itself fails — e.g. stopping or removing a container that no longer
 /// exists, or removing one still running without going through `Stop` first.
 pub fn run_action(action: Action, container_id: &str) -> Result<(), String> {
-    if !engine_available() {
-        return Ok(());
-    }
     let mut cmd = Command::new("podman");
     cmd.arg(action.verb());
     if action == Action::Stop {
@@ -477,27 +499,33 @@ pub fn run_action(action: Action, container_id: &str) -> Result<(), String> {
     }
 }
 
-/// Fetch the last `tail` log lines for a container. Empty on any failure.
-pub fn fetch_logs(container_id: &str, tail: usize) -> Vec<String> {
-    if !engine_available() {
-        return Vec::new();
-    }
+/// Fetch the last `tail` lines from the actual stdout/stderr log streams.
+/// A command refusal is an error, not fabricated output or an empty log.
+///
+/// # Errors
+/// Returns an error when Podman cannot read the container logs or the bounded command fails.
+pub fn fetch_logs(container_id: &str, tail: usize) -> Result<Vec<String>, String> {
     let tail_arg = tail.to_string();
-    let out = run_probe("podman", &["logs", "--tail", &tail_arg, container_id]);
-    match out {
-        Some(o) => {
-            let mut lines: Vec<String> = String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .chain(String::from_utf8_lossy(&o.stderr).lines())
-                .map(std::string::ToString::to_string)
-                .collect();
-            if lines.len() > tail {
-                lines = lines.split_off(lines.len() - tail);
-            }
-            lines
-        }
-        None => Vec::new(),
+    let out = bounded_command::run(
+        "podman",
+        &["logs", "--tail", &tail_arg, container_id],
+        None,
+        PROBE_OUTPUT_LIMIT,
+        PROBE_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
     }
+    let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(&out.stderr).lines())
+        .map(std::string::ToString::to_string)
+        .collect();
+    if lines.len() > tail {
+        lines = lines.split_off(lines.len() - tail);
+    }
+    Ok(lines)
 }
 
 /// Inspect a container, filling in env / mounts that `ps` doesn't expose.
@@ -558,23 +586,6 @@ pub fn inspect_into(container: &mut Container) {
 // Image operations
 // =====================================================================
 
-/// A lifecycle verb the UI can request against an image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImageAction {
-    Remove,
-}
-
-impl ImageAction {
-    pub fn is_destructive(self) -> bool {
-        matches!(self, ImageAction::Remove)
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            ImageAction::Remove => "Remove image",
-        }
-    }
-}
-
 /// Remove a local image by id or reference. `force` removes even when a
 /// stopped container references it. Returns stderr on failure.
 ///
@@ -584,9 +595,6 @@ impl ImageAction {
 /// the image is still referenced by a container and `force` is `false`, or
 /// `reference` doesn't resolve to a local image.
 pub fn remove_image(reference: &str, force: bool) -> Result<(), String> {
-    if !engine_available() {
-        return Ok(());
-    }
     let mut cmd = Command::new("podman");
     cmd.args(["rmi"]);
     if force {
@@ -603,25 +611,9 @@ pub fn remove_image(reference: &str, force: bool) -> Result<(), String> {
 /// Returns `Err` with the command's stderr when `podman tag` fails — e.g.
 /// `source` doesn't resolve to a local image.
 pub fn tag_image(source: &str, new_tag: &str) -> Result<(), String> {
-    if !engine_available() {
-        return Ok(());
-    }
     let mut cmd = Command::new("podman");
     cmd.args(["tag", source, new_tag]);
     finish(cmd)
-}
-
-/// Full `podman image inspect` JSON (pretty) for an image reference. Empty
-/// on failure. Used by the image detail / inspect view.
-pub fn inspect_image(reference: &str) -> String {
-    if !engine_available() {
-        return String::new();
-    }
-    let out = run_probe("podman", &["image", "inspect", reference]);
-    match out {
-        Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    }
 }
 
 // =====================================================================
@@ -635,9 +627,6 @@ pub fn inspect_image(reference: &str) -> String {
 /// Returns `Err` with the command's stderr when `podman volume create`
 /// fails — e.g. a volume with that name already exists.
 pub fn create_volume(name: &str) -> Result<(), String> {
-    if !engine_available() {
-        return Ok(());
-    }
     let mut cmd = Command::new("podman");
     cmd.args(["volume", "create", name]);
     finish(cmd)
@@ -651,9 +640,6 @@ pub fn create_volume(name: &str) -> Result<(), String> {
 /// Returns `Err` with the command's stderr when `podman volume rm` fails —
 /// e.g. the volume is still in use by a container and `force` is `false`.
 pub fn remove_volume(name: &str, force: bool) -> Result<(), String> {
-    if !engine_available() {
-        return Ok(());
-    }
     let mut cmd = Command::new("podman");
     cmd.args(["volume", "rm"]);
     if force {
@@ -679,14 +665,16 @@ pub enum StreamMsg {
 /// Spawn `podman <args>` and stream its merged stdout+stderr lines into
 /// `tx`, finishing with [`StreamMsg::Done`] or [`StreamMsg::Failed`]. Runs
 /// to completion on the calling thread — callers spawn it in a worker so the
-/// UI thread never blocks. No-op-success offline.
+/// UI thread never blocks. Failure to reach the engine closes the stream
+/// with `Failed`, never a synthetic success.
 pub fn stream_command(args: &[String], tx: &Sender<StreamMsg>) {
-    if !engine_available() {
-        let _ = tx.send(StreamMsg::Done);
-        return;
-    }
-    let mut child = match Command::new("podman")
-        .args(args)
+    let mut command = Command::new("podman");
+    command.args(args);
+    stream_prepared(command, tx);
+}
+
+fn stream_prepared(mut command: Command, tx: &Sender<StreamMsg>) {
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -698,29 +686,40 @@ pub fn stream_command(args: &[String], tx: &Sender<StreamMsg>) {
         }
     };
 
-    // Merge stdout + stderr: pull writes progress to stderr, logs to stdout.
+    // Drain both real pipes before announcing the terminal result. The UI
+    // stops consuming after Done/Failed, so a detached reader loses tail lines.
+    let mut readers = Vec::new();
     if let Some(out) = child.stdout.take() {
         let tx = tx.clone();
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 if tx.send(StreamMsg::Line(line)).is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
     if let Some(err) = child.stderr.take() {
         let tx = tx.clone();
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
                 if tx.send(StreamMsg::Line(line)).is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
 
-    match child.wait() {
+    let status = child.wait();
+    for reader in readers {
+        if reader.join().is_err() {
+            let _ = tx.send(StreamMsg::Failed(
+                "container output reader stopped unexpectedly".into(),
+            ));
+            return;
+        }
+    }
+    match status {
         Ok(status) if status.success() => {
             let _ = tx.send(StreamMsg::Done);
         }
@@ -738,31 +737,9 @@ pub fn pull_args(reference: &str) -> Vec<String> {
     vec!["pull".to_string(), reference.to_string()]
 }
 
-/// The argument vector for following a container's logs. Pure for testing.
-pub fn log_follow_args(container_id: &str, tail: usize) -> Vec<String> {
-    vec![
-        "logs".to_string(),
-        "--follow".to_string(),
-        "--tail".to_string(),
-        tail.to_string(),
-        container_id.to_string(),
-    ]
-}
-
 // =====================================================================
 // Exec / terminal
 // =====================================================================
-
-/// Build the `podman exec -it <id> <shell>` argv used to attach an
-/// interactive shell. Pure so the terminal wiring is unit-testable.
-pub fn exec_args(container_id: &str, shell: &str) -> Vec<String> {
-    vec![
-        "exec".to_string(),
-        "-it".to_string(),
-        container_id.to_string(),
-        shell.to_string(),
-    ]
-}
 
 /// Run completion helper shared by the simple (non-streaming) ops.
 fn finish(cmd: Command) -> Result<(), String> {
@@ -795,6 +772,86 @@ mod tests {
     use super::*;
 
     /// Sizes, memory usage, percentages and references parse, and destructive actions are flagged.
+    #[test]
+    fn engine_commands_do_not_report_success_for_a_missing_live_target() {
+        let absent = format!(
+            "tilo-missing-container-{}-{}",
+            std::process::id(),
+            ui::time::try_unix_now_ns().unwrap()
+        );
+        // This exercises the actual Podman command, including missing binary,
+        // lost engine and nonexistent target refusals. None is a success.
+        assert!(run_action(Action::Start, &absent).is_err());
+        assert!(remove_image(&absent, false).is_err());
+        assert!(tag_image(&absent, "tilo-test:unreachable").is_err());
+        assert!(remove_volume(&absent, false).is_err());
+        assert!(
+            fetch_logs(&absent, 20).is_err(),
+            "a refused log read is not an empty log"
+        );
+    }
+
+    #[test]
+    fn streamed_process_result_follows_every_stdout_and_stderr_line() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "i=0; while [ $i -lt 200 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done",
+        ]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        stream_prepared(command, &tx);
+        drop(tx);
+        let messages: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(messages.last(), Some(StreamMsg::Done)));
+        let lines: Vec<_> = messages
+            .iter()
+            .filter_map(|message| match message {
+                StreamMsg::Line(line) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.len(), 400);
+        for index in 0..200 {
+            assert!(lines.contains(&format!("out-{index}").as_str()));
+            assert!(lines.contains(&format!("err-{index}").as_str()));
+        }
+    }
+
+    #[test]
+    fn streamed_process_failure_is_terminal_after_its_diagnostics() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo engine-disconnected >&2; exit 1"]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        stream_prepared(command, &tx);
+        drop(tx);
+        let messages: Vec<_> = rx.into_iter().collect();
+        assert!(
+            matches!(messages.first(), Some(StreamMsg::Line(line)) if line == "engine-disconnected")
+        );
+        assert!(matches!(messages.last(), Some(StreamMsg::Failed(_))));
+    }
+
+    #[test]
+    fn actual_podman_null_ports_preserve_the_container_collection() {
+        // Podman emits null for a container without published ports, alongside
+        // mapped containers in the same response. One such row must not make
+        // the entire live collection appear offline.
+        let rows: Vec<PsEntry> = serde_json::from_str(
+            r#"[{"Id":"unmapped","Names":["worker"],"Ports":null},
+                {"Id":"mapped","Names":["service"],"Ports":[
+                    {"host_port":8080,"container_port":80,"protocol":"tcp"}]}]"#,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "unmapped");
+        assert!(rows[0].ports.is_none());
+        let mapped = rows[1].ports.as_ref().unwrap();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].host_port, 8080);
+        assert_eq!(mapped[0].container_port, 80);
+        assert_eq!(mapped[0].protocol, "tcp");
+    }
+
     #[test]
     fn podman_output_parsing_and_destructive_flags() {
         // --- phase: parse_size_handles_units ---

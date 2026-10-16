@@ -1,6 +1,6 @@
 use super::*;
 use automerge::{ReadDoc, transaction::Transactable};
-use collab_types::{Ed25519PublicKey, OpClass, SignedOp};
+use collab_types::{Ed25519PublicKey, OpKind, SignedOp};
 use tilo_user_identity::DeviceCapabilities;
 
 const APP: &str = "dev.tilo.notes";
@@ -98,7 +98,7 @@ fn signed_write(
         collab_types::document_artifact_id(APP, room, RECORD),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         collab_types::document_attestation_id(APP, room, RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         u64::try_from(sequence).unwrap(),
     );
@@ -193,6 +193,53 @@ fn a_first_write_in_a_declared_kind_creates_the_record_durably() {
 }
 
 #[test]
+fn stale_original_writer_is_refused_after_restart_but_owner_history_continues() {
+    let profile = profile();
+    let owner = open(&profile, creation(true, false));
+    let actor = automerge::ActorId::from(b"original-sdk-writer".as_slice());
+    let mut document = automerge::AutoCommit::new().with_actor(actor.clone());
+    let mut stale = document.clone();
+    let first = write(&profile, &mut document, "first");
+    commit(&owner, &first, Some(KIND)).unwrap();
+    let second = write(&profile, &mut document, "second");
+    commit(&owner, &second, None).unwrap();
+    drop(owner);
+
+    let owner = open(&profile, creation(true, false));
+    let stored = std::fs::read(profile.dir.path().join(ROOM_OWNER)).unwrap();
+    let retry = write(&profile, &mut stale, "from a stale cache");
+    let error = commit(&owner, &retry, None).unwrap_err();
+    assert!(error.contains("duplicate seq 1"), "{error}");
+    assert_eq!(text(&owner).as_deref(), Some("second"));
+    assert_eq!(
+        std::fs::read(profile.dir.path().join(ROOM_OWNER)).unwrap(),
+        stored,
+        "a refused stale writer cannot replace committed history"
+    );
+
+    // Restore the committed graph with the same original writer, not another actor.
+    // This private fixture read does not stand in for an admitted SDK read service.
+    let bytes = owner.document(APP, RECORD).unwrap();
+    let mut restored = automerge::AutoCommit::load(&bytes)
+        .unwrap()
+        .with_actor(actor.clone());
+    let before = restored.get_heads();
+    let third = write(&profile, &mut restored, "third");
+    let changes = restored.get_changes(&before);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].actor_id(), &actor);
+    assert_eq!(changes[0].seq(), 3);
+    commit(&owner, &third, None)
+        .unwrap()
+        .validate_for(&third)
+        .unwrap();
+    drop(owner);
+
+    let reopened = open(&profile, creation(true, false));
+    assert_eq!(text(&reopened).as_deref(), Some("third"));
+}
+
+#[test]
 fn a_missing_record_in_an_undeclared_or_unnamed_kind_is_refused() {
     let profile = profile();
     let owner = open(&profile, creation(true, false));
@@ -269,11 +316,12 @@ fn effect_receipts_are_kept_in_the_workspace() {
     let profile = profile();
     let owner = open(&profile, creation(true, false));
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(5));
-    let receipt = tilo_action_broker::policy::redacted_effect_receipt(
+    let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         invocation,
         "person-1",
         tilo_actions::ActionContext::default(),
         tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
     );
     let request = OwnerCommitRequest {
         room: profile.room.clone(),
@@ -409,6 +457,7 @@ fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> Chann
             steward: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
             policy: Policy {
                 allowed: Arc::new(Mutex::new(readers)),
+                ..Policy::default()
             },
         }),
         Arc::new(Mutex::new(

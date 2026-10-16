@@ -16,7 +16,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::panic,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "test fixtures"
@@ -110,6 +109,7 @@ impl Fixture for FakeFixture {
             Fault::RateLimited => self.server.inject(FakeFault::RateLimited),
             Fault::ServerError => self.server.inject(FakeFault::ServerError),
             Fault::TruncatedBody => self.server.inject(FakeFault::TruncatedBody),
+            Fault::ClosedEarly => self.server.inject(FakeFault::ClosedEarly),
             Fault::ExpiredCredential => self.server.inject(FakeFault::ExpiredCredential),
             Fault::CursorReset => self.server.reset_cursors(),
         }

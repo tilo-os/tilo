@@ -21,11 +21,6 @@ impl OfflineBackend {
             model: crate::sample::model(),
         }
     }
-
-    /// Build over an explicit model (used by tests / a future cache).
-    pub fn with_model(model: TubeModel) -> Self {
-        Self { model }
-    }
 }
 
 impl Default for OfflineBackend {

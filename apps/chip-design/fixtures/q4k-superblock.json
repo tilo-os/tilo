@@ -1,0 +1,133 @@
+{
+  "C_instrumentation": "write aux32[8] and sumi immediately before original FP32 scaling; no numerical changes",
+  "artifact_sha256": {
+    "c-compile.log": "fca615c10b72b55fbaad2494bdf3f1e89b2ad437d491145d74fb372a1b6ec316",
+    "c-input.bin": "b005fabb46bb15b5040385db89c1763d4a1045121fe09989366131070393e98f",
+    "c-output.bin": "4f160035d53799b8c5d7dc59fe1d752d90a4cc54906b6b6f656e0b71c3583713",
+    "c-stderr.log": "fca615c10b72b55fbaad2494bdf3f1e89b2ad437d491145d74fb372a1b6ec316",
+    "external-rescaling.json": "dd92b0882cb8d0448b5578ff81dcb5ddd328a8044b1fdde96139721fbc2bf6fa",
+    "fault-minimum/compile.log": "de438415fa81e9ea865a72b7877656dfeef5cc90e475a26c6d18401dd642e98a",
+    "fault-minimum/fixture.sv": "65b20bfa320c9085cb4eb2d466ae0c1b064037e57e9172e3e4bbcfe47ae2125a",
+    "fault-minimum/simulation.log": "e07d64cf4a0763bf80821541d8369cfde309efbe928345ef77812ed78ca950d0",
+    "fault-minimum/tb.sv": "63da5b64fb7af5dfdb269a9ca368ec256ee6ad40eb275690e680d0ce5516148c",
+    "fault-minimum/tile.sv": "a811dad8f0e1d9baabeed8d4d46cf16dc9d24bf288618fb9771b72cbcfa6be84",
+    "fault-scale/compile.log": "38b59596e5f5e4bd489e38687fe5de6c0f849c209d213c6ccee2d1b2140ce24d",
+    "fault-scale/fixture.sv": "65b20bfa320c9085cb4eb2d466ae0c1b064037e57e9172e3e4bbcfe47ae2125a",
+    "fault-scale/simulation.log": "5aa6d9e4d22253b35293ac88b17d90d066ea117d9cb33efc33f7784a6a994480",
+    "fault-scale/tb.sv": "63da5b64fb7af5dfdb269a9ca368ec256ee6ad40eb275690e680d0ce5516148c",
+    "fault-scale/tile.sv": "fac8a514589353aaf70f42118f7f76ec8e80575361dd545db4cd969bc7731053",
+    "fault-sign/compile.log": "39282f9ad0743ac25a72b53621e879c1c6bb273f59739d85151947ff8b21641c",
+    "fault-sign/fixture.sv": "65b20bfa320c9085cb4eb2d466ae0c1b064037e57e9172e3e4bbcfe47ae2125a",
+    "fault-sign/simulation.log": "5aa6d9e4d22253b35293ac88b17d90d066ea117d9cb33efc33f7784a6a994480",
+    "fault-sign/tb.sv": "63da5b64fb7af5dfdb269a9ca368ec256ee6ad40eb275690e680d0ce5516148c",
+    "fault-sign/tile.sv": "aa787dd99dbec0c434548bbd96a4d62ac392d6eb012c4778e745bf9a7aec4430",
+    "gcc-version.log": "5b76f507713ac5e09e86916de0531b31fb598d9642d84ccf47e3d339937a3050",
+    "ggml-common.h": "29bfa5afa64cabc4f2770feac41c794b91f073c15a762fef5e7bf18886d585d6",
+    "lanes-1/compile.log": "ef6a71baf61dd01402e46502d28cf9693f80a85f94d1d5eab96eb5b2dc7e3a48",
+    "lanes-1/fixture.sv": "4d4a4381101f669136b939e25e3af8b22625b7ed5219fe9239c8ae71bbdaf2da",
+    "lanes-1/simulation.log": "4b7f4abd4ddd4796e860271aab2cc12cbf731be587dedd5f7d0c02dc7fac4917",
+    "lanes-1/tb.sv": "ba0fd82181e68d9ad28a35c09565f713d3247b61d3143eaba81cfa6f134bebc4",
+    "lanes-1/tile.sv": "8a804f8df75db9c9377adfa05d4dd87f72779184850bb35d83a29ff6b8816267",
+    "lanes-64/compile.log": "b4e75a58b0e0957b666c1910a5068b040e298acd0d41123ccb63ae5831892271",
+    "lanes-64/fixture.sv": "607c0740288f1e3a509ed1724dcad99c6b4cf857df316db6fb7ab4116b8dc440",
+    "lanes-64/simulation.log": "4e435abbc252cf699180d408140abac9b18b8203a9c7347ebcc607a7ee80a2b1",
+    "lanes-64/tb.sv": "59763f74edd28117f95db3b835a2b8235fbb623f0b6bc3a2a399b4505cbb72e0",
+    "lanes-64/tile.sv": "8a804f8df75db9c9377adfa05d4dd87f72779184850bb35d83a29ff6b8816267",
+    "oracle": "c93f037f8df23791195ff63c7d45e0dd97cc23d6e033dee962607cc0e94b6caf",
+    "oracle.c": "7a5b90bf1c1eb4b0d0af87e604aebd70f9a23b804738c276e4e3ef914befd2d9",
+    "real-four/compile.log": "7e1ad1408c879a3347b52f9fc7ddb4da0faf5a376159592fde1765632e75f987",
+    "real-four/fixture.sv": "65b20bfa320c9085cb4eb2d466ae0c1b064037e57e9172e3e4bbcfe47ae2125a",
+    "real-four/netlist.json": "dabe098e6202e0ed6d4b17ffab6cd42e3565e79b8385cd9bebecf1bb13527387",
+    "real-four/simulation.log": "de54e7c7e99853654ba66b0dc784326a1f4adf47a62993878248ff9e8762ff8a",
+    "real-four/synth.ys": "a87b4b7aff65a8a3d2a053495fbb0f22c1a8e4f16b4b4633f2199b3b6e1992dc",
+    "real-four/synthesis.log": "8e7f1782e399f02c9278430b15bc68bbb80dead32c81079821c5f0dd8ecc2fe0",
+    "real-four/tb.sv": "63da5b64fb7af5dfdb269a9ca368ec256ee6ad40eb275690e680d0ce5516148c",
+    "real-four/tile.sv": "8a804f8df75db9c9377adfa05d4dd87f72779184850bb35d83a29ff6b8816267",
+    "sample.q4k": "a6a1a040ba5aaa3f5d36151b2a62902867307d26a76495bc6c680eca50008c52",
+    "vectors.json": "1e4974b6e6065637461e8f6e40361a2c89950d5a5ccd345f91c40b697033eb69",
+    "verilator-version.log": "2175ffb050acb6313454034aaf1695eccd48050d53818498656c8f6038895d71",
+    "yosys-version.log": "381c9074689e35e1774ea321defab123870434217a3a15960fb74ce54242aa51"
+  },
+  "checks": {
+    "fault_minimum_rejected": "passed",
+    "fault_scale_rejected": "passed",
+    "fault_sign_rejected": "passed",
+    "full_A8_extremes_and_lane_endpoints": "passed",
+    "generic_synthesis_and_check": "passed",
+    "immutable_real_superblocks": "passed",
+    "pinned_primary_source": "passed",
+    "real_integer_banks_protocol_exact_and_primary_C": "passed"
+  },
+  "compiler_flags": [
+    "-std=c11",
+    "-O0",
+    "-fno-fast-math",
+    "-ffp-contract=off",
+    "oracle.c",
+    "-lm",
+    "-o",
+    "oracle"
+  ],
+  "declared_toolchain_image": "sha256:cad34536eae2acc360319a2515aa0a799519ad93bc77eb721d657cfac7448558",
+  "evidence": "q4k_superblock_residue_rtl",
+  "excluded_metadata_cells": 1,
+  "excludes": [
+    "FP32_rescaler_RTL",
+    "actual_activation_capture",
+    "optimized_backend_equivalence",
+    "complete_layer",
+    "BF16_conversion_lineage",
+    "model_quality",
+    "PPA",
+    "manufacturability"
+  ],
+  "external_scalar_C_comparisons": 32,
+  "generic_cell_count": 9940,
+  "generic_cells": {
+    "$_ANDNOT_": 2367,
+    "$_AND_": 209,
+    "$_MUX_": 1427,
+    "$_NAND_": 27,
+    "$_NOR_": 592,
+    "$_NOT_": 460,
+    "$_ORNOT_": 427,
+    "$_OR_": 823,
+    "$_SDFFCE_PN0P_": 736,
+    "$_SDFFE_PN0P_": 920,
+    "$_SDFF_PN0_": 4,
+    "$_XNOR_": 502,
+    "$_XOR_": 1446
+  },
+  "primary_source_sha256": {
+    "cpu-quants.c": "bf922fbe276c3f56e4d97701a7fec9ed6eb588b6394f7331ac044bd73a2140b4",
+    "ggml-common.h": "29bfa5afa64cabc4f2770feac41c794b91f073c15a762fef5e7bf18886d585d6",
+    "ggml-quants.c": "bc46e831a14bd736caa7cb9761baf6d1d1b6e964c1eb6dba74d160a49190fe78"
+  },
+  "real_protocol": "SUPERBLOCK_PASS groups=8 inputs=2048 stalls=7 overlap=7",
+  "rtl_source_sha256": "8a804f8df75db9c9377adfa05d4dd87f72779184850bb35d83a29ff6b8816267",
+  "sample_receipt_sha256": "da0034f1877a4b0fbc1b351202515064e22d24447617169207a0c3bd1e13d96a",
+  "sample_sha256": "a6a1a040ba5aaa3f5d36151b2a62902867307d26a76495bc6c680eca50008c52",
+  "schema_version": 1,
+  "source_sha256": {
+    "arithmetic": "69e120cbfdf7ecf3841022c076e227ec08c8f0f04b770eb1e286ce5b9337cb64",
+    "group_harness": "11340736fcef2d39a90889777b2718312689945353f9bb53f5a1cfb20f9cd82b",
+    "harness": "53d12021f98728cd7e92147cecf8b7c2dc5d69d74467b912e33d46b1b1f8c7bc",
+    "q4_reference": "36b17109a41292e12c1137fe65dd750f056575c3c094344d42d6e98329e3b0c2",
+    "q8_reference": "3122c77b652c2c20f0334a80e7b261e680ea8982ce9e49db4eb4c42df1a13aa2"
+  },
+  "status": "passed",
+  "tools": {
+    "gcc": {
+      "executable_sha256": "1f28c67c201081aaf051bdf1efdfa559f98b4ec4ddcb6f6f236ac5cd6c1f7db6",
+      "version": "Synthetic contract tool identity 1.0"
+    },
+    "verilator": {
+      "executable_sha256": "5705421431fc14e781881ca71c61bfdcf228c212d9f8f22ff26a54234e8bac41",
+      "version": "Synthetic contract tool identity 1.0"
+    },
+    "yosys": {
+      "executable_sha256": "8fed2d40b40a22ead3956dad9d067e09444c56a0dbf732d3ac74b6b9aa8cbb3b",
+      "version": "Synthetic contract tool identity 1.0"
+    }
+  }
+}

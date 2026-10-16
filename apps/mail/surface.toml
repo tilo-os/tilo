@@ -1,0 +1,333 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "mail.mailbox"
+label = "Mail"
+version = 1
+fields = [
+  { path = "messages", type = "Collection<MessageState>", stored = "collection" },
+  { path = "messages.*.read", type = "bool", readonly = true },
+  { path = "messages.*.starred", type = "bool" },
+  { path = "messages.*.folder", type = "Folder" },
+  { path = "messages.*.labels", type = "Set<String>" },
+  { path = "messages.*.server", type = "Option<ServerCopy>", readonly = true, stored = "record" },
+  { path = "messages.*.server.account", type = "String" },
+  { path = "messages.*.server.locator", type = "String" },
+  { path = "messages.*.server.read", type = "bool" },
+  { path = "messages.*.server.starred", type = "bool" },
+  { path = "messages.*.server.folder", type = "Folder" },
+  { path = "messages.*.server.removed", type = "bool" },
+  { path = "messages.*.purged", type = "bool", readonly = true },
+  { path = "folders", type = "Collection<LocalFolder>", stored = "collection" },
+  { path = "folders.*.name", type = "String", label = true },
+  { path = "draft", type = "DraftState", stored = "record" },
+  { path = "draft.sender", type = "Option<DraftSender>" },
+  { path = "draft.to", type = "String" },
+  { path = "draft.cc", type = "String" },
+  { path = "draft.bcc", type = "String" },
+  { path = "draft.subject", type = "String" },
+  { path = "draft.body", type = "String" },
+  { path = "draft.html_body", type = "Option<String>" },
+  { path = "draft.calendar_ics", type = "Option<String>" },
+  { path = "draft.attachments", type = "Vec<DraftAttachment>" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:1ce89d3350d639da" },
+  { path = "outbox", type = "Outbox<Outgoing>" },
+  { path = "server", type = "Outbox<ServerUpdate>" },
+]
+
+[[resources.verbs]]
+id = "mark-read"
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "read", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "archive"
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "trash"
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "move-messages"
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "to", required = true, schema = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] } },
+]
+
+[[resources.verbs]]
+id = "purge"
+destructive = true
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "ingest"
+kind = "outside"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = ["string", "null"] }, folder = { type = ["string", "null"] }, id = { type = "string" }, locator = { type = ["string", "null"] }, read = { type = ["boolean", "null"] }, starred = { type = ["boolean", "null"] } }, required = ["id"] } } },
+]
+
+[[resources.verbs]]
+id = "server-applied"
+kind = "outside"
+params = [
+  { name = "update", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { Flags = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" }, read = { type = "boolean" }, starred = { type = "boolean" } }, required = ["id", "account", "locator", "folder", "read", "starred"] } }, required = ["Flags"] }, { type = "object", additionalProperties = false, properties = { Move = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, from = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" }, to = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] } }, required = ["id", "account", "locator", "from", "to"] } }, required = ["Move"] }, { type = "object", additionalProperties = false, properties = { Remove = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, locator = { type = "string" } }, required = ["id", "account", "locator", "folder"] } }, required = ["Remove"] }] } },
+]
+
+[[resources.verbs]]
+id = "start-draft-body"
+kind = "outside"
+params = [
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "html", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "save-draft"
+kind = "outside"
+params = [
+  { name = "message", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
+]
+
+[[resources.verbs]]
+id = "discard-draft"
+destructive = true
+kind = "outside"
+
+[[resources.verbs]]
+id = "send-message"
+destructive = true
+kind = "outside"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+  { name = "message", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
+  { name = "in_reply_to", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "cancel-send"
+kind = "outside"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tilo.contacts.identities"
+label = "Contact identities"
+version = 1
+person = true
+fields = [
+  { path = "people", type = "Collection<Person>", stored = "collection" },
+  { path = "people.*.label", type = "String" },
+  { path = "people.*.removed", type = "bool" },
+  { path = "people.*.phones", type = "Json<Vec<String>>" },
+  { path = "people.*.emails", type = "Json<Vec<String>>" },
+  { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
+  { path = "people.*.endpoints.*.service", type = "String" },
+  { path = "people.*.endpoints.*.recipient", type = "String" },
+  { path = "people.*.endpoints.*.scope", type = "String" },
+  { path = "people.*.endpoints.*.revision", type = "String" },
+  { path = "people.*.endpoints.*.removed", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "project-contact"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-contact"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "confirm-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "confirm-account"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "revision", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "previous", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-account"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "previous", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "revision", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "project-phones"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "phones", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "project-emails"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "emails", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "project-contacts"
+kind = "undoable"
+params = [
+  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "forget-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+version = 1
+person = true
+fields = [
+  { path = "accounts", type = "Collection<PersonAccount>", stored = "collection" },
+  { path = "accounts.*.type_id", type = "String" },
+  { path = "accounts.*.display_name", type = "String" },
+  { path = "accounts.*.config", type = "Json<serde_json::Value>" },
+  { path = "accounts.*.enabled", type = "bool" },
+  { path = "accounts.*.tint", type = "u8" },
+  { path = "active", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "publish-browser-identity"
+kind = "undoable"
+params = [
+  { name = "root", required = true, schema = { type = "string" } },
+  { name = "origin", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "type_id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "config", required = true, schema = {} },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+  { name = "tint", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-signal-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "aci", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-sms-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-whatsapp-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "jid", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-tilo-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+

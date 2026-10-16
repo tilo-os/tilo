@@ -1,0 +1,117 @@
+{
+  "accumulator_fault": {
+    "differing_profiles": [
+      "varied_magnitudes",
+      "sha_integer"
+    ],
+    "mutant_source_sha256": "0dd914474e093b7e3abe73997047ee157e6f685df08e24229025cc30e9a743f1",
+    "observed_output_sha256": "56a8b06b927306cb51aa63ca17a35359846b5b852b130ea9af2e392442e93a2d",
+    "process_exit": 0
+  },
+  "checks": {
+    "actual_model_norm_weights_epsilon": "passed",
+    "compiled_FP32_accumulator_fault_detected": "passed",
+    "six_synthetic_profiles_vs_pinned_fused_function": "passed"
+  },
+  "comparisons": [
+    {
+      "c_output_sha256": "ec036ec11b5c55a87cfb0478c3cc23e7257829b9cc0ca5e1c429d13c7cb5929d",
+      "fp32_comparisons": 8,
+      "mean_bits": 0,
+      "profile": "zero",
+      "scale_bits": 1148846079
+    },
+    {
+      "c_output_sha256": "6333a55dc06de8a6a2ab978c4eb07cd1c84e711d370ee91743f62ecb486cb1a7",
+      "fp32_comparisons": 8,
+      "mean_bits": 0,
+      "profile": "signed_zero",
+      "scale_bits": 1148846079
+    },
+    {
+      "c_output_sha256": "86d90eea25208949dc4654eb592cd5f0b5997b9b2c466e7503637e127f0be6ad",
+      "fp32_comparisons": 8,
+      "mean_bits": 1065353216,
+      "profile": "signed_one",
+      "scale_bits": 1065353208
+    },
+    {
+      "c_output_sha256": "d85e41ac9337644a0c004acbc8ffcd17863d9f4a39d9a346f59b397adf6d6696",
+      "fp32_comparisons": 8,
+      "mean_bits": 0,
+      "profile": "min_subnormal",
+      "scale_bits": 1148846079
+    },
+    {
+      "c_output_sha256": "9fadd42365e164b8972e0354f1f9dd4495c286a2b3b129991d4d49e08185c628",
+      "fp32_comparisons": 8,
+      "mean_bits": 1283921876,
+      "profile": "varied_magnitudes",
+      "scale_bits": 955854929
+    },
+    {
+      "c_output_sha256": "4a724c5b08c310599880c3e6e0215f253ce462207a6842105e87a2432019c6c5",
+      "fp32_comparisons": 8,
+      "mean_bits": 1168783010,
+      "profile": "sha_integer",
+      "scale_bits": 1012793180
+    }
+  ],
+  "compiler_executable_sha256": "33654e6b701d40d423e260ddda709302d3ef6c50dee207163f821f2342b7cbd5",
+  "compiler_flags": [
+    "-std=c++17",
+    "-O0",
+    "-fno-fast-math",
+    "-ffp-contract=off",
+    "oracle.cpp",
+    "-lm",
+    "-o",
+    "oracle"
+  ],
+  "compiler_version": "Synthetic contract compiler 1.0",
+  "evidence": "bounded_fused_scalar_rms_norm",
+  "excludes": [
+    "actual_hidden_states",
+    "unfused_SIMD_or_GPU_backend",
+    "model_quality",
+    "full_graph_execution",
+    "RTL",
+    "PPA",
+    "manufacturability"
+  ],
+  "input_sha256": "2e528abefa5bdaee4f34b9f68af3ce335f954bae97f8104e810ceb5a81fd553f",
+  "oracle_sha256": "5d46d5059ea6c7660ce7193517d721f838b68c2988ba841c9a3df065b548b24f",
+  "primary_revision": "0a84d860862eaae2f91a6986a5f08483c755f132",
+  "primary_source_sha256": {
+    "LICENSE": "93c95457270d8076e2795bc47683a066b6f43466941c26c174c8f2049df7a2d9",
+    "ops.cpp": "acb53dc67c51eb899255678d7478ed1d89ba22ed3ffe5acf4b0dd3e91076b1ee",
+    "vec.h": "50c6eda724642b753be01b10d4d6e9b870d6ceeecc5777a11291353b41506c9e"
+  },
+  "reference_sha256": "ee2843be1938d2d0f69a055c276e6c72fa1ef0dad9a632e53fe2272eab85dd9a",
+  "sample": {
+    "absolute_offset": 1802543552,
+    "epsilon_bits": 897988541,
+    "header_sha256": "4243555d0e739415f0e7eba693d0d0fc0483c971a1efd7a01c78fbc47d50ab54",
+    "sha256": "a49535a7c25ef3d804b695bb48819fb67db83618af88596db9564ca2a2254704",
+    "tensor": {
+      "elements": 8,
+      "name": "synthetic.norm.weight",
+      "payload_bytes": 32,
+      "relative_offset": 1791549440,
+      "shape_ggml_order": [
+        8
+      ],
+      "storage": "F32"
+    },
+    "weight_bytes": 32,
+    "whole_file_sha256": "5df2daf926ccb5a81300c1e9b774360a919c93d17eb512c835023a5dbb1e4ad7"
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "arithmetic": "69e120cbfdf7ecf3841022c076e227ec08c8f0f04b770eb1e286ce5b9337cb64",
+    "harness": "dbdc35fb8012739a1c19e3719063d3d13c4fe89e289e47c64071ae639ed7b043",
+    "inventory": "07432943c76ae0335a465c25bb3d11d2b75adff7f684fdb01c69228f8cb51f26",
+    "q4_reference": "36b17109a41292e12c1137fe65dd750f056575c3c094344d42d6e98329e3b0c2"
+  },
+  "status": "passed"
+}

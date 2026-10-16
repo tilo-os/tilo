@@ -68,6 +68,39 @@ pub enum Request {
     PlayVideo(String),
 }
 
+/// The worker's end of the result queue. Every result it posts wakes the
+/// window that asked for it, so a reply the network sends while nobody
+/// touches the app is shown at once: the window drains the queue only when it
+/// runs a frame, and without the wake it ran none until the next input or
+/// animation.
+#[derive(Clone)]
+pub struct Updates {
+    tx: SyncSender<Update>,
+    wake: ui::WakeHandle,
+}
+
+impl Updates {
+    /// Post `update`, waiting while the queue is full, and wake the window.
+    ///
+    /// # Errors
+    /// The update back when the window is gone.
+    pub fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
+        self.tx.send(update)?;
+        self.wake.wake();
+        Ok(())
+    }
+
+    /// Post `update` unless the queue is full, and wake the window.
+    ///
+    /// # Errors
+    /// The update back when the queue is full or the window is gone.
+    pub fn try_send(&self, update: Update) -> Result<(), std::sync::mpsc::TrySendError<Update>> {
+        self.tx.try_send(update)?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
 /// A result folded back into the model on the UI thread.
 #[derive(Clone, Debug)]
 pub enum Update {
@@ -116,7 +149,7 @@ pub enum Update {
         channel: Box<Channel>,
         uploads: Vec<Video>,
     },
-    /// Which data source is currently answering (drives the top-bar pill).
+    /// Which data source is currently answering (drives the header status badge).
     Status {
         live: bool,
         label: String,
@@ -346,34 +379,6 @@ pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
     resp.get("dislikes").and_then(serde_json::Value::as_u64)
 }
 
-/// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
-/// fields fall back to sensible defaults.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
-pub async fn search(
-    client: &tilo_net::Client,
-    instance: &str,
-    query: &str,
-) -> anyhow::Result<Vec<Video>> {
-    let url = format!("{}/api/v1/search", instance.trim_end_matches('/'));
-    let resp = get_json(client, &url, &[("q", query), ("type", "video")])
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
-
-    Ok(resp
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .take(40)
-                .filter_map(|item| video_from_item(item, "Search"))
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
 /// One Invidious list item (a search hit, a trending or recommended video,
 /// a channel upload) as a [`Video`]; `None` for other kinds and id-less rows.
 fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
@@ -462,7 +467,7 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
 
 /// Fetch one video's `SponsorBlock` segments, `DeArrow` branding and dislike
 /// count, posting each as it arrives.
-async fn branding(client: tilo_net::Client, id: String, up_tx: SyncSender<Update>) {
+async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
     match fetch_sponsor(&client, &id).await {
         Ok(segs) => {
             let _ = up_tx.send(Update::Sponsor(id.clone(), segs));
@@ -507,9 +512,10 @@ impl Worker {
                   length is the number of request kinds, not accidental complexity in any \
                   one arm"
     )]
-    pub fn spawn() -> Self {
+    pub fn spawn(wake: ui::WakeHandle) -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (up_tx, up_rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        let up_tx = Updates { tx: up_tx, wake };
         // Without threads (a browser page) the extractors cannot run; the
         // public Invidious API answers instead, as tasks on the app runtime.
         if matches!(
@@ -812,6 +818,16 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
+
+    /// A worker that fetches nothing: its results are what the returned
+    /// sender sends. For a test that lands a result at a moment it chooses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted(wake: ui::WakeHandle) -> (Self, Updates) {
+        let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
+        let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        (Self { tx, rx }, Updates { tx: results, wake })
+    }
 }
 
 /// Short `host…` label for a resolved URL, for the status log.
@@ -858,7 +874,7 @@ fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String,
 /// initialises. Returns `None` in the default build or on a construction error
 /// (the UI then shows its explicit offline/no-data state). Never panics.
 #[cfg(feature = "live")]
-fn try_live_backend(up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
+fn try_live_backend(up_tx: &Updates) -> Option<Box<dyn YtBackend>> {
     // Primary: yt-dlp, the community-maintained extractor. A subprocess, so it
     // tracks YouTube's changes for us and needs no in-process PoToken/BotGuard.
     match crate::backend::ytdlp::YtDlpBackend::new() {
@@ -891,7 +907,7 @@ fn try_live_backend(up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
 }
 
 #[cfg(not(feature = "live"))]
-fn try_live_backend(_up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
+fn try_live_backend(_up_tx: &Updates) -> Option<Box<dyn YtBackend>> {
     None
 }
 
@@ -901,7 +917,7 @@ fn try_live_backend(_up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
 /// `playlist()` resolves playlist pages — so one backend serves comments, search
 /// enrichment, the avatar-bearing popular feed, and playlist pages.
 #[cfg(feature = "live")]
-fn try_enricher(up_tx: &SyncSender<Update>) -> Option<crate::backend::live::RustyPipeBackend> {
+fn try_enricher(up_tx: &Updates) -> Option<crate::backend::live::RustyPipeBackend> {
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => Some(b),
         Err(e) => {
@@ -967,7 +983,7 @@ fn fetch(
     offline: &dyn YtBackend,
     query: Query,
     fallback: bool,
-    up_tx: &SyncSender<Update>,
+    up_tx: &Updates,
 ) -> Option<(BackendResult, bool)> {
     if let Some(b) = live {
         match b.run(query.clone()) {
@@ -992,7 +1008,7 @@ fn feed_trending(
     live: Option<&dyn YtBackend>,
     enrich: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
-    up_tx: &SyncSender<Update>,
+    up_tx: &Updates,
 ) -> Option<(Vec<Video>, String)> {
     // Dedicated endpoint first. `fetch` surfaces the error as a status note
     // (e.g. "live Trending: trending: http status 400"), so the failure of the
@@ -1001,12 +1017,12 @@ fn feed_trending(
         fetch(live, offline, Query::Trending, false, up_tx)
         && !vs.is_empty()
     {
-        return Some((vs, "live · trending".into()));
+        return Some((vs, "live trending".into()));
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
     let search_backend: Option<&dyn YtBackend> = enrich.or(live);
-    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
+    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live popular".into()))
 }
 
 /// Compose a "popular right now" home feed: for each broad topic, ask the
@@ -1014,10 +1030,7 @@ fn feed_trending(
 /// round-robin interleave for variety and de-duplicate. Every video comes from
 /// `YouTube` data (view-count-sorted search), not the offline sample. Returns
 /// `None` when there is no live backend so the caller keeps the empty state.
-fn live_popular_feed(
-    backend: Option<&dyn YtBackend>,
-    up_tx: &SyncSender<Update>,
-) -> Option<Vec<Video>> {
+fn live_popular_feed(backend: Option<&dyn YtBackend>, up_tx: &Updates) -> Option<Vec<Video>> {
     // Broad, evergreen topics so the union approximates a general popular feed
     // rather than one niche.
     const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
@@ -1065,7 +1078,7 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
     clippy::too_many_lines,
     reason = "one match arm per Request variant, as in the threaded worker's loop"
 )]
-async fn task_worker(requests: Receiver<Request>, updates: SyncSender<Update>) {
+async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     let post = |update: Update| {
         let _ = updates.try_send(update);
     };
@@ -1226,7 +1239,7 @@ async fn invidious_json(
     query: &[(&str, &str)],
 ) -> anyhow::Result<serde_json::Value> {
     let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in crate::backend::proxy::instances() {
+    for instance in tilo_invidious::instances() {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
         match get_json(client, &url, query).await {
             Ok(Some(value)) if value.get("error").is_none() => return Ok(value),
@@ -1257,7 +1270,7 @@ async fn invidious_videos(
         .unwrap_or_default())
 }
 
-fn send_status(up_tx: &SyncSender<Update>, live: bool) {
+fn send_status(up_tx: &Updates, live: bool) {
     let label = if live {
         "live (rustypipe)"
     } else {

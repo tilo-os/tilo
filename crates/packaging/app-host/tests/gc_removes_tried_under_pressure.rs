@@ -1,16 +1,6 @@
 //! The size-pressure sweep removes least recently used unpinned packages
 //! and preserves pinned ones; removal reclaims only unshared blobs.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::common;
 use app_host::install::install_tapp;
 use app_host::{PackageStore, Pinning};

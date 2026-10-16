@@ -8,6 +8,9 @@ Recent stream: --repo owner/repo --recent 20 [--workflow check.yml] [--head SHA]
 JSON goes to --output or stdout; a compact human summary goes to stderr.
 Pull-to-create is an observed interval, including registry/auth/setup overhead,
 not a measurement of network transfer alone. Parallel job times are never summed.
+Measured phases also retain bounded CPU/quota/pressure and cumulative job peak
+memory readings; missing readings stay unknown. Process RSS and container peak
+memory are different metrics. Checkout's own markers cover missing runner steps.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -32,16 +35,21 @@ EVENTS = {
 TERMINAL = {"success", "failure", "cancelled", "skipped"}
 ACTIVE = {"waiting", "queued", "running", "blocked"}
 MEASUREMENT = re.compile(r"^==> ([A-Za-z0-9 ._()/:+-]{1,120}) measurements$")
-WALL_SECONDS = re.compile(r"^\s*wall_seconds=([0-9]+(?:\.[0-9]+)?)\s*$")
 STEP_START = re.compile(r"^\s*⭐\s+Run Main (.{1,160})$")
-STEP_FINISH = re.compile(r"^\s*(?:✅ Success|❌ Failure) - Main (.{1,160})$")
+STEP_FINISH = re.compile(r"^\s*(?:✅\s+Success|❌\s+Failure)\s+-\s+Main (.{1,160})$")
+CHECKOUT_START = re.compile(r"^Syncing repository: ")
 CHECKOUT_FINISH = re.compile(r"^::remove-matcher owner=checkout-git::$")
 SCCACHE = {
     "compile_requests": re.compile(r"^Compile requests\s+([0-9]+)\s*$"),
     "cache_hits": re.compile(r"^Cache hits\s+([0-9]+)\s*$"),
     "cache_misses": re.compile(r"^Cache misses\s+([0-9]+)\s*$"),
 }
-PHASE_LABELS = ("checkout", "build", "check", "clippy", "compile", "test")
+PHASE_LABELS = ("checkout", "toolchain", "cache", "artifact", "setup", "build", "check", "clippy", "compile", "test")
+SCALAR_METRICS = re.compile(
+    r"^\s*(wall_seconds|user_seconds|system_seconds|max_rss_kib|cgroup_memory_peak|cgroup_memory_max)="
+    r"([0-9]{1,20}(?:\.[0-9]{1,6})?|unavailable|max)\s*$"
+)
+CPU_COUNTERS = ("usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec")
 
 
 def stamp(value):
@@ -71,6 +79,14 @@ def elapsed(start, end):
 def fixed_phase_label(value):
     """Classify an untrusted log label without retaining any of its text."""
     words = set(re.findall(r"[a-z]+", value.casefold()))
+    if words & {"downloads", "restore", "sccache"}:
+        return "cache"
+    if words & {"upload", "artifact", "artifacts"}:
+        return "artifact"
+    if words & {"package", "packaging"}:
+        return "build"
+    if words & {"tests", "suites"}:
+        return "test"
     return next((label for label in PHASE_LABELS if label in words), "other")
 
 
@@ -99,6 +115,90 @@ def extract_events(log):
                 if parsed_timestamp is not None:
                     found[event] = canonical_timestamp(parsed_timestamp)
     return found
+
+
+def resource_metric(message):
+    """Accept only named, bounded numbers; never retain arbitrary log values."""
+    match = re.fullmatch(r"\s*compiler_cache=(.{1,2048})\s*", message)
+    if match:
+        try:
+            payload = json.loads(match.group(1))
+            if type(payload.get("observed")) is not bool:
+                return None
+            if not payload["observed"]:
+                reason = payload.get("reason")
+                if reason not in ("disabled", "unavailable", "counter_reset"):
+                    return None
+                return "compiler_cache", {"observed": False, "reason": reason}
+            counters = {}
+            for key in ("cache_hits", "cache_misses", "cache_writes", "cache_read_errors",
+                        "cache_write_errors", "cache_timeouts", "compile_requests", "requests_executed"):
+                value = payload.get(key)
+                if type(value) is int and 0 <= value < 2**63:
+                    counters[key] = value
+            if not all(key in counters for key in ("cache_hits", "cache_misses")):
+                return None
+            for key in ("cache_read_hit_seconds", "cache_read_miss_seconds", "cache_write_seconds"):
+                value = payload.get(key)
+                if type(value) in (int, float) and 0 <= value < 10**12:
+                    counters[key] = value
+            return "compiler_cache", {"observed": True, **counters}
+        except (ValueError, TypeError, AttributeError):
+            return None
+    match = SCALAR_METRICS.fullmatch(message)
+    if match:
+        key, value = match.groups()
+        if value in {"unavailable", "max"}:
+            return key, None
+        if key.endswith("seconds"):
+            return key, round(float(value), 3)
+        if value.isdigit():
+            return key, int(value)
+        return None
+    match = re.fullmatch(
+        r"\s*cgroup_(cpu_max|cpuset_cpus_effective|cpu_stat_before|cpu_stat_after|"
+        r"(?:cpu|memory|io)_pressure_(?:before|after))=unavailable\s*", message)
+    if match:
+        key = match.group(1)
+        return {"cpu_max": "cpu_limit", "cpuset_cpus_effective": "cpuset_cpu_count"}.get(key, key), None
+    match = re.fullmatch(r"\s*cgroup_cpu_max=(max|[0-9]{1,20}) ([0-9]{1,20})\s*", message)
+    if match:
+        quota, period = match.groups()
+        if int(period) == 0:
+            return None
+        return "cpu_limit", None if quota == "max" else round(int(quota) / int(period), 3)
+    match = re.fullmatch(r"\s*cgroup_cpuset_cpus_effective=([0-9,-]{1,1000})\s*", message)
+    if match:
+        count = 0
+        for group in match.group(1).split(","):
+            bounds = group.split("-")
+            if not all(value.isdigit() for value in bounds) or len(bounds) > 2:
+                return None
+            first, last = int(bounds[0]), int(bounds[-1])
+            if last < first or last > 1048576:
+                return None
+            count += last - first + 1
+        return "cpuset_cpu_count", count
+    match = re.fullmatch(r"\s*cgroup_(cpu|memory|io)_pressure_(before|after)=(.{1,1000})", message)
+    if match:
+        totals = {}
+        for kind in ("some", "full"):
+            found = re.search(r"(?:^| )" + kind + r" (?:avg(?:10|60|300)=[0-9]+(?:\.[0-9]+)? )*total=([0-9]{1,20})(?: |$)", match.group(3))
+            if found:
+                totals[kind] = int(found.group(1))
+        if totals:
+            return match.group(1) + "_pressure_" + match.group(2), totals
+        return None
+    match = re.fullmatch(r"\s*cgroup_cpu_stat_(before|after)=(.{1,1000})", message)
+    if match:
+        counters = {}
+        for key in CPU_COUNTERS:
+            found = re.search(r"(?:^| )" + key + r" ([0-9]{1,20})(?: |$)", match.group(2))
+            if found:
+                counters[key] = int(found.group(1))
+        if counters:
+            return "cpu_stat_" + match.group(1), counters
+    return None
 
 
 def extract_job_metrics(log):
@@ -130,6 +230,7 @@ def extract_job_metrics(log):
 
         match = STEP_START.match(message)
         if match:
+            pending_measurement = None
             if current_step:
                 current_step["stopped"] = timestamp
                 current_step["seconds"] = elapsed(current_step["started"], timestamp)
@@ -152,25 +253,42 @@ def extract_job_metrics(log):
             current_step = None
             current_step_raw = None
 
+        # Some runner versions omit Main boundaries for later JS actions.
+        # Checkout's own bounded markers still identify every checkout, without
+        # retaining its repository name or inferring a missing finish time.
+        if CHECKOUT_START.match(message) and current_step is None:
+            current_step = {"name": "checkout", "started": timestamp,
+                            "stopped": None, "seconds": None}
+            current_step_raw = None
+
         match = MEASUREMENT.match(message)
         if match:
-            pending_measurement = fixed_phase_label(match.group(1))
+            pending_measurement = {"name": fixed_phase_label(match.group(1))}
             pending_lines = 0
             continue
         if pending_measurement is not None:
             pending_lines += 1
-            match = WALL_SECONDS.match(message)
-            if match:
-                measurements.append({"name": pending_measurement,
-                                     "wall_seconds": round(float(match.group(1)), 3)})
+            metric = resource_metric(message)
+            if pending_lines > 32 or metric is None:
                 pending_measurement = None
-            elif pending_lines > 8:
-                pending_measurement = None
+            else:
+                key, value = metric
+                if key == "wall_seconds" and "wall_seconds" not in pending_measurement and value is not None:
+                    measurements.append(pending_measurement)
+                pending_measurement[key] = value
 
         for key, pattern in SCCACHE.items():
             match = pattern.match(message)
             if match and key not in sccache:
                 sccache[key] = int(match.group(1))
+
+    for measurement in measurements:
+        before = measurement.get("cpu_stat_before") or {}
+        after = measurement.get("cpu_stat_after") or {}
+        for key, output in (("usage_usec", "cgroup_cpu_seconds"),
+                            ("throttled_usec", "cgroup_throttled_seconds")):
+            if key in before and key in after and after[key] >= before[key]:
+                measurement[output] = round((after[key] - before[key]) / 1e6, 3)
 
     if "cache_hits" in sccache and "cache_misses" in sccache:
         # Compiler probes and uncacheable requests are not cache lookups.
@@ -557,7 +675,14 @@ def human_summary(result):
                 f"total {fmt(job['runner_to_finish_seconds'])}"
             )
             for measurement in job["measurements"]:
-                lines.append(f"    {measurement['name']}: {fmt(measurement['wall_seconds'])}")
+                resource = ""
+                if "cgroup_cpu_seconds" in measurement:
+                    resource += f"; CPU {fmt(measurement['cgroup_cpu_seconds'])}"
+                if measurement.get("cpu_limit") is not None:
+                    resource += f"; quota {measurement['cpu_limit']} CPUs"
+                if measurement.get("cgroup_memory_peak") is not None:
+                    resource += f"; cumulative job peak {measurement['cgroup_memory_peak']} bytes"
+                lines.append(f"    {measurement['name']}: {fmt(measurement['wall_seconds'])}{resource}")
             if job["sccache"]:
                 lines.append(f"    sccache hit rate {percent(job['sccache'].get('hit_percent'))}")
     experience = result.get("experience", {})

@@ -4,7 +4,9 @@
 //! affordances by their laid-out rect, and inject real winit pointer events
 //! through `Widget::handle_event` — the exact production path (`ActionBus` drain →
 //! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
-//! at the real coordinates did the real thing.
+//! at the real coordinates did the real thing. Controls that change the shared
+//! library go through the framework's door and are driven through the
+//! framework app in `resource.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,106 +18,460 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod harness;
+use std::sync::Arc;
 
-use harness::Harness;
 use tube::TubeApp;
 use tube::model::Route;
+use ui::headless::Framed;
+use ui::theme::Theme;
+use ui::widget::{MediaSize, Widget};
+use vello::kurbo::Rect;
 
-const VIEWPORT: (f32, f32) = (1280.0, 800.0);
+const VIEWPORT: (u32, u32) = (1280, 800);
+
+fn mount(app: TubeApp) -> Framed<TubeApp> {
+    mount_at(app, VIEWPORT, Theme::dark())
+}
+
+fn mount_at(app: TubeApp, viewport: (u32, u32), theme: Theme) -> Framed<TubeApp> {
+    let (w, h) = viewport;
+    let app = app.with_viewport(f64::from(w), f64::from(h));
+    let mut framed = Framed::new(ui::State::new(), app, viewport, theme);
+    Framed::harness_mut(&mut framed).relayout();
+    framed
+}
+
+/// Click the control the host exports under `name`, then lay out again.
+fn click_control(framed: &mut Framed<TubeApp>, name: &str) {
+    let harness = Framed::harness_mut(framed);
+    let centre = harness
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some(name))
+        .and_then(|control| control.bounds)
+        .map_or_else(
+            || panic!("no control named {name:?}"),
+            |bounds| bounds.center(),
+        );
+    harness.click_at(centre.x, centre.y);
+    harness.relayout();
+}
+
+/// Click the widget with test id `id`, then lay out again.
+fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
+    let harness = Framed::harness_mut(framed);
+    harness
+        .click_named(id)
+        .unwrap_or_else(|error| panic!("{error}"));
+    harness.relayout();
+}
+
+fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if w.test_id() == Some(id) || (id == "video_grid" && w.name() == "MediaGrid") {
+        return Some(w);
+    }
+    w.children().into_iter().find_map(|c| find(c, id))
+}
+
+fn rects_named(w: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
+    if w.name() == name {
+        out.push(w.get_rect());
+    }
+    for c in w.children() {
+        rects_named(c, name, out);
+    }
+}
+
+fn png(rgba: [u8; 4]) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..64).flat_map(|_| rgba).collect();
+    ui::png::encode_rgba8(8, 8, &pixels).unwrap()
+}
+
+fn image_draws(framed: &Framed<TubeApp>) -> usize {
+    use vello_encoding::DrawTag;
+    Framed::harness(framed)
+        .scene()
+        .encoding()
+        .draw_tags
+        .iter()
+        .filter(|tag| **tag == DrawTag::IMAGE)
+        .count()
+}
+
+/// Paint the actual persistent player mounted by the watch page, including
+/// its shared controls. Window and poster material caches are outside this
+/// measurement, so only the timeline's additional segment fills differ.
+fn player_draws(app: TubeApp) -> usize {
+    fn paint_player(widget: &mut dyn Widget, scene: &mut vello::Scene) -> bool {
+        if widget.name() == "PlayerHost" {
+            widget.draw(
+                scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                &Theme::dark(),
+                &ui::presence::PresenceCtx::default(),
+            );
+            return true;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| paint_player(child, scene))
+    }
+    let mut framed = mount(app);
+    let player = find(&*framed, tube::widgets::player_host::PLAYER_HOST_ID)
+        .expect("the production watch page mounts its player")
+        .get_rect();
+    assert!(player.width() > 0.0 && player.height() > 0.0);
+    Framed::harness_mut(&mut framed).send(&ui::synthetic_input::cursor_moved(
+        player.center().x,
+        player.center().y,
+    ));
+    let mut scene = vello::Scene::new();
+    assert!(paint_player(&mut *framed, &mut scene));
+    scene.encoding().draw_tags.len()
+}
+
+struct Harness {
+    app: Framed<TubeApp>,
+}
+impl Harness {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test viewport dimensions are positive integral values below 2000"
+    )]
+    fn new<T: Into<f64> + Copy>(app: TubeApp, viewport: (T, T)) -> Self {
+        Self {
+            app: mount_at(
+                app,
+                (viewport.0.into() as u32, viewport.1.into() as u32),
+                Theme::dark(),
+            ),
+        }
+    }
+    fn rect_by_id(&self, id: &str) -> Option<Rect> {
+        find(&*self.app, id).map(Widget::get_rect)
+    }
+    fn has_id(&self, id: &str) -> bool {
+        self.rect_by_id(if id == "back_btn" {
+            "nav-shell-back"
+        } else {
+            id
+        })
+        .is_some()
+    }
+    fn click_id(&mut self, id: &str) {
+        if id == "back_btn" {
+            click_control(&mut self.app, "Back");
+        } else {
+            click_id(&mut self.app, id);
+        }
+    }
+    fn child_rects(&self, id: &str) -> Vec<Rect> {
+        let root = find(&*self.app, id).expect("the grid is retained");
+        let mut rects = Vec::new();
+        rects_named(root, "MediaCard", &mut rects);
+        rects
+    }
+    fn wheel_at(&mut self, at: vello::kurbo::Point, delta: f64) {
+        let frame = Framed::harness_mut(&mut self.app);
+        frame.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
+        frame.scroll(0.0, delta);
+        frame.relayout();
+    }
+    fn image_draw_count(&mut self) -> usize {
+        Framed::harness_mut(&mut self.app).relayout();
+        image_draws(&self.app)
+    }
+    fn layout_needs_measure(&self) -> bool {
+        Widget::layout_needs_measure(&*self.app)
+    }
+}
+
+/// A live Tube window, wide enough for the docked rail: a capture's controls
+/// start no effects.
+fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
+    let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::new().unwrap();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a fixed viewport"
+    )]
+    app.harness().resize(VIEWPORT).unwrap();
+    app.harness().relayout();
+    app
+}
+
+/// A hermetic catalogue in the actual live host, retaining typed effects.
+fn live_catalogue() -> ui::framework::testing::TestApp<tube::TubeShell> {
+    let mut app = live_app();
+    app.with_surface::<TubeApp, _>(|surface| {
+        surface.stage_model_for_test(tube::sample::model());
+    })
+    .expect("the canonical Tube surface is mounted");
+    app.settle();
+    app
+}
+
+fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
+    if let Some(label) = id.strip_prefix("nav_").filter(|name| *name != "toggle") {
+        let expected = format!("{}{}", label.get(..1).unwrap().to_uppercase(), &label[1..]);
+        let centre = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(expected.as_str()))
+            .and_then(|control| control.bounds)
+            .expect("the navigation item is actionable")
+            .center();
+        app.harness().click_at(centre.x, centre.y);
+    } else {
+        app.harness()
+            .click_named(if id == "nav_toggle" {
+                "nav-shell-sidebar"
+            } else {
+                id
+            })
+            .unwrap();
+    }
+    app.settle();
+    app.harness().relayout();
+}
+
+fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> Route {
+    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
+        .expect("the window shows Tube")
+}
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
-fn navigation_tabs_and_queue_are_real_destinations() {
-    // Case `clicking_a_nav_tab_switches_route`.
+fn the_rail_and_cards_navigate_and_back_returns() {
+    // Case `rail_items_open_their_destinations`.
     {
         // The app boots on Home (never into a fake/placeholder video). Click the
-        // "Trending" rail item and prove the route follows. Seed the viewport so
-        // the wide layout resolves its docked rail on the first frame (as the live
-        // app does once its width lands) rather than the unknown-width overlay.
-        let mut h = Harness::new(
-            TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-            VIEWPORT,
-        );
-        assert_eq!(
-            h.app.route_for_test(),
-            &Route::Home,
-            "the app boots on Home"
-        );
+        // "Trending" rail item and prove the route follows: the rail item is
+        // bound to the show-screen effect the window's host answers.
+        let mut app = live_app();
+        assert_eq!(route(&mut app), Route::Home, "the app boots on Home");
 
-        h.click_id("nav_trending");
+        click(&mut app, "nav_trending");
         assert_eq!(
-            h.app.route_for_test(),
-            &Route::Trending,
+            route(&mut app),
+            Route::Trending,
             "clicking the Trending tab navigates to Trending"
         );
+    }
+    // Case `a_card_opens_its_video_and_escape_goes_back`.
+    {
+        let mut framed = mount(TubeApp::new());
+        click_id(&mut framed, "video_card_vid_donut");
+        assert_eq!(
+            framed.route_for_test(),
+            &Route::Watch("vid_donut".into()),
+            "clicking a card opens its watch page"
+        );
+        Framed::harness_mut(&mut framed).key("Escape");
+        Framed::harness_mut(&mut framed).relayout();
+        assert_eq!(framed.route_for_test(), &Route::Home, "Escape goes back");
+    }
+    // Case `a_creator_tile_opens_the_creator`.
+    {
+        let mut framed = mount(TubeApp::new().with_route_shot(Route::Subscriptions));
+        click_id(&mut framed, "creator_ch_kurz");
+        assert_eq!(framed.route_for_test(), &Route::Channel("ch_kurz".into()));
+    }
+    // Case `a_browsed_page_shows_back_and_it_returns`.
+    for destination in [
+        Route::Watch("vid_donut".into()),
+        Route::Channel("ch_kurz".into()),
+        Route::Playlist("pl_systems".into()),
+    ] {
+        let mut app = live_catalogue();
+        let effect = match &destination {
+            Route::Watch(video) => tube::actions::TubeEffect::OpenVideo {
+                video: video.clone(),
+            },
+            Route::Channel(creator) => tube::actions::TubeEffect::OpenCreator {
+                creator: creator.clone(),
+            },
+            Route::Playlist(playlist) => tube::actions::TubeEffect::OpenPlaylist {
+                playlist: playlist.clone(),
+            },
+            _ => unreachable!("the cases are browsable content"),
+        };
+        app.effect(&effect).unwrap();
+        app.settle();
+        let centre = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some("Back"))
+            .and_then(|control| control.bounds)
+            .expect("browsed content exposes Back")
+            .center();
+        app.harness().click_at(centre.x, centre.y);
+        app.settle();
+        assert_eq!(
+            route(&mut app),
+            Route::Home,
+            "Back returns to the page the content was opened from"
+        );
+    }
+    // Case `the_watch_page_gear_opens_settings`.
+    {
+        let mut framed = mount(TubeApp::new().with_route_shot(Route::Watch("vid_donut".into())));
+        click_control(&mut framed, "Playback settings");
+        assert_eq!(framed.route_for_test(), &Route::Settings);
+    }
+}
 
+#[test]
+fn another_rail_destination_navigates() {
+    {
+        let mut app = live_app();
         // And a second tab, to prove it isn't a one-off.
-        h.click_id("nav_settings");
-        assert_eq!(h.app.route_for_test(), &Route::Settings);
+        click(&mut app, "nav_settings");
+        assert_eq!(route(&mut app), Route::Settings);
     }
     // Case `shared_queue_is_a_real_navigation_destination`.
     {
         // The queue has both a visible rail destination and a canonical navigation
         // action, rather than being an agent-only collection hidden behind Ctrl+K.
-        let mut h = Harness::new(
-            TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-            VIEWPORT,
-        );
-        h.click_id("nav_queue");
-        assert_eq!(h.app.route_for_test(), &Route::Queue);
+        let mut app = live_app();
+        click(&mut app, "nav_queue");
+        assert_eq!(route(&mut app), Route::Queue);
         assert!(
-            h.has_id("queue_page"),
+            app.harness().targets().contains_key("queue_page"),
             "the shared queue screen is laid out"
         );
     }
-    // Case `shared_queue_200_percent_text_reserves_a_distinct_rect_for_every_line`.
-    {
-        // Regression for the 200%-text screenshot: wrapped prose used to paint
-        // beneath a one-line flex allocation, causing the heading and empty state
-        // to collide. The real layout tree must give every rendered line a later
-        // y-origin than the one before it.
-        let app = TubeApp::new()
-            .with_viewport(800.0, 720.0)
-            .with_route_shot(Route::Queue);
-        let h = Harness::with_theme(
-            app,
-            (800.0, 720.0),
-            ui::theme::Theme::dark().with_text_scale(2.0),
+}
+
+/// A real viewport refresh between motion and press keeps the rail's hit state.
+#[test]
+fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
+    let mut app = live_app();
+    app.with_surface::<TubeApp, _>(|surface| {
+        surface.stage_model_for_test(tube::model::TubeModel::default());
+    })
+    .expect("the actual live surface is mounted");
+    app.settle();
+    let queue = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Queue"))
+        .and_then(|control| control.bounds)
+        .expect("the Queue rail destination is laid out");
+    assert!(queue.width() > 0.0 && queue.height() > 0.0);
+    let centre = queue.center();
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
+    // An actual viewport change forces the host's composition/layout passes,
+    // unlike a fixture-only model flag that cached layout may never observe.
+    app.harness().resize((VIEWPORT.0 + 1, VIEWPORT.1)).unwrap();
+    assert!(
+        app.harness()
+            .root_widget()
+            .get_rect()
+            .width()
+            .total_cmp(&f64::from(VIEWPORT.0 + 1))
+            .is_eq(),
+        "the host actually laid out the intermediate viewport"
+    );
+    app.harness().resize(VIEWPORT).unwrap();
+    let refreshed = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Queue"))
+        .and_then(|control| control.bounds)
+        .expect("Queue remains laid out after the refresh");
+    assert_eq!(refreshed, queue, "the destination did not move");
+    assert_eq!(route(&mut app), Route::Home, "refresh does not navigate");
+    for state in [
+        winit::event::ElementState::Pressed,
+        winit::event::ElementState::Released,
+    ] {
+        app.harness().send(&ui::synthetic_input::mouse_input(
+            state,
+            winit::event::MouseButton::Left,
+        ));
+    }
+    app.settle();
+    assert_eq!(route(&mut app), Route::Queue);
+    assert!(
+        app.harness().targets().contains_key("queue_page"),
+        "the physical click opens the laid-out shared queue"
+    );
+}
+
+#[test]
+fn pages_lay_out_without_overlap_at_every_size() {
+    // Case `watch_page_parts_stack_in_reading_order`.
+    for (viewport, scale) in [((1280, 800), 1.0), ((800, 600), 1.0), ((1280, 800), 2.0)] {
+        let framed = mount_at(
+            TubeApp::new().with_route_shot(Route::Watch("vid_rust_async".into())),
+            viewport,
+            Theme::dark().with_text_scale(scale),
         );
-        let ids = [
-            "queue_heading_title",
-            "queue_heading_count",
-            "queue_heading_membership",
-            "queue_heading_order",
-            "queue_empty_title",
-            "queue_empty_add",
-            "queue_empty_sync",
-        ];
-        let rects: Vec<_> = ids
-            .iter()
-            .map(|id| h.rect_by_id(id).unwrap_or_else(|| panic!("missing {id}")))
-            .collect();
+        let player = find(&*framed, "watch_video_surface")
+            .expect("the player is laid out")
+            .get_rect();
+        assert!(player.width() > 0.0 && player.height() > 0.0);
+        let creator = find(&*framed, "watch_creator")
+            .expect("the creator row is laid out")
+            .get_rect();
         assert!(
-            rects[0].height() >= 40.0,
-            "200% title must reserve scaled line height, got {:?}",
-            rects[0]
+            creator.y0 >= player.y1,
+            "the details sit under the player at {viewport:?} ×{scale}: {player:?} / {creator:?}"
         );
-        assert!(
-            rects[1].height() >= 25.0,
-            "200% metadata must reserve scaled line height, got {:?}",
-            rects[1]
-        );
-        for pair in rects.windows(2) {
-            assert!(
-                pair[0].y1 <= pair[1].y0,
-                "large-text lines overlap: {:?} then {:?}",
-                pair[0],
-                pair[1]
+    }
+    // Case `a_short_grid_keeps_the_card_size_of_a_full_one`.
+    for viewport in [(1280, 800), (800, 600)] {
+        let width_on = |route: Route| {
+            let framed = mount_at(
+                TubeApp::new().with_route_shot(route),
+                viewport,
+                Theme::dark(),
             );
+            let mut cards = Vec::new();
+            rects_named(&*framed, "MediaCard", &mut cards);
+            let mut grids = Vec::new();
+            rects_named(&*framed, "MediaGrid", &mut grids);
+            let width = cards
+                .first()
+                .map(Rect::width)
+                .expect("the page shows cards");
+            let extent = MediaSize::Regular.extent(&Theme::dark());
+            (width, grids, extent)
+        };
+        let (home, home_grids, home_extent) = width_on(Route::Home);
+        let (channel, channel_grids, channel_extent) =
+            width_on(Route::Channel("ch_lowlevel".into()));
+        assert!(
+            (home - channel).abs() <= 1.0,
+            "a creator's three videos are as wide as Home's at {viewport:?}: {home} vs {channel}; Home grids={home_grids:?}, extent={home_extent}; creator grids={channel_grids:?}, extent={channel_extent}"
+        );
+    }
+    // Case `home_cards_never_overlap`.
+    for (viewport, scale) in [((1280, 800), 1.0), ((560, 800), 1.0), ((1280, 800), 2.0)] {
+        let framed = mount_at(
+            TubeApp::new(),
+            viewport,
+            Theme::dark().with_text_scale(scale),
+        );
+        let mut cards = Vec::new();
+        rects_named(&*framed, "MediaCard", &mut cards);
+        assert!(cards.len() >= 4, "Home shows its cards at {viewport:?}");
+        for (i, a) in cards.iter().enumerate() {
+            for b in cards.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.width() <= 0.5 || overlap.height() <= 0.5,
+                    "cards overlap at {viewport:?} ×{scale}: {a:?} and {b:?}"
+                );
+            }
         }
     }
     // Case `selected_nav_tab_is_visible_and_addressable_after_switch`.
@@ -123,23 +479,12 @@ fn navigation_tabs_and_queue_are_real_destinations() {
         // After navigating, the selected tab must still resolve (it's re-rendered
         // with the accent fill, same test_id) — i.e. selection is real, not a
         // rendering dead-end.
-        let mut h = Harness::new(TubeApp::new(), VIEWPORT);
-        h.click_id("nav_home");
-        assert_eq!(h.app.route_for_test(), &Route::Home);
+        let mut app = live_app();
+        click(&mut app, "nav_home");
+        assert_eq!(route(&mut app), Route::Home);
         assert!(
-            h.has_id("nav_home"),
+            app.harness().a11y_node_named("Home").is_some(),
             "the now-selected Home tab is still in the laid-out tree"
-        );
-    }
-    // Case `transport_settings_gear_navigates_to_settings`.
-    {
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        assert!(matches!(h.app.route_for_test(), Route::Watch(_)));
-        h.click_id("watch_settings");
-        assert_eq!(
-            h.app.route_for_test(),
-            &Route::Settings,
-            "the transport gear opens Settings"
         );
     }
     // Case `hamburger_toggles_the_overlay_rail_through_a_real_click`.
@@ -147,25 +492,23 @@ fn navigation_tabs_and_queue_are_real_destinations() {
         // At a narrow width the rail is a collapsed overlay flap. The top-bar
         // hamburger must summon and dismiss it — via a real click through the menu
         // button's `handle_event`, not app.apply.
-        let narrow = (560.0f32, 800.0f32);
-        let app = TubeApp::new().with_viewport(f64::from(narrow.0), f64::from(narrow.1));
-        let mut h = Harness::new(app, narrow);
+        let mut app = live_app();
+        app.harness().resize((560, 800)).unwrap();
+        app.harness().relayout();
+        let open = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
+            app.with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
+                .expect("the window shows Tube")
+        };
         assert!(
-            !h.app.sidebar_open_for_test(),
+            !open(&mut app),
             "a narrow window starts with the rail collapsed"
         );
 
-        h.click_id("nav_toggle");
-        assert!(
-            h.app.sidebar_open_for_test(),
-            "the hamburger summons the overlay rail"
-        );
+        click(&mut app, "nav_toggle");
+        assert!(open(&mut app), "the hamburger summons the overlay rail");
 
-        h.click_id("nav_toggle");
-        assert!(
-            !h.app.sidebar_open_for_test(),
-            "a second click dismisses it"
-        );
+        click(&mut app, "nav_toggle");
+        assert!(!open(&mut app), "a second click dismisses it");
     }
 }
 
@@ -174,95 +517,74 @@ fn navigation_tabs_and_queue_are_real_destinations() {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-fn palette_and_search_inputs_are_present_and_navigate() {
-    // Case `palette_result_click_navigates_to_video`.
-    {
-        // Open the palette pre-seeded with a query (headless can't press Ctrl+K —
-        // see harness note), then click the first result and assert it opened a
-        // watch page. This drives the real palette overlay + ActivateHit path.
-        let app = TubeApp::new().with_palette_open_for_test("rust");
-        let mut h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test(), "palette starts open");
-        assert!(h.has_id("palette_card"), "palette overlay is laid out");
+fn search_inputs_are_present_and_navigate() {
+    for (viewport, scale) in [((1280, 800), 1.0), ((420, 800), 1.5)] {
+        let mut app =
+            ui::framework::testing::TestApp::<tube::TubeShell>::capture_at(None, viewport).unwrap();
+        app.harness()
+            .set_theme(Theme::dark().with_text_scale(scale));
+        let search = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref()
+                    == Some(ui::i18n::I18nManager::lookup_plain("standalone-search-title").as_str())
+            })
+            .expect("system search is present even with an empty query");
+        let bounds = search.bounds.expect("search has measured geometry");
         assert!(
-            h.has_id("palette_row_0"),
-            "query 'rust' should surface at least one result row"
+            bounds.width() > 10.0 && bounds.height() > 10.0,
+            "search is reachable: {bounds:?}"
         );
-
-        // Click the first result row at its computed rect — the real ActivateHit
-        // path — and assert it opened a watch page.
-        h.click_id("palette_row_0");
+        let centre = bounds.center();
+        app.harness().click_at(centre.x, centre.y);
+        app.settle();
+        let (_, focused) = app
+            .harness()
+            .a11y_focus()
+            .expect("pointer activation focuses the platform search input");
+        assert_eq!(focused.role(), ui::accesskit::Role::TextInput);
+        assert_eq!(focused.label(), Some("Search"));
+        assert_eq!(focused.description(), Some("Search actions and results"));
+        assert_eq!(
+            focused.value(),
+            Some(""),
+            "the actual platform palette starts with an empty query"
+        );
+        app.harness().type_text("compiler");
+        app.settle();
+        let (_, focused) = app
+            .harness()
+            .a11y_focus()
+            .expect("the platform query retains input focus");
+        assert_eq!(
+            focused.value(),
+            Some("compiler"),
+            "typing reaches the actual shared query field"
+        );
+        app.harness().key("Escape");
+        app.settle();
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(_)),
-            "clicking a video result opens its watch page"
+            app.harness()
+                .controls()
+                .iter()
+                .all(|control| !(control.role == ui::accesskit::Role::TextInput
+                    && control.name.as_deref() == Some("Search"))),
+            "Escape closes the actual platform query field"
         );
         assert!(
-            !h.app.palette_open_for_test(),
-            "activating a result closes the palette"
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.role == ui::accesskit::Role::Button
+                    && control.name.as_deref() == search.name.as_deref()),
+            "Escape restores the platform Search button"
         );
-    }
-    // Case `clicking_scrim_closes_palette`.
-    {
-        let app = TubeApp::new().with_palette_open_for_test("");
-        let mut h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test());
-        // Click near the top-left corner — inside the scrim, outside the centred
-        // card — which must dismiss the palette.
-        h.click_at(vello::kurbo::Point::new(20.0, 20.0));
-        assert!(
-            !h.app.palette_open_for_test(),
-            "scrim click closes the palette"
-        );
-    }
-    // Case `top_bar_search_input_is_present_even_when_query_is_empty`.
-    {
-        let h = Harness::new(
-            TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-            VIEWPORT,
-        );
-        assert_eq!(h.app.route_for_test(), &Route::Home);
-        assert!(
-            h.app.model_for_test().search_query.is_empty(),
-            "precondition: the boot query is empty"
-        );
-        assert!(
-            h.has_id("search_input"),
-            "the search TextInput must be present (and focusable) even with an empty query"
-        );
-    }
-    // Case `command_palette_input_is_present_even_when_query_is_empty`.
-    {
-        let app = TubeApp::new().with_palette_open_for_test("");
-        let h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test(), "palette starts open");
-        assert!(h.has_id("palette_card"), "palette overlay is laid out");
-        assert!(
-            h.has_id("palette_input"),
-            "the palette TextInput must be present even when the palette query is empty"
-        );
-    }
-    // Case `clicking_the_search_field_focuses_the_input`:
-    // A real click on the top search field must move keyboard focus to the
-    // `search_input` `TextInput` — drives the actual hit-test + event-routing path
-    // (`handle_event` → `focus_target`).
-    {
-        let app = TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
-        let mut h = Harness::new(app, VIEWPORT);
-
-        // The field is present and has a real, clickable rect (not zero-sized /
-        // collapsed — an earlier failure mode).
-        let r = h
-            .rect_by_id("search_input")
-            .expect("the top-bar search input is in the laid-out tree");
-        assert!(
-            r.width() > 40.0 && r.height() > 10.0,
-            "the search field has a real clickable rect: {r:?}",
-        );
-
-        // A click at its rect focuses it — the exact production path.
-        assert!(
-            h.click_focuses("search_input"),
-            "clicking the search field must focus the search_input TextInput",
+        assert_eq!(
+            route(&mut app),
+            Route::Home,
+            "search does not replace the app's page"
         );
     }
     // Case `search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved`.
@@ -386,12 +708,16 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             .rect_by_id("watch_video_surface")
             .expect("the watch page lays out the shared video-player surface");
 
-        let content_left = tube::screens::NAV_RAIL_W; // docked rail width (86)
+        let content_left = find(&*h.app, "tube_rail")
+            .expect("the rail is laid out")
+            .get_rect()
+            .x1; // docked rail width (86)
         let viewport_h = f64::from(VIEWPORT.1);
         // The content lane: the split's content pane minus the reserved scrollbar
         // gutter on the right.
         let lane_left = content_left;
-        let lane_right = f64::from(VIEWPORT.0) - f64::from(tube::app::SCROLL_GUTTER);
+        let lane_right =
+            f64::from(VIEWPORT.0) - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
 
         // 16:9 aspect.
         let aspect = player.width() / player.height();
@@ -435,12 +761,27 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         // a seeded dislike count). Assert they're laid out in the real tree.
         let h = Harness::new(watch_app(), VIEWPORT);
         assert!(
-            h.has_id("dislike_pill"),
-            "the watch page lays out the Return YouTube Dislike pill"
+            h.has_id("tube-dislikes"),
+            "the watch page lays out the shared Return YouTube Dislike count"
         );
+        let mut model = watch_app().model_for_test().clone();
+        let segments = model
+            .video(WATCH_ID)
+            .unwrap()
+            .sponsor
+            .iter()
+            .filter(|segment| model.settings.category_enabled(segment.category))
+            .count();
         assert!(
-            h.has_id("sb_timeline"),
-            "the watch page lays out the SponsorBlock segment timeline"
+            segments > 0,
+            "the actual video has enabled sponsor segments"
+        );
+        let with_marks = player_draws(watch_app());
+        model.settings.sponsorblock_enabled = false;
+        let without_marks = player_draws(TubeApp::new().with_model_for_test(model));
+        assert!(
+            with_marks >= without_marks + segments,
+            "the shared player paints each SponsorBlock segment on its timeline: {with_marks} vs {without_marks}, {segments} segments"
         );
     }
 }
@@ -462,108 +803,225 @@ fn watch_app() -> TubeApp {
 }
 
 #[test]
-fn watch_and_settings_controls_toggle_state_through_real_clicks() {
-    // Case `share_button_copies_a_link_and_is_not_wired_to_like`.
-    {
-        // Clicking Share must record a "link copied" notice (the visible
-        // confirmation of the real clipboard write) and must NOT like the video —
-        // proving the two are distinct.
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        assert!(
-            !h.app.model_for_test().is_liked(WATCH_ID),
-            "not liked to start"
-        );
 
-        h.click_id("share_btn");
-
-        assert!(
-            !h.app.model_for_test().is_liked(WATCH_ID),
-            "Share must not like the video"
+fn share_copies_a_link_through_a_real_click() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let subscriber = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("tube::share", tracing::Level::DEBUG),
+        )
+        .with(tracing_subscriber::fmt::layer().with_test_writer());
+    let _trace = tracing::subscriber::set_default(subscriber);
+    let mut app = live_catalogue();
+    app.effect(&tube::actions::TubeEffect::OpenVideo {
+        video: WATCH_ID.into(),
+    })
+    .unwrap();
+    app.settle();
+    assert!(
+        app.with_surface::<TubeApp, _>(|viewer| !viewer.model_for_test().is_liked(WATCH_ID))
+            .unwrap(),
+        "not liked to start"
+    );
+    // with_surface runs another host tick and relayout, which can start new
+    // presentation work. Settle after that final inspection so click_named's
+    // target rectangle stays valid through the real hover/press/release path.
+    // settle() above flushes effects but does not await the NavShell entrance.
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before clicking Share"
+    );
+    // Observe the real effect through the published accessibility notice.
+    // Under a busy shard, the click can enqueue work beyond the next host
+    // tick, so inspect the model only after that effect has appeared.
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
+    app.harness().click_named("watch_copy_link").unwrap();
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
+    let observed = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        });
+    if !observed {
+        let notices: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("Notifications"))
+            .map(|(_, node)| node.value().map(str::to_owned))
+            .collect();
+        eprintln!(
+            "share timeout at {:?}; a11y notices: {notices:?}",
+            ui::time::now()
         );
+        app.with_surface::<TubeApp, _>(|viewer| {
+            eprintln!(
+                "share timeout route: {:?}; model notices: {:?}",
+                viewer.route_for_test(),
+                viewer.model_for_test().notices
+            );
+        })
+        .unwrap();
+    }
+    assert!(
+        observed,
+        "the real click must publish the copied-link notice before inspecting the model"
+    );
+    app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
-            h.app
+            viewer
                 .model_for_test()
                 .notices
                 .iter()
-                .any(|n| n.contains("Link copied") && n.contains(WATCH_ID)),
-            "Share records a 'link copied' notice for this video"
+                .any(|notice| { notice.contains("Link copied") && notice.contains(WATCH_ID) }),
+            "the real pointer sequence must submit Share on the settled watch page"
         );
-        // And the confirmation toast is actually rendered.
-        assert!(
-            h.has_id("notices"),
-            "the share confirmation shows in the toast strip"
-        );
-    }
-    // Case `like_button_toggles_liked_state_through_a_real_click`.
-    {
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        assert!(!h.app.model_for_test().is_liked(WATCH_ID));
+    })
+    .unwrap();
 
-        h.click_id("like_btn");
+    app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
-            h.app.model_for_test().is_liked(WATCH_ID),
-            "clicking Like marks the video liked"
+            !viewer.model_for_test().is_liked(WATCH_ID),
+            "Share must not like the video"
         );
+        assert!(
+            viewer
+                .model_for_test()
+                .notices
+                .iter()
+                .any(|notice| notice.contains("Link copied") && notice.contains(WATCH_ID)),
+            "Share records a link copied notice for this video"
+        );
+    })
+    .unwrap();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some("Notifications")
+                && node.live() == Some(ui::accesskit::Live::Assertive)
+                && node
+                    .value()
+                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
+        }),
+        "the share confirmation is actually published by the toast strip"
+    );
+}
 
-        h.click_id("like_btn");
-        assert!(
-            !h.app.model_for_test().is_liked(WATCH_ID),
-            "clicking Like again unlikes it"
-        );
-    }
-    // Case `settings_category_mode_pill_cycles_the_skip_mode_through_a_real_click`.
-    {
-        use tube::model::{Category, SkipMode};
-        let app = TubeApp::new()
-            .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
-            .with_route_shot(Route::Settings);
-        let mut h = Harness::new(app, VIEWPORT);
-        // Sponsor defaults to Auto-skip; clicking its mode pill cycles it to Show.
-        assert_eq!(
-            h.app.model_for_test().settings.mode_of(Category::Sponsor),
-            SkipMode::Skip
-        );
-        h.click_id(&format!("mode_{}", Category::Sponsor.api_key()));
-        assert_eq!(
-            h.app.model_for_test().settings.mode_of(Category::Sponsor),
-            SkipMode::Show,
-            "clicking the mode pill cycles Auto-skip → Show"
-        );
-    }
-    // Case `subscribe_pill_toggles_subscription_through_a_real_click`.
-    {
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        let channel = h
-            .app
-            .model_for_test()
-            .video(WATCH_ID)
-            .unwrap()
-            .channel_id
-            .clone();
-        let before = h.app.model_for_test().is_subscribed(&channel);
-        h.click_id("subscribe_btn");
-        assert_ne!(
-            before,
-            h.app.model_for_test().is_subscribed(&channel),
-            "clicking the subscribe pill flips the subscription"
-        );
-    }
-    // Case `autoplay_switch_toggles_the_setting_through_a_real_switch_click`.
-    {
-        // Exercise `Switch::handle_event` for real (not app.apply): click the
-        // autoplay switch on the Settings page and prove the setting flips.
-        let app = TubeApp::new()
-            .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
-            .with_route_shot(Route::Settings);
-        let mut h = Harness::new(app, VIEWPORT);
-        let before = h.app.model_for_test().settings.autoplay;
-        h.click_id("switch_autoplay");
-        assert_ne!(
-            before,
-            h.app.model_for_test().settings.autoplay,
-            "clicking the autoplay switch flips the setting"
-        );
-    }
+/// The settled watch page with the pointer resting on "Copy link", fed by a
+/// worker whose results the test lands; and that button's identity.
+fn hovering_copy_link() -> (
+    ui::framework::testing::TestApp<tube::TubeShell>,
+    tube::api::Updates,
+    usize,
+) {
+    let mut app = live_catalogue();
+    let results = app
+        .with_surface::<TubeApp, _>(TubeApp::script_worker_for_test)
+        .expect("the canonical Tube surface is mounted");
+    app.effect(&tube::actions::TubeEffect::OpenVideo {
+        video: WATCH_ID.into(),
+    })
+    .unwrap();
+    app.settle();
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before the pointer arrives"
+    );
+    let centre = app.harness().targets()["watch_copy_link"].center();
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
+    let button = copy_link_identity(&mut app);
+    (app, results, button)
+}
+
+fn copy_link_identity(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> usize {
+    let button = find(app.harness().root_widget(), "watch_copy_link").expect("Copy link shows");
+    std::ptr::from_ref(button).cast::<()>().addr()
+}
+
+/// A worker result lands, as the network answering does, and the next
+/// frame folds it: the watch page is rebuilt with fresh widgets while the
+/// pointer stays where it was.
+fn land_worker_result(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    results: &tube::api::Updates,
+    before: usize,
+    label: &str,
+) {
+    let rect = app.harness().targets()["watch_copy_link"];
+    results
+        .send(tube::api::Update::Status {
+            live: false,
+            label: label.into(),
+        })
+        .unwrap();
+    app.harness().relayout();
+    assert_ne!(
+        copy_link_identity(app),
+        before,
+        "the result rebuilt the page with a fresh Copy link button"
+    );
+    assert_eq!(
+        app.harness().targets()["watch_copy_link"],
+        rect,
+        "the fresh button sits where the pointer rests"
+    );
+}
+
+fn press(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    state: winit::event::ElementState,
+) {
+    app.harness().send(&ui::synthetic_input::mouse_input(
+        state,
+        winit::event::MouseButton::Left,
+    ));
+}
+
+fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        })
+}
+
+/// A person hovers "Copy link", the page updates under the still pointer,
+/// and they click. The click must not be lost.
+#[test]
+fn a_click_after_a_worker_result_rebuilt_the_page_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    land_worker_result(&mut app, &results, button, "connecting… (rebuild)");
+    press(&mut app, winit::event::ElementState::Pressed);
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press after a content rebuild, with the pointer unmoved, submits Share"
+    );
+}
+
+/// As above, but the worker result lands while the button is held down.
+#[test]
+fn a_worker_result_between_press_and_release_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    press(&mut app, winit::event::ElementState::Pressed);
+    land_worker_result(&mut app, &results, button, "connecting… (held)");
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press, rebuild, release sequence submits Share"
+    );
 }
 
 // The play/pause and scrub transport now live in the shared `VideoPlayer`'s
@@ -686,13 +1144,14 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         }
         let cid = model.videos[0].channel_id.clone();
         // Set the avatar URL on that uploader's channel record.
-        let mut found = false;
         // `channels` is walked via the model's public accessor; set through a fresh
         // channel upsert so the avatar URL lands on the record the card reads.
-        if let Some(ch) = model.channels.iter_mut().find(|c| c.id == cid) {
+        let found = if let Some(ch) = model.channels.iter_mut().find(|c| c.id == cid) {
             ch.avatar_url = avatar_url.to_string();
-            found = true;
-        }
+            true
+        } else {
+            false
+        };
         assert!(found, "seeded an avatar URL on the first video's uploader");
 
         let app = TubeApp::new()
@@ -855,6 +1314,228 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             !h.layout_needs_measure(),
             "a laid-out, drawn Home must not report layout_needs_measure — an \
          off-screen widget forcing a re-solve is the scroll-jank regression",
+        );
+    }
+}
+
+#[test]
+fn fetched_images_reach_the_scene() {
+    // Case `home_cards_paint_fetched_thumbnails`.
+    {
+        let thumb = "http://test.local/thumb.png";
+        let bytes = png([20, 200, 60, 255]);
+        let fetch: ui::Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
+        let store = ui::ImageStore::new(&fetch);
+        let _ = store.get(thumb);
+        store.block_until_idle(tilo_test_env::hang_bound());
+
+        let mut model = tube::sample::model();
+        for v in &mut model.videos {
+            v.thumbnail_url = thumb.into();
+        }
+        let mut framed = mount(
+            TubeApp::new()
+                .with_model_for_test(model)
+                .with_image_store(store),
+        );
+        Framed::harness_mut(&mut framed).relayout();
+        assert!(
+            image_draws(&framed) >= 4,
+            "the decoded thumbnails paint on the Home cards"
+        );
+    }
+    // Case `the_watch_page_paints_the_creator_avatar`.
+    {
+        let avatar = "http://test.local/avatar.png";
+        let bytes = png([200, 60, 20, 255]);
+        let fetch: ui::Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
+        let store = ui::ImageStore::new(&fetch);
+        let _ = store.get(avatar);
+        store.block_until_idle(tilo_test_env::hang_bound());
+
+        let mut model = tube::sample::model();
+        if let Some(channel) = model.channels.iter_mut().find(|c| c.id == "ch_blender") {
+            channel.avatar_url = avatar.into();
+        }
+        model.route = Route::Watch("vid_donut".into());
+        let mut framed = mount(
+            TubeApp::new()
+                .with_model_for_test(model)
+                .with_image_store(store)
+                .with_route_shot(Route::Watch("vid_donut".into())),
+        );
+        Framed::harness_mut(&mut framed).relayout();
+        assert!(
+            image_draws(&framed) >= 1,
+            "the creator's decoded avatar paints, not its initials"
+        );
+    }
+}
+
+/// Leaf widgets that still ask for a layout re-measure.
+fn measure_demands(w: &dyn Widget, path: &str, out: &mut Vec<String>) {
+    let here = format!("{path}/{}", w.name());
+    let children = w.children();
+    if children.is_empty() {
+        if w.layout_needs_measure() {
+            out.push(here);
+        }
+    } else {
+        for child in children {
+            measure_demands(child, &here, out);
+        }
+    }
+}
+
+#[test]
+fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
+    // A widget that reports itself dirty forever makes the host re-solve the
+    // whole page on every scroll frame, which is the scroll-jank regression.
+    for route in [
+        Route::Home,
+        Route::Subscriptions,
+        Route::History,
+        Route::Channel("ch_kurz".into()),
+        Route::Playlist("pl_systems".into()),
+    ] {
+        let framed = mount(TubeApp::new().with_route_shot(route.clone()));
+        let mut demands = Vec::new();
+        measure_demands(&*framed, "", &mut demands);
+        assert!(
+            demands.is_empty(),
+            "{route:?}: laid-out widgets still demand a measure: {demands:?}"
+        );
+    }
+}
+
+/// The shared settings switch keeps its named, stateful semantic surface;
+/// activation crosses the real typed effect boundary and pointer hit-testing
+/// stays within the switch rather than its whole form row.
+#[test]
+fn shared_settings_toggle_exposes_state_and_applies_the_preference() {
+    let mut app = live_app();
+    click(&mut app, "nav_settings");
+    let name = "Autoplay next video";
+    let id = app
+        .harness()
+        .a11y_node_named(name)
+        .expect("named shared switch");
+    let node = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(key, _)| *key == id)
+        .unwrap()
+        .1;
+    assert_eq!(node.role(), ui::accesskit::Role::Switch);
+    let before = node.toggled();
+    let bounds = node.bounds().unwrap();
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::Focus)
+        .unwrap();
+    assert_eq!(
+        app.harness().focused_access_node().unwrap().name.as_deref(),
+        Some(name)
+    );
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::ToggleCheck)
+        .unwrap();
+    app.settle();
+    let id = app.harness().a11y_node_named(name).unwrap();
+    assert_ne!(
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(key, _)| *key == id)
+            .unwrap()
+            .1
+            .toggled(),
+        before,
+        "actual hosted effect changes the preference"
+    );
+    let rect = app
+        .with_surface::<TubeApp, _>(|surface| {
+            let toggle = find(surface, "switch_autoplay").expect("shared switch identity");
+            toggle.get_rect()
+        })
+        .unwrap();
+    assert!(rect.area() > 0.0 && bounds.width() > 0.0);
+    app.harness().click_at(rect.x0 - 1.0, rect.center().y);
+    app.settle();
+    let after_outside = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name) && node.role() == ui::accesskit::Role::Switch)
+        .unwrap()
+        .1
+        .toggled();
+    assert_ne!(
+        after_outside, before,
+        "outside press does not undo the semantic change"
+    );
+    app.harness().click_at(rect.center().x, rect.center().y);
+    app.settle();
+    let after_inside = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name) && node.role() == ui::accesskit::Role::Switch)
+        .unwrap()
+        .1
+        .toggled();
+    assert_eq!(
+        after_inside, before,
+        "inside press crosses the same typed preference route"
+    );
+}
+
+fn draw_cards(
+    widget: &mut dyn Widget,
+    scene: &mut vello::Scene,
+    text: &mut ui::text_render::TextRenderer,
+    theme: &Theme,
+    presence: &ui::presence::PresenceCtx,
+) -> usize {
+    if widget.name() == "MediaCard" {
+        widget.draw(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
+        return 1;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .map(|child| draw_cards(child, scene, text, theme, presence))
+        .sum()
+}
+
+/// Missing fetched media still paints the actual shared card and banner
+/// placeholders, without submitting any decoded IMAGE draw.
+#[test]
+fn unfetched_media_paints_shared_placeholders() {
+    for route in [Route::Home, Route::Channel("ch_kurz".into())] {
+        let mut framed = mount(TubeApp::new().with_route_shot(route));
+        let theme = Framed::harness(&framed).theme().clone();
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let presence = ui::presence::PresenceCtx::empty();
+        let observed = draw_cards(&mut *framed, &mut scene, &mut text, &theme, &presence);
+        assert!(
+            observed > 0,
+            "the mounted catalogue supplies actual shared cards"
+        );
+        assert_eq!(
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|tag| **tag == vello_encoding::DrawTag::IMAGE)
+                .count(),
+            0,
+            "unfetched card art submits no decoded image; window material caches are separate"
+        );
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "actual fallback cards paint"
         );
     }
 }

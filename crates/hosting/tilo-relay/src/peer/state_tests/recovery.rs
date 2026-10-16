@@ -9,7 +9,9 @@
 )]
 use super::*;
 use automerge::transaction::Transactable;
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use collab_types::CommitNamed as _;
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::StatePeer;
 
 struct Recovery {
     fixture: Fixture,
@@ -20,9 +22,7 @@ struct Recovery {
     now: web_time::SystemTime,
 }
 fn envelope(author: [u8; 32], room: &str, message: &NeighbourMsg, checkpoint: bool) -> Envelope {
-    let channel = tilo_peer_state::transport::retention(message, checkpoint)
-        .unwrap()
-        .0;
+    let channel = neighbour_wire::retention(message, checkpoint).unwrap().0;
     let body = postcard::to_allocvec(message).unwrap();
     let delta = if checkpoint {
         crate::coedit::CoeditPayload::Checkpoint { channel, body }
@@ -56,7 +56,7 @@ fn signed(
         collab_types::document_artifact_id("selector.app", room, "one"),
         collab_types::Ed25519PublicKey::from_bytes(source),
         collab_types::document_attestation_id("selector.app", room, "one"),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         now,
         seq,
     );
@@ -139,7 +139,7 @@ impl Recovery {
         b.set_actor(automerge::ActorId::from(vec![72]));
         let heads = b.get_heads();
         b.put(automerge::ROOT, "fallback", "B").unwrap();
-        b.commit();
+        b.commit_edit("fixture", "fallback");
         let tail = signed(
             key,
             room,
@@ -157,7 +157,7 @@ impl Recovery {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(room, cert).unwrap(),
+                    tilo_relay_protocol::retention::RetentionAuthority::new(room, cert).unwrap(),
                 )
                 .unwrap();
             runtime.checkpoint_prefix_recovery =
@@ -572,7 +572,8 @@ async fn active_recovery(count: usize) {
         fixture
             .store
             .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
+            .unwrap()
+            .saturating_add(u32::try_from(fixture.count_held()).unwrap()),
         u32::try_from(
             case.initial
                 .len()

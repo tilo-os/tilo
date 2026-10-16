@@ -17,9 +17,14 @@
 //! reimplementing, for its private `adapter` field. vello stays unmodified,
 //! and this file stays close to `vello::util`'s own logic so the two can be
 //! compared when vello moves.
+//!
+//! It also decides which backends the instance is made with
+//! (`default_backends`): without OpenGL whenever OpenGL could not be
+//! chosen anyway, because wgpu initialises every backend it is asked for.
 
 use std::sync::{Arc, Mutex};
 
+use tilo_lock::MutexRecover as _;
 use vello::util::RenderSurface;
 use wgpu::{
     Adapter, Device, Instance, Limits, Queue, Surface, SurfaceConfiguration, SurfaceTarget,
@@ -35,6 +40,9 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
+    /// Whether a window surface has been reported to use this adapter: a
+    /// device opened ahead of its window is reported when one first takes it.
+    surface_reported: bool,
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
@@ -46,10 +54,7 @@ pub struct DeviceLossMonitor(Arc<Mutex<Option<String>>>);
 impl DeviceLossMonitor {
     /// Actual device loss reason, when the context callback has observed one.
     pub fn reason(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 }
 
@@ -72,12 +77,61 @@ impl DeviceHandle {
     pub fn adapter(&self) -> &Adapter {
         &self.adapter
     }
+
+    /// The same driver's device on a fresh instance of this adapter's backend, with this
+    /// device's features and limits. Blocks while the device opens.
+    ///
+    /// Not a second device on this adapter: Mesa's CPU Vulkan driver compiles shaders for every
+    /// device of one physical device one at a time, so work meant to run beside this device's
+    /// needs a physical device of its own.
+    pub fn open_peer(&self) -> Option<(Device, Queue)> {
+        let info = self.adapter.get_info();
+        let backends = wgpu::Backends::from(info.backend);
+        let instance = Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends,
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(backends))
+            .into_iter()
+            .find(|adapter| {
+                let peer = adapter.get_info();
+                (peer.name.as_str(), peer.driver.as_str(), peer.device_type)
+                    == (info.name.as_str(), info.driver.as_str(), info.device_type)
+            })?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: self.device.features(),
+            required_limits: self.device.limits(),
+            memory_hints: MEMORY_HINTS,
+            ..Default::default()
+        }))
+        .ok()
+    }
 }
+
+/// See the module header for the default's cost. `MemoryUsage` (8 MB first block, 64 MB
+/// largest) is still not enough, because the block size doubles with every block a process opens
+/// (`min << active_general_blocks`, capped at the maximum): one idle app held
+/// 4+8+16+32+64 = 124 MB of blocks to suballocate ~50 MB of buffers out of.
+///
+/// Fixed 4 MB blocks stop the doubling. Anything larger gets a dedicated allocation of its own
+/// exact size instead (`gpu_allocator`'s `requires_personal_block`), so big buffers cost what
+/// they are. 4 MB is the floor wgpu clamps to.
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
+};
 
 /// wgpu state for one process, with a memory hint that fits a shared GPU.
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
+    /// Backends to start `instance` again with if its own offer no adapter
+    /// at all, before any device or surface came from it (`default_backends`).
+    fallback: Option<wgpu::Backends>,
+    backend_options: wgpu::BackendOptions,
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
@@ -128,8 +182,96 @@ fn required_limits(adapter: &Limits) -> Limits {
     }
 }
 
+/// The backends a context's instance is made with, and those it is made
+/// again with when the first offer no adapter at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BackendChoice {
+    pub(crate) primary: wgpu::Backends,
+    pub(crate) fallback: Option<wgpu::Backends>,
+}
+
+impl BackendChoice {
+    const fn only(backends: wgpu::Backends) -> Self {
+        Self {
+            primary: backends,
+            fallback: None,
+        }
+    }
+}
+
+/// The backends a context starts with when `WGPU_BACKEND` names none.
+///
+/// Windows uses DX12 alone: probing every backend can enter optional Vulkan
+/// translation-layer drivers before a working DX12 adapter is selected.
+/// Every Android device the app installs on has Vulkan 1.1. A native process
+/// elsewhere leaves OpenGL out whenever it could not be chosen anyway
+/// (`native::gpu_backends`).
+fn default_backends() -> BackendChoice {
+    if cfg!(target_os = "windows") {
+        BackendChoice::only(wgpu::Backends::DX12)
+    } else if cfg!(target_os = "android") {
+        BackendChoice::only(wgpu::Backends::VULKAN)
+    } else {
+        native_backends()
+    }
+}
+
+#[cfg(feature = "native")]
+fn native_backends() -> BackendChoice {
+    crate::native::gpu_backends::default_choice()
+}
+
+#[cfg(not(feature = "native"))]
+fn native_backends() -> BackendChoice {
+    BackendChoice::only(wgpu::Backends::all())
+}
+
+/// Whether `WGPU_ADAPTER_NAME` picks the adapter (`RenderContext::request_adapter`).
+#[cfg(feature = "native")]
+fn adapter_named_by_env() -> bool {
+    crate::native::gpu_backends::adapter_named()
+}
+
+/// Without a process environment to read, assume it may.
+#[cfg(not(feature = "native"))]
+fn adapter_named_by_env() -> bool {
+    true
+}
+
+/// An instance of `backends`, with every field spelled out:
+/// `InstanceDescriptor` has no `Default`, and these are the values vello
+/// would have used.
+fn create_instance(backends: wgpu::Backends, backend_options: &wgpu::BackendOptions) -> Instance {
+    let instance = Instance::new(wgpu::InstanceDescriptor {
+        display: None,
+        backends,
+        flags: {
+            let flags = wgpu::InstanceFlags::from_build_config();
+            // The Android emulator's Vulkan driver crashes in
+            // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
+            // for object labels.
+            #[cfg(target_os = "android")]
+            let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
+            flags.with_env()
+        },
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: backend_options.clone(),
+    });
+    tilo_startup_metrics::mark("gpu-instance-created");
+    instance
+}
+
 impl RenderContext {
+    /// A context on the backends `WGPU_BACKEND` names, or this platform's
+    /// `default_backends`. `WGPU_BACKEND` stays available for explicit
+    /// diagnostics and alternate drivers, and is never second-guessed.
     pub fn new() -> Self {
+        Self::with_backends(
+            wgpu::Backends::from_env().map_or_else(default_backends, BackendChoice::only),
+        )
+    }
+
+    pub(crate) fn with_backends(choice: BackendChoice) -> Self {
         let backend_options = wgpu::BackendOptions::from_env_or_default();
         #[cfg(windows)]
         let backend_options = {
@@ -149,8 +291,6 @@ impl RenderContext {
             }
             options
         };
-        // Every field spelled out: `InstanceDescriptor` has no `Default`, and
-        // these are the values vello would have used.
         #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let compiler_identity =
             crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
@@ -162,40 +302,67 @@ impl RenderContext {
             }
             options
         };
-        let instance = Instance::new(wgpu::InstanceDescriptor {
-            display: None,
-            // Use the host's native graphics API on Windows. Probing every
-            // backend can enter optional Vulkan translation-layer drivers
-            // before a working DX12 adapter is selected. Keep WGPU_BACKEND
-            // available for explicit diagnostics and alternate drivers.
-            backends: wgpu::Backends::from_env().unwrap_or_else(|| {
-                if cfg!(target_os = "windows") {
-                    wgpu::Backends::DX12
-                } else if cfg!(target_os = "android") {
-                    // Every device the app installs on has Vulkan 1.1.
-                    wgpu::Backends::VULKAN
-                } else {
-                    wgpu::Backends::default()
-                }
-            }),
-            flags: {
-                let flags = wgpu::InstanceFlags::from_build_config();
-                // The Android emulator's Vulkan driver crashes in
-                // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
-                // for object labels.
-                #[cfg(target_os = "android")]
-                let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
-                flags.with_env()
-            },
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options,
-        });
         Self {
-            instance,
+            instance: create_instance(choice.primary, &backend_options),
             devices: Vec::new(),
+            fallback: choice.fallback,
+            backend_options,
             #[cfg(all(windows, feature = "dx12-shader-cache"))]
             compiler_identity,
         }
+    }
+
+    /// Before the first device or surface comes from `instance`: if it may
+    /// still be replaced and offers no adapter at all, make it again with the
+    /// fallback backends, once. Nothing of the first instance exists yet, so
+    /// nothing of it can meet the new one; afterwards the instance stays.
+    /// Free once settled.
+    async fn settle_backends(&mut self) {
+        let Some(fallback) = self.fallback.take() else {
+            return;
+        };
+        if self.devices.is_empty()
+            && self
+                .instance
+                .enumerate_adapters(wgpu::Backends::all())
+                .await
+                .is_empty()
+        {
+            tilo_startup_metrics::mark("gpu-instance-fallback");
+            self.instance = create_instance(fallback, &self.backend_options);
+        }
+    }
+
+    /// The adapter for a new device. The first device decides the instance
+    /// for good (`settle_backends`).
+    ///
+    /// Asking wgpu for an adapter enumerates every adapter, and so does
+    /// settling. So the first request goes to the primary instance at once,
+    /// and the instance is settled (and the request repeated) only when that
+    /// finds nothing. With `WGPU_ADAPTER_NAME` set it is settled first
+    /// instead: wgpu then panics on an instance that offers no adapter
+    /// rather than failing.
+    async fn request_adapter(
+        &mut self,
+        compatible_surface: Option<&Surface<'_>>,
+    ) -> Option<wgpu::Adapter> {
+        if self.fallback.is_some()
+            && self.devices.is_empty()
+            && !adapter_named_by_env()
+            && let Ok(adapter) = wgpu::util::initialize_adapter_from_env_or_default(
+                &self.instance,
+                compatible_surface,
+            )
+            .await
+        {
+            // It offers an adapter, so it stays.
+            self.fallback = None;
+            return Some(adapter);
+        }
+        self.settle_backends().await;
+        wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
+            .await
+            .ok()
     }
 
     /// Index of a device that can present to `compatible_surface`, opening one
@@ -217,10 +384,14 @@ impl RenderContext {
     }
 
     async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
-        let adapter =
-            wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
-                .await
-                .ok()?;
+        tilo_startup_metrics::mark("gpu-adapter-request-start");
+        let adapter = self.request_adapter(compatible_surface).await?;
+        tilo_startup_metrics::mark("gpu-adapter-request-done");
+        if compatible_surface.is_some() {
+            tilo_startup_metrics::mark("gpu-adapter-report-start");
+            report_adapter(&self.instance, &adapter).await;
+            tilo_startup_metrics::mark("gpu-adapter-report-done");
+        }
         let features = adapter.features();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
         // Timestamp queries allocate profile-only GPU resources and are not a
@@ -256,36 +427,22 @@ impl RenderContext {
             }
             wgpu::Features::empty()
         };
+        tilo_startup_metrics::mark("gpu-device-request-start");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
                 required_limits: required_limits(&adapter.limits()),
-                // See the module header for the default's cost. `MemoryUsage`
-                // (8 MB first block, 64 MB largest) is still not enough,
-                // because the block size doubles with every block a process
-                // opens (`min << active_general_blocks`, capped at the
-                // maximum): one idle app held 4+8+16+32+64 = 124 MB of blocks
-                // to suballocate ~50 MB of buffers out of.
-                //
-                // Fixed 4 MB blocks stop the doubling. Anything larger gets a
-                // dedicated allocation of its own exact size instead
-                // (`gpu_allocator`'s `requires_personal_block`), so big
-                // buffers cost what they are. 4 MB is the floor wgpu clamps to.
-                memory_hints: wgpu::MemoryHints::Manual {
-                    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
-                },
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             })
             .await
             .ok()?;
+        tilo_startup_metrics::mark("gpu-device-request-done");
         let loss = DeviceLossMonitor::default();
         let observer = loss.clone();
         device.set_device_lost_callback(move |reason, message| {
-            let mut recorded = observer
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut recorded = observer.0.lock_recover();
             if recorded.is_none() {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }
@@ -298,10 +455,37 @@ impl RenderContext {
             device,
             queue,
             loss,
+            surface_reported: compatible_surface.is_some(),
             #[cfg(all(windows, feature = "dx12-shader-cache"))]
             shader_cache,
         });
         Some(self.devices.len().saturating_sub(1))
+    }
+
+    async fn surface_device(
+        &mut self,
+        surface: &Surface<'_>,
+    ) -> Option<(usize, wgpu::SurfaceCapabilities)> {
+        // is_surface_supported performs a complete capabilities query. Reuse
+        // its result for configuration when an existing device can present.
+        for (id, handle) in self.devices.iter_mut().enumerate() {
+            let capabilities = surface_capabilities(surface, &handle.adapter);
+            if !capabilities.formats.is_empty() {
+                // A device prepared without a surface (the startup renderer)
+                // still names the adapter its first window renders on: GPU
+                // health and the startup gate read that line.
+                if !handle.surface_reported {
+                    handle.surface_reported = true;
+                    report_adapter(&self.instance, &handle.adapter).await;
+                }
+                return Some((id, capabilities));
+            }
+        }
+        // Preserve surface-aware selection and explicit adapter preferences
+        // for a fresh or incompatible device, including non-Vulkan backends.
+        let id = self.new_device(Some(surface)).await?;
+        let handle = self.devices.get(id)?;
+        Some((id, surface_capabilities(surface, &handle.adapter)))
     }
 
     /// A surface for `window`, rendered at `width` x `height`.
@@ -318,6 +502,31 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        let surface = self
+            .create_surface_unconfigured(window, width, height, present_mode)
+            .await?;
+        tilo_startup_metrics::mark("surface-initial-configure-start");
+        self.configure_surface(&surface);
+        tilo_startup_metrics::mark("surface-initial-configure-done");
+        Ok(surface)
+    }
+
+    /// Build a surface and render targets without creating its swapchain.
+    ///
+    /// A caller that adjusts alpha or other configuration must configure the
+    /// returned surface before acquiring a frame. Native windows do that once
+    /// inside their existing validation error scope.
+    ///
+    /// # Errors
+    /// Returns the same surface, device and format errors as [`Self::create_surface`].
+    pub async fn create_surface_unconfigured<'w>(
+        &mut self,
+        window: impl Into<SurfaceTarget<'w>>,
+        width: u32,
+        height: u32,
+        present_mode: wgpu::PresentMode,
+    ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        self.settle_backends().await;
         tilo_startup_metrics::mark("surface-native-create-start");
         let surface = self
             .instance
@@ -325,8 +534,8 @@ impl RenderContext {
             .map_err(CreateSurfaceError::Surface)?;
         tilo_startup_metrics::mark("surface-native-create-done");
         tilo_startup_metrics::mark("surface-device-select-start");
-        let dev_id = self
-            .device(Some(&surface))
+        let (dev_id, capabilities) = self
+            .surface_device(&surface)
             .await
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-device-select-done");
@@ -335,16 +544,27 @@ impl RenderContext {
             .get(dev_id)
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-capabilities-start");
-        let capabilities = surface.get_capabilities(&handle.adapter);
-        let format = capabilities
-            .formats
-            .into_iter()
-            .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        // The intermediate target is RGBA8. Prefer a matching surface format
+        // so capable backends can present it with a texture copy instead of
+        // compiling a fullscreen blit shader for every new surface.
+        let format = if capabilities.formats.contains(&TextureFormat::Rgba8Unorm) {
+            TextureFormat::Rgba8Unorm
+        } else if capabilities.formats.contains(&TextureFormat::Bgra8Unorm) {
+            TextureFormat::Bgra8Unorm
+        } else {
+            return Err(CreateSurfaceError::UnsupportedSurfaceFormat);
+        };
+        let direct_copy = format == TextureFormat::Rgba8Unorm
+            && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if direct_copy {
+                    wgpu::TextureUsages::COPY_DST
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format,
             width,
             height,
@@ -368,9 +588,6 @@ impl RenderContext {
             target_view,
             blitter,
         };
-        tilo_startup_metrics::mark("surface-initial-configure-start");
-        self.configure_surface(&surface);
-        tilo_startup_metrics::mark("surface-initial-configure-done");
         Ok(surface)
     }
 
@@ -391,21 +608,102 @@ impl RenderContext {
         self.configure_surface(surface);
     }
 
-    pub fn set_present_mode(
-        &self,
-        surface: &mut RenderSurface<'_>,
-        present_mode: wgpu::PresentMode,
-    ) {
-        surface.config.present_mode = present_mode;
-        self.configure_surface(surface);
-    }
-
     pub fn configure_surface(&self, surface: &RenderSurface<'_>) {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
         };
         surface.surface.configure(&handle.device, &surface.config);
     }
+}
+
+/// Prefix of every line a window prints about the adapter it renders on.
+/// The compositor reads app stderr for it; session checks grep for it.
+pub const ADAPTER_LINE_PREFIX: &str = "tilo-gpu:";
+
+/// What follows [`ADAPTER_LINE_PREFIX`] when a window presents through a CPU
+/// adapter on a machine that has a GPU.
+pub const SOFTWARE_FALLBACK_MESSAGE: &str =
+    "window renders on a CPU adapter although a GPU is present";
+
+/// The one line naming a window's adapter, e.g.
+/// `tilo-gpu: window adapter "Turnip Adreno (TM) X1-85" type=IntegratedGpu backend=Vulkan driver="turnip Mesa driver"`.
+fn adapter_line(info: &wgpu::AdapterInfo) -> String {
+    format!(
+        "{ADAPTER_LINE_PREFIX} window adapter {:?} type={:?} backend={:?} driver={:?}",
+        info.name, info.device_type, info.backend, info.driver
+    )
+}
+
+fn surface_capabilities(surface: &Surface<'_>, adapter: &Adapter) -> wgpu::SurfaceCapabilities {
+    tilo_startup_metrics::mark("gpu-surface-capabilities-start");
+    let capabilities = surface.get_capabilities(adapter);
+    tilo_startup_metrics::mark("gpu-surface-capabilities-done");
+    capabilities
+}
+
+/// The hardware adapters a window passed over for a CPU one, or nothing when
+/// the choice was not a fallback.
+///
+/// Mesa's hardware Vulkan drivers present on Wayland only through
+/// `zwp_linux_dmabuf_v1`; without it they report the surface lost and the
+/// only adapter left that can present is lavapipe, which rasterises every
+/// frame on the CPU and JIT-compiles every shader on the first one. That cost
+/// seconds per launch on a Snapdragon laptop and nothing reported it.
+fn passed_over_hardware(
+    chosen: wgpu::DeviceType,
+    available: impl IntoIterator<Item = (wgpu::DeviceType, String)>,
+) -> Vec<String> {
+    if chosen != wgpu::DeviceType::Cpu {
+        return Vec::new();
+    }
+    available
+        .into_iter()
+        .filter(|(kind, _)| {
+            matches!(
+                kind,
+                wgpu::DeviceType::IntegratedGpu
+                    | wgpu::DeviceType::DiscreteGpu
+                    | wgpu::DeviceType::VirtualGpu
+                    | wgpu::DeviceType::Other
+            )
+        })
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Name the adapter a window renders on, and call it an error when it is a
+/// software fallback. Enumerating again costs a few milliseconds, so it only
+/// happens once the choice is already a CPU adapter.
+async fn report_adapter(instance: &Instance, chosen: &Adapter) {
+    let info = chosen.get_info();
+    crate::diag!("{}", adapter_line(&info));
+    if info.device_type != wgpu::DeviceType::Cpu {
+        return;
+    }
+    let available = instance
+        .enumerate_adapters(wgpu::Backends::all())
+        .await
+        .into_iter()
+        .map(|adapter| {
+            let other = adapter.get_info();
+            (
+                other.device_type,
+                format!("{} ({:?})", other.name, other.backend),
+            )
+        });
+    let hardware = passed_over_hardware(info.device_type, available);
+    if hardware.is_empty() {
+        return;
+    }
+    // Plain stderr, not only `tracing`: an app's subscriber prints errors,
+    // but the compositor matches this exact line to raise it in GPU health.
+    crate::diag!(
+        "{ADAPTER_LINE_PREFIX} {SOFTWARE_FALLBACK_MESSAGE}: {:?} chosen over {} \
+         because none of them can present to this window (does the compositor \
+         advertise zwp_linux_dmabuf_v1 on their render node?)",
+        info.name,
+        hardware.join(", ")
+    );
 }
 
 /// Why a surface could not be made.
@@ -421,8 +719,59 @@ pub enum CreateSurfaceError {
 
 #[cfg(test)]
 mod tests {
-    use super::create_targets;
+    use super::{BackendChoice, RenderContext, create_targets, passed_over_hardware};
+    use wgpu::Backends;
+
+    #[test]
+    fn a_context_whose_backends_offer_no_adapter_starts_again_on_its_fallback_once() {
+        // The production fallback, from an instance that can offer nothing to
+        // the backends of this machine's real adapter.
+        let mut context = RenderContext::with_backends(BackendChoice {
+            primary: Backends::empty(),
+            fallback: Some(Backends::all()),
+        });
+        let index = pollster::block_on(context.device(None))
+            .expect("the fallback instance opens this machine's adapter");
+        assert_eq!(index, 0);
+        assert!(
+            context.fallback.is_none(),
+            "an instance is only ever made again once"
+        );
+
+        // An instance that offers an adapter is kept: falling back here
+        // would leave this context with no backend at all.
+        let mut kept = RenderContext::with_backends(BackendChoice {
+            primary: Backends::all(),
+            fallback: Some(Backends::empty()),
+        });
+        assert!(
+            pollster::block_on(kept.device(None)).is_some(),
+            "an instance with an adapter is never replaced"
+        );
+        assert!(kept.fallback.is_none());
+    }
     use crate::offscreen::shared_gpu;
+    use wgpu::DeviceType;
+
+    #[test]
+    fn a_cpu_adapter_beside_a_gpu_is_reported_as_a_fallback() {
+        let adapters = || {
+            [
+                (DeviceType::IntegratedGpu, "Turnip Adreno X1-85".to_owned()),
+                (DeviceType::Cpu, "llvmpipe".to_owned()),
+            ]
+        };
+        assert_eq!(
+            passed_over_hardware(DeviceType::Cpu, adapters()),
+            ["Turnip Adreno X1-85"]
+        );
+        assert!(passed_over_hardware(DeviceType::IntegratedGpu, adapters()).is_empty());
+        assert!(
+            passed_over_hardware(DeviceType::Cpu, [(DeviceType::Cpu, "llvmpipe".to_owned())])
+                .is_empty(),
+            "a machine with only a software adapter has nothing to fall back from"
+        );
+    }
 
     #[test]
     fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {

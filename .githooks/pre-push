@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Refuse a push that CI rejects in its first minute: a branch that no longer
+# merges with main (lint, check and app-sdk all test the merge with main), and
+# a dependency change that leaves crates/workspace-hack stale (lint.yml's
+# hakari step). Bypass with `git push --no-verify`.
+set -euo pipefail
+note() { printf '  %s\n' "$*" >&2; }
+
+pushed=()
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  # A deleted ref pushes no commit.
+  [[ $local_sha =~ ^0+$ ]] || pushed+=("$local_sha")
+done
+[ "${#pushed[@]}" -gt 0 ] || exit 0
+
+# Main moves every few minutes; compare against its current tip.
+if ! timeout 30 git fetch --quiet origin main 2>/dev/null; then
+  note "pre-push: could not fetch origin/main; checking against the last fetched main"
+fi
+main=$(git rev-parse --verify --quiet origin/main) || exit 0
+
+fail=0
+for sha in "${pushed[@]}"; do
+  # Exit 1 is a conflict; anything else is git failing, not the branch.
+  status=0
+  merge=$(git merge-tree --write-tree --name-only --no-messages "$main" "$sha") || status=$?
+  if [ "$status" -eq 1 ]; then
+    note "pre-push: $(git rev-parse --short "$sha") conflicts with origin/main in:"
+    tail -n +2 <<< "$merge" | sed 's/^/    /' >&2
+    note "merge origin/main and resolve these files, then push again"
+    fail=1
+  fi
+
+  # cargo hakari reads the working tree, so check only the commit checked out.
+  if [ "$sha" = "$(git rev-parse HEAD)" ] \
+     && git diff --name-only "$(git merge-base "$main" "$sha")" "$sha" \
+        | grep -qE '(^|/)Cargo\.(toml|lock)$' \
+     && cargo hakari --version >/dev/null 2>&1; then
+    if ! { cargo hakari generate --diff >/dev/null && cargo hakari manage-deps --dry-run >/dev/null; }; then
+      note "pre-push: crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result"
+      fail=1
+    fi
+  fi
+done
+
+exit "$fail"

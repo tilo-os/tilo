@@ -5,16 +5,11 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 use crate::gesture::NavDirection;
 use crate::nav_stack::NavStack;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::{Element, TaffyTreeExt, Widget};
@@ -215,13 +210,6 @@ impl RouteHandle {
         }))
     }
 
-    pub fn back_action(&self) -> impl FnMut() + use<> {
-        let handle = self.clone();
-        move || {
-            let _ = handle.back();
-        }
-    }
-
     fn require_known(&self, route: &str) -> Result<(), RouteError> {
         if self.knows(route) {
             Ok(())
@@ -386,14 +374,12 @@ impl Router {
 }
 
 impl Widget for Router {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -406,68 +392,14 @@ impl Widget for Router {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "Router"
@@ -477,14 +409,10 @@ impl Widget for Router {
         Some("router")
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn on_nav_gesture(
         &mut self,
         direction: NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         if self.child.on_nav_gesture(direction, state, path) {
@@ -523,34 +451,6 @@ impl Widget for Router {
 
     fn restore_dev_route(&mut self, route: &RouteSnapshot) -> bool {
         self.handle.adopt_stack(route).unwrap_or(false)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-}
-
-impl crate::undo::UndoPoints for Router {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -627,9 +527,9 @@ mod tests {
             .unwrap();
             let handle = router.handle();
             handle.push("broken").unwrap();
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert_eq!(handle.current(), "home");
             assert!(matches!(
                 router.last_error(),
@@ -654,9 +554,9 @@ mod tests {
             let handle = router.handle();
             handle.state.borrow_mut().revision = u64::MAX - 1;
             assert!(handle.push("broken").unwrap());
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert_eq!(handle.current(), "home");
             assert_eq!(router.seen.revision, u64::MAX);
             assert_eq!(handle.snapshot().revision, u64::MAX);
@@ -672,15 +572,15 @@ mod tests {
             let theme = Theme::default();
             let mut router =
                 Router::new("settings", ["home", "settings"], &theme, |route, _, _| {
-                    Ok(Box::new(super::super::Button::new(route, route, None)))
+                    Ok(Box::new(super::super::Button::new(route, route)))
                 })
                 .unwrap();
             assert_eq!(router.handle().current(), "settings");
 
             router.handle().replace("home").unwrap();
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert!(router.take_structure_dirty());
             assert!(router.take_focus_reset());
             assert!(!router.take_focus_reset(), "focus reset is edge-triggered");

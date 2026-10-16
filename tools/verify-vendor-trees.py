@@ -6,9 +6,10 @@ that Tilo deliberately omits from that vendored tree. Tilo also adds one local
 ``cargo-machete`` annotation to winit's normalized manifest. The forks are
 published under their own names (tilo-winit, tilo-vello, tilo-vello-encoding),
 so their manifests carry a publication identity -- package name, description,
-readme, packaged files, renamed dependencies -- and a ``TILO-FORK.md``; those
-lines are set aside before comparing. Everything else, including Vello's
-retained package files, must match the recorded standalone tips byte-for-byte.
+readme, packaged files, renamed dependencies -- and Tilo's own records,
+``TILO-FORK.md`` and ``PROVENANCE.md``; those lines and files are set aside
+before comparing. Everything else, including Vello's retained package files,
+must match the recorded standalone tips byte-for-byte.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ ignored = [
 '''
 
 
-FORK_FILES = {"TILO-FORK.md"}
+FORK_FILES = {"TILO-FORK.md", "PROVENANCE.md"}
 
 # Manifest lines that give a fork its crates.io identity.
 IDENTITY_PREFIXES = (

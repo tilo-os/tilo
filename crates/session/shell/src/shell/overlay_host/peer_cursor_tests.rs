@@ -36,6 +36,7 @@ fn one_group_seed() -> WorkspaceTree {
             // A group's active tab has to name a tab it has; `0`
             // names nothing, and the resolvers read this.
             active_tab: tab_id,
+            focus_history: Vec::new(),
         }],
     };
     // Through the constructor rather than a struct literal: a field
@@ -188,6 +189,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
                     },
                 }],
                 active_tab: target_tab,
+                focus_history: Vec::new(),
             });
         tree.desktop
             .collaborators
@@ -277,14 +279,12 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
 
         // Only the public fields read by the host are initialized; winit's
         // private KeyEvent payload is intentionally opaque to this unit test.
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Escape);
-        key.state = ElementState::Pressed;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: key,
-            is_synthetic: false,
-        };
+        let key = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
+        let event = ui::synthetic_input::keyboard_input(key);
         assert!(host.release_follow_for_local_key(&event));
         assert!(host.followed_peer.is_none());
         assert_eq!(
@@ -340,4 +340,215 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
     a_local_workspace_click_releases_follow_before_routing_the_click();
     escape_releases_follow_before_the_key_reaches_content();
     leaving_a_workspace_releases_follow_in_the_original_room();
+}
+
+#[test]
+fn follow_waits_for_the_live_row_before_recording_its_target() {
+    let tree = one_group_seed();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let room = tree.desktop.workspaces[0].room;
+    let strip = tree.desktop.workspaces[0].strips[0].id;
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = std::rc::Rc::clone(&calls);
+    host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+        captured.borrow_mut().push((room, target));
+    }));
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let workspace = &mut tree.desktop.workspaces[0];
+        workspace.strips[0].window_groups.push(StateGroup {
+            id: 200,
+            width: StateWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: 201,
+                title: "Chat".into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Chat".into()),
+                    label: "Chat".into(),
+                },
+            }],
+            active_tab: 201,
+            focus_history: Vec::new(),
+        });
+        workspace
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+        drop(tree);
+    }
+    chrome.borrow_mut().bump();
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    assert_eq!(
+        host.followed_tab, None,
+        "the live row has not adopted the target yet"
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(1));
+    assert_eq!(calls.borrow().as_slice(), &[(room, Some("peer@77".into()))]);
+
+    host.resync_strips_from_tree();
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip),
+        Some(200)
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    assert_eq!(host.followed_tab, Some(201));
+}
+
+#[test]
+fn follow_activates_the_peers_strip_as_well_as_its_group() {
+    let mut tree = one_group_seed();
+    let workspace = tree.desktop.workspaces[0].id;
+    let mut target = tree.desktop.workspaces[0].strips[0].clone();
+    target.id = StripId::new();
+    target.window_groups[0].id = 200;
+    target.window_groups[0].tabs[0].id = 201;
+    target.window_groups[0].active_tab = 201;
+    let target_strip = target.id;
+    tree.desktop.workspaces[0].strips.push(target);
+    tree.desktop.active_group.insert(target_strip, 200);
+    tree.desktop.workspaces[0]
+        .collaborators
+        .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_strip.get(&workspace),
+        Some(&target_strip)
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_tab, Some(201));
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+}
+
+#[test]
+fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves() {
+    for interruption in [
+        "close",
+        "disconnect",
+        "focus-left",
+        "session-replaced",
+        "local-focus",
+    ] {
+        let tree = cross_app_follow_tree();
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        let room = tree.desktop.workspaces[0].room;
+        let fanout = std::sync::Arc::new(crate::shell::collab_broker::FanoutState::new());
+        let dispatcher = crate::shell::collab_broker::SessionFollowDispatcher::new(
+            std::sync::Arc::clone(&fanout),
+        );
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Separate room subscriptions exercise the real dispatcher used by
+        // every local app; a third room must never receive this relationship.
+        let subscriptions: Vec<_> = [room.to_string(), room.to_string(), "other-room".into()]
+            .into_iter()
+            .enumerate()
+            .map(|(app, subscribed_room)| {
+                let events = std::sync::Arc::clone(&events);
+                fanout.subscribe_rooms(
+                    vec![subscribed_room],
+                    Box::new(move |event, _| {
+                        if let ui::collaboration::CollabEvent::FollowChanged { peer_id } = event {
+                            events.lock().unwrap().push((app, peer_id.clone()));
+                        }
+                    }),
+                )
+            })
+            .collect();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+            dispatcher.set(&room.to_string(), target);
+        }));
+        host.set_followed_peer(Some("ada".into()));
+        assert_eq!(
+            chrome.borrow().tree().desktop.active_group_for(strip),
+            Some(200)
+        );
+        {
+            let mut state = chrome.borrow_mut();
+            // The same remote session moves from Chat into Terminal.
+            state.tree_mut().desktop.workspaces[0].collaborators[0].active_tab = Some(1);
+            state.bump();
+        }
+        assert!(host.reconcile_followed_peer());
+        assert_eq!(
+            chrome.borrow().tree().desktop.active_group_for(strip),
+            Some(100)
+        );
+        {
+            let mut state = chrome.borrow_mut();
+            match interruption {
+                "disconnect" => assert!(state.tree_mut().retire_session(77)),
+                "focus-left" => {
+                    state.tree_mut().desktop.workspaces[0].collaborators[0].active_tab = None;
+                }
+                "session-replaced" => {
+                    state.tree_mut().desktop.workspaces[0].collaborators[0].session = Some(88);
+                }
+                "local-focus" => state.focus_tab(tree.desktop.active, strip, 200, 201),
+                _ => state.tree_mut().desktop.workspaces[0].strips[0].window_groups[0]
+                    .tabs
+                    .clear(),
+            }
+            state.bump();
+        }
+        assert!(host.reconcile_followed_peer());
+        assert!(host.followed_peer.is_none());
+        assert!(host.followed_room.is_none());
+        assert_eq!(host.follow_stop_rect, Rect::ZERO);
+        let received = events.lock().unwrap();
+        for app in [0, 1] {
+            assert_eq!(
+                received
+                    .iter()
+                    .filter(|(id, _)| *id == app)
+                    .map(|(_, peer)| peer.clone())
+                    .collect::<Vec<_>>(),
+                vec![Some("peer@77".into()), None],
+                "each app releases the old authenticated session"
+            );
+        }
+        assert!(!received.iter().any(|(id, _)| *id == 2));
+        // A reconnect or replacement tab cannot resume the released relationship.
+        drop(received);
+        {
+            let mut state = chrome.borrow_mut();
+            state.tree_mut().desktop.workspaces[0].collaborators =
+                vec![Collaborator::with_active_tab("ada", "Ada", 201).with_session(88)];
+            state.bump();
+        }
+        assert!(!host.reconcile_followed_peer());
+        assert_eq!(events.lock().unwrap().len(), 4);
+        drop(subscriptions);
+    }
+}
+
+fn cross_app_follow_tree() -> WorkspaceTree {
+    let mut tree = one_group_seed();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .push(StateGroup {
+            id: 200,
+            width: StateWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: 201,
+                title: "Chat".into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Chat".into()),
+                    label: "Chat".into(),
+                },
+            }],
+            active_tab: 201,
+            focus_history: Vec::new(),
+        });
+    tree.desktop.workspaces[0]
+        .collaborators
+        .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+    tree
 }

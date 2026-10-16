@@ -3,11 +3,11 @@
 //!
 //! For each frame: synthesise a source RGBA frame (moving text stamp,
 //! bouncing shapes, rotating gradient); feed it through the production
-//! [`shell::network::encoder::VideoEncoder`] in the codec a share would
-//! negotiate on this machine; push the access unit through a
-//! [`frame_link::FrameLink`] shim configured with
-//! `--latency-ms`/`--throughput-kbps`; drain the shim and feed anything
-//! ready into the production [`shell::network::decoder::VideoDecoder`];
+//! [`tilo_callstream::VideoEncoder`] in the codec a share would negotiate on
+//! this machine; push the access unit through a [`frame_link::FrameLink`]
+//! shim configured with `--latency-ms`/`--throughput-kbps`; drain the shim
+//! and feed anything ready into the production
+//! [`tilo_callstream::surface_decoder::VideoDecoder`];
 //! composite source-on-left + decoded-on-right into a 2W×H canvas;
 //! encode the composite via a second encoder and mux it into an MP4 with
 //! the compositor's recording muxer.
@@ -45,9 +45,10 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
-use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
-use shell::network::decoder::VideoDecoder;
-use shell::network::encoder::VideoEncoder;
+use tilo_callstream::VideoEncoder;
+use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
+use tilo_callstream::surface_decoder::VideoDecoder;
+use tilo_lock::MutexRecover as _;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
@@ -226,16 +227,9 @@ struct SpanStats {
     count: u64,
 }
 
-/// Lock `m`, recovering the inner value on poison rather than panicking.
-/// This is a best-effort latency profiler; a stats read/write racing a
-/// panic elsewhere is not worth taking the whole process down for.
-fn lock_profile<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 impl ProfileLayer {
     fn snapshot(&self) -> Vec<(String, SpanStats)> {
-        let inner = lock_profile(&self.inner);
+        let inner = self.inner.lock_recover();
         inner
             .per_span
             .iter()
@@ -249,7 +243,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_enter(&self, id: &span::Id, _ctx: Context<'_, S>) {
-        let mut inner = lock_profile(&self.inner);
+        let mut inner = self.inner.lock_recover();
         inner.entered_at.insert(id.into_u64(), Instant::now());
     }
     #[allow(
@@ -266,11 +260,11 @@ where
         // Two short, separate critical sections rather than one held across
         // both the removal and the entry update — each lock/unlock pairs
         // tightly with the map operation it protects.
-        let entered = lock_profile(&self.inner).entered_at.remove(&key);
+        let entered = self.inner.lock_recover().entered_at.remove(&key);
         if let Some(entered) = entered {
             let dur = now.saturating_duration_since(entered);
             if let Some(name) = name {
-                let mut inner = lock_profile(&self.inner);
+                let mut inner = self.inner.lock_recover();
                 let entry = inner.per_span.entry(name).or_default();
                 entry.total_ns = entry.total_ns.saturating_add(dur.as_nanos());
                 entry.count = entry.count.saturating_add(1);
@@ -644,11 +638,6 @@ struct CompositeRenderer {
     canvas_w: u32,
     canvas_h: u32,
     header_h: u32,
-    #[allow(
-        dead_code,
-        reason = "retained for parity with the layout math; compose fixes the footer text relative to header_h + src_h"
-    )]
-    footer_h: u32,
     out: Vec<u8>,
     text: TextPainter,
     header_left: String,
@@ -676,7 +665,6 @@ impl CompositeRenderer {
             canvas_w,
             canvas_h,
             header_h,
-            footer_h,
             out,
             text: TextPainter::new(Family::SansSerif),
             header_left,
@@ -890,76 +878,6 @@ fn format_footer(
     )
 }
 
-/// A minimal H.264 Annex-B parser: chops a `Vec<u8>` back into
-/// individual NAL units so the shim can throttle at the correct
-/// granularity.
-///
-/// The encoder emits Annex-B (start code `00 00 00 01` or `00 00 01`);
-/// splitting at start codes and re-emitting them keeps the bytes
-/// bit-identical for the decoder.
-///
-/// Not currently called from the demo — the whole per-frame NAL blob is
-/// pushed into the shim as one payload so the throttle sees a realistic
-/// per-frame packet size (real streaming stacks bundle SPS+PPS+IDR
-/// together on keyframes). Kept for downstream callers wanting a
-/// finer-grained throttle.
-#[allow(
-    dead_code,
-    reason = "kept for callers wanting a per-NAL throttle; the demo pushes whole access units"
-)]
-fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    let starts = find_start_codes(nalus);
-    for w in starts.windows(2) {
-        // `windows(2)` always yields a length-2 slice; the pattern match
-        // (rather than `w[0]`/`w[1]`) expresses that to the compiler too.
-        if let [a, b] = w
-            && let Some(chunk) = nalus.get(*a..*b)
-        {
-            out.push(chunk.to_vec());
-        }
-    }
-    if let Some(&last) = starts.last()
-        && let Some(chunk) = nalus.get(last..)
-    {
-        out.push(chunk.to_vec());
-    }
-    // If we found no start codes, the whole slice is one blob.
-    if out.is_empty() && !nalus.is_empty() {
-        out.push(nalus.to_vec());
-    }
-    out
-}
-
-#[allow(dead_code, reason = "only reached through split_annex_b")]
-fn find_start_codes(bytes: &[u8]) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut i: usize = 0;
-    while bytes.get(i.saturating_add(3)).is_some() {
-        let b0 = bytes.get(i).copied();
-        let b1 = bytes.get(i.saturating_add(1)).copied();
-        let b2 = bytes.get(i.saturating_add(2)).copied();
-        let b3 = bytes.get(i.saturating_add(3)).copied();
-        if b0 == Some(0) && b1 == Some(0) {
-            if b2 == Some(1) {
-                out.push(i);
-                i = i.saturating_add(3);
-                continue;
-            }
-            // The `i + 3 < bytes.len()` re-check from the original is
-            // implied by the `while` guard above (`i` hasn't moved since),
-            // so it's dropped rather than re-expressed.
-            if b2 == Some(0) && b3 == Some(1) {
-                out.push(i);
-                i = i.saturating_add(4);
-                continue;
-            }
-        }
-        i = i.saturating_add(1);
-    }
-    out
-}
-
 /// Installs the tracing subscriber (env-filter controlled, `trace` by
 /// default) with a [`ProfileLayer`] wired in, and returns the shared
 /// per-span accumulator so `main` can later hand it to
@@ -972,7 +890,7 @@ fn init_tracing() -> Arc<Mutex<ProfileInner>> {
         // nothing else touches it yet, so `None` here can't happen in
         // practice; `get_or_insert_with` still gives a real fallback
         // (a fresh layer) instead of an `unwrap`.
-        let mut slot = lock_profile(&profile_layer);
+        let mut slot = profile_layer.lock_recover();
         slot.get_or_insert_with(ProfileLayer::default).inner.clone()
     };
     // Build a `ProfileLayer` variant referencing the shared `Arc` so it
@@ -1124,20 +1042,22 @@ impl Pipeline {
 
         // Encode the source with the production encoder — same code
         // path SharedFlatpakSession uses.
-        let nalus = self
+        let units = self
             .send_encoder
             .encode(src)
             .map_err(|e| format!("send_encoder.encode: {e:?}"))?;
         self.sent_frames = self.sent_frames.saturating_add(1);
 
-        // Push the full per-frame NAL blob as a single shim payload — the
+        // Push each frame's full NAL blob as a single shim payload — the
         // throttle sees per-frame granularity, matching how a real streaming
         // path bundles keyframe SPS+PPS+IDR together. Splitting into
         // individual NALs would let the throttle pace within a frame,
         // understating real burst behaviour.
         let now = Instant::now();
-        let size = nalus.len() as u64;
-        self.shim.push(now, size, nalus);
+        for unit in units {
+            let size = unit.data.len() as u64;
+            self.shim.push(now, size, unit.data);
+        }
 
         // Drain everything the shim has decided is ready, feeding each
         // frame's access unit into the decoder in emitted order. Units
@@ -1153,7 +1073,7 @@ impl Pipeline {
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {
                 // Post-HDR decoder now returns typed DecodedPixels; the
                 // demo only handles SDR RGBA, so extract those bytes.
-                if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                if let tilo_callstream::surface_decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                     self.last_decoded = Some(rgba);
                 }
                 self.decoded_frames = self.decoded_frames.saturating_add(1);
@@ -1177,11 +1097,13 @@ impl Pipeline {
             .compose(src, self.last_decoded.as_deref(), &footer);
 
         // Encode the composite via the second encoder and mux it.
-        let composite_nalus = self
+        let composite_units = self
             .composite_encoder
             .encode(composite_rgba)
             .map_err(|e| format!("composite_encoder.encode: {e:?}"))?;
-        self.muxer.write_access_unit(&composite_nalus)?;
+        for unit in composite_units {
+            self.muxer.write_access_unit(&unit.data)?;
+        }
 
         Ok(now.elapsed())
     }
@@ -1201,7 +1123,7 @@ impl Pipeline {
             .unwrap_or_else(Instant::now);
         for nal_blob in self.shim.drain_ready(flush_now) {
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {
-                if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                if let tilo_callstream::surface_decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                     self.last_decoded = Some(rgba);
                 }
                 self.decoded_frames = self.decoded_frames.saturating_add(1);
@@ -1211,7 +1133,7 @@ impl Pipeline {
 }
 
 fn main() -> Result<(), String> {
-    // Install the tracing subscriber early so every span from the shell
+    // Install the tracing subscriber early so every span from the
     // encoder/decoder/shim is captured.
     let inner = init_tracing();
     let Some(args) = parse_args().inspect_err(|_e| {
@@ -1271,7 +1193,15 @@ fn main() -> Result<(), String> {
     let shim_stats = pipeline.shim.stats();
     let started = pipeline.started;
 
-    // Finish the MP4 (writes its trailer).
+    // Mux the composite frames still in the encoder, then finish the MP4
+    // (writes its trailer).
+    let tail = pipeline
+        .composite_encoder
+        .finish()
+        .map_err(|e| format!("composite_encoder.finish: {e:?}"))?;
+    for unit in tail {
+        pipeline.muxer.write_access_unit(&unit.data)?;
+    }
     pipeline.muxer.finish()?;
 
     let total_wall = started.elapsed();

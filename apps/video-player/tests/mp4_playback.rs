@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ui::time::Duration;
 
 use media::gst::prelude::*;
-use ui::widget::Widget;
-use video_player::PlayerApp;
-use video_player::actions::{OPERATION_TYPE, PlayerOperation};
+use ui::framework::testing::TestApp;
+use video_player::actions::VideoEffect;
+use video_player::{PlayerApp, VideoPlayerShell};
 
 const CHILD_ROOT: &str = "TILO_VIDEO_MP4_TEST_ROOT";
 
@@ -27,33 +27,26 @@ fn frame_pts(app: &PlayerApp) -> Option<u64> {
         .map(|frame| frame.pts_ms)
 }
 
-fn invoke(app: &mut PlayerApp, doc: &mut automerge::AutoCommit, operation: &PlayerOperation) {
-    assert!(matches!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                OPERATION_TYPE,
-                &serde_json::to_vec(operation).unwrap()
-            ),
-            doc,
-            &automerge::ROOT
-        )
-        .expect("production playback action"),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
+/// Read the player the app's window shows.
+fn player<T>(app: &mut TestApp<VideoPlayerShell>, read: impl FnOnce(&mut PlayerApp) -> T) -> T {
+    app.with_surface::<PlayerApp, T>(read)
+        .expect("the window shows the player")
+}
+
+/// Invoke `effect` through the app's door, as its controls and agents do.
+fn invoke(app: &mut TestApp<VideoPlayerShell>, effect: &VideoEffect) {
+    app.effect(effect).expect("production playback effect");
 }
 
 fn wait_for(
-    app: &mut PlayerApp,
-    doc: &mut automerge::AutoCommit,
+    app: &mut TestApp<VideoPlayerShell>,
     description: &str,
     ready: impl Fn(&PlayerApp) -> bool,
 ) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        app.sync(doc, &automerge::ROOT);
-        if ready(app) {
+        app.settle();
+        if player(app, |player| ready(player)) {
             return;
         }
         assert!(
@@ -72,10 +65,7 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         exercise_app(Path::new(&root));
         return;
     }
-    let nonce = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = ui::time::try_unix_now_ns().unwrap();
     let root =
         std::env::temp_dir().join(format!("tilo MP4 日本語 #%-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
@@ -112,20 +102,23 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
 }
 
 fn exercise_app(root: &Path) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+    let fixture = Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
     let sample = root.join("Moving picture and silent audio.mp4");
     std::fs::copy(fixture, &sample).expect("copy the H.264/AAC fixture");
-    let mut app = PlayerApp::new().with_open_path(&sample);
-    let engine = app.player().engine().expect("production engine");
-    assert!(
-        engine.is_real_decode(),
-        "GStreamer is required; no synthesized fallback"
-    );
+    let mut app = TestApp::<VideoPlayerShell>::launched(&[&sample.display().to_string()])
+        .expect("the app launches on the sample");
+    let sink = player(&mut app, |player| {
+        let engine = player.player().engine().expect("production engine");
+        assert!(
+            engine.is_real_decode(),
+            "GStreamer is required; no synthesized fallback"
+        );
+        engine.audio_sink().expect("production audio output")
+    });
 
     // Observe actual decoded PCM entering the production audio sink. Track
     // metadata alone would still pass if AAC were unsupported and dropped.
     // The fixture encodes silence, so this never plays an audible test tone.
-    let sink = engine.audio_sink().expect("production audio output");
     let pad = sink.static_pad("sink").expect("audio sink input");
     let audio_buffers = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&audio_buffers);
@@ -143,64 +136,56 @@ fn exercise_app(root: &Path) {
         })
         .expect("observe decoded AAC buffers");
 
-    let mut doc = automerge::AutoCommit::new();
-    wait_for(
-        &mut app,
-        &mut doc,
-        "H.264 pictures and decoded AAC audio",
-        |app| {
-            frame_pts(app).is_some_and(|pts| pts >= 160)
-                && audio_buffers.load(Ordering::Relaxed) >= 3
-                && app.player().duration_ms() >= 3_900
-        },
-    );
-    let frame = app.player().latest_frame().unwrap();
-    assert_eq!((frame.width, frame.height), (160, 120));
-    assert_eq!(
-        app.player()
-            .engine()
-            .unwrap()
-            .latest_frame()
-            .unwrap()
-            .rgba
-            .len(),
-        160 * 120 * 4
-    );
-    assert_eq!(app.player().engine().unwrap().audio_tracks().len(), 1);
-    assert!(app.player().is_playing());
+    wait_for(&mut app, "H.264 pictures and decoded AAC audio", |app| {
+        frame_pts(app).is_some_and(|pts| pts >= 160)
+            && audio_buffers.load(Ordering::Relaxed) >= 3
+            && app.player().duration_ms() >= 3_900
+    });
+    player(&mut app, |app| {
+        let frame = app.player().latest_frame().unwrap();
+        assert_eq!((frame.width, frame.height), (160, 120));
+        assert_eq!(
+            app.player()
+                .engine()
+                .unwrap()
+                .latest_frame()
+                .unwrap()
+                .rgba
+                .len(),
+            160 * 120 * 4
+        );
+        assert_eq!(app.player().engine().unwrap().audio_tracks().len(), 1);
+        assert!(app.player().is_playing());
+    });
 
-    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
-    assert!(!app.player().is_playing());
-    invoke(&mut app, &mut doc, &PlayerOperation::SeekSeconds(2.0));
+    invoke(&mut app, &VideoEffect::TogglePlayback);
+    assert!(!player(&mut app, |app| app.player().is_playing()));
+    invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 });
     wait_for(
         &mut app,
-        &mut doc,
         "paused frame at the requested seek position",
         |app| frame_pts(app).is_some_and(|pts| (1_960..=2_040).contains(&pts)),
     );
-    let paused_pts = frame_pts(&app).unwrap();
+    let paused_pts = player(&mut app, |app| frame_pts(app).unwrap());
     let hold_until = ui::time::now()
         .checked_add(Duration::from_millis(200))
         .expect("hold deadline is representable");
     while ui::time::now() < hold_until {
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(frame_pts(&app).unwrap(), paused_pts);
-        assert!(!app.player().is_playing());
+        app.settle();
+        player(&mut app, |app| {
+            assert_eq!(frame_pts(app).unwrap(), paused_pts);
+            assert!(!app.player().is_playing());
+        });
         std::thread::sleep(Duration::from_millis(10));
     }
 
     let audio_before_resume = audio_buffers.load(Ordering::Relaxed);
-    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
-    wait_for(
-        &mut app,
-        &mut doc,
-        "resumed picture and audio progression",
-        |app| {
-            app.player().is_playing()
-                && frame_pts(app).is_some_and(|pts| pts >= paused_pts.saturating_add(160))
-                && audio_buffers.load(Ordering::Relaxed) > audio_before_resume
-        },
-    );
+    invoke(&mut app, &VideoEffect::TogglePlayback);
+    wait_for(&mut app, "resumed picture and audio progression", |app| {
+        app.player().is_playing()
+            && frame_pts(app).is_some_and(|pts| pts >= paused_pts.saturating_add(160))
+            && audio_buffers.load(Ordering::Relaxed) > audio_before_resume
+    });
     pad.remove_probe(probe);
     drop(pad);
     drop(sink);

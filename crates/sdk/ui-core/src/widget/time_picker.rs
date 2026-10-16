@@ -11,28 +11,17 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
 
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
@@ -109,6 +98,8 @@ pub struct TimePicker {
     minute_rect: Rect,
     second_rect: Rect, // ZERO when seconds == None
     last_cursor: Point,
+    /// The pointer is over the picker, so the arrow under it lifts.
+    pointer_inside: bool,
     is_focused: bool,
     /// Which cell consumes the next digit key. Set by clicking a
     /// value cell or by Tab cycling. `None` while no cell is in
@@ -140,6 +131,7 @@ impl TimePicker {
             minute_rect: Rect::ZERO,
             second_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            pointer_inside: false,
             is_focused: false,
             focused_cell: None,
             digit_buffer: String::new(),
@@ -322,11 +314,6 @@ impl TimePicker {
         self.publish_local_state();
     }
 
-    pub fn set_seconds(&mut self, seconds: Option<u8>) {
-        self.seconds = seconds.map(|seconds| seconds.min(MINSEC_MAX));
-        self.publish_local_state();
-    }
-
     pub fn set_value(&mut self, value: TimeValue) {
         self.apply_value(value.normalized());
         self.publish_local_state();
@@ -431,38 +418,50 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    fn draw_chevron(
+    /// One step arrow: a chevron from the icon set, lifted while the
+    /// pointer is over it like any quiet control.
+    fn draw_step_arrow(
         scene: &mut Scene,
         transform: Affine,
+        theme: &Theme,
         cell: Rect,
-        color: vello::peniko::Color,
+        hovered: bool,
         up: bool,
     ) {
-        // Triangle inscribed in the central ~50% of the cell, keeping the
-        // hit area larger than the visible arrow.
-        let cx = cell.center().x;
-        let cy = cell.center().y;
-        let w = cell.width() * 0.35;
-        let h = cell.height() * 0.30;
-        let mut path = BezPath::new();
-        if up {
-            path.move_to((cx - w, cy + h / 2.0));
-            path.line_to((cx + w, cy + h / 2.0));
-            path.line_to((cx, cy - h / 2.0));
-        } else {
-            path.move_to((cx - w, cy - h / 2.0));
-            path.line_to((cx + w, cy - h / 2.0));
-            path.line_to((cx, cy + h / 2.0));
+        let colors = &theme.tokens.colors;
+        if hovered {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.intent.selection_hover,
+                None,
+                &RoundedRect::from_rect(cell, f64::from(theme.tokens.radii.control)),
+            );
         }
-        path.close_path();
-        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &path);
+        let edge = f64::from(theme.tokens.metrics.icon_sm);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(cell.center(), (edge, edge)),
+            if up {
+                crate::icons::Icon::ChevronUp
+            } else {
+                crate::icons::Icon::ChevronDown
+            },
+            if hovered {
+                colors.text_primary
+            } else {
+                theme.text_dim
+            },
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 }
 
 impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -481,27 +480,17 @@ impl Widget for TimePicker {
         // Total width = spinner + colon + spinner [+ colon + spinner]
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(total_w),
-                height: Dimension::length(PICKER_HEIGHT),
-            },
+        let style = Style {
+            size: Size::from_lengths(total_w, PICKER_HEIGHT),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        ));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -513,8 +502,9 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.sm);
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
+        // Each value cell is a control: the control radius.
+        let radius = f64::from(theme.tokens.radii.control);
+        let text_style = theme.text(TextRole::Heading).numeric();
 
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
@@ -551,52 +541,64 @@ impl Widget for TimePicker {
             scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
             let label = format!("{value:02}");
-            let (w, h) = text_renderer.measure(&label, text_size, None);
+            let (w, h) = text_renderer.measure_style(&label, None, &text_style);
             let tx = value_rect.x0 + (value_rect.width() - f64::from(w)) / 2.0;
             let ty = value_rect.y0 + (value_rect.height() - f64::from(h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                text_size,
                 colors.text_primary,
-                translated(transform, tx, ty),
+                transform.pre_translate((tx, ty).into()),
                 None,
+                &text_style,
             );
 
-            Self::draw_chevron(scene, transform, up_rect, colors.text_dim, true);
-            Self::draw_chevron(scene, transform, down_rect, colors.text_dim, false);
+            let hovered = |rect: Rect| self.pointer_inside && rect.contains(self.last_cursor);
+            Self::draw_step_arrow(scene, transform, theme, up_rect, hovered(up_rect), true);
+            Self::draw_step_arrow(
+                scene,
+                transform,
+                theme,
+                down_rect,
+                hovered(down_rect),
+                false,
+            );
         }
 
         // Colons at the same point size as the value text so baselines line up.
         let between_h_m_x = f64::midpoint(self.hour_rect.x1, self.minute_rect.x0);
         let centre_y = self.rect.center().y;
         let colon = ":";
-        let (cw, ch) = text_renderer.measure(colon, text_size, None);
-        text_renderer.draw_text(
+        let (cw, ch) = text_renderer.measure_style(colon, None, &text_style);
+        text_renderer.draw_style(
             scene,
             colon,
-            text_size,
             colors.text_dim,
-            translated(
-                transform,
-                between_h_m_x - f64::from(cw) / 2.0,
-                centre_y - f64::from(ch) / 2.0,
+            transform.pre_translate(
+                (
+                    between_h_m_x - f64::from(cw) / 2.0,
+                    centre_y - f64::from(ch) / 2.0,
+                )
+                    .into(),
             ),
             None,
+            &text_style,
         );
         if self.seconds.is_some() {
             let between_m_s_x = f64::midpoint(self.minute_rect.x1, self.second_rect.x0);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 colon,
-                text_size,
                 colors.text_dim,
-                translated(
-                    transform,
-                    between_m_s_x - f64::from(cw) / 2.0,
-                    centre_y - f64::from(ch) / 2.0,
+                transform.pre_translate(
+                    (
+                        between_m_s_x - f64::from(cw) / 2.0,
+                        centre_y - f64::from(ch) / 2.0,
+                    )
+                        .into(),
                 ),
                 None,
+                &text_style,
             );
         }
     }
@@ -604,9 +606,10 @@ impl Widget for TimePicker {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
+                self.pointer_inside = self.rect.contains(self.last_cursor);
             }
+            WindowEvent::CursorLeft { .. } => self.pointer_inside = false,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -668,18 +671,19 @@ impl Widget for TimePicker {
                 .with_action_target(&self.id)
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                ),
         )
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
@@ -825,7 +829,7 @@ impl TimePicker {
             Key::Named(NamedKey::Backspace) => {
                 // An empty buffer resets the cell value to zero.
                 if let Some(cell) = self.focused_cell {
-                    self.digit_buffer.pop();
+                    crate::text_edit::delete_last_grapheme(&mut self.digit_buffer);
                     let v: u8 = self.digit_buffer.parse().unwrap_or(0);
                     match cell {
                         TimeCell::Hours => self.hours = v,
@@ -927,44 +931,13 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, dy),
-            phase: winit::event::TouchPhase::Moved,
-        }
-    }
-
-    /// Drive an event through the picker with default scaffolding.
-    fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        tp.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::mouse_wheel(0.0, dy)
     }
 
     /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
@@ -1055,14 +1028,7 @@ mod tests {
 
             let centre = tp.hour_rect.center();
             dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-            dispatch(
-                &mut tp,
-                &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut tp, &crate::synthetic_input::mouse_press());
             assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
         }
 
@@ -1137,11 +1103,11 @@ mod tests {
             let mut left = TimePicker::from_state(&state);
             let mut right = TimePicker::from_state(&state);
             let expected = TimeValue::new(16, 45).with_seconds(12);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_value(expected);
             assert_eq!(state.with(|value| *value), expected);
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.value(), expected);
         }
 
@@ -1166,7 +1132,8 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("21:07:09".into()),
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);
@@ -1175,7 +1142,8 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("24:00".into()),
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);

@@ -12,11 +12,10 @@
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
-use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
@@ -47,10 +46,6 @@ pub const PAN_SLOP: f64 = 4.0;
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 /// Inset (screen px) of the scrollbar from the viewport edge.
 const SCROLLBAR_INSET: f64 = 3.0;
-/// Largest per-frame `dt` (seconds) honoured by drag inertia bookkeeping;
-/// the viewport itself has no easing, but the field is clamped for parity
-/// with the animated widgets in case a future smooth-zoom is added.
-const MAX_FRAME_DT: f64 = 0.1;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64`
 /// matrix multiply-add with no overflow trap, so it cannot panic regardless
@@ -112,10 +107,6 @@ pub struct ViewportState {
     /// In-progress drag-to-pan, if any. Records the screen point + scroll
     /// offsets captured at press so motion maps 1:1.
     pan: Option<PanAnchor>,
-    /// Wall-clock anchor of the last reduced frame; clamped delta is
-    /// available to hosts that layer their own motion on top. Optional so
-    /// the first frame doesn't see a huge delta.
-    last_tick: Option<Instant>,
     /// Shared vertical-bar interaction model (thumb drag + track paging +
     /// hover). See [`crate::widget::scrollbar`]. Pressing the thumb drags
     /// it directly rather than pan-grabbing the content beneath it.
@@ -162,7 +153,6 @@ impl ViewportState {
             align_x: SmallContentAlign::Center,
             align_y: SmallContentAlign::Start,
             pan: None,
-            last_tick: None,
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
         }
@@ -447,12 +437,21 @@ impl ViewportState {
         self.clamp_scroll();
     }
 
-    /// Reset to 100 % zoom, scrolled to the top-left. An alternative Ctrl+0
-    /// behaviour for hosts that prefer true 1:1 over fit.
-    pub fn reset_to_actual_size(&mut self) {
-        self.zoom = (1.0_f64).clamp(self.min_zoom, self.max_zoom);
-        self.scroll_x = 0.0;
-        self.scroll_y = 0.0;
+    /// Zoom so `area` (content units) fills the viewport, honouring
+    /// padding, and centre it as far as the scroll range allows: the "zoom to
+    /// selection" path. A degenerate area keeps the zoom and only centres.
+    pub fn zoom_to_rect(&mut self, area: Rect) {
+        let avail_w = self.rect.width() - 2.0 * self.pad;
+        let avail_h = self.rect.height() - 2.0 * self.pad;
+        if area.width() > 0.0 && area.height() > 0.0 && avail_w > 0.0 && avail_h > 0.0 {
+            self.zoom = (avail_w / area.width())
+                .min(avail_h / area.height())
+                .clamp(self.min_zoom, self.max_zoom);
+        }
+        let centre = area.center();
+        let view = self.rect.center();
+        self.scroll_x = self.rect.x0 + self.pad + centre.x * self.zoom - view.x;
+        self.scroll_y = self.rect.y0 + self.pad + centre.y * self.zoom - view.y;
         self.clamp_scroll();
     }
 
@@ -601,19 +600,6 @@ impl ViewportState {
             },
             _ => false,
         }
-    }
-
-    /// Record a frame tick and return the clamped seconds since the last
-    /// call. The viewport has no easing of its own, but exposing the clamped
-    /// delta lets a host layer smooth-scroll / kinetic motion on top without
-    /// re-deriving the clock. The first call returns `0.0`.
-    pub fn frame_dt(&mut self) -> f64 {
-        let now = crate::time::now();
-        let dt = self.last_tick.map_or(0.0, |t| {
-            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
-        });
-        self.last_tick = Some(now);
-        dt
     }
 
     // ---- scrollbar geometry -----------------------------------------
@@ -834,6 +820,28 @@ pub struct DocumentViewport {
     rect: Rect,
     dirty: bool,
     layout_theme: Theme,
+    /// What the frame being drawn shows of the content, and what the last
+    /// frame the host presented showed: a pan between the two that changed
+    /// nothing else is offered to the host as a copy
+    /// ([`crate::scroll_copy::offer`]).
+    shown_drawing: Option<ViewShown>,
+    shown_presented: Option<ViewShown>,
+    /// Something besides a pan changed what the frame being drawn paints
+    /// (`dirty` is cleared by the draw itself, before the host collects
+    /// damage).
+    repaint: bool,
+}
+
+/// Where a frame shows the content: where its origin lands and at what
+/// zoom, the viewport, the content's size, and the transform it is drawn
+/// with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewShown {
+    origin: Point,
+    zoom: f64,
+    rect: Rect,
+    content: (f64, f64),
+    transform: Affine,
 }
 
 impl DocumentViewport {
@@ -851,6 +859,9 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
+            shown_drawing: None,
+            shown_presented: None,
+            repaint: true,
         }
     }
 
@@ -870,6 +881,9 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
+            shown_drawing: None,
+            shown_presented: None,
+            repaint: true,
         }
     }
 
@@ -914,6 +928,21 @@ impl DocumentViewport {
         &mut self.state
     }
 
+    /// How far the content moved on screen since the last presented frame,
+    /// and where this frame shows it, when only a pan moved it: the same
+    /// zoom, viewport, content size and transform. A draw closure's content
+    /// says nothing of what changed in it, so only a wrapped widget offers.
+    fn panned_since_presented(&self) -> Option<(ViewShown, Vec2)> {
+        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
+        let quiet = matches!(self.content, Content::Widget(_))
+            && drawing.zoom.to_bits() == presented.zoom.to_bits()
+            && drawing.rect == presented.rect
+            && drawing.content == presented.content
+            && drawing.transform == presented.transform
+            && drawing.origin != presented.origin;
+        quiet.then(|| (drawing, drawing.origin - presented.origin))
+    }
+
     /// Lay the wrapped child widget out at its own (content-space) size, so
     /// it has rects for hit-testing. Cheap; only runs for the widget form.
     fn place_child(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
@@ -955,7 +984,7 @@ impl DocumentViewport {
 }
 
 impl Widget for DocumentViewport {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Content::Widget(c) = &mut self.content {
             c.sync(state, path);
         }
@@ -975,25 +1004,11 @@ impl Widget for DocumentViewport {
             self.state.pad = f64::from(theme.tokens.spacing.s6);
         }
         self.layout_theme = theme.clone();
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
@@ -1016,6 +1031,14 @@ impl Widget for DocumentViewport {
             self.place_child(theme, text_renderer);
         }
         let content_xf = compose(transform, self.state.content_to_screen());
+        self.repaint |= self.state.is_panning() || self.state.scrollbar_dragging();
+        self.shown_drawing = Some(ViewShown {
+            origin: self.state.content_origin(),
+            zoom: self.state.zoom(),
+            rect: self.rect,
+            content: self.state.content_size(),
+            transform: crate::scroll_copy::on_screen(transform),
+        });
         match &mut self.content {
             Content::Widget(c) => c.draw(scene, content_xf, text_renderer, theme, presence),
             Content::Draw(draw) => draw(scene, content_xf, text_renderer, theme, self.rect),
@@ -1027,8 +1050,7 @@ impl Widget for DocumentViewport {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 // An active scrollbar thumb drag owns the move.
                 if self.state.drag_scrollbar(self.last_cursor) {
                     self.dirty = true;
@@ -1043,6 +1065,7 @@ impl Widget for DocumentViewport {
                 // Otherwise brighten the hovered thumb.
                 if self.state.update_scrollbar_hover(self.last_cursor) {
                     self.dirty = true;
+                    self.repaint = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1055,6 +1078,7 @@ impl Widget for DocumentViewport {
                     // the child and drag-to-pan beneath it.
                     if self.state.press_scrollbar(self.last_cursor) {
                         self.dirty = true;
+                        self.repaint = true;
                         *ctx.handled = true;
                         return;
                     }
@@ -1079,6 +1103,7 @@ impl Widget for DocumentViewport {
             } => {
                 if self.state.release_scrollbar() {
                     self.dirty = true;
+                    self.repaint = true;
                     *ctx.handled = true;
                     return;
                 }
@@ -1150,6 +1175,49 @@ impl Widget for DocumentViewport {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.state.is_panning() || self.state.scrollbar_dragging()
+    }
+
+    /// A pan offers the host a copy of what stays on screen: the bars'
+    /// tracks are what does not move with the content, and what changed in
+    /// the wrapped widget besides moving is its own damage, placed on
+    /// screen. Anything else repaints the viewport.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        let shown_changed = self.shown_drawing != self.shown_presented;
+        if !shown_changed && !self.repaint && !self.needs_redraw() {
+            return;
+        }
+        if let Some((shown, delta)) = self.panned_since_presented()
+            && let Content::Widget(child) = &self.content
+        {
+            let overlays: Vec<Rect> = [self.state.v_track(), self.state.h_track()]
+                .into_iter()
+                .flatten()
+                .map(|track| track.inflate(SCROLLBAR_INSET, SCROLLBAR_INSET))
+                .collect();
+            if crate::scroll_copy::offer(self, shown.rect, delta, overlays, shown.transform) {
+                let mut changed = Vec::new();
+                child.collect_damage(&mut changed);
+                let placed = self.state.content_to_screen();
+                regions.extend(
+                    changed
+                        .into_iter()
+                        .map(|rect| placed.transform_rect_bbox(rect).intersect(shown.rect))
+                        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+                );
+                return;
+            }
+        }
+        regions.push(self.rect);
+    }
+
+    fn mark_drawn(&mut self) {
+        // Not drawn this frame, what the screen shows where it lies is not
+        // known to be its content: the next pan repaints the viewport.
+        self.shown_presented = self.shown_drawing.take();
+        self.repaint = false;
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
 
     /// Hold the pointer while panning or dragging a scrollbar thumb so the
@@ -1236,17 +1304,9 @@ mod tests {
             );
         }
 
-        fn frame_dt_first_call_is_zero_then_positive() {
-            let mut v = kernel();
-            assert_eq!(v.frame_dt(), 0.0, "first frame has no delta");
-            std::thread::sleep(crate::time::Duration::from_millis(2));
-            assert!(v.frame_dt() > 0.0, "subsequent frame has a positive delta");
-        }
-
         retained_layout_keeps_the_active_theme_for_child_layout();
         default_gutter_and_scrollbar_thickness_equal_the_spacing_tokens();
         gutter_follows_the_theme_unless_a_host_pinned_it();
-        frame_dt_first_call_is_zero_then_positive();
     }
 
     /// Build a kernel with a 1000×1400 content in an 800×600 viewport at the
@@ -1624,4 +1684,23 @@ mod tests {
         press_in_content_area_is_not_a_bar();
         horizontal_thumb_drag_scrolls_x();
     }
+
+    /// Zooming to an area fills the viewport with it and centres it.
+    #[test]
+    fn zoom_to_rect_fills_and_centres_the_area() {
+        let mut v = kernel();
+        let area = Rect::new(400.0, 600.0, 600.0, 750.0);
+        v.zoom_to_rect(area);
+        let fit = ((800.0 - 2.0 * v.pad) / 200.0).min((600.0 - 2.0 * v.pad) / 150.0);
+        assert!((v.zoom() - fit).abs() < 1e-9, "{}", v.zoom());
+        let centre = v.content_point_to_screen(area.center());
+        assert!(
+            centre.distance(Point::new(400.0, 300.0)) < 1e-6,
+            "{centre:?}"
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "document_viewport_copy_tests.rs"]
+mod copy_tests;

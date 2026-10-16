@@ -6,12 +6,7 @@
 //! matches server-side.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -27,7 +22,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     protocol::{wl_compositor, wl_registry, wl_surface},
 };
 use wayland_protocols::wp::color_management::v1::client::{
@@ -35,8 +30,8 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_color_manager_v1::{
         self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
     },
-    wp_image_description_creator_icc_v1::{self, WpImageDescriptionCreatorIccV1},
-    wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
+    wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1,
+    wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 
@@ -85,29 +80,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<wl_compositor::WlCompositor, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &wl_compositor::WlCompositor,
-        _: wl_compositor::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_surface::WlSurface, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &wl_surface::WlSurface,
-        _: wl_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore wl_compositor::WlCompositor);
+delegate_noop!(ClientAppState: ignore wl_surface::WlSurface);
 
 impl Dispatch<WpColorManagerV1, ()> for ClientAppState {
     fn event(
@@ -142,29 +116,8 @@ impl Dispatch<WpColorManagerV1, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<WpImageDescriptionCreatorParamsV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &WpImageDescriptionCreatorParamsV1,
-        _: wp_image_description_creator_params_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<WpImageDescriptionCreatorIccV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &WpImageDescriptionCreatorIccV1,
-        _: wp_image_description_creator_icc_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore WpImageDescriptionCreatorParamsV1);
+delegate_noop!(ClientAppState: ignore WpImageDescriptionCreatorIccV1);
 
 impl Dispatch<WpImageDescriptionV1, ()> for ClientAppState {
     fn event(
@@ -185,17 +138,7 @@ impl Dispatch<WpImageDescriptionV1, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &wp_color_management_surface_v1::WpColorManagementSurfaceV1,
-        _: wp_color_management_surface_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore wp_color_management_surface_v1::WpColorManagementSurfaceV1);
 
 /// Pump the client → server → client round-trip until pending events
 /// settle: both sides flush and dispatch in a bounded loop.

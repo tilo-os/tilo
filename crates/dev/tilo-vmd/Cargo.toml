@@ -15,9 +15,14 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
+os-actions = { path = "../../system/os-actions" }
+launcher = { path = "../../packaging/launcher" }
+package-store = { path = "../../packaging/package-store" }
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
@@ -30,12 +35,22 @@ serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
+# Parses the slot user's package registry from a descriptor opened without following links.
+toml.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
+console-control = { path = "../../session/console-control" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 uuid.workspace = true
+zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The device test drives tilo-vm's own commands against this daemon.
+tilo-test-env = { path = "../test-env" }
+tilo-vm = { path = "../tilo-vm" }
 
 [[test]]
 name = "it"

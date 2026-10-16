@@ -38,8 +38,12 @@ impl XConnection {
     fn get_supported_hints(&self, root: xproto::Window) -> Vec<xproto::Atom> {
         let atoms = self.atoms();
         let supported_atom = atoms[_NET_SUPPORTED];
-        self.get_property(root, supported_atom, xproto::Atom::from(xproto::AtomEnum::ATOM))
-            .unwrap_or_else(|_| Vec::with_capacity(0))
+        self.get_property(
+            root,
+            supported_atom,
+            xproto::Atom::from(xproto::AtomEnum::ATOM),
+        )
+        .unwrap_or_else(|_| Vec::with_capacity(0))
     }
 
     #[allow(clippy::useless_conversion)]

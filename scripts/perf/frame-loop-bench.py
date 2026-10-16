@@ -40,6 +40,7 @@ appears on the operator's desktop. `--backend drm` needs a free TTY.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import signal
@@ -55,6 +56,34 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
+def required_load_client(shell_bin: Path, load: str) -> Path | None:
+    """A requested workload must exist before starting a compositor."""
+    if load == "none":
+        return None
+    client = shell_bin.parent / "tilo-loadclient"
+    if not client.is_file():
+        raise FileNotFoundError(f"Requested {load} load requires {client}")
+    return client
+
+
+def stop_process_group(proc: subprocess.Popen) -> None:
+    """Reap only the disposable session this runner started, including early failures."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=5)
+
+
 # --------------------------------------------------------------------------
 # trace parsing / statistics
 # --------------------------------------------------------------------------
@@ -62,21 +91,55 @@ REPO = Path(__file__).resolve().parents[2]
 # Column order is defined by `metrics::CSV_HEADER`; we read the header
 # rather than hard-coding indices so a new column can't silently shift
 # every number this script prints.
+TEXT_TRACE_COLUMNS = {"wake", "input_step", "paint_reasons", "paint_clients", "paint_animations"}
+REQUIRED_TRACE_COLUMNS = {
+    "start_us", "period_us", "input_us", "pump_us", "layout_us", "scene_us",
+    "submit_us", "clients_us", "sleep_us", "painted", "present_async",
+}
+
+
 def read_trace(path: Path) -> tuple[list[str], list[dict]]:
     rows: list[dict] = []
-    with path.open() as fh:
-        header = fh.readline().strip().split(",")
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(",")
-            if len(parts) != len(header):
-                continue
-            row = {}
-            for k, v in zip(header, parts):
-                row[k] = int(v) if v else None
-            rows.append(row)
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh, strict=True)
+        try:
+            header = next(reader, [])
+        except csv.Error:
+            raise ValueError("Malformed frame trace CSV header") from None
+        if not all(header) or len(set(header)) != len(header):
+            raise ValueError("Missing or duplicate frame trace columns")
+        missing = REQUIRED_TRACE_COLUMNS.difference(header)
+        if missing:
+            raise ValueError(f"Missing required frame trace columns: {', '.join(sorted(missing))}")
+        try:
+            for parts in reader:
+                if not parts:
+                    continue
+                if len(parts) != len(header):
+                    raise ValueError(
+                        f"Incomplete frame trace row {reader.line_num}: "
+                        f"expected {len(header)} fields, found {len(parts)}"
+                    )
+                row = {}
+                for key, value in zip(header, parts):
+                    if key in TEXT_TRACE_COLUMNS:
+                        row[key] = value
+                    elif not value and key in REQUIRED_TRACE_COLUMNS:
+                        raise ValueError(
+                            f"Missing required frame trace value for {key} at row {reader.line_num}"
+                        )
+                    else:
+                        try:
+                            row[key] = int(value) if value else None
+                        except ValueError:
+                            raise ValueError(
+                                f"Invalid numeric frame trace value for {key} at row {reader.line_num}"
+                            ) from None
+                rows.append(row)
+        except csv.Error:
+            raise ValueError(f"Malformed frame trace CSV at row {reader.line_num}") from None
+    if not rows:
+        raise ValueError("No frame trace samples were recorded")
     return header, rows
 
 
@@ -534,6 +597,7 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             f"no shell binary at {shell_bin}\n"
             f"build it first: .claude/tilo-tools/qbuild-wt build -p shell --bin shell --release"
         )
+    load_client = required_load_client(shell_bin, args.load)
     label = args.label or f"{args.backend}-{args.load}"
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
@@ -650,7 +714,6 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
         load_proc = None
         try:
             if not wait_for_socket(ctl_path, timeout=args.startup_timeout):
-                proc.kill()
                 sys.exit(
                     f"[bench] control socket never appeared; see {log}\n"
                     + log.read_text(errors="replace")[-3000:]
@@ -659,12 +722,9 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             if args.load != "none":
                 wl = wait_for_wayland_socket(log, timeout=5.0)
                 if wl is None:
-                    print("[bench] warning: no wayland socket name in the log; skipping load")
+                    sys.exit(f"[bench] requested load has no Wayland endpoint; see {log}")
                 else:
-                    client = shell_bin.parent / "tilo-loadclient"
-                    if not client.exists():
-                        print(f"[bench] warning: {client} missing; skipping load")
-                    else:
+                    if load_client is not None:
                         cenv = dict(os.environ)
                         cenv["WAYLAND_DISPLAY"] = wl
                         # The Wayland socket belongs to this benchmark's
@@ -673,13 +733,13 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                         # makes the load test exercise nothing.
                         cenv["XDG_RUNTIME_DIR"] = str(session_root / "run")
                         ccmd = [
-                            str(client),
+                            str(load_client),
                             "--size",
                             f"{args.width}x{args.height}",
                             "--app-id",
                             "dev.tilo.frame-loop-load",
                             "--seconds",
-                            str(args.seconds),
+                            str(process_seconds),
                         ]
                         if args.load == "fullscreen":
                             ccmd.append("--fullscreen")
@@ -777,18 +837,15 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             proc.wait(timeout=process_seconds + args.startup_timeout + 15)
         except subprocess.TimeoutExpired:
             print("[bench] compositor overran its deadline; terminating")
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+            stop_process_group(proc)
         finally:
+            stop_process_group(proc)
             if load_proc is not None:
                 try:
                     cout, _ = load_proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     load_proc.kill()
-                    cout = ""
+                    cout, _ = load_proc.communicate(timeout=5)
                 for line in (cout or "").splitlines():
                     if line.startswith("LOADCLIENT"):
                         print(f"[bench] {line}")

@@ -22,13 +22,62 @@ const fn default_page() -> u32 {
     64
 }
 
+/// One exact existing resource whose inert local-view metadata is requested.
+/// The transport supplies identity and current room authority independently.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewResourceQuery {
+    /// Record-local resource address, never a display label.
+    pub id: String,
+    /// Expected resource kind; a different publisher cannot satisfy the lookup.
+    pub kind: String,
+}
+
+/// A host-issued navigation locator. It carries no access grant or credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewLocator {
+    /// Host-configured HTTPS listener origin.
+    pub origin: String,
+    /// Current governed room, supplied by the host.
+    pub room: String,
+    /// Certified host device key as hexadecimal.
+    #[serde(rename = "hostDevice")]
+    pub host_device: String,
+    /// Exact existing record provider checked by the host.
+    pub provider: String,
+    /// The web entry base (`https://tilo.so/`, ending in `/`) the operator serves
+    /// the browser bundle under; links to this host's resources are minted
+    /// under it. Absent until a compatible bundle is hosted.
+    #[serde(default, rename = "webEntry", skip_serializing_if = "Option::is_none")]
+    pub web_entry: Option<String>,
+}
+
+/// Exact document route whose broker-owned live publisher is requested.
+/// This selects custody, not permission: ordinary caller authorization still applies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalActionRoute {
+    pub room: String,
+    pub app_id: String,
+    /// Empty names the package-primary record, never any record.
+    pub record_id: String,
+}
+
 /// One bounded request for catalogue rows. Every field narrows; the empty
 /// query lists the first page of everything offered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueQuery {
+    /// Provider-only lookup of one exact route's custodian. Cannot accompany
+    /// a provider, cursor, target, view lookup, or row filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_route: Option<CanonicalActionRoute>,
     /// Only rows from this provider (a token a previous page issued).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Read-only view discovery, separate from the document action catalogue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_resource: Option<ViewResourceQuery>,
     /// Only the direct children of this resource; `None` is the top level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_resource: Option<String>,
@@ -59,7 +108,9 @@ pub struct CatalogueQuery {
 impl Default for CatalogueQuery {
     fn default() -> Self {
         Self {
+            canonical_route: None,
             provider: None,
+            view_resource: None,
             parent_resource: None,
             needle: String::new(),
             target: None,
@@ -137,6 +188,29 @@ pub struct CatalogueRow {
 }
 
 impl CatalogueRow {
+    /// A top-level row offering `action` on the resource it addresses.
+    #[must_use]
+    pub fn for_action(
+        provider: impl Into<String>,
+        app_id: impl Into<String>,
+        action: ActionDescriptor,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            app_id: app_id.into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: action.address.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+                presentation: None,
+            },
+            action: Some(action),
+            has_children: false,
+            visibility: None,
+        }
+    }
+
     /// The target that invokes this row's action.
     #[must_use]
     pub fn target(&self) -> Option<RemoteActionTarget> {
@@ -196,6 +270,9 @@ pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.
     pub revision: String,
     pub rows: Vec<CatalogueRow>,
+    /// Present only on a fresh authorized view lookup with a routable host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<ResourceViewLocator>,
     /// For a query naming no provider: the publishers the caller may use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<CatalogueProvider>,
@@ -228,6 +305,14 @@ impl CataloguePage {
         let parent = query.parent_resource.as_deref().unwrap_or("");
         let mut matching = rows.into_iter().filter(|row| {
             row.parent_resource == parent
+                && query.view_resource.as_ref().is_none_or(|wanted| {
+                    row.resource.id == wanted.id
+                        && row.resource.kind == wanted.kind
+                        && row
+                            .action
+                            .as_ref()
+                            .is_some_and(|action| action.kind == crate::OperationKind::View)
+                })
                 && row.matches(&query.needle)
                 && query.target.as_ref().is_none_or(|target| {
                     row.action
@@ -243,6 +328,7 @@ impl CataloguePage {
         Self {
             revision,
             rows,
+            locator: None,
             next_cursor: if more {
                 u64::try_from(next)
                     .unwrap_or(u64::MAX)
@@ -282,6 +368,7 @@ mod tests {
                 presentation: None,
             },
             action: action.map(|action| ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: "notes.note".into(),
                 resource_label: resource.into(),

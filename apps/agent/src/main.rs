@@ -4,26 +4,9 @@
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
 #![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -31,8 +14,7 @@ use clap::Parser;
 use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins the session's collaboration broker
-/// and handles addressed document instructions or canonical package-primary
-/// Chat summons (`--app so.tilo.chat`, no `--record`).
+/// and carries out broker-leased tasks (`--task-runs`).
 #[derive(Parser, Debug)]
 #[command(name = "tilo-agent")]
 struct Cli {
@@ -58,14 +40,8 @@ struct Cli {
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     #[arg(long)]
     endpoint: Option<PathBuf>,
-    /// Pause between edits, in milliseconds, so the caret can be watched.
-    #[arg(long, default_value_t = 250)]
-    pace_ms: u64,
-    /// Exit after the first instruction has been carried out.
-    #[arg(long)]
-    once: bool,
-    /// Receive broker-minted Task Center leases instead of watching a
-    /// document. This mode uses only the agent's admitted, permission-
+    /// Receive broker-minted Task Center leases, the agent's only mode; every
+    /// launcher passes it. A task uses only the agent's admitted, permission-
     /// filtered action catalogue and cannot infer work from room traffic.
     #[arg(long)]
     task_runs: bool,
@@ -86,17 +62,6 @@ struct Cli {
     /// 30000 ms, the whole budget of a multi-turn action decision.
     #[arg(long)]
     model_timeout_ms: Option<u64>,
-    /// How long to wait for the room to answer with the document before
-    /// giving up and naming the address nobody answered on. `0` waits
-    /// forever, which is right when the document may not be open yet and
-    /// wrong in a script.
-    #[arg(long, default_value_t = 60_000)]
-    await_document_ms: u64,
-    /// How long a paragraph must stop changing before it is read as a
-    /// finished request, in milliseconds. `0` acts on first sight, right
-    /// for a page seeded before the agent joins.
-    #[arg(long, default_value_t = 0)]
-    settle_ms: u64,
 }
 
 /// The total model budget of one managed action decision (all its turns).
@@ -115,6 +80,10 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut cli = Cli::parse();
+    anyhow::ensure!(
+        cli.task_runs,
+        "tilo-agent runs broker-leased tasks only: pass --task-runs"
+    );
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
     let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
         MANAGED_MODEL_TIMEOUT_MS
@@ -133,17 +102,10 @@ fn main() -> anyhow::Result<()> {
     // decision, not something a headless participant grants itself.
     let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent(&agent_id),
-            vec![
-                CapOverride::grant(
-                    Subject::agent(&agent_id),
-                    Scope::App(cli.app.clone()),
-                    Verb::Write,
-                )
-                .with_id("invited"),
-            ],
+        ui::permissions::PermissionContext::agent_granted_at(
+            &agent_id,
+            &[ui::permissions::TreePath::root().app(cli.app.clone())],
+            ui::permissions::KindSet::READ_UNDOABLE,
         )
     };
     let cfg = Config {
@@ -154,20 +116,20 @@ fn main() -> anyhow::Result<()> {
         cluster: cli.workspace,
         record: cli.record,
         name: cli.name,
-        pace: Duration::from_millis(cli.pace_ms),
-        once: cli.once,
         model: !cli.no_model,
         model_timeout: Duration::from_millis(model_timeout_ms),
-        await_document: Duration::from_millis(cli.await_document_ms),
-        settle: Duration::from_millis(cli.settle_ms),
-        directory: None,
         permissions,
-        content: tilo_content::ContentStore::for_app(),
+        content: device_content(),
     };
-    let mut session = Session::connect(cfg)?;
-    if cli.task_runs {
-        session.run_task_runs()
-    } else {
-        session.run()
+    Session::connect(cfg)?.run_task_runs()
+}
+
+/// The device content store the launcher handed this agent: where the
+/// content addresses the room's apps hand it resolve. An agent started
+/// without one reads only what it stores itself, in memory.
+fn device_content() -> tilo_content::ContentStore {
+    if let Some(device) = tilo_content::ContentStore::device() {
+        return device;
     }
+    tilo_content::ContentStore::memory()
 }

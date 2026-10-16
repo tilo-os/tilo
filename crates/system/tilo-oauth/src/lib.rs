@@ -29,19 +29,6 @@
 //! Nothing here stores tokens. Callers own custody (the account vault) and
 //! decide which party ever sees which token.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fmt;
 
 use base64::Engine as _;
@@ -53,7 +40,8 @@ use sha2::{Digest as _, Sha256};
 pub mod client;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod flow_tests;
 pub mod loopback;
 
@@ -311,6 +299,9 @@ impl AuthorizationRequest<'_> {
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenSet {
     pub access_token: String,
+    /// Provider-confirmed scopes; absent in older grants or omitted responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     #[serde(default)]
     pub refresh_token: String,
     /// Access token lifetime in seconds as reported by the provider; `0`
@@ -446,8 +437,18 @@ pub fn parse_token_response(body: &str) -> Result<TokenSet, OAuthError> {
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
         .ok_or_else(|| OAuthError::Protocol("the token response has no access token".into()))?;
+    let scope = match value.get("scope") {
+        None => None,
+        Some(serde_json::Value::String(scope)) => Some(scope.clone()),
+        Some(_) => {
+            return Err(OAuthError::Protocol(
+                "the token response has invalid scope metadata".into(),
+            ));
+        }
+    };
     Ok(TokenSet {
         access_token: access_token.to_string(),
+        scope,
         refresh_token: value
             .get("refresh_token")
             .and_then(serde_json::Value::as_str)
@@ -612,6 +613,25 @@ mod tests {
     }
 
     #[test]
+    fn token_response_retains_provider_scope_without_adding_permissions() {
+        let tokens = parse_token_response(
+            r#"{"access_token":"access","scope":"user-read-private user-library-read"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tokens.scope.as_deref(),
+            Some("user-read-private user-library-read")
+        );
+        assert_eq!(
+            parse_token_response(r#"{"access_token":"access"}"#)
+                .unwrap()
+                .scope,
+            None
+        );
+        assert!(parse_token_response(r#"{"access_token":"access","scope":42}"#).is_err());
+    }
+
+    #[test]
     fn token_errors_are_typed_and_never_echo_descriptions() {
         assert_eq!(
             parse_token_response(
@@ -636,6 +656,7 @@ mod tests {
             refresh_token: "r".into(),
             expires_in: 3600,
             obtained_at: 1_000_000,
+            scope: None,
         };
         assert!(!tokens.is_expired_with_skew(60, 1_000_100));
         assert!(tokens.is_expired_with_skew(60, 1_003_550));

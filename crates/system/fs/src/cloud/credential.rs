@@ -1,4 +1,5 @@
-//! The credential handoff between the account service and a mount.
+//! The pipe between the account service and a mount: the credential
+//! handoff, and the service's control of the mount.
 //!
 //! Neither side opens Settings' account vault. The service reads one
 //! account's short-lived credential from the handoff store through
@@ -12,16 +13,24 @@
 //! fresh one (which runs Settings' credential helper when needed) and sends
 //! it, or marks the account as needing sign-in. Closing the mount's stdin
 //! tells it to unmount.
+//!
+//! The same pipe carries the control the service serves on its socket
+//! (`runtime_fs::cloud`): sync now, pause, resume and file requests
+//! (revisions, restore, share link). The mount answers a file request with
+//! a [`REPLY_PREFIX`] line; neither direction carries a credential beside
+//! the [`ToMount::Credential`] line itself.
 
 use std::io::{BufRead, Write};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cloud_source::{Credential, CredentialSource, Error};
+use runtime_fs::cloud::{CloudCapabilities, FileReply, FileRequest};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use super::providers::MountSpec;
+use tilo_lock::MutexRecover as _;
 
 /// Printed by a mount once the filesystem is serving.
 pub const READY_LINE: &str = "TILO_CLOUD_MOUNT_READY_V1";
@@ -33,6 +42,34 @@ pub const EXPIRED_LINE: &str = "credential-expired";
 const EXPIRY_SKEW: Duration = Duration::from_secs(30);
 /// Prefix of a health line (`health <state>`).
 pub const HEALTH_PREFIX: &str = "health ";
+/// Prefix of the line a mount prints before [`READY_LINE`]: its provider's
+/// [`CloudCapabilities`] as JSON.
+pub const CAPABILITIES_PREFIX: &str = "capabilities ";
+/// Prefix of the answer to a [`ToMount::Request`]: a [`MountReply`] as JSON.
+pub const REPLY_PREFIX: &str = "reply ";
+
+/// A mount's answer to [`ToMount::Request`] `id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountReply {
+    pub id: u64,
+    pub result: Result<FileReply, String>,
+}
+
+/// The [`CAPABILITIES_PREFIX`] line for `capabilities`.
+pub fn capabilities_line(capabilities: CloudCapabilities) -> String {
+    format!(
+        "{CAPABILITIES_PREFIX}{}",
+        serde_json::to_string(&capabilities).unwrap_or_default()
+    )
+}
+
+/// The [`REPLY_PREFIX`] line for `reply`.
+pub fn reply_line(reply: &MountReply) -> String {
+    format!(
+        "{REPLY_PREFIX}{}",
+        serde_json::to_string(reply).unwrap_or_default()
+    )
+}
 
 /// A credential on the wire. `Debug` never shows secrets.
 #[derive(Serialize, Deserialize)]
@@ -123,6 +160,17 @@ impl From<WireCredential> for Credential {
 pub enum ToMount {
     Start(MountSpec),
     Credential(WireCredential),
+    /// Cut the sync back-off short and sync now.
+    SyncNow,
+    /// Pause background sync and uploads.
+    Pause,
+    /// Resume them and sync now.
+    Resume,
+    /// A file request, answered by a [`REPLY_PREFIX`] line carrying `id`.
+    Request {
+        id: u64,
+        request: FileRequest,
+    },
 }
 
 /// Serialise a message as one line. The caller writes it to the pipe and
@@ -166,9 +214,7 @@ impl PipeCredential {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     pub fn update(&self, credential: Credential) {
@@ -186,12 +232,21 @@ impl PipeCredential {
     }
 
     /// Read service messages until stdin closes, then call `on_close`.
-    pub fn pump(&self, input: impl BufRead, on_close: impl FnOnce()) {
+    /// Credentials update this source; every other message goes to
+    /// `on_control`.
+    pub fn pump(
+        &self,
+        input: impl BufRead,
+        mut on_control: impl FnMut(ToMount),
+        on_close: impl FnOnce(),
+    ) {
         for line in input.lines() {
             let Ok(line) = line else { break };
             let line = Zeroizing::new(line);
-            if let Ok(ToMount::Credential(wire)) = serde_json::from_str::<ToMount>(&line) {
-                self.update(wire.into());
+            match serde_json::from_str::<ToMount>(&line) {
+                Ok(ToMount::Credential(wire)) => self.update(wire.into()),
+                Ok(ToMount::Start(_)) | Err(_) => {}
+                Ok(control) => on_control(control),
             }
         }
         self.close();
@@ -273,6 +328,58 @@ mod tests {
             panic!("basic");
         };
         assert_eq!(password.as_str(), "hunter2");
+    }
+
+    #[test]
+    fn the_pump_hands_control_on_and_keeps_credentials() {
+        let pipe = PipeCredential::new(None, Box::new(Vec::new()));
+        let mut input = Vec::new();
+        for message in [
+            ToMount::SyncNow,
+            ToMount::Credential(WireCredential::Bearer {
+                token: "fresh".into(),
+                expires_unix: None,
+            }),
+            ToMount::Pause,
+            ToMount::Request {
+                id: 7,
+                request: FileRequest::Revisions {
+                    path: "a/b.txt".into(),
+                },
+            },
+        ] {
+            input.extend_from_slice(&line(&message));
+        }
+        let mut seen = Vec::new();
+        let mut closed = false;
+        pipe.pump(
+            input.as_slice(),
+            |control| seen.push(format!("{control:?}")),
+            || closed = true,
+        );
+        assert!(closed);
+        assert_eq!(
+            seen,
+            [
+                "SyncNow",
+                "Pause",
+                "Request { id: 7, request: Revisions { path: \"a/b.txt\" } }"
+            ]
+        );
+        assert!(seen.iter().all(|control| !control.contains("fresh")));
+        let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
+            panic!("bearer");
+        };
+        assert_eq!(token.as_str(), "fresh");
+
+        let reply = MountReply {
+            id: 7,
+            result: Ok(FileReply::Link("https://example.test/s/1".into())),
+        };
+        let text = reply_line(&reply);
+        let parsed: MountReply =
+            serde_json::from_str(text.strip_prefix(REPLY_PREFIX).unwrap()).unwrap();
+        assert_eq!(parsed, reply);
     }
 
     #[test]

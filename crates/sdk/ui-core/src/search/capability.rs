@@ -2,7 +2,7 @@
 //! Ctrl+K palette and system search, and activating one of its hits.
 
 use crate::widget::capability::{capability, capability_mut};
-use crate::widget::{AppModel, ModelPath, Widget};
+use crate::widget::{ModelPath, Widget};
 
 /// A widget whose content is searchable.
 pub trait SearchSource: Widget {
@@ -11,9 +11,27 @@ pub trait SearchSource: Widget {
         Vec::new()
     }
 
+    /// Who each of [`search_providers`](Self::search_providers) is, as the
+    /// action directory's witness reads them. A source whose providers are
+    /// costly to make (one that builds an index to answer from) overrides
+    /// this to describe them without making them: the witness is read on
+    /// every frame that publishes the action surface, a search only when
+    /// someone searches.
+    fn search_provider_descriptors(&self) -> Vec<SearchProviderDescriptor> {
+        self.search_providers()
+            .iter()
+            .map(|provider| SearchProviderDescriptor::of(provider.as_ref()))
+            .collect()
+    }
+
     /// Activate a hit: presentation (navigation), not a document action;
     /// mutate the model only if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        _action_id: &str,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) {
     }
 }
 
@@ -22,11 +40,74 @@ pub fn search_providers(widget: &(impl Widget + ?Sized)) -> Vec<Box<dyn super::S
     capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_providers)
 }
 
+/// `widget`'s search providers as the action directory's witness reads them,
+/// without querying them.
+pub fn search_provider_descriptors(
+    widget: &(impl Widget + ?Sized),
+) -> Vec<SearchProviderDescriptor> {
+    capability::<dyn SearchSource>(widget)
+        .map_or_else(Vec::new, SearchSource::search_provider_descriptors)
+}
+
+/// What the action directory's witness reads of a search provider: who it
+/// is and which build of its content answers for it. Two descriptors differ
+/// whenever a directory page from one provider could differ from the other's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchProviderDescriptor {
+    pub(crate) name: String,
+    /// The component lifetime the provider is a proxy into, if any.
+    pub(crate) owner: Option<uuid::Uuid>,
+    pub(crate) generation: Option<u64>,
+    pub(crate) invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
+}
+
+impl SearchProviderDescriptor {
+    /// A provider listed as `name` whose content is the build `generation`
+    /// names (as [`SearchProvider::action_directory_generation`]), over
+    /// `invocation_domain` (as
+    /// [`SearchProvider::action_directory_invocation_domain`]).
+    ///
+    /// [`SearchProvider::action_directory_generation`]: super::SearchProvider::action_directory_generation
+    /// [`SearchProvider::action_directory_invocation_domain`]: super::SearchProvider::action_directory_invocation_domain
+    pub fn new(
+        name: impl Into<String>,
+        generation: Option<u64>,
+        invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            owner: None,
+            generation,
+            invocation_domain,
+        }
+    }
+
+    /// `provider`, as it describes itself.
+    pub fn of(provider: &(dyn super::SearchProvider + '_)) -> Self {
+        Self {
+            name: provider.name().to_owned(),
+            owner: provider
+                .callback_binding()
+                .map(|binding| binding.lifetime_id),
+            generation: provider.action_directory_generation(),
+            invocation_domain: provider.action_directory_invocation_domain(),
+        }
+    }
+
+    /// This provider reached through the component lifetime `owner`.
+    pub(crate) fn owned_by(self, owner: uuid::Uuid) -> Self {
+        Self {
+            owner: Some(owner),
+            ..self
+        }
+    }
+}
+
 /// Activate hit `action_id` in `widget`.
 pub fn activate_search_result(
     widget: &mut (impl Widget + ?Sized),
     action_id: &str,
-    doc: &mut AppModel,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ModelPath,
 ) {
     if let Some(source) = capability_mut::<dyn SearchSource>(widget) {

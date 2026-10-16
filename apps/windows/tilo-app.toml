@@ -20,6 +20,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["files.open", "files.paths", "threads"]
 
+[resources]
+kinds = ["windows.manager"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

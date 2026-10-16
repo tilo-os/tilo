@@ -6,17 +6,18 @@
 //! to time, trim handles live on sub-pixel edges, the playhead crosses
 //! every lane. That density is far cleaner to express as direct drawing +
 //! geometric hit-tests than as a Taffy tree. The structural state still
-//! lives in the CRDT (see [`crate::doc`]) so the edit is collaborative and
+//! lives in the CRDT (see [`crate::model::Project`]) so the edit is collaborative and
 //! undoable; only ephemeral *view* state (playhead, zoom, selection) is
 //! held in widget fields, matching the toolkit's per-peer-view convention.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use automerge::AutoCommit;
+use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -24,25 +25,22 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, ModalAction, ModalFrame,
-    ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
+    Button, ButtonFace, ButtonRole, ContextMenu, ControlSize, EditOutcome, EditableLabel,
+    FlapState, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
+    modal_dialog,
 };
 
-use crate::actions::{
-    MarkerTextField, VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx,
-    clip_field_patch_action, delete_clip_action, remove_media_action, ripple_delete_action,
-    set_project_meta_action, split_clip_action, upsert_clip_action, upsert_media_action,
-    upsert_track_action,
-};
-use crate::doc::VideoDoc;
+use crate::actions::VideoResourceCtx;
+use crate::model::key;
+
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
     Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
@@ -69,7 +67,7 @@ mod project_workflow;
 mod scenario;
 mod selection;
 mod timeline_paint;
-use crate::layout::{self as chrome_layout, S1, S2, S3};
+use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
 use inspector_layout::InspectorLayout;
 use layout::Regions;
 #[allow(
@@ -78,7 +76,8 @@ use layout::Regions;
 )]
 use paint::*;
 use scenario::ShotLifecycle;
-pub use scenario::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
+pub(crate) use scenario::composed_project;
+pub use scenario::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use selection::Selection;
 
 const TRANSPORT_CONTROL_CY: f64 = 20.0;
@@ -93,21 +92,13 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 
 const GOTO_CARD_W: f64 = 260.0;
 
-const ADD_TRACK_H: f64 = 24.0;
-
-const TOPBAR_BTN_W: f64 = 110.0;
-
-const PANE_HEADING_Y0: f64 = 6.0;
-
-const PANE_HEADING_H: f64 = 26.0;
-
-const INSPECTOR_LABEL_SIZE: f32 = 12.0;
-
 // ---- layout constants ----------------------------------------------------
-const TOPBAR_H: f64 = 48.0;
-/// Width of the export progress / outcome chip under the topbar.
-const EXPORT_CHIP_W: f64 = 176.0;
-const TIMELINE_H: f64 = 320.0;
+/// The preview's share of the room under the header row, as the window
+/// opens: about a 320 px timeline in an ordinary window, more preview in a
+/// small one. The person drags the divider; the lanes scroll.
+const PREVIEW_SHARE: f32 = 0.56;
+/// The preview / timeline divider's action target.
+const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
 const GUTTER_W: f64 = 128.0;
@@ -145,11 +136,6 @@ const HISTORY_MIN_STRIP_W: f64 = TRANSPORT_RIGHT_X + 100.0;
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
-/// How dark the overlay-bin scrim gets at full reveal. The editor behind it
-/// must stay readable — the scrim says "the bin has the input now", it is not
-/// a curtain. Deliberately a number here rather than the alpha of
-/// `surfaces.scrim`: that token is opaque in every theme.
-const SCRIM_ALPHA: f64 = 0.55;
 /// What the editor says, in plain words, when a source's bytes are not on this
 /// device — the reference replicated but the content has not been hydrated
 /// from the FUSE (or the file is gone). One string so the bin row, the clip
@@ -180,30 +166,8 @@ const PIP_INSET: f64 = 0.04;
 /// Width of the key control at the head of an animatable inspector row.
 const KEY_BOX: f64 = 20.0;
 
-/// The keyboard cursor's ring, in the width every shared widget in `ui` draws
-/// focus at (`Button`, `DataTable`, `IconGrid`, `ToggleGroup` all stroke 2px in
-/// `Theme::border_focus`). The colour is always read from the theme — in the
-/// high-contrast theme it is a yellow nothing else uses, which is the whole
-/// point of a focus colour being a token rather than a literal.
-const FOCUS_RING_W: f64 = 2.0;
-/// How far inside a control's own outline the ring is drawn where the two would
-/// otherwise land on the same edge.
-///
-/// A palette declares one accent and its focus colour normally follows it, so
-/// `border_focus` and `accent[5]` are the same colour in most themes. The bin's
-/// selected row already carries an accent outline on its edge; a ring laid on
-/// that edge would disappear into it, so the cursor's ring sits inside and the
-/// two read as concentric. Around the transport's round buttons the offset goes
-/// the other way — see [`draw_focus_ring_circle`].
-const FOCUS_RING_INSET: f64 = 3.0;
-
 const BIN_BREAKPOINT: f64 = 900.0;
 
-/// A top-bar command needs a target a finger can reliably acquire. The old
-/// 28px icon targets were especially easy to miss on a narrow timeline, where
-/// the collapsed-bin and collapsed-inspector controls are the only way back to
-/// those panes.
-const TOPBAR_TOUCH_TARGET: f64 = 36.0;
 const TOPBAR_EDGE: f64 = S3;
 const TOPBAR_GAP: f64 = S3;
 /// At this width the Split button is redundant with its stable `S` shortcut
@@ -228,6 +192,22 @@ const TOPBAR_EXPORT_KEY: &str = "topbar.export";
 const PROJECT_BTN_W: f64 = 210.0;
 const PROJECT_BTN_MIN_W: f64 = 120.0;
 
+/// The topbar's labelled commands. "Import" and "Export" open a dialog of
+/// their own, so they carry the ellipsis that says so.
+const IMPORT_LABEL: &str = "Import…";
+const SPLIT_LABEL: &str = "Split";
+const EXPORT_LABEL: &str = "Export…";
+
+/// How wide the topbar's labelled commands are; see
+/// [`VideoEditorApp::topbar_widths`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TopbarWidths {
+    pub(super) import: f64,
+    pub(super) split: f64,
+    pub(super) export: f64,
+    pub(super) project: f64,
+}
+
 /// What the project button's dot means, spelled out wherever the dot cannot
 /// be seen. Not a warning — the autosave still holds the work; what the user
 /// does not have is a file of their own.
@@ -242,7 +222,7 @@ const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
 const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
 /// The marker list's add button, shared by the paint and the accessibility
 /// tree so a reader is offered the control the screen actually shows.
-const ADD_MARKER_LABEL: &str = "+ Marker at playhead (M)";
+const ADD_MARKER_LABEL: &str = "Add marker at playhead";
 /// The key the add button is addressed by, before hashing. A constant rather
 /// than a literal at each site so the node and the router cannot drift apart.
 const ADD_MARKER_KEY: &str = "add marker";
@@ -261,10 +241,6 @@ const MIX_METER_KEY: &str = "mix meter";
 const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
 const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
 
-/// Height of the inspector's own "INSPECTOR" heading row, which the empty
-/// state starts below.
-const INSPECTOR_HEADER_H: f64 = 26.0;
-
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
 ///
@@ -277,7 +253,7 @@ const INSPECTOR_HEADER_H: f64 = 26.0;
 /// Unlike the bin, an open inspector paints **no scrim**: its whole purpose
 /// is to change the picture, so dimming the picture while you drag a slider
 /// would hide the thing you are adjusting.
-const INSPECTOR_BREAKPOINT: f64 = 760.0;
+const INSPECTOR_BREAKPOINT: f64 = 960.0;
 
 struct BinPaintCtx<'a> {
     scene: &'a mut Scene,
@@ -309,14 +285,21 @@ enum NoticeLevel {
 }
 
 impl NoticeLevel {
-    /// The tint this level paints in, read from the theme like every other
-    /// colour in the app.
-    fn tint(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
+    /// The banner this level is told in.
+    fn banner_kind(self) -> ui::widget::BannerKind {
         match self {
-            Self::Ok => c.accent[5],
-            Self::Warning => c.semantic.warning,
-            Self::Failed => c.semantic.danger,
+            Self::Ok => ui::widget::BannerKind::Info,
+            Self::Warning => ui::widget::BannerKind::Warning,
+            Self::Failed => ui::widget::BannerKind::Error,
+        }
+    }
+
+    /// The tone a badge or a progress fill takes at this level.
+    fn tone(self) -> ui::widget::Tone {
+        match self {
+            Self::Ok => ui::widget::Tone::Neutral,
+            Self::Warning => ui::widget::Tone::Warning,
+            Self::Failed => ui::widget::Tone::Danger,
         }
     }
 }
@@ -404,6 +387,7 @@ impl Notice {
         }
     }
 
+    #[cfg(test)]
     fn is_failure(&self) -> bool {
         self.level == NoticeLevel::Failed
     }
@@ -522,16 +506,16 @@ enum Section {
 impl Section {
     fn label(self) -> &'static str {
         match self {
-            Section::Curves => "CURVES",
-            Section::Transform => "TRANSFORM",
-            Section::Speed => "SPEED",
-            Section::Mix => "MIX",
-            Section::Key => "CHROMA KEY",
-            Section::Mask => "MASK",
-            Section::Title => "TITLE",
-            Section::Effects => "EFFECTS",
-            Section::Markers => "MARKERS",
-            Section::Project => "PROJECT",
+            Section::Curves => "Curves",
+            Section::Transform => "Transform",
+            Section::Speed => "Speed",
+            Section::Mix => "Mix",
+            Section::Key => "Chroma key",
+            Section::Mask => "Mask",
+            Section::Title => "Title",
+            Section::Effects => "Effects",
+            Section::Markers => "Markers",
+            Section::Project => "Project",
         }
     }
 }
@@ -917,9 +901,6 @@ enum Drag {
         /// The durable effect target prevents an old drag from applying to the
         /// instance that later happened to occupy this row.
         effect: Uuid,
-        /// The amount the gesture started from, used as the action's optimistic
-        /// precondition when it is committed.
-        expected_amount_bits: u64,
     },
     /// Dragging control point `idx` of `channel`'s tone curve. Released
     /// outside the editor's box, an interior point is removed — the standard
@@ -958,12 +939,22 @@ enum ScrollPane {
     Inspector,
     /// The media bin's vertical axis (px).
     Bin,
+    /// The timeline's lanes, vertically (px).
+    Lanes,
 }
 
-/// The configuration and initial selection policy of this editor instance.
+/// What this editor instance is built for, and its initial selection policy.
 #[derive(Default)]
 struct SeedState {
-    demo: bool,
+    /// Built for a screenshot or a past version rather than a window someone
+    /// uses: it makes no sound, decodes none of the demo project's stand-in
+    /// media and runs no wall clock, so the frame it draws is the same on
+    /// every run.
+    hermetic: bool,
+    /// Built for a screenshot, which renders once: an imported clip's
+    /// decoded picture is waited for rather than painted over with the
+    /// representative fill.
+    capture: bool,
     selection_initialised: bool,
 }
 
@@ -1010,12 +1001,22 @@ struct RenderPipelineState {
 /// Per-device project-file work deferred until the next `sync`.
 #[derive(Default)]
 struct ProjectSyncState {
+    /// A project the host presented during a drag still waits to replace
+    /// the drag's live preview, which lives only in the in-memory project:
+    /// it lands the moment the drag lets go.
     reload_pending: bool,
     save_requested: bool,
+    /// An open was submitted and the host has not applied it yet.
+    open_submitted: bool,
 }
 
 pub struct VideoEditorApp {
     project: Project,
+    /// The project as the document stores it, last presented by the host,
+    /// with the tracks, sources, markers and new clips submitted since: what
+    /// the next edit of one of them is the difference from, and what the
+    /// optimistic `project` returns to once a drag lets go.
+    stored: std::rc::Rc<Project>,
     /// The local state each existing clip had immediately before the current
     /// UI edit began. Optimistic actions diff this baseline against the local
     /// result, then check only those old values against the live CRDT. They
@@ -1049,6 +1050,12 @@ pub struct VideoEditorApp {
     hbar: ui::widget::Scrollbar,
     inspector_bar: ui::widget::Scrollbar,
     bin_bar: ui::widget::Scrollbar,
+    lanes_bar: ui::widget::Scrollbar,
+    /// Vertical scroll offset of the timeline's lanes (px): a project with
+    /// more tracks than the timeline holds scrolls them under the ruler.
+    lane_scroll: f64,
+    /// The divider between the preview and the timeline.
+    timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
     /// Decides which one thing to tell the room about this participant on
@@ -1166,13 +1173,12 @@ pub struct VideoEditorApp {
     /// leaves this false and never fabricates a project — it opens blank.
     last_tick: Instant,
     rect: Rect,
-    /// Framework-owned action dispatch. Every document-mutating affordance
-    /// dispatches its [`VideoEditorAction`](crate::actions::VideoEditorAction)
-    /// through this: the host brackets the undo boundary, applies the action via
-    /// the executor (so it replays byte-identically on peers), and remembers it
-    /// for the affordance == `ActionSpec` covenant test. Ctrl+Z / Ctrl+Y are
-    /// handled OS-wide by the toolkit off the recorded boundary.
-    actions: crate::resource::ActionSink,
+    /// Where every edit goes: the framework's dispatcher, handed over when
+    /// the editor is hosted ([`ui::framework::ResourceSurface::attach`]). The
+    /// host checks each against the participant's permissions, applies it
+    /// through the replayable executor, records it as one undo step and
+    /// attributes it in history.
+    actions: Option<ui::framework::Dispatcher<Project>>,
     /// Copied clips, ready to paste at the playhead (Ctrl+C / Ctrl+X / Ctrl+V).
     /// Holds full clip snapshots — trim window, filters and fades come along —
     /// and pasting preserves their relative offsets and lanes, so copying a
@@ -1219,7 +1225,7 @@ pub struct VideoEditorApp {
     /// would replicate to everyone sharing the project. So it is handed a
     /// local document of its own, and the real write goes out as the same
     /// media action every other title property uses.
-    font_picker: Option<(MediaId, Box<ui::widget::Dropdown>, AutoCommit)>,
+    font_picker: Option<(MediaId, Box<ui::widget::Dropdown>)>,
     /// Which channel the curve editor is showing. Presentation, like
     /// `collapsed`: the curve itself carries all four channels whatever is on
     /// screen, so this never reaches the document.
@@ -1276,7 +1282,10 @@ pub struct VideoEditorApp {
     /// the only way a reader user learns the editor has shortcuts at all.
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
-    goto_entry: Option<String>,
+    goto_entry: Option<ui::widget::TextInput>,
+    /// The window's History control, in the editor's own header row; while
+    /// the editor shows it the window draws no History bar above it.
+    history: ui::widget::HistoryOpener,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
@@ -1307,15 +1316,6 @@ pub struct VideoEditorApp {
     /// frames open for its whole duration, so the chip's words are formatted
     /// and elided when they change rather than once a frame.
     export_chip_text: Option<ExportChipText>,
-    /// Whether [`VideoDoc::load_project`] still owes this widget a rebuild.
-    ///
-    /// Set when the document's heads move and cleared by the reload it asks
-    /// for. Starting `true` is what makes the first `sync` load, without
-    /// having to infer "first" from heads that are legitimately empty for a
-    /// document nobody has written to yet. It also survives a drag: an edit
-    /// that arrives while one is in flight cannot be applied then (the live
-    /// preview lives only in the in-memory project), and this is what
-    /// remembers that it is owed.
     // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
@@ -1336,13 +1336,13 @@ pub struct VideoEditorApp {
     /// sources this device cannot read says which. Carries its own severity —
     /// see [`NoticeLevel`].
     project_notice: Option<Notice>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    resource_operation: Option<crate::actions::VideoEditorOperation>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
-    resource_pending_operation: Option<(
-        tilo_actions::InvocationId,
-        crate::actions::VideoEditorOperation,
-    )>,
+    /// The project file or render job an effect started, answered through
+    /// `resource_reply` once it settles.
+    resource_operation: Option<crate::actions::VideoEditorEffect>,
+    resource_reply: Option<ui::framework::EffectReply>,
+    /// A project open or save at a named path, run on the next sync, where
+    /// the document is at hand.
+    resource_pending_operation: Option<crate::actions::VideoEditorEffect>,
     /// The project menu (Open / Save / Save As / recents), on the shared
     /// [`ContextMenu`] every other menu in the app uses.
     project_menu: ContextMenu,
@@ -1356,7 +1356,10 @@ pub struct VideoEditorApp {
     /// A project waiting for the user to say what to do about unsaved work.
     /// Opening a file must never silently discard an unsaved project.
     pending_open: Option<PendingOpen>,
-    chrome_theme: Option<Theme>,
+    /// The theme the chrome was last drawn with: the default theme until the
+    /// first frame, so geometry measured before that frame (an event, a
+    /// test) agrees with what it paints.
+    chrome_theme: Theme,
     hit_text: std::cell::RefCell<Option<TextRenderer>>,
     help_scroll: f64,
     /// What a `Save` should do once the destination comes back: just save, or
@@ -1452,17 +1455,13 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             project: Project::new("Untitled"),
+            stored: std::rc::Rc::new(Project::new("Untitled")),
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
             shot_lifecycle: ShotLifecycle::default(),
             seed: SeedState::default(),
             playback: PlaybackState::default(),
-            presentation: PresentationState {
-                // Dev aid: `TILO_VE_EXPORT=1` opens straight into the export
-                // dialog so its layout can be screenshotted headlessly.
-                export_open: std::env::var_os("TILO_VE_EXPORT").is_some(),
-                ..PresentationState::default()
-            },
+            presentation: PresentationState::default(),
             navigation: NavigationState::default(),
             media_pipeline: MediaPipelineState {
                 #[cfg(any(feature = "gst", feature = "decode"))]
@@ -1470,10 +1469,7 @@ impl VideoEditorApp {
                 ..MediaPipelineState::default()
             },
             render_pipeline: RenderPipelineState::default(),
-            project_sync: ProjectSyncState {
-                reload_pending: true,
-                ..ProjectSyncState::default()
-            },
+            project_sync: ProjectSyncState::default(),
             text_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
@@ -1483,6 +1479,13 @@ impl VideoEditorApp {
             hbar: ui::widget::Scrollbar::horizontal(),
             inspector_bar: ui::widget::Scrollbar::vertical(),
             bin_bar: ui::widget::Scrollbar::vertical(),
+            lanes_bar: ui::widget::Scrollbar::vertical(),
+            lane_scroll: 0.0,
+            timeline_split: ui::widget::SplitHandle::new(
+                ui::widget::SplitOrientation::Vertical,
+                ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
+            )
+            .with_label("Resize the preview and the timeline"),
             selection: Selection::default(),
             selected_media: None,
             export: ExportSettings::default(),
@@ -1518,13 +1521,14 @@ impl VideoEditorApp {
             pending_rename: None,
             last_tick: ui::time::now(),
             rect: Rect::ZERO,
-            actions: crate::resource::ActionSink::default(),
+            actions: None,
             clipboard: Vec::new(),
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             flap_tick: ui::time::now(),
             bin_menu: ContextMenu::new(),
+            history: ui::widget::HistoryOpener::new(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
             // header still states what is inside it, and what is inside this
@@ -1560,15 +1564,14 @@ impl VideoEditorApp {
             saved_heads: None,
             project_rx: None,
             project_notice: None,
-            resource_invocation: None,
             resource_operation: None,
-            resource_result: None,
+            resource_reply: None,
             resource_pending_operation: None,
             project_menu: ContextMenu::new(),
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
-            chrome_theme: None,
+            chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
             save_then_open: None,
@@ -1577,47 +1580,6 @@ impl VideoEditorApp {
             project_format_shown: String::new(),
             project_format_from: (0, 0, 0),
         }
-    }
-
-    /// The hermetic `--shots`/demo build: seeds the bundled sample project on
-    /// the first sync. This is the sole source of sample media/clips — the
-    /// live app never fabricates a project.
-    pub fn new_demo() -> Self {
-        let mut app = Self::new();
-        app.seed.demo = true;
-        // A single-frame demo/`--shots` render can't wait on a background
-        // waveform compute, so warm them synchronously for a deterministic shot.
-        app.render_pipeline.warm_waveforms_sync = true;
-        app
-    }
-
-    /// Construct the editor pre-arranged for a deterministic `--shots`
-    /// capture scenario (see [`ShotScenario`]). The scenario is applied once
-    /// during the first `sync`, after the sample project loads.
-    pub fn new_for_shot(scenario: ShotScenario) -> Self {
-        let mut app = Self::new_demo();
-        app.shot_scenario = scenario;
-        app
-    }
-
-    /// Build a blank live app that imports `paths` on its first `sync` (as
-    /// real clips, probed for real metadata). Used by `--shots`/tests to seed a
-    /// real imported clip deterministically without opening the portal — the
-    /// same code path a portal pick drives.
-    pub fn new_import(paths: Vec<PathBuf>) -> Self {
-        let mut app = Self::new();
-        app.pending_imports = paths;
-        app
-    }
-
-    /// Like [`Self::new_import`] but also drops the first imported clip onto the
-    /// timeline (creating a track if needed) and parks the playhead inside it,
-    /// so the preview has real content to decode/composite for a `--shots`
-    /// capture or a `--import` preload.
-    pub fn new_import_placed(paths: Vec<PathBuf>) -> Self {
-        let mut app = Self::new_import(paths);
-        app.media_pipeline.auto_place_imports = true;
-        app
     }
 
     /// Whether the canvas is currently showing real decoded footage rather
@@ -1645,6 +1607,31 @@ impl VideoEditorApp {
         {
             false
         }
+    }
+
+    /// Whether a decoded picture of the clip under the playhead may still
+    /// reach the canvas: the preview has not drawn yet, or its frame source
+    /// is still asking the decoder for that clip. A clip the source has
+    /// written off as undecodable, a clip with no decodable bytes, and a
+    /// preview with no compositor never will, so a capture stops waiting for
+    /// them and shows what the editor shows instead.
+    #[cfg(feature = "decode")]
+    fn preview_awaits_frame(&self) -> bool {
+        if self.has_preview_frame() {
+            return false;
+        }
+        let Some(clip) = self.project.top_video_clip_at(self.playhead) else {
+            return false;
+        };
+        if !self.render_pipeline.compositor_tried {
+            return true;
+        }
+        if self.compositor.is_none() {
+            return false;
+        }
+        self.frame_source
+            .as_ref()
+            .is_none_or(|source| source.may_serve(clip.media))
     }
 
     /// The selected clip's source aspect and the project frame's, which is
@@ -1758,12 +1745,31 @@ impl VideoEditorApp {
     /// what a deep control edits and prevents a partially scrolled row from
     /// ever painting beneath the editor chrome.
     fn inspector_body_origin(&self, r: &Regions) -> f64 {
-        // Four 2× property lines need substantially more air than their 1×
-        // baselines suggest; reserve a body viewport of at least 160px even
-        // in a short window rather than allowing the last value to cross the
-        // first scrolled control.
-        let max_header = (r.inspector.height() - 160.0).max(90.0);
-        r.inspector.y0 + (190.0 * self.inspector_ui_scale()).min(max_header)
+        r.inspector.y0 + self.inspector_header(r).height
+    }
+
+    /// The fixed header's measured extent: the clip's name and its lane (or
+    /// that nothing is selected), measured in the roles it is drawn in, so the
+    /// header and the body below it never overlap at any text size or window
+    /// height. Everything else, the clip's facts included, scrolls.
+    fn inspector_header(&self, r: &Regions) -> InspectorHeader {
+        self.with_dialog_layout(|_, tr, theme| {
+            let name = line_height(tr, &theme.text(TextRole::Heading));
+            let sub = line_height(tr, &theme.text(TextRole::Caption));
+            InspectorHeader {
+                height: (S3 + name + S1 + sub + S3).min(r.inspector.height()),
+            }
+        })
+    }
+
+    /// The selected clip's four facts as the property list draws them.
+    fn inspector_property_values(clip: &Clip, fps: f64) -> [String; 4] {
+        [
+            timecode(clip.start, fps),
+            timecode(clip.duration(), fps),
+            timecode(clip.in_point, fps),
+            timecode(clip.out_point, fps),
+        ]
     }
 
     fn inspector_viewport(&self, r: &Regions) -> Rect {
@@ -1782,14 +1788,40 @@ impl VideoEditorApp {
     /// wide.  Treating only the latter as compact left the scaled labels to
     /// run into one another.
     fn topbar_is_compact(&self) -> bool {
-        self.rect.width()
-            < TOPBAR_COMPACT_BREAKPOINT.max(
-                2.0 * TOPBAR_EDGE
-                    + 3.0 * TOPBAR_BTN_W
-                    + 2.0 * TOPBAR_TOUCH_TARGET
-                    + 4.0 * TOPBAR_GAP,
-            )
+        let w = self.topbar_widths();
+        let target = self.topbar_target();
+        let gap = TOPBAR_GAP * self.chrome_scale();
+        let needed = 2.0 * TOPBAR_EDGE * self.chrome_scale()
+            + 2.0 * target
+            + w.import
+            + w.split
+            + w.export
+            + PROJECT_BTN_MIN_W.min(w.project)
+            + 6.0 * gap;
+        self.rect.width() < TOPBAR_COMPACT_BREAKPOINT.max(needed)
             || (self.text_scale > 1.25 && self.rect.width() / self.text_scale < 800.0)
+    }
+
+    /// How wide each labelled topbar command is: as wide as its label, by
+    /// the toolkit's own button measure.
+    pub(super) fn topbar_widths(&self) -> TopbarWidths {
+        let project = self.project_label();
+        self.with_dialog_layout(|app, tr, theme| {
+            let mut w = |label: &str| ButtonFace::new(Rect::ZERO, label).intrinsic_width(tr, theme);
+            let import = w(IMPORT_LABEL);
+            let split = w(SPLIT_LABEL);
+            let export = w(EXPORT_LABEL);
+            let project = ButtonFace::new(Rect::ZERO, &project)
+                .icon(Icon::Film)
+                .intrinsic_width(tr, theme)
+                .min(PROJECT_BTN_W * app.chrome_scale());
+            TopbarWidths {
+                import,
+                split,
+                export,
+                project,
+            }
+        })
     }
 
     /// Canvas chrome has fixed logical geometry, whereas text is scaled by
@@ -1799,23 +1831,83 @@ impl VideoEditorApp {
         self.text_scale.clamp(1.0, 1.35)
     }
 
+    /// The editor's one header row: the window's header height.
     fn topbar_height(&self) -> f64 {
-        TOPBAR_H * self.chrome_scale()
+        f64::from(self.chrome_theme.tokens.metrics.header_height) * self.chrome_scale()
     }
 
+    /// A topbar control: a Regular control's height.
     fn topbar_target(&self) -> f64 {
-        TOPBAR_TOUCH_TARGET * self.chrome_scale()
+        ButtonFace::height(ControlSize::Regular, &self.chrome_theme)
     }
 
-    fn timeline_height(&self) -> f64 {
-        // Large type gives audio lanes the same two-row header as video
-        // lanes, so reserve their extra vertical rhythm rather than cutting
-        // the last AUDIO label off behind the add-track footer.
-        if self.text_scale > 1.25 {
-            TIMELINE_H * 1.5
-        } else {
-            TIMELINE_H * self.chrome_scale()
+    /// Where the timeline starts in the room between the header row and
+    /// the window's bottom edge: the divider the person drags.
+    fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
+        (below_header
+            + self
+                .timeline_split
+                .ratio()
+                .first_extent((bottom - below_header).max(0.0)))
+        .round()
+    }
+
+    /// The room the divider moves in: everything under the header row.
+    fn timeline_split_bounds(&self) -> Rect {
+        let r = self.rect;
+        Rect::new(r.x0, r.y0 + self.topbar_height(), r.x1, r.y1)
+    }
+
+    /// Give the preview / timeline divider the event. Returns whether it
+    /// took it (a drag, a press on the divider, a key while it is focused).
+    fn route_to_timeline_split(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let bounds = self.timeline_split_bounds();
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.timeline_split.handle_event(event, ctx)
+    }
+
+    /// The lanes' scrolled extent: every lane, then the add-track buttons,
+    /// then room for the horizontal scroll bar.
+    fn lanes_content_height(&self) -> f64 {
+        let lanes: f64 = self
+            .project
+            .display_tracks()
+            .iter()
+            .map(|t| self.lane_height(t.kind) + LANE_GAP)
+            .sum();
+        let footer = 2.0 * S2 + ButtonFace::height(ControlSize::Small, &self.chrome_theme);
+        LANE_GAP + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+    }
+
+    fn lanes_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            self.lanes_content_height(),
+            r.lanes.height(),
+            self.lane_scroll,
+        )
+    }
+
+    /// The lanes' vertical scroll bar track, or `None` when every lane fits.
+    fn lanes_scroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.lanes_metrics(r).overflows() {
+            return None;
         }
+        let x1 = r.lanes.x1 - SCROLLBAR_INSET;
+        let bottom = if self.hscroll_track(r).is_some() {
+            SCROLLBAR_THICKNESS + 2.0 * SCROLLBAR_INSET
+        } else {
+            SCROLLBAR_INSET
+        };
+        Some(Rect::new(
+            x1 - SCROLLBAR_THICKNESS,
+            r.lanes.y0 + SCROLLBAR_INSET,
+            x1,
+            r.lanes.y1 - bottom,
+        ))
     }
 
     fn transport_height(&self) -> f64 {
@@ -1838,7 +1930,8 @@ impl VideoEditorApp {
     /// Whether the inspector is on screen right now: always when docked,
     /// only while the flap is open when it is an overlay.
     fn inspector_is_visible(&self, r: &Regions) -> bool {
-        !r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split())
+        r.inspector.width() > 1.0
+            && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
     }
 
     // ---- region geometry -------------------------------------------------
@@ -1996,7 +2089,7 @@ impl VideoEditorApp {
     /// full lane width.
     fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.lanes.y0 + LANE_GAP;
+        let mut y = r.lanes.y0 + LANE_GAP - self.lane_scroll;
         for t in self.project.display_tracks() {
             let h = self.lane_height(t.kind);
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
@@ -2038,39 +2131,46 @@ impl VideoEditorApp {
     }
 
     /// The clip flag inside it: what is clicked to walk the overloads.
-    fn clip_flag_rect(r: &Regions) -> Rect {
+    fn clip_flag_rect(&self, r: &Regions) -> Rect {
         let m = chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r));
-        Rect::new(
-            m.readout.x1 - 52.0,
-            m.readout.y0,
-            m.readout.x1,
-            m.readout.y1,
-        )
+        let words = self.clip_flag_words();
+        let w = self
+            .with_dialog_layout(|_, tr, theme| {
+                ui::widget::BadgeFace::intrinsic_width(&words, tr, theme)
+            })
+            .min(m.readout.width());
+        Rect::new(m.readout.x1 - w, m.readout.y0, m.readout.x1, m.readout.y1)
     }
 
-    /// The two "add track" buttons in the gutter footer, if there is room below
-    /// the last lane: `(kind, rect)` for a Video and an Audio add.
+    /// What the master strip's clip flag says: that the mix clipped, and by
+    /// how much at worst.
+    fn clip_flag_words(&self) -> String {
+        format!("Clip {:+.1}", self.mix.worst_over_db())
+    }
+
+    /// The two "add track" buttons under the last lane: `(kind, rect)` for a
+    /// Video and an Audio add, each as wide as its label, starting at the
+    /// gutter's edge and running out under the lanes when the gutter is
+    /// narrower than the two of them.
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
         let lanes = self.lane_rects(r);
         let y = lanes.last().map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
-        if y + (ADD_TRACK_H * self.chrome_scale()) > r.timeline.y1 {
+        let (h, widths) = self.with_dialog_layout(|_, tr, theme| {
+            let h = ButtonFace::height(ControlSize::Small, theme);
+            let mut width = |kind| {
+                ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
+                    .icon(Icon::Plus)
+                    .control_size(ControlSize::Small)
+                    .intrinsic_width(tr, theme)
+            };
+            (h, [width(TrackKind::Video), width(TrackKind::Audio)])
+        });
+        // Scrolled out of the lanes' view, they are not there to press.
+        if y < r.lanes.y0 || y + h > r.timeline.y1 {
             return Vec::new();
         }
-        // Two related buttons in one footer: `S2` between them and to the
-        // gutter's edges, the same step the bin's rows keep.
-        let w = (r.gutter.width() - S2 * 3.0) / 2.0;
-        let vbtn = Rect::new(
-            r.gutter.x0 + S2,
-            y,
-            r.gutter.x0 + S2 + w,
-            y + (ADD_TRACK_H * self.chrome_scale()),
-        );
-        let abtn = Rect::new(
-            vbtn.x1 + S2,
-            y,
-            vbtn.x1 + S2 + w,
-            y + (ADD_TRACK_H * self.chrome_scale()),
-        );
+        let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + widths[0], y + h);
+        let abtn = Rect::new(vbtn.x1 + S2, y, vbtn.x1 + S2 + widths[1], y + h);
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
@@ -2200,20 +2300,26 @@ impl VideoEditorApp {
     /// The bin row's metadata line. Unknown is written as unknown: a source
     /// that carries no dimensions or no length must not be rendered as
     /// "0p · 0:00", which reads as a probed fact and is not one.
-    fn bin_subtitle(m: &MediaItem) -> String {
-        let dur = if m.duration > 0.0 {
-            clock(m.duration)
-        } else {
-            "length unknown".to_string()
-        };
+    /// What a bin source is: its picture size, or the kind of thing it is
+    /// when it has none.
+    fn bin_kind_words(m: &MediaItem) -> String {
         match m.kind {
-            MediaKind::Audio => format!("Audio · {dur}"),
+            MediaKind::Audio => "Audio".to_string(),
             // A title is drawn at whatever the project frame is, so it has
             // no size of its own. That is not the same as "we could not
             // read the size", which is what an unreadable file gets.
-            MediaKind::Text => format!("Title · {dur}"),
-            _ if m.height == 0 => format!("size unknown · {dur}"),
-            _ => format!("{}p · {}", m.height, dur),
+            MediaKind::Text => "Title".to_string(),
+            _ if m.height == 0 => "Size unknown".to_string(),
+            _ => format!("{}p", m.height),
+        }
+    }
+
+    /// How long a bin source runs.
+    fn bin_length(m: &MediaItem) -> String {
+        if m.duration > 0.0 {
+            clock(m.duration)
+        } else {
+            "Length unknown".to_string()
         }
     }
 
@@ -2232,7 +2338,7 @@ impl VideoEditorApp {
     }
 
     /// Row pitch of the media bin list, and where the first row starts.
-    const BIN_ROW_BODY: f64 = 50.0;
+    const BIN_ROW_BODY: f64 = 56.0;
     const BIN_ROW_H: f64 = Self::BIN_ROW_BODY + S2;
     const BIN_LIST_TOP: f64 = 40.0;
 
@@ -2248,21 +2354,36 @@ impl VideoEditorApp {
     /// it at the playhead and opens its words for typing.
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let scale = self.bin_ui_scale();
-        let x1 = r.bin.x0 + 152.0 * scale;
-        let y0 = r.bin.y0 + PANE_HEADING_Y0 * scale;
-        Rect::new(x1 - 62.0 * scale, y0, x1, y0 + PANE_HEADING_H * scale)
+        let (w, h) = self.with_dialog_layout(|_, tr, theme| {
+            let face = ButtonFace::new(Rect::ZERO, "Title")
+                .icon(Icon::Plus)
+                .control_size(ControlSize::Small);
+            (
+                face.intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Small, theme),
+            )
+        });
+        let x1 = r.bin.x1 - S2 * scale;
+        let y0 = r.bin.y0 + (self.bin_list_top() - h) / 2.0;
+        Rect::new(x1 - w, y0, x1, y0 + h)
     }
 
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
         let mut out = Vec::new();
         let row_h = self.bin_row_height();
         let mut y = r.bin.y0 + self.bin_list_top() - self.bin_scroll;
+        let inset = S2 * self.bin_ui_scale();
+        // A list that scrolls keeps its rows clear of the bar beside them.
+        let trailing = if self.bin_metrics(r).overflows() {
+            inset + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+        } else {
+            inset
+        };
         for mid in self.bin_order() {
-            let inset = 8.0 * self.bin_ui_scale();
             let rect = Rect::new(
                 r.bin.x0 + inset,
                 y,
-                r.bin.x1 - inset,
+                r.bin.x1 - trailing,
                 y + row_h - S2 * self.bin_ui_scale(),
             );
             out.push((mid, rect));
@@ -2273,12 +2394,17 @@ impl VideoEditorApp {
 
     /// Whether the media bin is on screen: docked, or an open overlay flap.
     fn bin_is_visible(&self, r: &Regions) -> bool {
-        !r.bin_overlay || self.bin_flap.is_open(self.bin_layout())
+        r.bin.width() > 1.0 && (!r.bin_overlay || self.bin_flap.is_open(self.bin_layout()))
     }
 
     /// The bin's visible list viewport — everything below the header band.
     fn bin_viewport(r: &Regions) -> Rect {
-        Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1)
+        Rect::new(
+            r.bin.x0,
+            r.bin.y0 + Self::BIN_LIST_TOP - S1,
+            r.bin.x1,
+            r.bin.y1,
+        )
     }
 
     /// Total height the bin list wants, in px.
@@ -2352,6 +2478,9 @@ impl VideoEditorApp {
                 .inspector_scroll_track(r)
                 .map(|t| (t, self.inspector_metrics(r))),
             ScrollPane::Bin => self.bin_scroll_track(r).map(|t| (t, self.bin_metrics(r))),
+            ScrollPane::Lanes => self
+                .lanes_scroll_track(r)
+                .map(|t| (t, self.lanes_metrics(r))),
         }
     }
 
@@ -2360,6 +2489,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &mut self.hbar,
             ScrollPane::Inspector => &mut self.inspector_bar,
             ScrollPane::Bin => &mut self.bin_bar,
+            ScrollPane::Lanes => &mut self.lanes_bar,
         }
     }
 
@@ -2368,6 +2498,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &self.hbar,
             ScrollPane::Inspector => &self.inspector_bar,
             ScrollPane::Bin => &self.bin_bar,
+            ScrollPane::Lanes => &self.lanes_bar,
         }
     }
 
@@ -2383,12 +2514,20 @@ impl VideoEditorApp {
                 let max = self.bin_max_scroll(r);
                 self.bin_scroll = offset.clamp(0.0, max);
             }
+            ScrollPane::Lanes => {
+                let max = self.lanes_metrics(r).max_scroll();
+                self.lane_scroll = offset.clamp(0.0, max);
+            }
         }
     }
 
     /// Every pane that currently shows a bar, for the hover / press sweeps.
-    const SCROLL_PANES: [ScrollPane; 3] =
-        [ScrollPane::Inspector, ScrollPane::Bin, ScrollPane::Timeline];
+    const SCROLL_PANES: [ScrollPane; 4] = [
+        ScrollPane::Inspector,
+        ScrollPane::Bin,
+        ScrollPane::Timeline,
+        ScrollPane::Lanes,
+    ];
 
     /// Keep the audio monitor in step with the transport.
     ///
@@ -2408,9 +2547,9 @@ impl VideoEditorApp {
         const RESYNC: f64 = 0.35;
         if !self.media_pipeline.monitor_tried {
             self.media_pipeline.monitor_tried = true;
-            // The demo/shots build must make no sound and open no pipeline:
-            // a capture has to stay hermetic.
-            if !self.seed.demo {
+            // A capture or a past version must make no sound and open no
+            // pipeline: it has to stay hermetic.
+            if !self.seed.hermetic {
                 self.monitor = Some(crate::audio::AudioMonitor::new(
                     &self.project,
                     crate::audio::open_output(),
@@ -2475,7 +2614,7 @@ impl VideoEditorApp {
         // Same gate the monitor uses (`pump_monitor`) and for the same reason:
         // a capture is hermetic, so it neither makes a sound nor watches a
         // clock.
-        if !self.seed.demo {
+        if !self.seed.hermetic {
             self.mix_meters.decay(dt);
         }
         self.mix = self.mix_meters.snapshot();
@@ -2565,6 +2704,10 @@ impl VideoEditorApp {
         let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
+        // A screenshot shows the moment its scenario staged, however long
+        // the capture takes to settle: a shuttle at 8x would otherwise run
+        // to the end of the timeline first.
+        let dt = if self.seed.capture { 0.0 } else { dt };
         let dur = self.project.duration();
         if self.playback.playing || self.shuttle != 0.0 {
             // A moving playhead pulls the view along with it.
@@ -2620,12 +2763,23 @@ impl VideoEditorApp {
         let now = ui::time::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
-        self.bin_flap.tick(layout, dt);
-        self.inspector_flap.tick(insp, dt);
+        // The panels slide over the theme's own base duration.
+        let duration = self.chrome_theme.tokens.motion.durations.base();
+        self.bin_flap.tick(layout, dt, duration);
+        self.inspector_flap.tick(insp, dt, duration);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
+    /// Tell both side panels which layout the window is in now, so a show,
+    /// hide or choice lands in the size class it was made in rather than
+    /// the one the panel last saw (a resize with no frame drawn since).
+    fn reconcile_flaps(&mut self) {
+        self.bin_flap.reconcile(self.bin_layout());
+        self.inspector_flap.reconcile(self.inspector_split());
+    }
+
     fn toggle_bin(&mut self) {
+        self.reconcile_flaps();
         let layout = self.bin_layout();
         if layout != SplitLayout::Overlay {
             self.bin_flap.toggle(layout);
@@ -2652,6 +2806,7 @@ impl VideoEditorApp {
     /// it. This is shared by the toggle, Escape, and scrim click so every
     /// close path has the same focus-return behaviour.
     fn close_bin_overlay(&mut self) {
+        self.reconcile_flaps();
         self.bin_flap.close();
         if let Some(previous) = self.bin_focus_before_open.take() {
             self.focus.pane = previous;
@@ -2667,6 +2822,7 @@ impl VideoEditorApp {
     /// window the inspector is docked and this collapses it away, which is
     /// the same affordance the bin's hamburger offers there.
     fn toggle_inspector(&mut self) {
+        self.reconcile_flaps();
         self.inspector_flap.toggle(self.inspector_split());
     }
 
@@ -2675,6 +2831,7 @@ impl VideoEditorApp {
     /// second click on a toggle the user has to find first.
     fn reveal_inspector(&mut self) {
         if self.inspector_split() == SplitLayout::Overlay {
+            self.reconcile_flaps();
             self.inspector_flap.open();
         }
     }
@@ -2700,19 +2857,19 @@ impl VideoEditorApp {
     /// doing, or `None` when it is standing still.
     fn motion_words(&self) -> Option<String> {
         if self.playback.playing {
-            return Some("PLAYING".to_string());
+            return Some("Playing".to_string());
         }
         if self.shuttle == 0.0 {
             return None;
         }
         // Direction as well as rate: "8×" alone does not say which way the
         // footage is running, and reverse is half of what J/L are for.
-        let arrows = if self.shuttle > 0.0 {
-            "\u{25B6}\u{25B6}"
+        let way = if self.shuttle > 0.0 {
+            "forward"
         } else {
-            "\u{25C0}\u{25C0}"
+            "backward"
         };
-        Some(format!("SHUTTLE {arrows} {:.0}\u{d7}", self.shuttle.abs()))
+        Some(format!("Shuttling {way} {:.0}\u{d7}", self.shuttle.abs()))
     }
 
     fn toggle_play(&mut self) {
@@ -2759,36 +2916,64 @@ impl VideoEditorApp {
     }
 
     // ---- mutations (dispatched as replayable actions) --------------------
-    // Every document-mutating edit dispatches a `VideoEditorAction` through the
-    // framework's `ActionHost`: it brackets the undo boundary, applies the
-    // action through the executor (so it replays byte-identically on peers), and
-    // remembers it for the covenant test. There is no per-edit `needs_commit`
-    // flag any more — the host records exactly one undo boundary per event.
+    // Every document-mutating edit changes the local project, then submits
+    // the field edits between where it started and where it ended through
+    // the framework's dispatcher: the host applies them through the executor
+    // (so they replay byte-identically on peers) after the event, and every
+    // edit one input event makes is one undo step.
+
+    /// Submit one edit through the host, which applies it after this event.
+    /// A widget the framework has not hosted has nowhere to send it.
+    fn submit<S: ui::framework::Submit<Project>>(&self, edits: Vec<S>) {
+        let Some(dispatcher) = &self.actions else {
+            return;
+        };
+        if edits.len() == 1 {
+            for edit in edits {
+                dispatcher.submit(edit);
+            }
+        } else if !edits.is_empty() {
+            dispatcher.group(|| {
+                for edit in edits {
+                    dispatcher.submit(edit);
+                }
+            });
+        }
+    }
+
+    /// Submit what the local project changed since `before`, field by field
+    /// and clip by clip.
+    fn submit_changes(&self, before: &Project) {
+        self.submit(
+            ui::tilo_resource::Path::<Project, Project>::root().edits(before, &self.project),
+        );
+    }
 
     /// Dispatch an optimistic field patch for an existing durable clip. New
     /// clips still need their complete first write; subsequent UI edits never
     /// carry an old snapshot of unrelated fields.
-    fn dispatch_clip(&mut self, doc: &mut AutoCommit, id: ClipId) {
+    fn dispatch_clip(&mut self, id: ClipId) {
         if let Some(c) = self.project.clip(id).cloned() {
-            if VideoDoc::load_project(doc).clip(id).is_some() {
-                self.dispatch_existing_clips(doc, &[id]);
+            if self.stored.clip(id).is_some() {
+                self.dispatch_existing_clips(&[id]);
             } else {
-                self.actions
-                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+                std::rc::Rc::make_mut(&mut self.stored)
+                    .clips
+                    .push(c.clone());
+                self.submit(vec![Project::paths().clips.insert(&c)]);
             }
         }
     }
 
     /// Commit several already-persisted clips as one all-or-nothing optimistic
     /// patch. This is the membership path for link/unlink as well as the
-    /// ordinary linked geometry edits: every precondition is evaluated against
-    /// the same document projection before the action writes its first key.
-    fn dispatch_existing_clips(&mut self, doc: &mut AutoCommit, ids: &[ClipId]) {
+    /// ordinary linked geometry edits: the host checks every precondition
+    /// against the same document before the action writes its first key.
+    fn dispatch_existing_clips(&mut self, ids: &[ClipId]) {
         let mut ids = ids.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        let current = VideoDoc::load_project(doc);
-        let mut patches = Vec::new();
+        let mut edits = Vec::new();
         for id in &ids {
             let (Some(before), Some(after)) =
                 (self.clip_edit_bases.get(id), self.project.clip(*id))
@@ -2799,25 +2984,17 @@ impl VideoEditorApp {
                 // change as a reverse patch.
                 return;
             };
-            if current.clip(*id).is_none() {
-                return;
-            }
-            let VideoEditorAction::PatchClipFields { clip, changes } =
-                clip_field_patch_action(before, after)
-            else {
-                return;
-            };
-            if !changes.is_empty() {
-                patches.push(crate::actions::ClipPatchData { clip, changes });
-            }
-        }
-        if !patches.is_empty() {
-            self.actions.dispatch(
-                doc,
-                VIDEO_EDITOR_ACTION_TYPE,
-                &VideoEditorAction::PatchClipsFields { patches },
+            // A clip that is gone by the time the host applies the patch
+            // refuses it there, so the patch never recreates it; one submitted
+            // earlier in this gesture is there by then.
+            edits.extend(
+                Project::paths()
+                    .clips
+                    .item_path(&key(*id))
+                    .edits(before, after),
             );
         }
+        self.submit(edits);
         // Whether the edit changed a field or was a harmless no-op, this
         // authoring attempt is over. A later UI gesture gets a fresh baseline.
         for id in ids {
@@ -2839,14 +3016,14 @@ impl VideoEditorApp {
     /// baseline map is the authoritative changed-member set: a locked follower
     /// is intentionally not edited, so it must not abandon editable members
     /// merely because it has no local before snapshot.
-    fn dispatch_clip_linked(&mut self, doc: &mut AutoCommit, id: ClipId) {
+    fn dispatch_clip_linked(&mut self, id: ClipId) {
         let group: Vec<_> = self
             .project
             .link_group(id)
             .into_iter()
             .filter(|member| self.clip_edit_bases.contains_key(member))
             .collect();
-        self.dispatch_existing_clips(doc, &group);
+        self.dispatch_existing_clips(&group);
     }
 
     // ---- selection ------------------------------------------------------
@@ -2930,28 +3107,20 @@ impl VideoEditorApp {
 
     /// Split every editable selected clip at the playhead. Only clips whose
     /// span actually covers the playhead split; the rest are left alone. All
-    /// the splits dispatch inside one event, so they collapse into a single
-    /// undo boundary (see [`ui::ActionHost::dispatch`]).
-    fn split_selected(&mut self, doc: &mut AutoCommit) {
+    /// the splits are submitted inside one event, so they are one undo step.
+    fn split_selected(&mut self) {
+        let before = self.project.clone();
         let mut right_halves = Vec::new();
         // Cut a linked shot on both its lanes as one edit, so the two tails
         // become a link group of their own rather than joining the heads' —
         // four clips in one group would make dragging the second half of the
         // shot drag the first half with it.
         for group in self.target_groups() {
-            for (id, rid) in self.project.split_group(&group, self.playhead) {
-                let left = self.project.clip(id).cloned();
-                let right = self.project.clip(rid).cloned();
-                if let (Some(left), Some(right)) = (left, right) {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &split_clip_action(&left, &right),
-                    );
-                }
+            for (_, rid) in self.project.split_group(&group, self.playhead) {
                 right_halves.push(rid);
             }
         }
+        self.submit_changes(&before);
         // The right-hand halves become the selection, matching the
         // single-clip behaviour (S leaves you on the tail).
         if !right_halves.is_empty() {
@@ -2959,44 +3128,43 @@ impl VideoEditorApp {
         }
     }
 
-    /// Lift every editable selected clip, leaving the gaps where they were.
-    fn delete_selected(&mut self, doc: &mut AutoCommit) {
+    /// Lift every editable selected clip, leaving the gaps where they were:
+    /// one delete per shot (a clip with its linked clips), as one gesture.
+    fn delete_selected(&mut self) {
         let ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
+        let mut deletes = Vec::new();
         for id in ids {
-            self.project.delete_clip(id);
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
+            if self.project.clip(id).is_some() {
+                self.project.delete_linked(id);
+                deletes.push(Project::REMOVE_CLIP.with(key(id)));
+            }
         }
+        self.submit(deletes);
         self.selection.clear();
     }
 
     /// Delete the selected clips and close the gaps, shifting later clips on
-    /// the same track left. Each ripple — the delete plus every shifted clip —
-    /// is carried in one action, and the whole selection's worth of ripples
-    /// dispatches inside one event, so it lands as a single undo boundary and
-    /// replays atomically on a peer. Deleting right-to-left keeps each
-    /// remaining clip's start valid while the earlier ones are still there.
-    fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
+    /// the same track left. The whole selection's worth of ripples is one
+    /// gesture, so it lands as a single undo boundary and replays atomically
+    /// on a peer. Deleting right-to-left keeps each remaining clip's start
+    /// valid while the earlier ones are still there.
+    fn ripple_delete_selected(&mut self) {
         let mut ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
         ids.reverse();
+        let mut ripples = Vec::new();
         for id in ids {
-            let moved_ids = self.project.ripple_delete(id);
-            let moved: Vec<Clip> = moved_ids
-                .iter()
-                .filter_map(|m| self.project.clip(*m).cloned())
-                .collect();
-            self.actions.dispatch(
-                doc,
-                VIDEO_EDITOR_ACTION_TYPE,
-                &ripple_delete_action(&id, &moved),
-            );
+            if self.project.clip(id).is_some() {
+                self.project.ripple_delete_linked(id);
+                ripples.push(Project::CLOSE_GAP.with(key(id)));
+            }
         }
+        self.submit(ripples);
         self.selection.clear();
     }
 
@@ -3031,9 +3199,9 @@ impl VideoEditorApp {
 
     /// Ctrl+X: copy the selection, then lift it. Both halves happen in one
     /// event, so the removal is one undo boundary.
-    fn cut_selected(&mut self, doc: &mut AutoCommit) {
+    fn cut_selected(&mut self) {
         self.copy_selected();
-        self.delete_selected(doc);
+        self.delete_selected();
     }
 
     /// Paste the clipboard at the playhead. The earliest copied clip lands on
@@ -3043,7 +3211,7 @@ impl VideoEditorApp {
     /// selected clip's track, otherwise any unlocked track of the right kind
     /// (created if the project has none). The pasted clips become the
     /// selection.
-    fn paste_clip(&mut self, doc: &mut AutoCommit) {
+    fn paste_clip(&mut self) {
         let src = self.clipboard.clone();
         if src.is_empty() {
             return;
@@ -3073,7 +3241,7 @@ impl VideoEditorApp {
                 .project
                 .placement_track(kind, Some(clip.track))
                 .or_else(|| self.project.placement_track(kind, near))
-                .unwrap_or_else(|| self.ensure_track_of_kind(doc, kind));
+                .unwrap_or_else(|| self.ensure_track_of_kind(kind));
             let start = snap_to_frame(
                 (self.playhead + (clip.start - base)).max(0.0),
                 self.project.fps,
@@ -3083,7 +3251,7 @@ impl VideoEditorApp {
             from.push((was, id));
             pasted.push(id);
         }
-        self.relink_copies(doc, &from);
+        self.relink_copies(&from);
         if !pasted.is_empty() {
             self.selection.set(pasted);
         }
@@ -3091,7 +3259,7 @@ impl VideoEditorApp {
 
     /// Ctrl+D: drop a copy of the selection immediately after it, on the same
     /// tracks, and select the copies. One event → one undo boundary.
-    fn duplicate_selected(&mut self, doc: &mut AutoCommit) {
+    fn duplicate_selected(&mut self) {
         let ids = self.edit_targets();
         if ids.is_empty() {
             return;
@@ -3118,7 +3286,7 @@ impl VideoEditorApp {
             from.push((was, id));
             copies.push(id);
         }
-        self.relink_copies(doc, &from);
+        self.relink_copies(&from);
         self.selection.set(copies);
     }
 
@@ -3157,7 +3325,7 @@ impl VideoEditorApp {
     /// group becomes one **fresh** group among the copies: duplicating a shot
     /// has to give back a shot whose picture and sound still move together,
     /// without tying either of them to the shot they were copied from.
-    fn relink_copies(&mut self, doc: &mut AutoCommit, from: &[(Option<Uuid>, ClipId)]) {
+    fn relink_copies(&mut self, from: &[(Option<Uuid>, ClipId)]) {
         let mut seen: Vec<Uuid> = Vec::new();
         for (link, _) in from {
             if let Some(l) = link
@@ -3175,7 +3343,7 @@ impl VideoEditorApp {
             self.project.link_clips(&members);
         }
         for (_, id) in from {
-            self.dispatch_clip(doc, *id);
+            self.dispatch_clip(*id);
         }
     }
 
@@ -3209,7 +3377,7 @@ impl VideoEditorApp {
     /// are written inside the caller's event, so the pair lands on one undo
     /// boundary. Returns the audio clip's id, or `None` when there is nothing
     /// to split off.
-    fn attach_linked_audio(&mut self, doc: &mut AutoCommit, video_clip: ClipId) -> Option<ClipId> {
+    fn attach_linked_audio(&mut self, video_clip: ClipId) -> Option<ClipId> {
         let clip = self.project.clip(video_clip)?;
         let (media_id, track_id) = (clip.media, clip.track);
         let media = self.project.media(media_id)?;
@@ -3227,32 +3395,35 @@ impl VideoEditorApp {
         let audio_track = self
             .project
             .placement_track(TrackKind::Audio, None)
-            .unwrap_or_else(|| self.ensure_track_of_kind(doc, TrackKind::Audio));
+            .unwrap_or_else(|| self.ensure_track_of_kind(TrackKind::Audio));
         self.remember_clip_before(video_clip);
         let audio = self.project.add_linked_audio(video_clip, audio_track)?;
         // The picture is already durable, so only its newly assigned group
         // membership is patched. The audio half is genuinely new and gets its
         // one allowed complete first write below.
-        self.dispatch_existing_clips(doc, &[video_clip]);
-        self.dispatch_clip(doc, audio);
+        self.dispatch_existing_clips(&[video_clip]);
+        self.dispatch_clip(audio);
         Some(audio)
     }
 
     /// Break the link on every clip in the selection's groups, leaving two
     /// ordinary independent clips. Writes exactly the clips that changed.
-    fn unlink_selected(&mut self, doc: &mut AutoCommit) {
-        let ids = self.edit_targets();
-        for id in &ids {
-            self.remember_clip_before(*id);
+    fn unlink_selected(&mut self) {
+        let mut unlinks = Vec::new();
+        for id in self.edit_targets() {
+            if self.project.is_linked(id) {
+                let group = self.project.link_group(id);
+                self.project.unlink_clips(&group);
+                unlinks.push(Project::UNLINK.with(key(id)));
+            }
         }
-        let changed = self.project.unlink_clips(&ids);
-        self.dispatch_existing_clips(doc, &changed);
+        self.submit(unlinks);
     }
 
     /// Put every editable selected clip into one fresh link group — the way
     /// back after an unlink, and the way to tie a sound to a picture it was
     /// never imported with.
-    fn link_selected(&mut self, doc: &mut AutoCommit) {
+    fn link_selected(&mut self) {
         let mut ids = self.editable_selection();
         // Re-linking a shot to the sound it was split from: the sound half is
         // not selected — the user picked the picture and asked for the link
@@ -3264,20 +3435,25 @@ impl VideoEditorApp {
         {
             ids.push(sound);
         }
-        for id in &ids {
-            self.remember_clip_before(*id);
-        }
+        let Some((&first, others)) = ids.split_first() else {
+            return;
+        };
         if self.project.link_clips(&ids).is_none() {
             return;
         }
-        self.dispatch_existing_clips(doc, &ids);
+        self.submit(
+            others
+                .iter()
+                .map(|other| Project::LINK_WITH.with((key(first), key(*other))))
+                .collect(),
+        );
     }
 
     /// Re-time the selected clip and everything linked to it, and write them
     /// all. The one door every rate affordance goes through — the slider, the
     /// presets, the reverse toggle and the keyboard — so none of them can
     /// leave half a shot at the old speed.
-    fn set_speed_selected(&mut self, doc: &mut AutoCommit, rate: f64, reverse: bool) {
+    fn set_speed_selected(&mut self, rate: f64, reverse: bool) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3287,7 +3463,7 @@ impl VideoEditorApp {
             self.remember_clip_before(*id);
         }
         self.project.set_speed_group(&ids, rate, reverse);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// What the link control offers for the current selection, or `None` when
@@ -3324,13 +3500,13 @@ impl VideoEditorApp {
     }
 
     /// Do whichever of link / unlink the selection currently offers.
-    fn toggle_link_selected(&mut self, doc: &mut AutoCommit) {
+    fn toggle_link_selected(&mut self) {
         match self.link_affordance() {
-            Some(LinkAffordance::Unlink) => self.unlink_selected(doc),
-            Some(LinkAffordance::Link) => self.link_selected(doc),
+            Some(LinkAffordance::Unlink) => self.unlink_selected(),
+            Some(LinkAffordance::Link) => self.link_selected(),
             Some(LinkAffordance::SplitAudio) => {
                 if let Some(id) = self.selected() {
-                    self.attach_linked_audio(doc, id);
+                    self.attach_linked_audio(id);
                 }
             }
             None => {}
@@ -3341,7 +3517,7 @@ impl VideoEditorApp {
     /// trims the head so the clip starts at the current frame. A single-clip
     /// trim by nature — it acts on the anchor, and only when its track allows
     /// edits.
-    fn set_in_at_playhead(&mut self, doc: &mut AutoCommit) {
+    fn set_in_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3359,12 +3535,12 @@ impl VideoEditorApp {
             self.remember_clip_before(*linked);
         }
         self.project.trim_in_with(id, delta, &also);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// Set the out-point of the primary selected clip to the playhead (`O`):
     /// trims the tail so the clip ends at the current frame.
-    fn set_out_at_playhead(&mut self, doc: &mut AutoCommit) {
+    fn set_out_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3382,13 +3558,13 @@ impl VideoEditorApp {
             self.remember_clip_before(*linked);
         }
         self.project.trim_out_with(id, delta, &also);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// Nudge every editable selected clip by `dt` seconds (arrow keys).
     /// Snaps each result to the frame grid. One event → one undo boundary,
     /// so a multi-clip nudge is a single Ctrl+Z.
-    fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
+    fn nudge_selected(&mut self, dt: f64) {
         let ids = self.edit_targets();
         for id in &ids {
             self.remember_clip_before(*id);
@@ -3397,7 +3573,7 @@ impl VideoEditorApp {
             });
             self.project.move_clip(*id, new_start);
         }
-        self.dispatch_existing_clips(doc, &ids);
+        self.dispatch_existing_clips(&ids);
     }
 
     /// Apply `edit` to the selected clip and dispatch an optimistic narrow
@@ -3405,7 +3581,7 @@ impl VideoEditorApp {
     /// transition / palette click, or a keyboard-driven grade) — each is one
     /// undo step. Continuous slider drags use [`Self::preview_edit`] +
     /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
-    fn edit_selected(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut Clip)) {
+    fn edit_selected(&mut self, edit: impl FnOnce(&mut Clip)) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3414,7 +3590,7 @@ impl VideoEditorApp {
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
     }
 
     /// Apply `edit` to the selected clip **in memory only** — the live drag
@@ -3450,7 +3626,7 @@ impl VideoEditorApp {
         let Some(mid) = self.project.clip(id).map(|c| c.media) else {
             return;
         };
-        if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+        if let Some(m) = self.project.media.find_mut(&key(mid)) {
             edit(m);
         }
     }
@@ -3478,49 +3654,87 @@ impl VideoEditorApp {
         if self.project.track_locked(tid) {
             return;
         }
-        if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+        if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
             edit(t);
         }
     }
 
     /// Dispatch a whole-track write for the lane the selection sits on.
-    fn dispatch_selected_track(&mut self, doc: &mut AutoCommit) {
-        let Some(t) = self.selected_track().cloned() else {
-            return;
-        };
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&t));
+    fn dispatch_selected_track(&mut self) {
+        if let Some(t) = self.selected_track().cloned() {
+            self.submit_track(&t);
+        }
+    }
+
+    /// Submit what changed of the lane `track` since it was last stored or
+    /// submitted, as field edits of that lane alone.
+    fn submit_track(&mut self, track: &crate::model::Track) {
+        let edits = Project::paths()
+            .tracks
+            .upsert(self.stored.track(track.id), track);
+        let stored = std::rc::Rc::make_mut(&mut self.stored);
+        match stored.tracks.find_mut(&key(track.id)) {
+            Some(slot) => *slot = track.clone(),
+            None => stored.tracks.push(track.clone()),
+        }
+        self.submit(edits);
+    }
+
+    /// Submit what changed of the timeline marker `marker` since it was last
+    /// stored or submitted, as field edits of that marker alone.
+    fn submit_marker(&mut self, marker: &crate::model::Marker) {
+        let edits = Project::paths()
+            .markers
+            .upsert(self.stored.marker(marker.id), marker);
+        let stored = std::rc::Rc::make_mut(&mut self.stored);
+        match stored.markers.find_mut(&key(marker.id)) {
+            Some(slot) => *slot = marker.clone(),
+            None => stored.markers.push(marker.clone()),
+        }
+        self.submit(edits);
+    }
+
+    /// Submit what changed of the source `item` since it was last stored or
+    /// submitted, as field edits of that source alone.
+    fn submit_media(&mut self, item: &MediaItem) {
+        let edits = Project::paths()
+            .media
+            .upsert(self.stored.media(item.id), item);
+        let stored = std::rc::Rc::make_mut(&mut self.stored);
+        match stored.media.find_mut(&key(item.id)) {
+            Some(slot) => *slot = item.clone(),
+            None => stored.media.push(item.clone()),
+        }
+        self.submit(edits);
     }
 
     /// Put the selected clip's lane back to unity and centre, as one action
     /// and one undo boundary.
-    fn reset_selected_track_mix(&mut self, doc: &mut AutoCommit) {
+    fn reset_selected_track_mix(&mut self) {
         self.preview_track_edit(|t| {
             t.gain_db = 0.0;
             t.pan = 0.0;
         });
-        self.dispatch_selected_track(doc);
+        self.dispatch_selected_track();
     }
 
     /// Dispatch a whole-media write for one bin source.
-    fn dispatch_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+    fn dispatch_media(&mut self, mid: MediaId) {
         if let Some(m) = self.project.media(mid).cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
+            self.submit_media(&m);
         }
     }
 
     /// Dispatch a whole-media write for the selected clip's source.
-    fn dispatch_selected_media(&mut self, doc: &mut AutoCommit) {
+    fn dispatch_selected_media(&mut self) {
         if let Some(m) = self.selected_media_item().cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
+            self.submit_media(&m);
         }
     }
 
     /// Apply `edit` to the selected clip's title styling and dispatch it as
     /// one media write. A no-op on a clip whose source is not a title.
-    fn edit_title(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut TextSource)) {
+    fn edit_title(&mut self, edit: impl FnOnce(&mut TextSource)) {
         let has_text = self.selected_media_item().is_some_and(|m| m.text.is_some());
         if !has_text {
             return;
@@ -3542,7 +3756,7 @@ impl VideoEditorApp {
             }
             m.text = Some(t);
         });
-        self.dispatch_selected_media(doc);
+        self.dispatch_selected_media();
     }
 
     /// What a ranged control currently shows. `None` when the control has
@@ -3697,9 +3911,9 @@ impl VideoEditorApp {
     /// parameter reads there. The first key never moves the picture — it is
     /// the *second* one that makes anything animate — so keying is safe to
     /// try, which is what makes the control learnable.
-    fn key_here(&mut self, doc: &mut AutoCommit, param: Param) {
+    fn key_here(&mut self, param: Param) {
         let at = self.playhead;
-        self.edit_selected(doc, move |c| {
+        self.edit_selected(move |c| {
             let now = c.param_at(param, at);
             let interp = c.key_interp_at(param, at).unwrap_or_default();
             c.set_key_at(param, at, now, interp);
@@ -3747,7 +3961,7 @@ impl VideoEditorApp {
     /// Indices count separators, because that is what `ContextMenu::item_at`
     /// reports. The two shapes the menu takes are laid out here beside the
     /// builder that produces them so they cannot drift apart.
-    fn key_menu_choose(&mut self, doc: &mut AutoCommit, param: Param, idx: usize) {
+    fn key_menu_choose(&mut self, param: Param, idx: usize) {
         self.key_menu_param = None;
         let at = self.playhead;
         let on_key = self
@@ -3757,29 +3971,29 @@ impl VideoEditorApp {
         if on_key {
             // 0 remove · 1 sep · 2..4 shapes · 5 sep · 6 prev · 7 next · 8 sep · 9 clear
             match idx {
-                0 => self.edit_selected(doc, move |c| {
+                0 => self.edit_selected(move |c| {
                     c.remove_key_at(param, at);
                 }),
                 2..=4 => {
                     let Some(&shape) = Interp::ALL.get(idx - 2) else {
                         return;
                     };
-                    self.edit_selected(doc, move |c| {
+                    self.edit_selected(move |c| {
                         c.set_interp_at(param, at, shape);
                     });
                 }
                 6 => self.jump_to_key(false),
                 7 => self.jump_to_key(true),
-                9 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                9 => self.edit_selected(move |c| c.anim.clear(param)),
                 _ => {}
             }
         } else {
             // 0 add · 1 sep · 2 prev · 3 next · 4 sep · 5 clear
             match idx {
-                0 => self.key_here(doc, param),
+                0 => self.key_here(param),
                 2 => self.jump_to_key(false),
                 3 => self.jump_to_key(true),
-                5 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                5 => self.edit_selected(move |c| c.anim.clear(param)),
                 _ => {}
             }
         }
@@ -3825,30 +4039,28 @@ impl VideoEditorApp {
     /// memory the way every other local edit does: the document is the truth
     /// and `sync` will reload it, but the model must not disagree with it in
     /// between.
-    fn dispatch_project_meta(&mut self, doc: &mut AutoCommit, next: Project) {
-        let action = set_project_meta_action(&next);
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &action);
-        self.project = next;
+    fn dispatch_project_meta(&mut self, next: Project) {
+        let before = std::mem::replace(&mut self.project, next);
+        self.submit_changes(&before);
     }
 
     /// Set the project's frame size — the same whole-settings write the
     /// `set-frame-size` action dispatches.
-    fn set_project_frame_size(&mut self, doc: &mut AutoCommit, width: u32, height: u32) {
+    fn set_project_frame_size(&mut self, width: u32, height: u32) {
         let mut next = self.project.clone();
         next.set_frame_size(width, height);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
-    fn set_project_fps(&mut self, doc: &mut AutoCommit, fps: f64) {
+    fn set_project_fps(&mut self, fps: f64) {
         let mut next = self.project.clone();
         next.set_fps(fps);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Take the shape of whatever [`Self::format_source`] names as the
     /// project's own — deliberately, so a later import cannot undo it.
-    fn match_project_format(&mut self, doc: &mut AutoCommit) {
+    fn match_project_format(&mut self) {
         let Some(m) = self.format_source().cloned() else {
             return;
         };
@@ -3857,7 +4069,7 @@ impl VideoEditorApp {
         if m.fps > 0.0 {
             next.set_fps(m.fps);
         }
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Re-word the project's format if it has moved since the last frame.
@@ -3877,8 +4089,8 @@ impl VideoEditorApp {
     /// Switch the chroma key on or off, opening the section so its sliders
     /// are on screen — the one edit both the enable button and an assistive
     /// technology's activation run, so the two cannot diverge.
-    fn toggle_key_enabled(&mut self, doc: &mut AutoCommit) {
-        self.edit_selected(doc, |c| {
+    fn toggle_key_enabled(&mut self) {
+        self.edit_selected(|c| {
             c.key.enabled = !c.key.enabled;
             // A key switched on with the tolerance wound to zero removes
             // nothing, which reads as the button not working; give it back a
@@ -3893,9 +4105,9 @@ impl VideoEditorApp {
     /// Choose the mask's shape. Turning a mask on lands it over the picture
     /// rather than in the middle of an empty frame, so a masked
     /// picture-in-picture is one press.
-    fn set_mask_shape(&mut self, doc: &mut AutoCommit, shape: crate::model::MaskShape) {
+    fn set_mask_shape(&mut self, shape: crate::model::MaskShape) {
         let (src_aspect, frame_aspect) = self.selected_aspects();
-        self.edit_selected(doc, move |c| {
+        self.edit_selected(move |c| {
             if shape == crate::model::MaskShape::None || c.mask.is_active() {
                 c.mask.shape = shape;
             } else {
@@ -3913,7 +4125,7 @@ impl VideoEditorApp {
     /// the *project's* aspect — an exported file letterboxed into 16:9 with no
     /// exit. A format that was set deliberately is never overridden, and
     /// neither is one whose timeline already has clips cut against it.
-    fn adopt_project_format(&mut self, doc: &mut AutoCommit, media: MediaId) {
+    fn adopt_project_format(&mut self, media: MediaId) {
         if self.project.format_explicit || !self.project.clips.is_empty() {
             return;
         }
@@ -3922,7 +4134,7 @@ impl VideoEditorApp {
         };
         let mut next = self.project.clone();
         if next.adopt_format(&m) {
-            self.dispatch_project_meta(doc, next);
+            self.dispatch_project_meta(next);
         }
     }
 
@@ -3933,31 +4145,37 @@ impl VideoEditorApp {
     /// gets rendered, and the export loop ran the whole timeline
     /// unconditionally — so checking a ten-second fix meant re-rendering
     /// everything.
-    fn mark_in_here(&mut self, doc: &mut AutoCommit) {
-        let mut next = self.project.clone();
-        next.set_mark_in(self.playhead);
-        self.dispatch_project_meta(doc, next);
+    fn mark_in_here(&mut self) {
+        self.project.set_mark_in(self.playhead);
+        self.submit_marks();
     }
 
-    fn mark_out_here(&mut self, doc: &mut AutoCommit) {
-        let mut next = self.project.clone();
-        next.set_mark_out(self.playhead);
-        self.dispatch_project_meta(doc, next);
+    fn mark_out_here(&mut self) {
+        self.project.set_mark_out(self.playhead);
+        self.submit_marks();
     }
 
     /// Drop both marks, putting the render back to the whole timeline.
-    fn clear_marks(&mut self, doc: &mut AutoCommit) {
+    fn clear_marks(&mut self) {
         if !self.project.has_marks() {
             return;
         }
-        let mut next = self.project.clone();
-        next.clear_marks();
-        self.dispatch_project_meta(doc, next);
+        self.project.clear_marks();
+        self.submit_marks();
     }
 
     /// Add a timeline marker at the playhead and open it for naming, so the
     /// marker is never left as an anonymous tick the user has to hunt for.
-    fn add_marker_here(&mut self, doc: &mut AutoCommit) {
+    /// Write the render range's in and out marks as they are now.
+    fn submit_marks(&self) {
+        let paths = Project::paths();
+        self.submit(vec![
+            paths.mark_in.set(self.project.mark_in),
+            paths.mark_out.set(self.project.mark_out),
+        ]);
+    }
+
+    fn add_marker_here(&mut self) {
         let mut next = self.project.clone();
         let palette = (next.markers.len() as u8 % 6) + 1;
         let id = next.add_marker(self.playhead, "Marker", palette);
@@ -3965,11 +4183,7 @@ impl VideoEditorApp {
             return;
         };
         self.project = next.clone();
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::AddProjectMarker { marker },
-        );
+        self.submit_marker(&marker);
         self.collapsed.remove(&Section::Markers);
         self.begin_marker_rename(MarkerRef {
             id,
@@ -4010,21 +4224,14 @@ impl VideoEditorApp {
         } else {
             current
         };
-        // The dropdown reads its current value out of the document it is
-        // given, so the family in force is seeded there and synced in —
-        // which is also what lands the highlight on it when the list opens.
-        let mut doc = AutoCommit::new();
-        let _ = automerge::transaction::Transactable::put(
-            &mut doc,
-            &automerge::ROOT,
-            "font",
-            shown.as_str(),
-        );
-        let mut dd = ui::widget::Dropdown::new(options, "font")
+        // The choice is view state until it is committed through the media
+        // action: the family in force starts it, which is also what lands
+        // the highlight on it when the list opens.
+        let chosen = ui::LocalState::new(shown);
+        let dd = ui::widget::Dropdown::from_state(options, &chosen)
             .with_id("title_font")
             .open();
-        dd.sync(&mut doc, &automerge::ROOT);
-        self.font_picker = Some((mid, Box::new(dd), doc));
+        self.font_picker = Some((mid, Box::new(dd)));
     }
 
     /// Take whatever the open picker settled on, if it has closed.
@@ -4032,7 +4239,7 @@ impl VideoEditorApp {
     /// Returns the family to write — an empty string for the default — so
     /// the caller commits it through the ordinary media action.
     fn take_font_choice(&mut self) -> Option<(MediaId, String)> {
-        let (mid, dd, _) = self.font_picker.as_ref()?;
+        let (mid, dd) = self.font_picker.as_ref()?;
         if dd.is_open() {
             return None;
         }
@@ -4074,7 +4281,7 @@ impl VideoEditorApp {
             })
             .unwrap_or_default();
         let mut label = EditableLabel::new(&current)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Label)
             .with_id("marker_rename");
         label.begin_edit();
         self.marker_field = field;
@@ -4087,9 +4294,9 @@ impl VideoEditorApp {
     /// Returns whether the write was accepted — an empty name is refused,
     /// and the caller has to say so rather than silently restoring the old
     /// one.
-    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) -> bool {
+    fn commit_marker_rename(&mut self, m: MarkerRef, text: &str) -> bool {
         let field = self.marker_field;
-        self.commit_marker_text(doc, m, field, text)
+        self.commit_marker_text(m, field, text)
     }
 
     /// Write one of a marker's texts through whichever action owns that
@@ -4102,13 +4309,7 @@ impl VideoEditorApp {
     /// Returns whether the document changed, so a caller that has to report
     /// the outcome -- an assistive technology setting the text outright --
     /// can say "refused" rather than claim a write that never happened.
-    fn commit_marker_text(
-        &mut self,
-        doc: &mut AutoCommit,
-        m: MarkerRef,
-        field: MarkerField,
-        text: &str,
-    ) -> bool {
+    fn commit_marker_text(&mut self, m: MarkerRef, field: MarkerField, text: &str) -> bool {
         let text = text.trim().to_string();
         if field == MarkerField::Name && text.is_empty() {
             return false;
@@ -4126,10 +4327,7 @@ impl VideoEditorApp {
         };
         match m.clip {
             None => {
-                let Some(expected) = self.project.marker(m.id).map(|mk| match field {
-                    MarkerField::Name => mk.name.clone(),
-                    MarkerField::Note => mk.note.clone(),
-                }) else {
+                let Some(before) = self.project.marker(m.id).cloned() else {
                     return false;
                 };
                 let mut next = self.project.clone();
@@ -4140,54 +4338,30 @@ impl VideoEditorApp {
                     return false;
                 }
                 self.project = next.clone();
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::SetProjectMarkerText {
-                        marker: m.id.to_string(),
-                        field: match field {
-                            MarkerField::Name => MarkerTextField::Name,
-                            MarkerField::Note => MarkerTextField::Note,
-                        },
-                        expected,
-                        value: text,
-                    },
-                );
+                if let Some(after) = next.marker(m.id) {
+                    let _ = before;
+                    let after = after.clone();
+                    self.submit_marker(&after);
+                }
                 true
             }
             Some(cid) => {
-                let Some(expected) = self
+                if self
                     .project
                     .clip(cid)
                     .and_then(|clip| clip.markers.iter().find(|mk| mk.id == m.id))
-                    .map(|mk| match field {
-                        MarkerField::Name => mk.name.clone(),
-                        MarkerField::Note => mk.note.clone(),
-                    })
-                else {
+                    .is_none()
+                {
                     return false;
-                };
+                }
                 self.remember_clip_before(cid);
                 let changed = self
                     .project
                     .clip_mut(cid)
-                    .and_then(|c| c.markers.iter_mut().find(|mk| mk.id == m.id).map(write))
+                    .and_then(|c| c.markers.find_mut(&key(m.id)).map(write))
                     .unwrap_or(false);
                 if changed {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &VideoEditorAction::SetClipMarkerText {
-                            clip: cid.to_string(),
-                            marker: m.id.to_string(),
-                            field: match field {
-                                MarkerField::Name => MarkerTextField::Name,
-                                MarkerField::Note => MarkerTextField::Note,
-                            },
-                            expected,
-                            value: text,
-                        },
-                    );
+                    self.dispatch_existing_clips(&[cid]);
                 }
                 changed
             }
@@ -4217,7 +4391,7 @@ impl VideoEditorApp {
         self.seek_to(m.at);
     }
 
-    fn delete_marker(&mut self, doc: &mut AutoCommit, m: MarkerRef) {
+    fn delete_marker(&mut self, m: MarkerRef) {
         match m.clip {
             None => {
                 let mut next = self.project.clone();
@@ -4225,13 +4399,7 @@ impl VideoEditorApp {
                     return;
                 }
                 self.project = next.clone();
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::RemoveProjectMarker {
-                        marker: m.id.to_string(),
-                    },
-                );
+                self.submit(vec![Project::paths().markers.remove(&key(m.id))]);
             }
             Some(cid) => {
                 self.remember_clip_before(cid);
@@ -4240,14 +4408,7 @@ impl VideoEditorApp {
                     .clip_mut(cid)
                     .is_some_and(|c| c.remove_marker(m.id));
                 if gone {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &VideoEditorAction::RemoveClipMarker {
-                            clip: cid.to_string(),
-                            marker: m.id.to_string(),
-                        },
-                    );
+                    self.dispatch_existing_clips(&[cid]);
                 }
             }
         }
@@ -4263,7 +4424,7 @@ impl VideoEditorApp {
     /// hydrate, and it renders on every peer immediately — so "add a title"
     /// can go all the way to an editable clip on the timeline in one step
     /// rather than leaving an unnamed item in the bin to be dragged out.
-    fn add_title(&mut self, doc: &mut AutoCommit) {
+    fn add_title(&mut self) {
         let palette = (self.project.media.len() as u8) % 7;
         let item = MediaItem {
             id: Uuid::new_v4(),
@@ -4275,16 +4436,14 @@ impl VideoEditorApp {
             fps: self.project.fps,
             palette,
             path: String::new(),
-            hydration: crate::media::Hydration::Local,
             text: Some(TextSource::default()),
             ..Default::default()
         };
         let mid = item.id;
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit_media(&item);
         self.selected_media = Some(mid);
-        if let Some(cid) = self.place_title_clip(doc, mid) {
+        if let Some(cid) = self.place_title_clip(mid) {
             self.selection.select_only(cid);
             self.reveal_inspector();
         }
@@ -4295,23 +4454,23 @@ impl VideoEditorApp {
     /// Place a fresh title clip at the playhead on the topmost video track
     /// that will take it, so a title lands *over* the picture rather than
     /// under it.
-    fn place_title_clip(&mut self, doc: &mut AutoCommit, mid: MediaId) -> Option<ClipId> {
+    fn place_title_clip(&mut self, mid: MediaId) -> Option<ClipId> {
         let existing = self
             .project
             .display_tracks()
             .into_iter()
             .find(|t| t.kind == TrackKind::Video && !t.locked)
             .map(|t| t.id);
-        let track = existing.unwrap_or_else(|| self.add_track(doc, TrackKind::Video));
+        let track = existing.unwrap_or_else(|| self.add_track(TrackKind::Video));
         let at = snap_to_frame(self.playhead, self.project.fps);
         let cid = self.project.add_clip(track, mid, at)?;
-        self.dispatch_clip(doc, cid);
+        self.dispatch_clip(cid);
         Some(cid)
     }
 
     /// Commit new words for a title: one media write, so the picture, the bin
     /// row and every clip that placed this title all follow from it.
-    fn commit_title_text(&mut self, doc: &mut AutoCommit, mid: MediaId, words: &str) {
+    fn commit_title_text(&mut self, mid: MediaId, words: &str) {
         let Some(m) = self.project.media(mid) else {
             return;
         };
@@ -4326,11 +4485,10 @@ impl VideoEditorApp {
             next.name = "Title".into();
         }
         next.text = Some(t);
-        if let Some(slot) = self.project.media.iter_mut().find(|m| m.id == mid) {
+        if let Some(slot) = self.project.media.find_mut(&key(mid)) {
             *slot = next.clone();
         }
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+        self.submit_media(&next);
     }
 
     fn begin_title_edit(&mut self, mid: MediaId) {
@@ -4343,7 +4501,7 @@ impl VideoEditorApp {
         let mut field = ui::widget::TextInput::local()
             .multiline(true)
             .with_initial_value(&content)
-            .with_font_size(13.0)
+            .with_text_role(TextRole::Body)
             .with_id("title_text");
         field.set_focus(true);
         self.title_edit = Some((mid, field));
@@ -4358,54 +4516,33 @@ impl VideoEditorApp {
             .max(0.01)
     }
 
-    fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
-        self.edit_selected(doc, move |c| c.transition = t);
+    fn set_transition(&mut self, t: Transition) {
+        self.edit_selected(move |c| c.transition = t);
     }
-    fn add_effect_to_selected(&mut self, doc: &mut AutoCommit, kind: EffectKind) {
+    fn add_effect_to_selected(&mut self, kind: EffectKind) {
         let Some(id) = self.selected() else { return };
-        let Some(clip) = self.project.clip(id) else {
+        let Some(clip) = self.project.clip_mut(id) else {
             return;
         };
-        let ordinal = clip.effects.len();
-        let effect = crate::model::ClipEffect::new(kind);
-        if let Some(clip) = self.project.clip_mut(id) {
-            clip.effects.push(effect);
-        }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::AddEffect {
-                clip: id.to_string(),
-                ordinal,
-                effect,
-            },
-        );
+        clip.add_effect(kind);
+        self.submit(vec![Project::ADD_EFFECT.with((key(id), kind))]);
     }
-    fn remove_effect_from_selected(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn remove_effect_from_selected(&mut self, idx: usize) {
         let Some(id) = self.selected() else { return };
         let Some(effect) = self
             .project
             .clip(id)
             .and_then(|clip| clip.effects.get(idx))
-            .copied()
+            .map(|effect| effect.id)
         else {
             return;
         };
         if let Some(clip) = self.project.clip_mut(id) {
-            clip.effects.remove(idx);
+            clip.remove_effect(idx);
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::RemoveEffect {
-                clip: id.to_string(),
-                effect: effect.id.to_string(),
-                expected_kind: effect.kind,
-                expected_amount_bits: effect.amount.to_bits(),
-            },
-        );
+        self.submit(vec![Project::REMOVE_EFFECT.with((key(id), key(effect)))]);
     }
-    fn move_effect_selected(&mut self, doc: &mut AutoCommit, idx: usize, up: bool) {
+    fn move_effect_selected(&mut self, idx: usize, up: bool) {
         let Some(id) = self.selected() else { return };
         let Some(clip) = self.project.clip(id) else {
             return;
@@ -4420,24 +4557,18 @@ impl VideoEditorApp {
         let Some(effect) = clip.effects.get(idx) else {
             return;
         };
-        let Some(neighbour) = clip.effects.get(target).map(|e| e.id) else {
+        if clip.effects.get(target).is_none() {
             return;
-        };
+        }
         let effect_id = effect.id;
         if let Some(clip) = self.project.clip_mut(id) {
-            clip.effects.swap(idx, target);
+            clip.move_effect_id(effect_id, up);
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::MoveEffect {
-                clip: id.to_string(),
-                effect: effect_id.to_string(),
-                expected_index: idx,
-                neighbour: neighbour.to_string(),
-                up,
-            },
-        );
+        self.submit(vec![Project::MOVE_EFFECT.with((
+            key(id),
+            key(effect_id),
+            up,
+        ))]);
     }
     /// Open the "Add effect" picker (the shared context menu) at `at`.
     fn open_effect_menu(&mut self, at: Point) {
@@ -4449,8 +4580,8 @@ impl VideoEditorApp {
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::AddEffect);
     }
-    fn set_palette(&mut self, doc: &mut AutoCommit, p: u8) {
-        self.edit_selected(doc, move |c| c.palette = p);
+    fn set_palette(&mut self, p: u8) {
+        self.edit_selected(move |c| c.palette = p);
     }
 
     /// Return the lowest-index *unlocked* track of `kind`, creating one
@@ -4458,7 +4589,7 @@ impl VideoEditorApp {
     /// edit) when the project has none — so placing a clip from the bin works
     /// even on a blank project, and a locked track never silently swallows a
     /// drop.
-    fn ensure_track_of_kind(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+    fn ensure_track_of_kind(&mut self, kind: TrackKind) -> TrackId {
         if let Some(t) = self
             .project
             .tracks
@@ -4493,8 +4624,7 @@ impl VideoEditorApp {
             pan: 0.0,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.submit_track(&track);
         self.project.tracks.push(track);
         id
     }
@@ -4502,47 +4632,41 @@ impl VideoEditorApp {
     /// Append the given media as a clip on a matching track (creating that track
     /// if the project has none), at the end of that track's content. Returns the
     /// new clip id.
-    fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
+    fn add_media_to_timeline(&mut self, media: MediaId) -> Option<ClipId> {
         let m = self.project.media(media).cloned()?;
         // Before the clip lands, while the timeline is still empty: a blank
         // project takes its shape from the footage rather than making the
         // user go and find a dialog.
-        self.adopt_project_format(doc, media);
+        self.adopt_project_format(media);
         let kind = if m.kind.is_visual() {
             TrackKind::Video
         } else {
             TrackKind::Audio
         };
-        let track = self.ensure_track_of_kind(doc, kind);
+        let track = self.ensure_track_of_kind(kind);
         let start = self.project.clips_on(track).last().map_or(0.0, |c| c.end());
         let id = self.project.add_clip(track, media, start)?;
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
         // A picture that carries sound lands as two clips, not one: the sound
         // on its own lane, linked to the picture. Without it there is nothing
         // to slide, level, fade or cut the sound with.
-        self.attach_linked_audio(doc, id);
+        self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
     }
 
     /// Place `media` on `track` at timeline time `start` (a drag-drop from the
     /// bin), creating and selecting the clip. Returns the new clip id.
-    fn place_media_at(
-        &mut self,
-        doc: &mut AutoCommit,
-        media: MediaId,
-        track: TrackId,
-        start: f64,
-    ) -> Option<ClipId> {
+    fn place_media_at(&mut self, media: MediaId, track: TrackId, start: f64) -> Option<ClipId> {
         // A drag from the bin is just as much "the project's first clip" as
         // an append is, so it adopts the same way.
-        self.adopt_project_format(doc, media);
+        self.adopt_project_format(media);
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
         // Dropping a source on a lane is just as much a placement as
         // appending one, so it splits the sound off the same way.
-        self.attach_linked_audio(doc, id);
+        self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
     }
@@ -4599,7 +4723,7 @@ impl VideoEditorApp {
     /// A press that never became a drag ends here too: if it armed a rename
     /// intent, this is where the rename actually begins — release-time, so a
     /// drag that started from the same press has already cancelled it.
-    fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
+    fn release_bin_drag(&mut self, r: &Regions) {
         let Some(bd) = self.bin_drag.take() else {
             return;
         };
@@ -4627,20 +4751,20 @@ impl VideoEditorApp {
         if let Some((tid, kind, _)) = self.bin_drop_lane(r) {
             let t = self.drop_time(p.x, r);
             if kind == want_kind && !self.project.track_locked(tid) {
-                self.place_media_at(doc, bd.media, tid, t);
+                self.place_media_at(bd.media, tid, t);
             } else {
                 // Wrong kind, or the lane refuses edits: fall to a track that
                 // can take it, at the same drop time.
                 let track = self
                     .project
                     .placement_track(want_kind, None)
-                    .unwrap_or_else(|| self.ensure_track_of_kind(doc, want_kind));
-                self.place_media_at(doc, bd.media, track, t);
+                    .unwrap_or_else(|| self.ensure_track_of_kind(want_kind));
+                self.place_media_at(bd.media, track, t);
             }
         } else if r.timeline.contains(p) {
             // On the timeline but not level with any lane (below the last one)
             // → append to a matching track.
-            self.add_media_to_timeline(doc, bd.media);
+            self.add_media_to_timeline(bd.media);
         }
     }
 
@@ -4651,7 +4775,7 @@ impl VideoEditorApp {
     /// rename field is placed.
     fn bin_name_rect(row: Rect) -> Rect {
         // Mirrors draw_bin: a 64px thumbnail at the left, then the name text.
-        let x0 = row.x0 + 8.0 + 64.0 + 12.0;
+        let x0 = row.x0 + 8.0 + 64.0 + 8.0;
         Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
     }
 
@@ -4750,7 +4874,7 @@ impl VideoEditorApp {
     fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         let bin_visible = self.bin_is_visible(r);
-        if !bin_visible {
+        if !bin_visible || !VideoEditorApp::bin_viewport(r).contains(p) {
             return false;
         }
         for (mid, rect) in self.bin_item_rects(r) {
@@ -4781,55 +4905,55 @@ impl VideoEditorApp {
 
     /// Act on a chosen context-menu row (indices match the `open_*_menu`
     /// builders for the current [`MenuTarget`]).
-    fn bin_menu_choose(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn bin_menu_choose(&mut self, idx: usize) {
         match self.menu_target {
             Some(MenuTarget::Media(mid)) => match idx {
                 0 => {
-                    self.add_media_to_timeline(doc, mid);
+                    self.add_media_to_timeline(mid);
                 }
                 1 => self.begin_rename(mid),
-                3 => self.delete_media(doc, mid),
+                3 => self.delete_media(mid),
                 _ => {}
             },
             Some(MenuTarget::Track(tid)) => match idx {
-                0 => self.toggle_track_mute(doc, tid),
-                1 => self.toggle_track_solo(doc, tid),
-                2 => self.toggle_track_lock(doc, tid),
+                0 => self.toggle_track_mute(tid),
+                1 => self.toggle_track_solo(tid),
+                2 => self.toggle_track_lock(tid),
                 4 => {
-                    self.add_track(doc, TrackKind::Video);
+                    self.add_track(TrackKind::Video);
                 }
                 5 => {
-                    self.add_track(doc, TrackKind::Audio);
+                    self.add_track(TrackKind::Audio);
                 }
-                7 => self.delete_track(doc, tid),
+                7 => self.delete_track(tid),
                 _ => {}
             },
             Some(MenuTarget::Clip(_)) => match idx {
-                0 => self.cut_selected(doc),
+                0 => self.cut_selected(),
                 1 => self.copy_selected(),
-                2 => self.duplicate_selected(doc),
-                4 => self.split_selected(doc),
-                6 => self.delete_selected(doc),
-                7 => self.ripple_delete_selected(doc),
+                2 => self.duplicate_selected(),
+                4 => self.split_selected(),
+                6 => self.delete_selected(),
+                7 => self.ripple_delete_selected(),
                 // 8 is the separator; 9 exists only when `open_clip_menu`
                 // found something to link or unlink, so it can only be chosen
                 // when it does.
-                9 => self.toggle_link_selected(doc),
+                9 => self.toggle_link_selected(),
                 _ => {}
             },
             Some(MenuTarget::AddEffect) => {
                 if let Some(&kind) = EffectKind::ALL.get(idx) {
-                    self.add_effect_to_selected(doc, kind);
+                    self.add_effect_to_selected(kind);
                 }
             }
-            Some(MenuTarget::Keyframe(param)) => self.key_menu_choose(doc, param, idx),
+            Some(MenuTarget::Keyframe(param)) => self.key_menu_choose(param, idx),
             None => {}
         }
     }
 
     /// Add a fresh empty track of `kind` above the others of its kind
     /// (index = current max of that kind + 1), dispatched as an action.
-    fn add_track(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+    fn add_track(&mut self, kind: TrackKind) -> TrackId {
         let index = self
             .project
             .tracks
@@ -4855,14 +4979,13 @@ impl VideoEditorApp {
             pan: 0.0,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.submit_track(&track);
         self.project.tracks.push(track);
         id
     }
 
     /// Delete a track and every clip on it, as one action.
-    fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn delete_track(&mut self, tid: TrackId) {
         let clip_ids: Vec<ClipId> = self
             .project
             .clips
@@ -4871,22 +4994,19 @@ impl VideoEditorApp {
             .map(|c| c.id)
             .collect();
         self.selection.remove_all(&clip_ids);
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &crate::actions::delete_track_action(&tid, &clip_ids),
-        );
+        self.submit(vec![Project::DELETE_TRACK.with(key(tid))]);
     }
 
     /// Toggle a track's mute flag (the header pill), dispatched as an action.
-    fn toggle_track_mute(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_mute(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.muted = !next.muted;
             let muted = next.muted;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            self.submit(vec![
+                Project::paths().tracks.item(&key(tid)).muted.set(muted),
+            ]);
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.muted = muted;
             }
         }
@@ -4895,14 +5015,13 @@ impl VideoEditorApp {
     /// Toggle a track's solo, dispatched as an action. Wired exactly like
     /// mute: the flag lives on the track, replicates, and undoes the same way.
     /// [`Project::track_audible`] is where the two combine.
-    fn toggle_track_solo(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_solo(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.solo = !next.solo;
             let solo = next.solo;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            self.submit(vec![Project::paths().tracks.item(&key(tid)).solo.set(solo)]);
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.solo = solo;
             }
         }
@@ -4912,16 +5031,17 @@ impl VideoEditorApp {
     /// action so it replicates and undoes like every other edit. Locking is
     /// what [`Project::clip_editable`] reads, so the flag really does hold
     /// every move / trim / delete / split off the track's clips.
-    fn toggle_track_lock(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_lock(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.locked = !next.locked;
             // Reflect it in memory too so the very next press is already
             // guarded, before the document round-trips back through `sync`.
             let locked = next.locked;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            self.submit(vec![
+                Project::paths().tracks.item(&key(tid)).locked.set(locked),
+            ]);
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.locked = locked;
             }
         }
@@ -4934,7 +5054,7 @@ impl VideoEditorApp {
             return;
         };
         let mut label = EditableLabel::new(&m.name)
-            .with_font_size(13.0)
+            .with_text_role(TextRole::Body)
             .with_id("bin_rename");
         label.begin_edit();
         self.bin_rename = Some((mid, label));
@@ -4942,7 +5062,7 @@ impl VideoEditorApp {
     }
 
     /// Commit an inline rename: dispatch a whole-media write with the new name.
-    fn commit_rename(&mut self, doc: &mut AutoCommit, mid: MediaId, name: &str) {
+    fn commit_rename(&self, mid: MediaId, name: &str) {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return;
@@ -4951,15 +5071,14 @@ impl VideoEditorApp {
             if m.name == trimmed {
                 return;
             }
-            let mut next = m.clone();
-            next.name = trimmed.to_string();
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+            self.submit(vec![
+                Project::paths().media.item(&key(mid)).name.replace(trimmed),
+            ]);
         }
     }
 
     /// Delete a bin media and every clip that placed it, as one action.
-    fn delete_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+    fn delete_media(&mut self, mid: MediaId) {
         let clip_ids: Vec<ClipId> = self
             .project
             .clips
@@ -4969,11 +5088,7 @@ impl VideoEditorApp {
             .collect();
         // Keep the in-memory selection consistent before the reload.
         self.selection.remove_all(&clip_ids);
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &remove_media_action(&mid, &clip_ids),
-        );
+        self.submit(vec![Project::REMOVE_MEDIA.with(key(mid))]);
         // Mirror the action in memory, the way the import path does. The
         // document is the truth and `sync` will reload it, but the model
         // must not disagree with it in between — a caller that deletes and
@@ -4995,7 +5110,7 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        if crate::files::native_paths() {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
             self.import_contents_rx = Some(portal::request_import_contents());
@@ -5005,7 +5120,7 @@ impl VideoEditorApp {
     /// Import the files a contents chooser delivered: probed from their
     /// bytes, which are kept in the editor's cache location, and named in
     /// the project by that copy.
-    fn drain_import_contents(&mut self, doc: &mut AutoCommit) {
+    fn drain_import_contents(&mut self) {
         let Some(rx) = self.import_contents_rx.as_ref() else {
             return;
         };
@@ -5021,7 +5136,7 @@ impl VideoEditorApp {
             ui::portal::ContentsOutcome::Picked(files) => {
                 let mut report = ImportReport::default();
                 for file in files {
-                    match self.try_import_contents(doc, &file.name, file.bytes) {
+                    match self.try_import_contents(&file.name, file.bytes) {
                         Ok(()) => report.added += 1,
                         Err(reason) => report.refused.push((file.name, reason)),
                     }
@@ -5035,12 +5150,7 @@ impl VideoEditorApp {
         }
     }
 
-    fn try_import_contents(
-        &mut self,
-        doc: &mut AutoCommit,
-        name: &str,
-        bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    fn try_import_contents(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         if bytes.len() > crate::files::KEEP_LIMIT {
             return Err(format!(
                 "is larger than {} MB, the most a browser page imports",
@@ -5063,14 +5173,12 @@ impl VideoEditorApp {
             // The kept copy's name in the cache location; no decoder here
             // reads it yet, so the preview draws the clip from its metadata.
             path: format!("{}/{token}", crate::media::KEPT_PREFIX),
-            hydration: crate::media::Hydration::Projected,
             text: None,
             has_audio: probed.has_audio,
         };
         crate::files::keep_imported(token, bytes);
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit_media(&item);
         self.selected_media = Some(id);
         Ok(())
     }
@@ -5081,11 +5189,11 @@ impl VideoEditorApp {
     )]
     fn perform_resource_operation(
         &mut self,
-        operation: crate::actions::VideoEditorOperation,
+        operation: crate::actions::VideoEditorEffect,
     ) -> Result<(), String> {
-        use crate::actions::VideoEditorOperation;
+        use crate::actions::VideoEditorEffect;
         match operation {
-            VideoEditorOperation::RevealClip { clip } => {
+            VideoEditorEffect::RevealClip { clip } => {
                 let id = clip
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid clip id: {clip}"))?;
@@ -5099,7 +5207,7 @@ impl VideoEditorApp {
                 self.seek_to(clip.start);
                 self.reveal_inspector();
             }
-            VideoEditorOperation::RevealEffect { clip, effect } => {
+            VideoEditorEffect::RevealEffect { clip, effect } => {
                 let clip_id = clip
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid clip id: {clip}"))?;
@@ -5118,7 +5226,7 @@ impl VideoEditorApp {
                 self.seek_to(clip.start);
                 self.reveal_inspector();
             }
-            VideoEditorOperation::RevealTrack { track } => {
+            VideoEditorEffect::RevealTrack { track } => {
                 let id = track
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid track id: {track}"))?;
@@ -5141,7 +5249,7 @@ impl VideoEditorApp {
                     self.reveal_inspector();
                 }
             }
-            VideoEditorOperation::RevealMarker { marker, clip } => {
+            VideoEditorEffect::RevealMarker { marker, clip } => {
                 let marker_id = marker
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid marker id: {marker}"))?;
@@ -5176,7 +5284,7 @@ impl VideoEditorApp {
                 }
                 self.seek_to(at);
             }
-            VideoEditorOperation::RevealMedia { media } => {
+            VideoEditorEffect::RevealMedia { media } => {
                 let id = media
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid media id: {media}"))?;
@@ -5185,25 +5293,26 @@ impl VideoEditorApp {
                 }
                 self.selected_media = Some(id);
                 self.selection.clear();
+                self.reconcile_flaps();
                 self.bin_flap.open();
             }
-            VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
-            VideoEditorOperation::OpenProject { path: None } => self.request_open_project(),
-            VideoEditorOperation::SaveProject { path: None } => self.queue_save_project(),
-            VideoEditorOperation::SaveProjectAs { path: None } => self.request_save_as(),
-            VideoEditorOperation::Export { path: None } => self.request_export(),
-            VideoEditorOperation::ImportMedia { path: Some(path) } => {
+            VideoEditorEffect::Import { path: None } => self.trigger_import(),
+            VideoEditorEffect::OpenProject { path: None } => self.request_open_project(),
+            VideoEditorEffect::Save { path: None } => self.queue_save_project(),
+            VideoEditorEffect::SaveAs { path: None } => self.request_save_as(),
+            VideoEditorEffect::Export { path: None } => self.request_export(),
+            VideoEditorEffect::Import { path: Some(path) } => {
                 self.pending_imports.push(PathBuf::from(path));
             }
-            VideoEditorOperation::Export { path: Some(path) } => {
+            VideoEditorEffect::Export { path: Some(path) } => {
                 self.begin_export_to(PathBuf::from(path));
             }
-            VideoEditorOperation::OpenProject { path: Some(_) }
-            | VideoEditorOperation::SaveProject { path: Some(_) }
-            | VideoEditorOperation::SaveProjectAs { path: Some(_) } => {
+            VideoEditorEffect::OpenProject { path: Some(_) }
+            | VideoEditorEffect::Save { path: Some(_) }
+            | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
             }
-            VideoEditorOperation::CancelExport => {
+            VideoEditorEffect::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
                     return Err("no export is running".into());
                 };
@@ -5214,12 +5323,21 @@ impl VideoEditorApp {
     }
 
     fn finish_resource_file_operation_if_ready(&mut self) {
-        use crate::actions::VideoEditorOperation;
+        use crate::actions::VideoEditorEffect;
         let Some(operation) = self.resource_operation.as_ref() else {
             return;
         };
+        if matches!(operation, VideoEditorEffect::Export { .. })
+            && self
+                .resource_reply
+                .as_ref()
+                .is_some_and(ui::framework::EffectReply::is_cancelled)
+            && let Some(job) = self.export_job.as_ref()
+        {
+            job.cancel();
+        }
         let outcome: Option<Result<(), String>> = match operation {
-            VideoEditorOperation::ImportMedia { .. }
+            VideoEditorEffect::Import { .. }
                 if self.import_rx.is_none() && self.pending_imports.is_empty() =>
             {
                 self.import_notice.as_ref().map(|notice| {
@@ -5230,9 +5348,9 @@ impl VideoEditorApp {
                     }
                 })
             }
-            VideoEditorOperation::OpenProject { .. }
-            | VideoEditorOperation::SaveProject { .. }
-            | VideoEditorOperation::SaveProjectAs { .. }
+            VideoEditorEffect::OpenProject { .. }
+            | VideoEditorEffect::Save { .. }
+            | VideoEditorEffect::SaveAs { .. }
                 if self.project_rx.is_none()
                     && self.resource_pending_operation.is_none()
                     && self.pending_open.is_none() =>
@@ -5245,46 +5363,39 @@ impl VideoEditorApp {
                     }
                 })
             }
-            VideoEditorOperation::Export { .. } => match &self.export_status {
+            VideoEditorEffect::Export { .. } => match &self.export_status {
                 ExportStatus::Done { .. } => Some(Ok(())),
                 ExportStatus::Failed { reason } => Some(Err(reason.clone())),
                 _ => None,
             },
             _ => None,
         };
-        let (Some(invocation), Some(outcome)) = (self.resource_invocation.take(), outcome) else {
-            return;
-        };
+        if let Some(outcome) = outcome {
+            self.settle_resource_job(outcome);
+        }
+    }
+
+    /// Answer the effect that started the running project file or render
+    /// job with `outcome`.
+    fn settle_resource_job(&mut self, outcome: Result<(), String>) {
         self.resource_operation = None;
-        self.resource_result = Some(match outcome {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "video_editor.operation_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+        if let Some(reply) = self.resource_reply.take() {
+            reply.finish(outcome.map(|()| ui::tilo_actions::ActionOutput::default()));
+        }
     }
 
     /// Drain any pending imports (queued deterministic files first, then a
     /// portal outcome), bringing each chosen file into the bin as a real clip.
-    fn drain_import(&mut self, doc: &mut AutoCommit) {
-        self.drain_import_contents(doc);
+    fn drain_import(&mut self) {
+        self.drain_import_contents();
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
-            let report = self.import_files(doc, &paths);
+            let report = self.import_files(&paths);
             self.import_notice = Some(import_report_notice(&report));
             if self.media_pipeline.auto_place_imports
                 && let Some(mid) = self.selected_media
             {
-                self.ensure_track_and_place(doc, mid);
+                self.ensure_track_and_place(mid);
             }
         }
         let mut clear = false;
@@ -5304,17 +5415,13 @@ impl VideoEditorApp {
         }
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
-                let report = self.import_files(doc, &paths);
+                let report = self.import_files(&paths);
                 self.import_notice = Some(import_report_notice(&report));
             }
             Some(ImportOutcome::Cancelled) => {
                 self.import_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("media selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err("media selection was cancelled".into()));
                 }
             }
             // The picker itself refused. Its wording ("the file picker needs
@@ -5333,11 +5440,11 @@ impl VideoEditorApp {
     /// return only a count, so a partly-failed import collapsed to "Imported
     /// 3 of 5 files" — which names neither of the two files that were
     /// refused nor why, even though the probe knew exactly.
-    fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> ImportReport {
+    fn import_files(&mut self, paths: &[PathBuf]) -> ImportReport {
         self.import_notice = None;
         let mut report = ImportReport::default();
         for path in paths {
-            match self.try_import_one(doc, path) {
+            match self.try_import_one(path) {
                 Ok(()) => report.added += 1,
                 Err(reason) => report.refused.push((display_name(path), reason)),
             }
@@ -5354,7 +5461,7 @@ impl VideoEditorApp {
     /// is HTML document") rather than writing a notice itself, so the batch
     /// above can keep *every* refusal instead of whichever one happened to be
     /// written last.
-    fn try_import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> Result<(), String> {
+    fn try_import_one(&mut self, path: &Path) -> Result<(), String> {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
             Err(e) => return Err(e.to_string()),
@@ -5377,7 +5484,6 @@ impl VideoEditorApp {
             fps: probed.fps,
             palette,
             path: stored,
-            hydration: resolved.hydration,
             // An imported file is decoded, never generated: only a title
             // carries text.
             text: None,
@@ -5388,8 +5494,7 @@ impl VideoEditorApp {
         };
         let id = item.id;
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit_media(&item);
         self.selected_media = Some(id);
         Ok(())
     }
@@ -5398,10 +5503,10 @@ impl VideoEditorApp {
     /// the blank project has none) and park the playhead inside the new clip.
     /// Used by the `--shots`/preload placed-import path so the preview shows the
     /// clip; a normal portal import lands in the bin only.
-    fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
+    fn ensure_track_and_place(&mut self, media_id: MediaId) {
         // `add_media_to_timeline` now creates a matching track when the project
         // has none, so this just places and parks the playhead in the new clip.
-        let Some(cid) = self.add_media_to_timeline(doc, media_id) else {
+        let Some(cid) = self.add_media_to_timeline(media_id) else {
             return;
         };
         if let Some(c) = self.project.clip(cid) {
@@ -5416,24 +5521,30 @@ impl VideoEditorApp {
         if !self.project.media.is_empty() {
             return None;
         }
+        let (w, h) = self.with_dialog_layout(|_, tr, theme| {
+            (
+                ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Regular, theme),
+            )
+        });
         let cx = r.bin.center().x;
-        let cy = r.bin.y0 + 150.0;
-        Some(Rect::new(cx - 92.0, cy, cx + 92.0, cy + 34.0))
+        let cy = r.bin.y0 + self.bin_list_top() + 80.0;
+        Some(Rect::new(cx - w / 2.0, cy, cx + w / 2.0, cy + h))
     }
 
     /// Pump the real preview decoder for the clip under the playhead. No-op
     /// build carries no decoder; the decode build seeks + decodes the frame.
     #[cfg(feature = "decode")]
     fn pump_preview_decode(&mut self) {
-        // The bundled demo/shots project references placeholder sample-media,
-        // not real bytes, so decoding it would spin a real GStreamer pipeline
-        // for no usable frame and make a headless render depend on the gst
-        // runtime. Keep the demo preview on its deterministic representative
-        // composite. `decode` stays compiled in: the live app and the
-        // `--import` real-decode capture (which loads genuine files) still
-        // decode. This is the runtime half of "features compile the code in;
-        // the runtime mode decides live vs sample".
-        if self.seed.demo {
+        // The demo project a capture shows references placeholder
+        // sample-media, not real bytes, so decoding it would spin a real
+        // GStreamer pipeline for no usable frame and make a headless render
+        // depend on the gst runtime. Keep its preview on the deterministic
+        // representative composite. `decode` stays compiled in: the live app
+        // and a capture launched on a real file still decode. This is the
+        // runtime half of "features compile the code in; the run mode
+        // decides live vs sample".
+        if self.seed.hermetic {
             return;
         }
         self.preview_decoder.update(&self.project, self.playhead);
@@ -5491,7 +5602,7 @@ impl VideoEditorApp {
                     // stalls the UI thread is worse than a frame of lag.
                     Some(crate::gpu::MediaFrameSource::new(
                         &self.project,
-                        if self.media_pipeline.auto_place_imports {
+                        if self.seed.capture {
                             crate::gpu::Fetch::Exact
                         } else {
                             crate::gpu::Fetch::Responsive
@@ -5556,14 +5667,20 @@ impl VideoEditorApp {
     /// far edge the chip is still in the ruler, still one click, and out of
     /// the way of both.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
-        let y = r.ruler.y0 + 4.0;
-        // TextRenderer applies the accessibility scale, while this custom
-        // chip's old 84px width did not.  At 2× the value was painted through
-        // its border and over the final ruler label.  Reserve proportional
-        // room; the ruler intentionally omits ticks behind this control.
-        let width = (84.0 * self.text_scale).min((r.ruler.width() - 8.0).max(0.0));
-        let x1 = r.ruler.x1 - 8.0;
-        Rect::new(x1 - width, y, x1, y + 22.0)
+        // As wide as the reading it carries, a Small control centred on the
+        // ruler band; the ruler omits ticks behind it.
+        let (w, h) = self.with_dialog_layout(|app, tr, theme| {
+            let words = app.zoom_words();
+            let face = ButtonFace::new(Rect::ZERO, &words).control_size(ControlSize::Small);
+            (
+                face.intrinsic_width(tr, theme),
+                ButtonFace::height(ControlSize::Small, theme),
+            )
+        });
+        let width = w.min((r.ruler.width() - S2).max(0.0));
+        let x1 = r.ruler.x1 - S2;
+        let y = r.ruler.y0 + ((r.ruler.height() - h) / 2.0).max(0.0);
+        Rect::new(x1 - width, y, x1, y + h)
     }
 
     fn zoom_by(&mut self, factor: f64) {
@@ -5592,7 +5709,7 @@ impl VideoEditorApp {
         reason = "the export card's geometry is one top-to-bottom stack of measured rows"
     )]
     fn export_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> ExportLayout {
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let sp = &theme.tokens.spacing;
         let (s1, s2, s3, s4) = (
             f64::from(sp.s1),
@@ -5600,8 +5717,8 @@ impl VideoEditorApp {
             f64::from(sp.s3),
             f64::from(sp.s4),
         );
-        let line_sm = line_height(tr, type_sizes.sm);
-        let line_xs = line_height(tr, type_sizes.xs);
+        let line_sm = line_height(tr, &type_sizes.sm);
+        let line_xs = line_height(tr, &type_sizes.xs);
         // Every option is a pointer target: the theme's minimum, or taller
         // when its label needs the room.
         let seg_target = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
@@ -5624,16 +5741,10 @@ impl VideoEditorApp {
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
         let body_h = header_h + groups_h + footer_h;
         let actions = self.export_actions();
-        let spec = ModalSpec::new("Export Project")
+        let spec = ModalSpec::new("Export project")
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
-        let modal = modal_layout_with_stacking_actions(
-            self.rect,
-            &spec,
-            body_h / f64::from(theme.text_scale),
-            tr,
-            theme,
-        );
+        let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
         let body = modal.body;
         let (x0, x1) = (body.x0, body.x1);
 
@@ -5685,43 +5796,50 @@ impl VideoEditorApp {
             top
         });
         y += header_gap;
-        // `n` equal segments across the body, one spacing step apart — the
-        // same gapped convention the inspector's segmented rows use.
-        let seg = |n: usize, y: f64| -> Vec<Rect> {
-            let w = (x1 - x0 + s1) / n as f64;
-            (0..n)
-                .map(|i| {
-                    Rect::new(
-                        x0 + i as f64 * w,
-                        y,
-                        x0 + (i as f64 + 1.0) * w - s1,
-                        y + seg_h,
-                    )
-                })
-                .collect()
-        };
+        // Each group is one segmented strip across the body, its segments
+        // sized to their labels the way every segmented control is.
         let mut captions = [0.0; 3];
-        let mut group = |caption: &mut f64, n: usize| -> Vec<Rect> {
+        let mut group = |caption: &mut f64, labels: &[String]| -> Vec<Rect> {
             *caption = y;
             y += line_xs + s1;
-            let rects = seg(n, y);
+            let strip = Rect::new(x0, y, x1, y + seg_h);
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let rects = ui::widget::SegmentedFace::partition(
+                strip,
+                &labels,
+                control_size_for(strip, theme),
+                tr,
+                theme,
+            );
             y += seg_h + group_gap;
             rects
         };
+        let resolution_labels: Vec<String> = Resolution::ALL
+            .iter()
+            .map(|v| v.label().to_string())
+            .collect();
         let resolution = Resolution::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[0], Resolution::ALL.len()))
+            .zip(group(&mut captions[0], &resolution_labels))
+            .collect();
+        let container_labels: Vec<String> = Container::ALL
+            .iter()
+            .map(|v| v.label().to_string())
             .collect();
         let container = Container::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[1], Container::ALL.len()))
+            .zip(group(&mut captions[1], &container_labels))
+            .collect();
+        let fps_labels: Vec<String> = FrameRate::ALL
+            .iter()
+            .map(|v| format!("{} fps", v.label()))
             .collect();
         let fps = FrameRate::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[2], FrameRate::ALL.len()))
+            .zip(group(&mut captions[2], &fps_labels))
             .collect();
 
         // The footer, from the body's foot up.
@@ -5783,6 +5901,19 @@ impl VideoEditorApp {
             // meter on screen disagrees with.
             mix: self.mix.clone(),
         }
+    }
+
+    /// Test-only: plant a local project that has not been published through
+    /// the framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
+        self.project = project;
+    }
+
+    /// Test-only: move the playhead so the edits bound to it bind to a known time.
+    #[cfg(test)]
+    pub(crate) fn set_playhead_for_test(&mut self, playhead: f64) {
+        self.playhead = playhead;
     }
 }
 
@@ -5869,7 +6000,7 @@ const TITLE_COLORS: [[f64; 4]; 8] = [
     [0.40, 0.78, 0.98, 1.0],
     [0.44, 0.85, 0.55, 1.0],
     [0.79, 0.55, 0.96, 1.0],
-    [1.0, 1.0, 1.0, 0.55],
+    [0.60, 0.62, 0.66, 1.0],
 ];
 
 /// Rate presets offered as a segmented row beside the rate slider.
@@ -5901,7 +6032,16 @@ const RATE_PRESETS: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
 /// the numbers it was built from (see `VideoEditorApp::project_format_words`)
 /// rather than being formatted per frame.
 fn format_words(width: u32, height: u32, fps: f64) -> String {
-    format!("{width} \u{d7} {height} \u{b7} {} fps", rate_words(fps))
+    format!("{width}\u{d7}{height}, {} fps", rate_words(fps))
+}
+
+/// A speed preset as its segment says it: "2×", "0.5×".
+fn speed_words(rate: f64) -> String {
+    if (rate - rate.round()).abs() < 1e-6 {
+        format!("{}\u{d7}", rate.round() as i64)
+    } else {
+        format!("{rate}\u{d7}")
+    }
 }
 
 /// A frame rate with no trailing zeros: "30", not "30.00", and "23.98" for a
@@ -5917,14 +6057,37 @@ fn rate_words(fps: f64) -> String {
     format!("{fps:.2}")
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct DialogType {
-    /// The type scale's `sm` step: body lines, segment labels.
-    sm: f32,
-    /// The type scale's `xs` step: captions, status lines, hints.
-    xs: f32,
-    /// The type scale's `xl` step: the go-to field's timecode entry.
-    xl: f32,
+    /// `Body`: the sheets' lines and their segment labels.
+    sm: TextStyle,
+    /// `Caption`: captions, status lines, hints.
+    xs: TextStyle,
+    /// `Title`, in tabular figures: the go-to field's timecode.
+    xl: TextStyle,
+}
+
+/// What the inspector's fixed header holds this frame; see
+/// [`VideoEditorApp::inspector_header`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct InspectorHeader {
+    /// From the panel's top edge to where the scrolling body starts.
+    pub(super) height: f64,
+}
+
+/// The four facts the inspector states about the selected clip, at the top
+/// of its body.
+fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>; 4] {
+    fn row<'a>(label: &'a str, value: &'a str) -> ui::widget::PropertyRow<'a> {
+        ui::widget::PropertyRow::new(label, value).with_kind(ui::TextKind::Numeric)
+    }
+    let [position, duration, source_in, source_out] = values;
+    [
+        row("Position", position),
+        row("Duration", duration),
+        row("Source in", source_in),
+        row("Source out", source_out),
+    ]
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5995,12 +6158,13 @@ struct HelpGroupLayout {
     rows: Vec<Rect>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct GotoLayout {
     card: Rect,
     type_sizes: DialogType,
     label_top: f64,
-    entry_top: f64,
+    /// The text field the timecode is typed into.
+    entry: Rect,
     hint_top: f64,
 }
 
@@ -6019,7 +6183,7 @@ impl VideoEditorApp {
     /// Keeping this lifecycle work separate makes the draw pass read as the
     /// actual visual stacking order.
     fn prepare_draw_frame(&mut self, theme: &Theme) -> Regions {
-        self.chrome_theme = Some(theme.clone());
+        self.chrome_theme = theme.clone();
         self.advance_playback();
         #[cfg(any(feature = "gst", feature = "decode"))]
         self.pump_monitor();
@@ -6028,6 +6192,8 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
+        let bounds = self.timeline_split_bounds();
+        self.timeline_split.set_rect(bounds, theme);
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
@@ -6065,8 +6231,7 @@ impl VideoEditorApp {
         if layout.title_font.is_some() && self.system_fonts.is_empty() {
             self.system_fonts = tr.system_families();
         }
-        if let (Some((_, dropdown, _)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font)
-        {
+        if let (Some((_, dropdown)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font) {
             dropdown.apply_layout_external(rect);
             dropdown.draw(scene, transform, tr, theme, presence);
         }
@@ -6101,85 +6266,52 @@ impl VideoEditorApp {
 
 impl Widget for VideoEditorApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::undo::UndoControl,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence
     );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
-    }
 
     #[expect(
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
-        if !self.shot_lifecycle.seeded {
-            // The live app opens on a blank project; only the hermetic demo
-            // build seeds the bundled sample project into a fresh document.
-            if self.seed.demo && VideoDoc::is_empty(state) {
-                VideoDoc::seed_sample(state);
-            }
-            self.shot_lifecycle.seeded = true;
-        }
-        if let Some((invocation, operation)) = self.resource_pending_operation.take() {
-            use crate::actions::VideoEditorOperation;
+        if let Some(operation) = self.resource_pending_operation.take() {
+            use crate::actions::VideoEditorEffect;
             match &operation {
-                VideoEditorOperation::OpenProject { path: Some(path) } => {
-                    self.begin_open(state, PathBuf::from(path));
+                VideoEditorEffect::OpenProject { path: Some(path) } => {
+                    self.begin_open(PathBuf::from(path));
                 }
-                VideoEditorOperation::SaveProject { path: Some(path) }
-                | VideoEditorOperation::SaveProjectAs { path: Some(path) } => {
+                VideoEditorEffect::Save { path: Some(path) }
+                | VideoEditorEffect::SaveAs { path: Some(path) } => {
                     self.write_project_to(state, PathBuf::from(path));
                 }
                 _ => {}
             }
-            self.resource_invocation = Some(invocation);
         }
-        // The document's heads are the cheap "something actually changed"
-        // signal. Reloading the model every frame says nothing; a new head
-        // means a real edit, local or from a peer.
-        // Hosted by the framework, the project arrives through `present`;
-        // a refused edit (read-only participant) re-reads what is stored.
-        if self.actions.take_stale() {
-            self.project_sync.reload_pending = true;
-        }
-        let heads = state.get_heads();
-        if heads != self.doc_heads && !self.actions.is_hosted() {
-            self.doc_heads = heads;
-            self.project_sync.reload_pending = true;
-            #[cfg(any(feature = "gst", feature = "decode"))]
-            {
-                self.media_pipeline.monitor_stale = true;
-            }
-        }
-        // Rebuilding the whole model from the CRDT is the most expensive thing
-        // in this pass — measured at ~1.1ms on the sample project, roughly a
-        // third of the frame budget, and it grows with the project while
-        // `get_heads` does not. `sync` runs every frame for as long as
-        // anything animates (playback, a running render, an open flap), so
-        // this used to re-derive an unchanged model sixty times a second.
-        //
+        // The project arrives through `present`; the document's heads say
+        // whether it has changed since it was saved.
+        self.track_saved_heads(state.committed_heads());
         // While a clip-editing drag is in flight, the live preview lives only
-        // in the in-memory project — the CRDT isn't written until the drag
-        // commits — so don't clobber it by reloading a stale document
-        // mid-drag. The reload stays owed and lands the moment the drag lets
-        // go, so an edit that arrived meanwhile is not lost.
+        // in the in-memory project — the document isn't written until the
+        // drag commits — so a project presented meanwhile waits, and lands
+        // the moment the drag lets go, so an edit that arrived is not lost.
         if self.project_sync.reload_pending && !self.drag_is_editing() {
-            self.project = VideoDoc::load_project(state);
+            self.project = Project::clone(&self.stored);
             self.clip_edit_bases.clear();
             self.project_sync.reload_pending = false;
+            // A timeline with nothing on it has no time to be part-way
+            // through: the playhead waits at the start.
+            if self.project.clips.is_empty() {
+                self.playhead = 0.0;
+            }
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
-        self.drain_import(state);
+        self.drain_import();
         // A project open/save chooser that has come back. Drained after the
         // model load above so an Open replaces a project that is current, and
         // before the passes below so they see what was opened.
@@ -6292,22 +6424,15 @@ impl Widget for VideoEditorApp {
     fn has_pending_visual_work(&self) -> bool {
         let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
         #[cfg(feature = "decode")]
-        let prerolling = self.media_pipeline.auto_place_imports
-            && !self.project.clips.is_empty()
-            && !self.has_preview_frame();
+        let prerolling = self.media_pipeline.auto_place_imports && self.preview_awaits_frame();
         #[cfg(not(feature = "decode"))]
         let prerolling = false;
         importing || prerolling
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing until the demo/shared project is loaded so a
-        // freshly-spawned, input-free instance still seeds + paints. The live
-        // app opens blank, so once seeded it must not idle-sync forever. Also
-        // keep syncing while an import is pending so its outcome is drained.
-        !self.shot_lifecycle.seeded
-            || (self.seed.demo && self.project.clips.is_empty())
-            || self.import_rx.is_some()
+        // Keep syncing while an import is pending so its outcome is drained.
+        self.import_rx.is_some()
             || !self.pending_imports.is_empty()
             // A project chooser is a round-trip in flight exactly like an
             // import; without this the chosen file would sit undrained until
@@ -6330,10 +6455,6 @@ impl Widget for VideoEditorApp {
             || self.mix_meter_is_live()
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "a complete local root style is infallible; Widget::build_layout cannot return Result"
-    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -6341,19 +6462,7 @@ impl Widget for VideoEditorApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            // A leaf made from this complete local style cannot violate a
-            // Taffy tree invariant; the host API cannot surface the error.
-            .expect("a complete video-editor root leaf is valid");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     #[allow(
@@ -6366,12 +6475,7 @@ impl Widget for VideoEditorApp {
             // The node was just installed by `build_layout`; a missing node
             // would be a host lifecycle violation rather than user input.
             .expect("the video-editor root node remains in the Taffy tree");
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
     }
 
     fn draw(
@@ -6395,6 +6499,9 @@ impl Widget for VideoEditorApp {
         // Same for the bin: deleting sources shortens the list under us.
         let bin_max = self.bin_max_scroll(&r);
         self.bin_scroll = self.bin_scroll.clamp(0.0, bin_max);
+        // And the lanes: removing a track shortens them.
+        let lanes_max = self.lanes_metrics(&r).max_scroll();
+        self.lane_scroll = self.lane_scroll.clamp(0.0, lanes_max);
         // Keep the playhead on screen while it is moving under its own steam,
         // and the horizontal scroll inside a timeline whose length may have
         // just changed under us (a delete, a remote edit).
@@ -6419,7 +6526,7 @@ impl Widget for VideoEditorApp {
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
         // behind a scrim.
-        if !r.bin_overlay {
+        if !r.bin_overlay && r.bin.width() > 1.0 {
             self.draw_bin(scene, transform, tr, theme, &r);
         }
         self.draw_preview(scene, transform, tr, theme, &r);
@@ -6427,7 +6534,7 @@ impl Widget for VideoEditorApp {
         // Docked, the inspector draws in its column. As an overlay it floats
         // over the preview it is editing — no scrim, so the picture the
         // sliders are changing stays visible while they change it.
-        if !r.inspector_overlay {
+        if !r.inspector_overlay && r.inspector.width() > 1.0 {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
         self.draw_timeline(scene, transform, tr, theme, presence, &r);
@@ -6435,17 +6542,17 @@ impl Widget for VideoEditorApp {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
         if r.bin_overlay {
-            // Dimming scrim, then the bin sliding in on top of it.
+            // The modal scrim over everything under the header row — the
+            // preview, the transport and the timeline alike — then the drawer
+            // sliding in on top of it. One scrim, from the theme.
             if r.scrim.width() > 0.0 {
-                // The themed scrim token gives the hue (raw black over a light
-                // theme reads as a hole); the *strength* is ours. The token is
-                // built with `from_rgb8`/`mix8`, so its own alpha is 1.0 in
-                // every theme — multiplying by it dimmed nothing and painted an
-                // opaque slab over the preview, transport, inspector and
-                // timeline, leaving a narrow window looking like a black void.
-                let a = self.bin_flap.reveal() * SCRIM_ALPHA;
-                let scrim = theme.tokens.colors.surfaces.scrim;
-                fill_rect(scene, transform, r.scrim, with_alpha(scrim, a));
+                ui::overlay::scrim::modal(
+                    scene,
+                    transform,
+                    r.scrim,
+                    self.bin_flap.reveal() as f32,
+                    theme,
+                );
             }
             if self.bin_flap.reveal() > 0.001 {
                 self.draw_bin(scene, transform, tr, theme, &r);
@@ -6462,7 +6569,7 @@ impl Widget for VideoEditorApp {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
         if self.goto_entry.is_some() {
-            self.draw_goto(scene, transform, tr, theme, &r);
+            self.draw_goto(scene, transform, tr, theme, presence, &r);
         }
         if self.navigation.help_open {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
@@ -6475,10 +6582,8 @@ impl Widget for VideoEditorApp {
         if self.pending_open.is_some() {
             self.draw_discard_dialog(scene, transform, tr, theme);
         }
-        // The context menus float above everything else.
-        self.bin_menu.draw(scene, transform, tr, theme, presence);
-        self.project_menu
-            .draw(scene, transform, tr, theme, presence);
+        // The context menus float above everything else: they are children,
+        // painted in the top layer by `draw_overlay`.
     }
 
     #[allow(
@@ -6491,9 +6596,28 @@ impl Widget for VideoEditorApp {
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Everything one input event edits is one undo step.
-        let _gesture = self.actions.gesture();
+        let _gesture = self
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
+        // The window's History control in the header row, unless a dialog
+        // holds the window.
+        let modal_open = self.presentation.export_open
+            || self.pending_open.is_some()
+            || self.navigation.help_open;
+        if !modal_open
+            && self
+                .history
+                .handle_event(event, r.history_btn, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            return;
+        }
+        if !modal_open && !bin_overlay_open && self.route_to_timeline_split(event, ctx) {
+            return;
+        }
         // An in-flight inline rename owns input: forward every event to the
         // shared editable label, then reconcile its outcome. A blur-commit
         // (click outside) is intentionally not consumed, so the same click also
@@ -6514,7 +6638,7 @@ impl Widget for VideoEditorApp {
             };
             match outcome {
                 EditOutcome::Committed(name) => {
-                    self.commit_rename(ctx.state, mid, &name);
+                    self.commit_rename(mid, &name);
                     self.bin_rename = None;
                 }
                 EditOutcome::Cancelled => self.bin_rename = None,
@@ -6529,24 +6653,11 @@ impl Widget for VideoEditorApp {
         // whatever it is covering.
         if self.font_picker.is_some() {
             let l = self.inspector_layout(&r);
-            if let Some((_, dd, local)) = self.font_picker.as_mut() {
+            if let Some((_, dd)) = self.font_picker.as_mut() {
                 if let Some(rect) = l.title_font {
                     dd.apply_layout_external(rect);
                 }
-                let root = automerge::ROOT;
-                dd.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: local,
-                        path: &root,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                dd.handle_event(event, ctx);
             }
             if let Some((mid, family)) = self.take_font_choice() {
                 let same = self
@@ -6555,7 +6666,7 @@ impl Widget for VideoEditorApp {
                     .and_then(|m| m.text.as_ref())
                     .is_some_and(|t| t.font == family);
                 if !same {
-                    self.edit_title(ctx.state, move |t| t.font = family);
+                    self.edit_title(move |t| t.font = family);
                 }
             }
             if *ctx.handled {
@@ -6578,7 +6689,7 @@ impl Widget for VideoEditorApp {
                     (*mid, field.value().to_string())
                 };
                 if done {
-                    self.commit_title_text(ctx.state, mid, &words);
+                    self.commit_title_text(mid, &words);
                 }
                 self.title_edit = None;
                 *ctx.handled = true;
@@ -6599,7 +6710,7 @@ impl Widget for VideoEditorApp {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
-                self.commit_title_text(ctx.state, mid, &words);
+                self.commit_title_text(mid, &words);
                 self.title_edit = None;
                 // Not marked handled: the click still lands on whatever it
                 // was aimed at, which is what makes accepting-on-click-away
@@ -6637,7 +6748,7 @@ impl Widget for VideoEditorApp {
                     // regardless put the old name back with nothing said, so
                     // a marker whose name you had just cleared looked as
                     // though it had simply ignored you.
-                    if self.commit_marker_rename(ctx.state, target, &name) {
+                    if self.commit_marker_rename(target, &name) {
                         self.marker_rename = None;
                     } else {
                         self.project_notice =
@@ -6655,7 +6766,7 @@ impl Widget for VideoEditorApp {
         if self.bin_menu.is_open() {
             self.bin_menu.handle_event(event, ctx);
             if let Some(idx) = self.bin_menu.take_selection() {
-                self.bin_menu_choose(ctx.state, idx);
+                self.bin_menu_choose(idx);
             }
             if *ctx.handled {
                 return;
@@ -6666,12 +6777,37 @@ impl Widget for VideoEditorApp {
             self.project_menu.handle_event(event, ctx);
             if let Some(idx) = self.project_menu.take_selection() {
                 if let Some(item) = self.project_menu_intent(idx) {
-                    self.run_project_menu_item(ctx.state, item);
+                    self.run_project_menu_item(item);
                 }
                 self.project_menu.close();
             }
             if *ctx.handled {
                 return;
+            }
+        }
+        // The go-to field owns typing while it is open: Enter and Esc are the
+        // card's (see `handle_key`), every other key and pointer press edits
+        // the toolkit's text field.
+        if self.goto_entry.is_some() {
+            let card_key = matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if matches!(key.logical_key, Key::Named(NamedKey::Enter | NamedKey::Escape))
+            );
+            if !card_key {
+                let entry =
+                    self.with_dialog_layout(|app, tr, theme| app.goto_layout(&r, tr, theme).entry);
+                if let Some(field) = self.goto_entry.as_mut() {
+                    field.apply_layout_external(entry);
+                    let before = field.value().to_string();
+                    field.handle_event(event, ctx);
+                    if field.value() != before {
+                        self.navigation.goto_notice = false;
+                    }
+                }
+                if *ctx.handled {
+                    return;
+                }
             }
         }
         // The bin flap's full-window scrim is modal for secondary input too.
@@ -6707,7 +6843,7 @@ impl Widget for VideoEditorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state, &r) {
+                if self.handle_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state, &r) {
                     *ctx.handled = true;
                 }
             }
@@ -6726,7 +6862,7 @@ impl Widget for VideoEditorApp {
                 {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(ctx.state, &r, ctx.modifiers.state().shift_key());
+                self.handle_press(&ctx.state, &r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
@@ -6748,7 +6884,7 @@ impl Widget for VideoEditorApp {
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
-                    self.release_bin_drag(ctx.state, &r);
+                    self.release_bin_drag(&r);
                     *ctx.handled = true;
                 } else if self.drag.is_some() {
                     // A rubber band resolves to a selection; a press that never
@@ -6761,14 +6897,14 @@ impl Widget for VideoEditorApp {
                     }
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
-                    self.commit_drag(ctx.state);
+                    self.commit_drag();
                     self.drag = None;
                     self.marquee = None;
                     *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 self.update_hover(&r);
                 if !bin_overlay_open {
@@ -6789,7 +6925,7 @@ impl Widget for VideoEditorApp {
                 }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
-                let report = self.import_files(ctx.state, std::slice::from_ref(path));
+                let report = self.import_files(std::slice::from_ref(path));
                 self.import_notice = Some(import_report_notice(&report));
                 *ctx.handled = true;
             }
@@ -6816,11 +6952,10 @@ impl Widget for VideoEditorApp {
                 // timeline behind it must not zoom or pan. The shortcut
                 // sheet's body scrolls when the window cannot hold the table.
                 if self.is_modal() {
-                    if self.navigation.help_open
-                        && let Some(max) = self.with_dialog_layout(|app, tr, theme| {
+                    if self.navigation.help_open {
+                        let max = self.with_dialog_layout(|app, tr, theme| {
                             app.help_layout(tr, theme).max_scroll
-                        })
-                    {
+                        });
                         self.help_scroll = (self.help_scroll - dy * 40.0).clamp(0.0, max);
                     }
                     *ctx.handled = true;
@@ -6859,6 +6994,15 @@ impl Widget for VideoEditorApp {
                     let step = self.visible_seconds(&r) * 0.15;
                     self.scroll_by(notches * step, &r);
                     *ctx.handled = true;
+                } else if dy.abs() > 0.0
+                    && !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                    && self.lanes_metrics(&r).overflows()
+                {
+                    // More lanes than the timeline holds: the wheel scrolls
+                    // them; Ctrl (Cmd) + wheel still zooms.
+                    let max = self.lanes_metrics(&r).max_scroll();
+                    self.lane_scroll = (self.lane_scroll - dy * 40.0).clamp(0.0, max);
+                    *ctx.handled = true;
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
                     // so the frame you are looking at stays put.
@@ -6888,9 +7032,7 @@ impl Widget for VideoEditorApp {
             // Laid out from the current state — see `chrome_theme`. A
             // disabled Export offers no pointer: a hand over a button that
             // will refuse is a lie about what the click does.
-            let Some(l) = self.with_dialog_layout(VideoEditorApp::export_layout) else {
-                return Some(CursorIcon::Default);
-            };
+            let l = self.with_dialog_layout(VideoEditorApp::export_layout);
             let over_btn = if l.confirm.contains(point) {
                 self.export_is_offered()
             } else if l.cancel.contains(point) {
@@ -6913,6 +7055,9 @@ impl Widget for VideoEditorApp {
             } else {
                 CursorIcon::Default
             });
+        }
+        if let Some(icon) = self.timeline_split.cursor_shape(point) {
+            return Some(icon);
         }
         // A live drag owns the cursor for its whole duration.
         match self.drag {
@@ -6954,10 +7099,11 @@ impl Widget for VideoEditorApp {
         }
         // Bin rows can be dragged onto the timeline.
         if self.bin_is_visible(&r) && r.bin.contains(point) {
-            if self
-                .bin_item_rects(&r)
-                .iter()
-                .any(|(_, rect)| rect.contains(point))
+            if VideoEditorApp::bin_viewport(&r).contains(point)
+                && self
+                    .bin_item_rects(&r)
+                    .iter()
+                    .any(|(_, rect)| rect.contains(point))
             {
                 return Some(CursorIcon::Grab);
             }
@@ -7098,57 +7244,6 @@ impl Widget for VideoEditorApp {
         Some("video_editor_root")
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.poll_export();
-        self.finish_resource_file_operation_if_ready();
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
-    }
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -7181,6 +7276,9 @@ impl Widget for VideoEditorApp {
     /// invisible mode.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = Vec::new();
+        if let Some(field) = &self.goto_entry {
+            v.push(field);
+        }
         if self.bin_menu.is_open() {
             v.push(&self.bin_menu);
         }
@@ -7201,6 +7299,9 @@ impl Widget for VideoEditorApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if let Some(field) = &mut self.goto_entry {
+            v.push(field);
+        }
         if self.bin_menu.is_open() {
             v.push(&mut self.bin_menu);
         }
@@ -7239,6 +7340,10 @@ impl Widget for VideoEditorApp {
                 self.a11y_project(),
                 self.a11y_bin(),
                 self.a11y_transport(),
+                self.timeline_split
+                    .accessibility()
+                    .with_bounds(self.timeline_split.hit_rect())
+                    .with_action_target(TIMELINE_SPLIT_TARGET),
                 self.a11y_timeline(),
                 self.a11y_inspector(),
             ]
@@ -7271,14 +7376,45 @@ impl Widget for VideoEditorApp {
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.presentation.keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.presentation.keyboard_focus),
+                )
                 .with_children(kids)
                 .with_keyed_action_routes("video-editor"),
         )
+    }
+
+    /// The window's History control answers to its own target; everything
+    /// else the tree publishes is a keyed route to [`Self::perform_action`].
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
+        if target == TIMELINE_SPLIT_TARGET {
+            return self.timeline_split.perform_action(action);
+        }
+        let Some((_, encoded)) = target
+            .strip_prefix("tilo.key-action:")
+            .and_then(|route| route.rsplit_once(':'))
+        else {
+            return false;
+        };
+        let Ok(key_path) = encoded
+            .split('/')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        !key_path.is_empty() && self.perform_action(action, &key_path, state, path)
     }
 
     /// Route an assistive technology's action to the element it named.
@@ -7293,17 +7429,20 @@ impl Widget for VideoEditorApp {
         clippy::indexing_slicing,
         reason = "a decoded accessibility action has its fixed argument shape validated before its command-specific fields are read"
     )]
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
         let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
-        let _gesture = self.actions.gesture();
+        let _gesture = self
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
         let Some(&pane_key) = key_path.first() else {
             return false;
         };
@@ -7338,7 +7477,7 @@ impl Widget for VideoEditorApp {
                 return false;
             }
             if pane_key == hash_key(&TOPBAR_A11Y_KEY) {
-                return self.a11y_topbar_action(action, &key_path[1..], state);
+                return self.a11y_topbar_action(action, &key_path[1..]);
             }
             if pane_key == hash_key(&"discard") {
                 let Some(&which) = key_path.get(1) else {
@@ -7369,10 +7508,10 @@ impl Widget for VideoEditorApp {
         // Focusing anything inside a pane also moves the pane cursor there, so
         // the keyboard and the reader stay on the same element.
         match pane {
-            Pane::Bin => self.a11y_bin_action(action, rest, state),
+            Pane::Bin => self.a11y_bin_action(action, rest),
             Pane::Transport => self.a11y_transport_action(action, rest),
-            Pane::Timeline => self.a11y_timeline_action(action, rest, state),
-            Pane::Inspector => self.a11y_inspector_action(action, rest, state),
+            Pane::Timeline => self.a11y_timeline_action(action, rest),
+            Pane::Inspector => self.a11y_inspector_action(action, rest),
         }
     }
 
@@ -7387,18 +7526,6 @@ impl Widget for VideoEditorApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 
@@ -7434,30 +7561,6 @@ impl ui::presence::capability::PublishesPresence for VideoEditorApp {
     }
 }
 
-impl ui::search::capability::SearchSource for VideoEditorApp {
-    /// Fold the open project into Tilo global search: every marker, title and
-    /// bin source becomes a findable *place*, and choosing one seeks there.
-    ///
-    /// A snapshot rather than a borrow, because the host queries the provider
-    /// off the paint path — see
-    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ProjectSearchProvider::new(&self.project),
-        )]
-    }
-}
-
-impl ui::resources::PublishesResources for VideoEditorApp {
-    /// Publish the open project + its tracks and clips so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-}
-
 impl ui::undo::UndoControl for VideoEditorApp {
     /// The host's reading of the history, which is what the strip's undo and
     /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
@@ -7471,81 +7574,39 @@ impl ui::undo::UndoControl for VideoEditorApp {
     }
 }
 
-impl ui::undo::CommittedActions for VideoEditorApp {
-    /// Hand the host the document heads captured before an on-screen affordance
-    /// dispatched its timeline action, so it records exactly one undo boundary
-    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 impl VideoEditorApp {
-    fn answer_resource_operation(
+    /// Answer `effect`. A reveal or a cancel answers at once; an import,
+    /// project open or save and an export answer once their job settles
+    /// ([`Self::finish_resource_file_operation_if_ready`]).
+    fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+        effect: crate::actions::VideoEditorEffect,
+        cx: &mut ui::framework::EffectCx<Project, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::VideoEditorEffect;
+        match &effect {
+            VideoEditorEffect::RevealTrack { .. }
+            | VideoEditorEffect::RevealClip { .. }
+            | VideoEditorEffect::RevealEffect { .. }
+            | VideoEditorEffect::RevealMarker { .. }
+            | VideoEditorEffect::RevealMedia { .. }
+            | VideoEditorEffect::CancelExport => {
+                self.perform_resource_operation(effect)?;
+                return Ok(ui::framework::Effected::done());
+            }
+            VideoEditorEffect::OpenProject { path: Some(_) }
+            | VideoEditorEffect::Save { path: Some(_) }
+            | VideoEditorEffect::SaveAs { path: Some(_) } => {
+                self.resource_pending_operation = Some(effect.clone());
+            }
+            _ => self.perform_resource_operation(effect.clone())?,
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
+        if self.resource_reply.is_some() {
+            self.settle_resource_job(Err("a newer project or render job replaced this one".into()));
         }
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
-        }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::CancelExport
-        ) {
-            self.answer_resource_operation(kind, type_id, payload, doc, path)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::OpenProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProjectAs { path: Some(_) }
-        ) {
-            self.resource_operation = Some(operation.clone());
-            self.resource_pending_operation = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.perform_resource_operation(operation)?;
-        self.resource_operation = crate::actions::decode_operation(type_id, payload)?;
-        self.resource_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.resource_operation = Some(effect);
+        self.resource_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -7558,7 +7619,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
         "Project",
         &[
             ("Ctrl+O", "Open a project"),
-            ("Ctrl+S", "Save (Shift: save as…)"),
+            ("Ctrl+S", "Save"),
+            ("Ctrl+Shift+S", "Save as…"),
             ("Ctrl+Shift+O", "Import media"),
             ("Ctrl+E", "Export video"),
         ],
@@ -7583,7 +7645,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("S", "Split at playhead"),
             ("M", "Add marker"),
             ("T", "Add title"),
-            ("Delete", "Delete (Shift: ripple)"),
+            ("Delete", "Delete clip"),
+            ("Shift+Delete", "Ripple delete"),
             ("Arrows", "Nudge, or step playhead"),
         ],
     ),
@@ -7596,14 +7659,15 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Ctrl+Z", "Undo"),
             // Both spellings work and neither was written down, so the sheet
             // claimed the editor had undo and no redo.
-            ("Ctrl+Shift+Z", "Redo (or Ctrl+Y)"),
+            ("Ctrl+Shift+Z", "Redo"),
+            ("Ctrl+Y", "Redo"),
         ],
     ),
     (
         "View",
         &[
-            ("Tab", "Next pane (Shift+Tab: previous)"),
-            ("Page Up / Down", "Scroll timeline (when it has focus)"),
+            ("Tab / Shift+Tab", "Next / previous pane"),
+            ("Page Up / Down", "Scroll the timeline"),
             ("Z", "Zoom to fit"),
             ("+ / -", "Zoom in / out"),
             ("B", "Toggle media bin"),
@@ -7931,13 +7995,13 @@ impl VideoEditorApp {
                     _ => (l.saturation, Param::Saturation),
                 };
                 if let Some(track) = track {
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let v = slider_value_at(track, p.x);
                     self.preview_param(param, v);
                 }
             }
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
@@ -7947,14 +8011,14 @@ impl VideoEditorApp {
             }
             Drag::TransitionLen => {
                 if let Some(track) = self.inspector_layout(r).transition_len {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self.transition_len_max();
                     self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
                 }
             }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
@@ -7969,7 +8033,7 @@ impl VideoEditorApp {
                     .get(idx)
                     .map(|row| Self::effect_row_parts(*row).3)
                 {
-                    let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
+                    let v = slider_value_at(slider, p.x);
                     self.preview_edit(move |c| {
                         if let Some(e) = c.effects.get_mut(idx) {
                             e.amount = v;
@@ -7979,7 +8043,7 @@ impl VideoEditorApp {
             }
             Drag::Num(f) => {
                 if let Some(track) = self.inspector_layout(r).num(f) {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     self.set_num(f, f.at_frac(frac));
                 }
             }
@@ -7990,7 +8054,7 @@ impl VideoEditorApp {
     /// shape of the clip the drag touched. Called on mouse-up, before the drag
     /// is cleared. Playhead / scrubber drags are presentation and commit
     /// nothing.
-    fn commit_drag(&mut self, doc: &mut AutoCommit) {
+    fn commit_drag(&mut self) {
         let Some(drag) = self.drag else { return };
         match drag {
             Drag::Playhead | Drag::Scrubber | Drag::Scrollbar(_) | Drag::Marquee { .. } => {}
@@ -8003,50 +8067,41 @@ impl VideoEditorApp {
                 if !ids.contains(&id) {
                     ids.push(id);
                 }
-                self.dispatch_existing_clips(doc, &ids);
+                self.dispatch_existing_clips(&ids);
             }
             Drag::TrimIn { id } | Drag::TrimOut { id } => {
-                self.dispatch_clip_linked(doc, id);
+                self.dispatch_clip_linked(id);
             }
-            Drag::EffectAmount {
-                idx,
-                effect,
-                expected_amount_bits,
-            } => {
+            Drag::EffectAmount { idx, effect } => {
                 let Some(id) = self.selected() else { return };
                 let Some(amount) = self
                     .project
                     .clip(id)
                     .and_then(|clip| clip.effects.get(idx))
-                    .filter(|current| current.id == effect)
-                    .map(|current| current.amount)
+                    .filter(|e| e.id == effect)
+                    .map(|e| e.amount)
                 else {
                     return;
                 };
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::SetEffectAmount {
-                        clip: id.to_string(),
-                        effect: effect.to_string(),
-                        expected_amount_bits,
-                        amount,
-                    },
-                );
+                self.submit(vec![Project::SET_EFFECT_AMOUNT.with((
+                    key(id),
+                    key(effect),
+                    amount,
+                ))]);
             }
             // A title knob writes the *source*, so it commits a media write;
             // everything else on this path is a clip field.
-            Drag::Num(f) if f.is_media() => self.dispatch_selected_media(doc),
+            Drag::Num(f) if f.is_media() => self.dispatch_selected_media(),
             // …and the two lane knobs write the *track*, which is a third
             // destination again. Committed as one whole-track action, so the
             // fader lands on one undo boundary and replays on a peer as the
             // same change the palette's `set-gain` makes.
-            Drag::Num(f) if f.is_track() => self.dispatch_selected_track(doc),
+            Drag::Num(f) if f.is_track() => self.dispatch_selected_track(),
             // Rate is the one field the drag applied to the whole link group,
             // so it is the one that has to commit the whole group.
             Drag::Num(NumField::Speed) => {
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip_linked(doc, id);
+                    self.dispatch_clip_linked(id);
                 }
             }
             Drag::Opacity
@@ -8059,7 +8114,7 @@ impl VideoEditorApp {
             | Drag::TransitionLen
             | Drag::Num(_) => {
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(doc, id);
+                    self.dispatch_clip(id);
                 }
             }
             Drag::CurvePoint { channel, idx } => {
@@ -8079,7 +8134,7 @@ impl VideoEditorApp {
                     }
                 }
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(doc, id);
+                    self.dispatch_clip(id);
                 }
             }
         }
@@ -8138,7 +8193,7 @@ impl VideoEditorApp {
         if scrub.width() <= 1.0 {
             return;
         }
-        let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
+        let frac = slider_value_at(scrub, p.x);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
         self.playback.playing = false;
         // The transport scrubber spans the whole project, so it can land the
@@ -8160,7 +8215,7 @@ impl VideoEditorApp {
             }
         }
         let bin_visible = self.bin_is_visible(r);
-        self.hover_media = if bin_visible {
+        self.hover_media = if bin_visible && VideoEditorApp::bin_viewport(r).contains(p) {
             self.bin_item_rects(r)
                 .into_iter()
                 .find(|(_, rect)| rect.contains(p))
@@ -8189,10 +8244,10 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "chrome composition keeps the top-bar's shared geometry and semantic controls in one paint pass"
-    )]
+    /// The editor's one header row: the bin toggle and the project at the
+    /// leading end, the commands, History and the inspector toggle at the
+    /// trailing end. It stands on the window's ground with one hairline under
+    /// it; the OS names the app, so nothing here does.
     fn draw_chrome(
         &self,
         scene: &mut Scene,
@@ -8201,129 +8256,86 @@ impl VideoEditorApp {
         theme: &Theme,
         r: &Regions,
     ) {
-        let c = &theme.tokens.colors;
-        fill_rect(scene, tf, self.rect, c.surfaces.base);
-        // Top bar.
-        fill_rect(scene, tf, r.topbar, c.surfaces.raised);
-        // The bar's foot, on its own last pixel row: derived against the
-        // raised bar, so it still shows where the raised side panes meet it.
-        stroke_line(
-            scene,
-            tf,
-            pane_hairline(theme),
-            r.topbar.x0,
-            r.topbar.y1 - 0.5,
-            r.topbar.x1,
-            r.topbar.y1 - 0.5,
-            1.0,
+        ui::widget::toolbar::paint_band(scene, tf, theme, r.topbar);
+        let hovered = |rect: Rect| rect.contains(self.last_mouse);
+        // The two panel toggles: the toolkit's plain panel buttons, lifted
+        // while their panel is shown.
+        let bin_open = self.bin_flap.is_open(self.bin_layout());
+        draw_toggle_button(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            r.menu_btn,
+            ToggleContent::Icon(Icon::PanelLeft, "Media"),
+            bin_open && r.bin_overlay,
+            hovered(r.menu_btn),
         );
-        // Leading slot: a hamburger toggle when the bin is collapsed to an
-        // overlay flap. The OS owns the window title/app-name/logo, so the app
-        // draws no glyph or wordmark here.
-        if r.bin_overlay {
-            self.draw_hamburger(scene, tf, tr, theme, r.menu_btn);
-        }
-        // Inspector toggle, present only while the inspector is collapsed.
-        if r.inspector_overlay && r.inspector_btn.width() > 0.0 {
-            let rect = r.inspector_btn;
-            let open = self.inspector_flap.is_open(self.inspector_split());
-            let hovered = rect.contains(self.last_mouse);
-            let fg = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
-            // A panel glyph: the pane outline with its right column filled,
-            // which is where the inspector lives and what the toggle reveals.
-            let g = rect.inset(-8.0);
-            stroke_round(scene, tf, g, 2.0, fg, 1.4);
-            fill_rect(
-                scene,
-                tf,
-                Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1),
-                fg,
-            );
-        }
-        // The project button. The frame size and rate still live in the
-        // transport beside the timecode they belong with — this is a *control*
-        // (it opens Open / Save / Save As / recents) that happens to be
-        // labelled with what it acts on, not the project meta that used to be
-        // centred here and collided with the buttons on the right.
-        //
-        // The app name and the window title remain the OS's, and this is
-        // neither: which *file* is open, and whether it is written down, are
-        // things only the app knows.
+        let inspector_open = self.inspector_flap.is_open(self.inspector_split());
+        draw_toggle_button(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            r.inspector_btn,
+            ToggleContent::Icon(Icon::PanelRight, "Inspector"),
+            inspector_open && r.inspector_overlay,
+            hovered(r.inspector_btn),
+        );
+        self.history.paint(scene, tf, tr, theme, r.history_btn);
+        // The project button: which file is open, whether it is written down,
+        // and the way to open or save one. The app name and the window title
+        // remain the OS's, and this is neither.
         self.draw_project_button(scene, tf, tr, theme, r);
-        if self.topbar_is_compact() {
+        let compact = self.topbar_is_compact();
+        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+        if compact {
             draw_icon_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                IconButtonSpec {
-                    rect: r.import_btn,
-                    icon: ui::icons::Icon::FolderOpen,
-                    accessible_name: "Import media",
-                    primary: false,
-                    hovered: r.import_btn.contains(self.last_mouse),
-                },
-            );
-        } else {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut ctx,
                 r.import_btn,
-                "Import…",
-                false,
-                r.import_btn.contains(self.last_mouse),
+                Icon::FolderOpen,
+                "Import media",
+                ButtonRole::Plain,
+                hovered(r.import_btn),
+                true,
             );
-        }
-        if r.split_btn.width() > 0.0 {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                r.split_btn,
-                "Split (S)",
-                false,
-                r.split_btn.contains(self.last_mouse),
-            );
-        }
-        if self.topbar_is_compact() {
             draw_icon_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                IconButtonSpec {
-                    rect: r.export_btn,
-                    icon: ui::icons::Icon::ArrowUp,
-                    accessible_name: "Export video",
-                    primary: true,
-                    hovered: r.export_btn.contains(self.last_mouse),
-                },
+                &mut ctx,
+                r.export_btn,
+                Icon::Upload,
+                "Export video",
+                ButtonRole::Primary,
+                hovered(r.export_btn),
+                true,
             );
         } else {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                r.export_btn,
-                "Export…",
+            draw_button_enabled(
+                &mut ctx,
+                r.import_btn,
+                IMPORT_LABEL,
+                ButtonRole::Secondary,
+                hovered(r.import_btn),
                 true,
-                r.export_btn.contains(self.last_mouse),
+            );
+            if r.split_btn.width() > 0.0 {
+                draw_button_enabled(
+                    &mut ctx,
+                    r.split_btn,
+                    SPLIT_LABEL,
+                    ButtonRole::Secondary,
+                    hovered(r.split_btn),
+                    true,
+                );
+            }
+            draw_button_enabled(
+                &mut ctx,
+                r.export_btn,
+                EXPORT_LABEL,
+                ButtonRole::Primary,
+                hovered(r.export_btn),
+                true,
             );
         }
     }
 
     /// The project button: which project is open, whether it has been written
-    /// to a file, and the way to open or save one.
-    ///
-    /// Painted through the shared [`ui::widget::Button`] face so it carries
-    /// the same fill, border, hover and press treatment as every other button
-    /// in the fleet. The unsaved dot is a corner badge rather than part of the
-    /// label, because the label is centred and a marker inside it would sit
-    /// wherever the name's width happened to put it.
+    /// to a file, and the way to open or save one — the toolkit's own button
+    /// face, with the unsaved dot as a corner mark rather than part of the
+    /// label.
     fn draw_project_button(
         &self,
         scene: &mut Scene,
@@ -8338,48 +8350,48 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
-        // Room for the leading icon, the padding either side, and the badge.
         let label = if self.topbar_is_compact() {
             String::new()
         } else {
-            elide_at(
-                &self.project_label(),
-                (rect.width() - 52.0) as f32,
-                13.0,
-                tr,
-            )
+            self.project_label()
         };
-        let face = ui::widget::ButtonFace::new(rect, &label)
-            .style(ui::widget::ButtonStyle::Neutral)
-            .icon(ui::icons::Icon::Film)
-            .radius(7.0)
-            .text_size(13.0)
-            .hovered(hovered)
-            .pressed(self.project_menu.is_open());
-        ui::widget::Button::paint(scene, tf, tr, theme, &face);
+        let face = if label.is_empty() {
+            ButtonFace::icon_only(rect, Icon::Film, PROJECT_UNSAVED)
+        } else {
+            ButtonFace::new(rect, &label)
+                .icon(Icon::Film)
+                .role(ButtonRole::Plain)
+        }
+        .hovered(hovered)
+        .pressed(self.project_menu.is_open());
+        Button::paint(scene, tf, tr, theme, &face);
 
         if self.project_is_dirty() {
-            // A filled dot on the corner, ringed in the topbar's own colour so
-            // it reads as a badge on the button rather than a speck in it.
-            let ctr = Point::new(rect.x1 - 7.0, rect.y0 + 7.0);
+            // A dot on the corner, ringed in the ground it stands on so it
+            // reads as a mark on the button rather than a speck in it.
+            let ctr = Point::new(rect.x1 - S1, rect.y0 + S1);
             scene.fill(
                 Fill::NonZero,
                 tf,
-                c.surfaces.raised,
+                c.surfaces.content,
                 None,
-                &Circle::new(ctr, 5.0),
+                &Circle::new(ctr, S1 + 1.0),
             );
-            scene.fill(Fill::NonZero, tf, c.accent[5], None, &Circle::new(ctr, 3.5));
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                c.text_primary,
+                None,
+                &Circle::new(ctr, S1 - 0.5),
+            );
         }
     }
 
     /// Invite an external file drop, over the whole window.
     ///
     /// `DroppedFile` is accepted anywhere in the window, so the invitation has
-    /// to cover the same ground the handler does. Highlighting the media bin
-    /// alone said "drop here", which is narrower than the truth, and when the
-    /// bin was collapsed to a closed flap it said nothing at all — a drop that
-    /// would have worked looked like one that would not.
+    /// to cover the same ground the handler does: the window dims, and one
+    /// line on a floating panel at its centre says what a drop will do.
     fn draw_file_drop_invite(
         &self,
         scene: &mut Scene,
@@ -8390,39 +8402,37 @@ impl VideoEditorApp {
         if !self.presentation.file_hovering {
             return;
         }
-        let c = &theme.tokens.colors;
         let w = self.rect;
-        fill_rect(scene, tf, w, with_alpha(c.accent[5], 0.10));
-        stroke_round(scene, tf, w.inset(-4.0), 10.0, c.accent[5], 3.0);
-        // One label, centred on the window, on a plate so it stays readable
-        // over the timeline and the preview alike.
+        ui::overlay::scrim::modal(scene, tf, w, 1.0, theme);
         let hint = "Drop to import";
-        let (hw, _) = tr.measure_weighted(hint, 15.0, None, TextWeight::Semibold);
+        let style = theme.text(TextRole::Heading);
+        let hw = text_width(tr, hint, &style);
+        let hh = line_height(tr, &style);
         let ctr = w.center();
         let plate = Rect::new(
-            ctr.x - f64::from(hw) / 2.0 - 18.0,
-            ctr.y - 20.0,
-            ctr.x + f64::from(hw) / 2.0 + 18.0,
-            ctr.y + 20.0,
+            ctr.x - hw / 2.0 - S6,
+            ctr.y - hh / 2.0 - S4,
+            ctr.x + hw / 2.0 + S6,
+            ctr.y + hh / 2.0 + S4,
         );
-        fill_round(scene, tf, plate, 10.0, c.surfaces.raised);
-        stroke_round(scene, tf, plate, 10.0, c.accent[5], 1.5);
-        let baseline = text_baseline(plate, 15.0, tr);
-        text_w(
+        ui::widget::floating_surface::paint(scene, tf, plate, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        text(
             scene,
             tr,
             tf,
             hint,
-            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
-            c.accent[5],
-            Point::new(plate.x0 + 18.0, baseline),
+            &style,
+            ink.text_primary,
+            plate.x0 + S6,
+            plate.y0 + S4,
         );
     }
 
-    /// The last thing that happened to the project file, on a strip under the
-    /// topbar. Full width and above the panes, because it is not about the bin
-    /// or the timeline — and because a save that failed must not be findable
-    /// only by opening a panel.
+    /// The last thing that happened to the project file, as a status badge
+    /// in the strip under the topbar: full width and above the panes,
+    /// because it is not about the bin or the timeline — and because a save
+    /// that failed must not be findable only by opening a panel.
     fn draw_project_notice(
         &self,
         scene: &mut Scene,
@@ -8434,45 +8444,30 @@ impl VideoEditorApp {
         let Some(notice) = &self.project_notice else {
             return;
         };
-        let c = &theme.tokens.colors;
-        // The severity was decided where the outcome was known and travels
-        // with the message, so a notice in any language is tinted correctly.
-        let tint = notice.level.tint(theme);
-        // A floating plate, not a full-width band. A translucent band across
-        // the whole window let the media bin's own header show through it, so
-        // "Saved to …" and "MEDIA BIN · 7 clips" were painted on top of each
-        // other; this is opaque, sized to its words, and plainly a transient
-        // thing sitting over the editor rather than a row of the layout.
+        let gap = TOPBAR_GAP * self.chrome_scale();
         let x0 = if r.project_btn.width() > 0.0 {
-            r.project_btn.x0
+            r.project_btn.x1
         } else {
-            r.topbar.x0 + 12.0
-        };
-        let room = (self.project_notice_limit(r) - x0).max(80.0);
-        let shown = elide_at(&notice.text, (room - 24.0) as f32, 11.5, tr);
-        let (w, _) = tr.measure(&shown, 11.5, None);
-        // The same band the export chip and the pane headings use, so the
-        // three centre on one line across the strip under the topbar.
-        let plate = Rect::new(
-            x0,
-            r.topbar.y1 + PANE_HEADING_Y0,
-            (x0 + f64::from(w) + 24.0).min(self.project_notice_limit(r)),
-            r.topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
-        );
-        fill_round(scene, tf, plate, 7.0, c.surfaces.raised);
-        fill_round(scene, tf, plate, 7.0, with_alpha(tint, 0.18));
-        stroke_round(scene, tf, plate, 7.0, with_alpha(tint, 0.55), 1.0);
-        let baseline = text_baseline(plate, 11.5, tr);
-        text(
-            scene,
+            r.menu_btn.x1
+        } + gap;
+        let room = self.project_notice_limit(r) - x0;
+        let pad = ui::widget::BadgeFace::intrinsic_width("", tr, theme);
+        if room <= pad + S6 {
+            return;
+        }
+        let shown = elide_at(
+            &notice.text,
+            (room - pad) as f32,
+            &theme.text(TextRole::Caption),
             tr,
-            tf,
-            &shown,
-            11.5,
-            c.text_primary,
-            plate.x0 + 12.0,
-            baseline,
         );
+        let w = ui::widget::BadgeFace::intrinsic_width(&shown, tr, theme).min(room);
+        let h = ui::widget::BadgeFace::height(theme);
+        let cy = r.topbar.center().y;
+        let plate = Rect::new(x0, cy - h / 2.0, x0 + w, cy + h / 2.0);
+        ui::widget::BadgeFace::new(plate, &shown)
+            .style(ui::widget::ChipStyle::Tinted(notice.level.tone()))
+            .paint(scene, tf, tr, theme);
     }
 
     /// Whether a render has anything to report right now. A job that is still
@@ -8501,8 +8496,31 @@ impl VideoEditorApp {
                 "Exported {}",
                 display_name(Path::new(path))
             ))),
-            ExportStatus::Failed { reason } => Some(Notice::failed(reason.clone())),
+            // The reason is the dialog's to give in full (the chip opens it, and
+            // its hover and its accessible value carry the reason too); the
+            // header row only has room to say that it happened.
+            ExportStatus::Failed { .. } => Some(Notice::failed("Export failed".to_string())),
         }
+    }
+
+    /// How wide the export chip wants to be: as wide as its words. A render in
+    /// flight is measured at its widest reading, so the chip does not jitter
+    /// as the percentage counts up.
+    pub(super) fn export_chip_width(&self) -> f64 {
+        let Some(notice) = self.export_chip_notice() else {
+            return 0.0;
+        };
+        self.with_dialog_layout(|app, tr, theme| match app.export_status {
+            ExportStatus::Failed { .. } => {
+                ui::widget::BadgeFace::intrinsic_width(&notice.text, tr, theme)
+            }
+            ExportStatus::Rendering { .. } => ButtonFace::new(Rect::ZERO, "Exporting… 100%")
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme),
+            _ => ButtonFace::new(Rect::ZERO, &notice.text)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme),
+        })
     }
 
     /// The chip's words and severity, formatted and elided only when they
@@ -8511,7 +8529,12 @@ impl VideoEditorApp {
     /// A render keeps animation frames coming for its whole duration, so this
     /// is on the hot path: the text is rebuilt when the whole-percent figure
     /// moves (or the window width does), not on every encoded frame.
-    fn export_chip_text(&mut self, chip: Rect, tr: &mut TextRenderer) -> Option<&ExportChipText> {
+    fn export_chip_text(
+        &mut self,
+        chip: Rect,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<&ExportChipText> {
         if !self.export_chip_is_shown() {
             self.export_chip_text = None;
             return None;
@@ -8523,17 +8546,28 @@ impl VideoEditorApp {
             // Only on a real change: the format and the elision both live
             // behind this branch, so a steady render costs neither.
             let notice = self.export_chip_notice()?;
+            let style = theme.text(TextRole::Caption).numeric();
+            // The chip is sized to its words; they are elided only when the
+            // header row could not give it that much room.
+            let fits = self.export_chip_width() <= chip.width() + 0.5;
+            let shown = if fits {
+                notice.text.clone()
+            } else {
+                elide_at(&notice.text, (chip.width() - S4) as f32, &style, tr)
+            };
             self.export_chip_text = Some(ExportChipText {
                 from: self.export_status.clone(),
                 width: chip.width(),
                 level: notice.level,
-                shown: elide_at(&notice.text, (chip.width() - 20.0) as f32, 11.0, tr),
+                shown,
             });
         }
         self.export_chip_text.as_ref()
     }
 
-    /// Paint the render's own state into the window chrome.
+    /// Paint the render's own state into the window chrome: a floating chip
+    /// under the Export button with its words, filled from the leading edge
+    /// as the render encodes.
     ///
     /// The worker was built to run while the editor stays editable — it clones
     /// the project precisely so the UI thread can keep working — so closing
@@ -8548,7 +8582,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let chip = r.export_chip;
-        if chip.width() <= 0.0 {
+        if chip.width() <= S6 {
             self.export_chip_text = None;
             return;
         }
@@ -8556,71 +8590,78 @@ impl VideoEditorApp {
             ExportStatus::Rendering { progress } => Some(progress.clamp(0.0, 1.0)),
             _ => None,
         };
-        let Some(cached) = self.export_chip_text(chip, tr) else {
+        let Some(cached) = self.export_chip_text(chip, tr, theme) else {
             return;
         };
         let level = cached.level;
         // Cloned off the cache so the scene draws below can borrow `tr` again;
         // one short string, and only while a render has something to say.
         let shown = cached.shown.clone();
-        let c = &theme.tokens.colors;
-        let tint = level.tint(theme);
-        fill_round(scene, tf, chip, 7.0, c.surfaces.raised);
-        fill_round(scene, tf, chip, 7.0, with_alpha(tint, 0.18));
-        // A render in flight fills the chip as it encodes: the progress bar
-        // the dialog used to hold alone, in a place that survives the dialog.
-        // Clipped to the chip's own shape so the fill's leading edge is a
-        // straight line rather than a second pill nested inside the first.
-        if let Some(p) = progress {
-            let done = chip.width() * p;
-            if done > 0.5 {
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    tf,
-                    &RoundedRect::from_rect(chip, 7.0),
-                );
-                fill_rect(
-                    scene,
-                    tf,
-                    Rect::new(chip.x0, chip.y0, chip.x0 + done, chip.y1),
-                    with_alpha(tint, 0.34),
-                );
-                scene.pop_layer();
-            }
+        if level == NoticeLevel::Failed {
+            // A failed render is a status, in danger: the toolkit's badge.
+            // At a badge's own height, centred in the chip's slot: a pill
+            // pads its label by its height, so a taller rect would elide it.
+            let h = ui::widget::BadgeFace::height(theme);
+            let badge = Rect::new(
+                chip.x0,
+                chip.center().y - h / 2.0,
+                chip.x1,
+                chip.center().y + h / 2.0,
+            );
+            ui::widget::BadgeFace::new(badge, &shown)
+                .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Danger))
+                .paint(scene, tf, tr, theme);
+            return;
         }
-        stroke_round(scene, tf, chip, 7.0, with_alpha(tint, 0.55), 1.0);
-        let baseline = text_baseline(chip, 11.0, tr);
-        text(
-            scene,
-            tr,
-            tf,
-            &shown,
-            11.0,
-            c.text_primary,
-            chip.x0 + 10.0,
-            baseline,
-        );
+        // Otherwise it is the way back into the dialog: a raised well that
+        // fills from its leading edge as the render encodes, with a plain
+        // button over it whose label is the render's state.
+        let c = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.control);
+        let well = c.surfaces.raised;
+        ui::surface::card(scene, tf, chip, radius, well);
+        if let Some(p) = progress {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                tf,
+                &RoundedRect::from_rect(chip, radius),
+            );
+            let done = Rect::new(chip.x0, chip.y0, chip.x0 + chip.width() * p, chip.y1);
+            fill_rect(scene, tf, done, c.lift_on(well, 1.0));
+            scene.pop_layer();
+        }
+        let face = ButtonFace::new(chip, &shown)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .hovered(chip.contains(self.last_mouse));
+        Button::paint(scene, tf, tr, theme, &face);
     }
 
     /// How far right the project-notice plate may run. It shares the strip
     /// under the topbar with the export chip, which is anchored to the right;
     /// a plate that ran to the window edge would be drawn straight through it.
     fn project_notice_limit(&self, r: &Regions) -> f64 {
+        let gap = TOPBAR_GAP * self.chrome_scale();
         if self.export_chip_is_shown() {
-            r.export_chip.x0 - 8.0
+            r.export_chip.x0 - gap
         } else {
-            r.topbar.x1 - 12.0
+            r.import_btn.x0 - gap
         }
+    }
+
+    /// A Small control's height, for the statuses in the header row.
+    fn topbar_small_height(&self) -> f64 {
+        ButtonFace::height(ControlSize::Small, &self.chrome_theme)
     }
 
     /// Card and buttons for the unsaved-work question.
     fn discard_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<DiscardLayout> {
         let pending = self.pending_open.as_ref()?;
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let s1 = f64::from(theme.tokens.spacing.s1);
-        let line_sm = line_height(tr, type_sizes.sm);
+        let line_sm = line_height(tr, &type_sizes.sm);
         let (title, _) = Self::discard_words(pending);
         let actions = Self::discard_actions();
         let spec = ModalSpec::new(&title)
@@ -8629,13 +8670,7 @@ impl VideoEditorApp {
             .closable(false)
             .dismiss_on_scrim(false);
         let body_h = line_sm * 2.0 + s1;
-        let modal = modal_layout_with_stacking_actions(
-            self.rect,
-            &spec,
-            body_h / f64::from(theme.text_scale),
-            tr,
-            theme,
-        );
+        let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
         let lines = [modal.body.y0, modal.body.y0 + line_sm + s1];
         let at = |i: usize| modal.actions.get(i).copied().unwrap_or_default();
         Some(DiscardLayout {
@@ -8672,8 +8707,8 @@ impl VideoEditorApp {
             .max_width(DISCARD_CARD_W)
             .closable(false)
             .dismiss_on_scrim(false);
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (_, dim) = ModalFrame::ink(theme);
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = modal_dialog::ink(theme);
         let width = l.modal.body.width() as f32;
         // Clipped to the body, as the other dialogs are: when the verbs stack
         // on a small window the body is what is left above them, and the
@@ -8686,44 +8721,20 @@ impl VideoEditorApp {
             &l.modal.body,
         );
         for (line, top) in lines.iter().zip(l.lines) {
-            let shown = elide_at(line, width, l.type_sizes.sm, tr);
+            let shown = elide_at(line, width, &l.type_sizes.sm, tr);
             text(
                 scene,
                 tr,
                 tf,
                 &shown,
-                l.type_sizes.sm,
+                &l.type_sizes.sm,
                 dim,
                 l.modal.body.x0,
                 top,
             );
         }
         scene.pop_layer();
-        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
-    }
-
-    /// Three-bar hamburger that summons the collapsed media bin. Highlights
-    /// while the flap is open so it reads as a pressed toggle.
-    fn draw_hamburger(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        if rect.width() <= 0.0 {
-            return;
-        }
-        let open = self.bin_flap.is_open(self.bin_layout());
-        let hovered = rect.contains(self.last_mouse);
-        let bar = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
-        let bx0 = rect.x0 + 7.0;
-        let bx1 = rect.x1 - 7.0;
-        for i in 0..3 {
-            let by = rect.center().y - 5.0 + f64::from(i) * 5.0;
-            fill_round(scene, tf, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0, bar);
-        }
+        modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
     }
 
     /// The shortcut sheet.
@@ -8743,10 +8754,9 @@ impl VideoEditorApp {
         let l = self.help_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
         let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (ink, dim) = ModalFrame::ink(theme);
-        let c = &theme.tokens.colors;
-        let ty = l.type_sizes;
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (ink, dim) = modal_dialog::ink(theme);
+        let ty = &l.type_sizes;
         let body = l.modal.body;
         // The rows are clipped to the body above the scroll hint's band: a
         // body the window cannot hold scrolls, and the rows must not paint
@@ -8765,43 +8775,56 @@ impl VideoEditorApp {
             tf,
             &rows_clip,
         );
-        text(
-            scene,
-            tr,
-            tf,
-            "Esc or ? to close",
-            ty.sm,
-            dim,
-            body.x0,
-            l.hint_top,
-        );
-        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
-            text_w(
+        // A scrolled body shows whole lines only: a line the clip would cut
+        // through is left out until it scrolls fully into view, so no row is
+        // ever read as half of itself at the body's edges.
+        let whole = |top: f64, h: f64| top >= rows_clip.y0 - 0.5 && top + h <= rows_clip.y1 + 0.5;
+        if whole(l.hint_top, line_height(tr, &ty.sm)) {
+            text(
                 scene,
                 tr,
                 tf,
-                group,
-                &TextStyle::new(ty.xs).with_weight(TextWeight::Bold),
+                "Esc or ? to close",
+                &ty.sm,
                 dim,
-                Point::new(g.heading.x0, g.heading.y0),
+                body.x0,
+                l.hint_top,
             );
+        }
+        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
+            if whole(g.heading.y0, g.heading.height()) {
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    group,
+                    &ty.xs.clone().strong(),
+                    ink,
+                    g.heading.x0,
+                    g.heading.y0,
+                );
+            }
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
-                text_w(
+                if !whole(row.y0, row.height()) {
+                    continue;
+                }
+                text(
                     scene,
                     tr,
                     tf,
                     combo,
-                    &TextStyle::new(ty.sm).with_weight(TextWeight::Bold),
-                    c.accent[6],
-                    Point::new(row.x0, row.y0),
+                    &ty.sm.clone().strong(),
+                    ink,
+                    row.x0,
+                    row.y0,
                 );
-                let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
+                let shown = elide_at(what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &shown,
-                    ty.sm,
+                    &ty.sm,
                     ink,
                     row.x0 + l.what_dx,
                     row.y0,
@@ -8811,119 +8834,57 @@ impl VideoEditorApp {
         scene.pop_layer();
         if let Some(hint_top) = l.footer_hint {
             let label = if self.help_scroll + 0.5 < l.max_scroll {
-                "Scroll for more shortcuts ↓"
+                "Scroll for more shortcuts"
             } else {
-                "Scroll up for earlier shortcuts ↑"
+                "Scroll up for earlier shortcuts"
             };
-            text(scene, tr, tf, label, ty.xs, dim, body.x0, hint_top);
+            text(scene, tr, tf, label, &ty.xs, dim, body.x0, hint_top);
         }
     }
 
     /// The go-to-timecode field: type a time, press Enter, land there.
     ///
-    /// Typing a timecode is table stakes in an editor and there was no way to
-    /// do it — the playhead could only be dragged or stepped. A value that
-    /// cannot be read keeps the field open and says so, rather than closing and
-    /// silently going nowhere.
+    /// A floating panel over the transport holding the toolkit's text field.
+    /// A value that cannot be read keeps the field open and says so under it
+    /// in danger ink, rather than closing and silently going nowhere.
     fn draw_goto(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         r: &Regions,
     ) {
-        let Some(entry) = self.goto_entry.clone() else {
+        if self.goto_entry.is_none() {
             return;
-        };
+        }
         let c = &theme.tokens.colors;
         let l = self.goto_layout(r, tr, theme);
-        let ty = l.type_sizes;
-        // A floating Panel (HIG §9.1): the panel ground with its derived
-        // border — and, because the card *is* the focused field, the focus
-        // ring over it, in danger while the entry cannot be read.
-        let radius = f64::from(theme.tokens.radii.lg);
-        fill_round(scene, tf, l.card, radius, ui::chrome::panel_ground(theme));
-        stroke_round(
-            scene,
-            tf,
-            l.card.inset(-0.5),
-            radius - 0.5,
-            ui::chrome::panel_border(theme),
-            1.0,
-        );
-        stroke_round(
-            scene,
-            tf,
-            l.card,
-            radius,
-            if self.navigation.goto_notice {
-                c.semantic.danger
-            } else {
-                c.border_focus
-            },
-            FOCUS_RING_W,
-        );
-        let x = l.card.x0 + f64::from(theme.tokens.spacing.s4);
+        let ty = &l.type_sizes;
+        ui::widget::floating_surface::paint(scene, tf, l.card, theme);
+        let panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let x = l.entry.x0;
         text(
             scene,
             tr,
             tf,
             "Go to timecode",
-            ty.xs,
-            c.text_dim,
+            &ty.xs,
+            panel.text_dim,
             x,
             l.label_top,
         );
-        let shown = if entry.is_empty() {
-            "0:00"
-        } else {
-            entry.as_str()
-        };
-        let col = if entry.is_empty() {
-            c.text_dim
-        } else {
-            c.text_primary
-        };
-        text_w(
-            scene,
-            tr,
-            tf,
-            shown,
-            &TextStyle::new(ty.xl).with_weight(TextWeight::Bold),
-            col,
-            Point::new(x, l.entry_top),
-        );
-        // A caret, so an empty field reads as "type here" rather than as a
-        // placeholder someone forgot to remove. Measured at the weight the
-        // digits are drawn in, so it stands at their end rather than inside
-        // the last one.
-        if !entry.is_empty() {
-            let (tw, th) = tr.measure_weighted(shown, ty.xl, None, TextWeight::Bold);
-            let caret_x = x + f64::from(tw) + f64::from(theme.tokens.spacing.s1) / 2.0;
-            fill_rect(
-                scene,
-                tf,
-                Rect::new(
-                    caret_x,
-                    l.entry_top,
-                    caret_x + theme.caret_width,
-                    l.entry_top + f64::from(th),
-                ),
-                c.accent[6],
-            );
+        if let Some(field) = self.goto_entry.as_mut() {
+            field.apply_layout_external(l.entry);
+            field.draw(scene, tf, tr, &panel, presence);
         }
-        let hint = if self.navigation.goto_notice {
-            "Not a timecode — try 1:30"
+        let (hint, hc) = if self.navigation.goto_notice {
+            ("Not a timecode, try 1:30", c.semantic.danger)
         } else {
-            "Enter to jump, Esc to cancel"
+            ("Enter to jump, Esc to cancel", panel.text_dim)
         };
-        let hc = if self.navigation.goto_notice {
-            c.semantic.danger
-        } else {
-            c.text_dim
-        };
-        text(scene, tr, tf, hint, ty.xs, hc, x, l.hint_top);
+        text(scene, tr, tf, hint, &ty.xs, hc, x, l.hint_top);
     }
 
     #[allow(
@@ -8949,20 +8910,20 @@ impl VideoEditorApp {
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
-        let spec = ModalSpec::new("Export Project")
+        let spec = ModalSpec::new("Export project")
             .actions(&actions)
             .max_width(EXPORT_CARD_W)
             .close_hovered(hit == Some(ModalHit::Close));
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (_, dim) = ModalFrame::ink(theme);
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = modal_dialog::ink(theme);
         let c = &theme.tokens.colors;
-        let ty = l.type_sizes;
+        let ty = &l.type_sizes;
         let body = l.modal.body;
         let x0 = body.x0;
         let width = body.width() as f32;
         let sp = &theme.tokens.spacing;
         let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
-        let line_xs = line_height(tr, ty.xs);
+        let line_xs = line_height(tr, &ty.xs);
         // Clipped to the body: on a window too small for the card the frame
         // clamps it and reports the overflow, and the content must not paint
         // through the action row.
@@ -8976,10 +8937,10 @@ impl VideoEditorApp {
         let filename = elide_at(
             &self.export.suggested_filename(&self.project.name),
             width,
-            ty.sm,
+            &ty.sm,
             tr,
         );
-        text(scene, tr, tf, &filename, ty.sm, dim, x0, l.filename_top);
+        text(scene, tr, tf, &filename, &ty.sm, dim, x0, l.filename_top);
         // What the levels did, stated **here**, before the button that
         // renders them. A mix that clipped and only said so in the file is
         // the fault this whole surface exists to end, and the dialog is the
@@ -8990,8 +8951,8 @@ impl VideoEditorApp {
             } else {
                 dim
             };
-            let words = elide_at(&words, width, ty.xs, tr);
-            text(scene, tr, tf, &words, ty.xs, tint, x0, top);
+            let words = elide_at(&words, width, &ty.xs, tr);
+            text(scene, tr, tf, &words, &ty.xs, tint, x0, top);
         }
 
         let cursor = self.last_mouse;
@@ -9000,7 +8961,7 @@ impl VideoEditorApp {
                          caption: &str,
                          top: f64,
                          items: &[(String, Rect, bool)]| {
-            text(scene, tr, tf, caption, ty.xs, dim, x0, top);
+            text(scene, tr, tf, caption, &ty.xs, dim, x0, top);
             // The shared segmented face, as the inspector's transition and
             // preset rows already use — so the dialog's option groups look
             // like every other segmented control in the fleet instead of a
@@ -9012,27 +8973,20 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
-            draw_segmented_sized(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                &rects,
-                &labels,
-                selected,
-                cursor,
-                ty.sm,
-            );
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, cursor);
         };
         let res: Vec<_> = l
             .resolution
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
             .collect();
-        seg_group(scene, tr, "RESOLUTION", l.captions[0], &res);
+        seg_group(scene, tr, "Resolution", l.captions[0], &res);
         let con: Vec<_> = l
             .container
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
             .collect();
-        seg_group(scene, tr, "FORMAT", l.captions[1], &con);
+        seg_group(scene, tr, "Format", l.captions[1], &con);
         let fps: Vec<_> = l
             .fps
             .iter()
@@ -9044,7 +8998,7 @@ impl VideoEditorApp {
                 )
             })
             .collect();
-        seg_group(scene, tr, "FRAME RATE", l.captions[2], &fps);
+        seg_group(scene, tr, "Frame rate", l.captions[2], &fps);
 
         // Estimate + status.
         // One source of truth for the size line: the export module knows which
@@ -9058,21 +9012,21 @@ impl VideoEditorApp {
         // And how long it will run — the marked range when there is one,
         // which is the whole reason for marking one.
         let info = format!(
-            "{est}   ·   {w}×{h}   ·   {}{}",
+            "{w}×{h} for {}{}, {est}",
             timecode(self.project.export_duration(), self.project.fps),
             if self.project.has_marks() {
-                " (marked)"
+                " (marked range)"
             } else {
                 ""
             }
         );
-        let info = elide_at(&info, width, ty.sm, tr);
-        text(scene, tr, tf, &info, ty.sm, dim, x0, l.info_top);
+        let info = elide_at(&info, width, &ty.sm, tr);
+        text(scene, tr, tf, &info, &ty.sm, dim, x0, l.info_top);
         let status = l.status;
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
                 let bar = Rect::new(status.x0, status.y0, status.x1, status.y0 + s2);
-                let radius = f64::from(theme.tokens.radii.sm);
+                let radius = f64::from(theme.tokens.radii.detail);
                 well(scene, tf, theme, bar, radius);
                 let f = Rect::new(
                     bar.x0,
@@ -9080,17 +9034,17 @@ impl VideoEditorApp {
                     bar.x0 + bar.width() * progress.max(0.04),
                     bar.y1,
                 );
-                fill_round(scene, tf, f, radius, c.accent[5]);
-                text(scene, tr, tf, "Rendering…", ty.xs, dim, x0, bar.y1 + s1);
+                fill_round(scene, tf, f, radius, c.intent.inverted);
+                text(scene, tr, tf, "Rendering…", &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
-                let done = elide_at(&format!("Done: {path}"), width, ty.xs, tr);
+                let done = elide_at(&format!("Done: {path}"), width, &ty.xs, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &done,
-                    ty.xs,
+                    &ty.xs,
                     c.semantic.success,
                     x0,
                     status.y0,
@@ -9101,14 +9055,14 @@ impl VideoEditorApp {
                 // slot is deliberately bounded so an encoder's untrusted
                 // error cannot paint through the buttons; the full, unelided
                 // reason remains in the dialog's accessible static-text node.
-                let lines = tr.clamp_to_lines(reason, ty.xs, width, 2);
+                let lines = tr.clamp_to_lines(reason, &ty.xs, width, 2);
                 for (line, words) in lines.iter().enumerate() {
                     text(
                         scene,
                         tr,
                         tf,
                         words,
-                        ty.xs,
+                        &ty.xs,
                         c.semantic.danger,
                         x0,
                         status.y0 + line as f64 * line_xs,
@@ -9119,19 +9073,19 @@ impl VideoEditorApp {
                 // One source of truth for the availability copy — the export
                 // module knows what it can actually do, this dialog does not.
                 if let Some(reason) = crate::export::unavailable_reason() {
-                    let reason = elide_at(reason, width, ty.xs, tr);
-                    text(scene, tr, tf, &reason, ty.xs, dim, x0, status.y0);
+                    let reason = elide_at(reason, width, &ty.xs, tr);
+                    text(scene, tr, tf, &reason, &ty.xs, dim, x0, status.y0);
                 }
             }
         }
         // The flow's own status (choosing a destination, a portal refusal)
         // sits under the render status, so an action is never silent.
         if let Some(notice) = &self.export_notice {
-            let shown = elide_at(notice, width, ty.xs, tr);
-            text(scene, tr, tf, &shown, ty.xs, dim, x0, l.notice_top);
+            let shown = elide_at(notice, width, &ty.xs, tr);
+            text(scene, tr, tf, &shown, &ty.xs, dim, x0, l.notice_top);
         }
         scene.pop_layer();
-        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
+        modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
     }
 }
 
@@ -9148,34 +9102,37 @@ impl VideoEditorApp {
         Rect::new(px - 6.0, r.ruler.y0, px + 6.0, r.ruler.y0 + 16.0)
     }
 
-    fn with_dialog_layout<T>(
-        &self,
-        f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T,
-    ) -> Option<T> {
-        let theme = self.chrome_theme.as_ref()?;
-        let mut slot = self.hit_text.borrow_mut();
+    fn with_dialog_layout<T>(&self, f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T) -> T {
+        let theme = &self.chrome_theme;
+        // A layout measured inside another one (the inspector's header while
+        // the go-to card is being placed) gets its own renderer rather than a
+        // second borrow of the shared one.
+        let Ok(mut slot) = self.hit_text.try_borrow_mut() else {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(theme.text_scale);
+            return f(self, &mut tr, theme);
+        };
         let tr = slot.get_or_insert_with(TextRenderer::new);
         tr.set_text_scale(theme.text_scale);
-        Some(f(self, tr, theme))
+        f(self, tr, theme)
     }
 
     fn help_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> HelpLayout {
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let sp = &theme.tokens.spacing;
         let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
-        let m = HelpMetrics::measure(tr, theme, type_sizes);
-        let line_sm = line_height(tr, type_sizes.sm);
-        let line_xs = line_height(tr, type_sizes.xs);
+        let m = HelpMetrics::measure(tr, theme, &type_sizes);
+        let line_sm = line_height(tr, &type_sizes.sm);
+        let line_xs = line_height(tr, &type_sizes.xs);
         let scale = f64::from(theme.text_scale.max(1.0));
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts")
-            .body_height(content_h / f64::from(theme.text_scale));
+        let mut spec = ModalSpec::new("Keyboard shortcuts").body_height(content_h);
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
-        let modal = ModalFrame::layout(self.rect, &spec, tr, theme);
+        let modal = modal_dialog::layout(self.rect, &spec, tr, theme);
         let body = modal.body;
         // A body shorter than the table scrolls, and keeps a band at its foot
         // for the line that says so.
@@ -9196,7 +9153,7 @@ impl VideoEditorApp {
             .flat_map(|(_, rows)| rows.iter())
             .map(|(combo, _)| {
                 f64::from(
-                    tr.measure_weighted(combo, type_sizes.sm, None, TextWeight::Bold)
+                    tr.measure_style(combo, None, &type_sizes.sm.clone().strong())
                         .0,
                 )
             })
@@ -9236,11 +9193,11 @@ impl VideoEditorApp {
 }
 
 impl HelpMetrics {
-    fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: DialogType) -> Self {
+    fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: &DialogType) -> Self {
         let s1 = f64::from(theme.tokens.spacing.s1);
         Self {
-            header_h: line_height(tr, type_sizes.xs) + s1,
-            row_h: line_height(tr, type_sizes.sm) + s1,
+            header_h: line_height(tr, &type_sizes.xs) + s1,
+            row_h: line_height(tr, &type_sizes.sm) + s1,
             group_gap: f64::from(theme.tokens.spacing.s2),
         }
     }
@@ -9315,12 +9272,43 @@ impl VideoEditorApp {
     }
 }
 
-impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEditorApp {
+impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> for VideoEditorApp {
+    fn effect(
+        &mut self,
+        effect: crate::actions::VideoEditorEffect,
+        cx: &mut ui::framework::EffectCx<Project, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Export needs an encoder in this build; cancelling needs a render
+    /// running.
+    fn effects(&self) -> Vec<ui::framework::EffectStatus> {
+        use crate::actions::VideoEditorEffect;
+        let mut statuses = Vec::new();
+        if let Some(reason) = crate::export::unavailable_reason() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::EXPORT,
+                "export_unavailable",
+                reason,
+            ));
+        }
+        if self.export_job.is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::CANCEL_EXPORT,
+                "no_export_running",
+                "No export is running",
+            ));
+        }
+        statuses
+    }
+
     /// The stored project changed: a local edit the host applied, a
     /// collaborator's, an undo — or, in History mode, a past version. A drag
     /// in flight keeps its live preview; the new project is loaded when it
     /// lets go, exactly as for the standalone editor.
     fn present(&mut self, project: &std::rc::Rc<Project>) {
+        self.stored = std::rc::Rc::clone(project);
         if self.drag_is_editing() {
             self.project_sync.reload_pending = true;
             return;
@@ -9334,13 +9322,34 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
         }
     }
 
-    fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::VideoProject>) {
-        self.actions.attach(cx.dispatcher());
+    /// A launch naming files imports them, the way a file chooser's pick
+    /// does, and places the first on the timeline. A screenshot or a past
+    /// version of anything else is hermetic.
+    fn attach(&mut self, cx: ui::framework::SurfaceCx<Project>) {
+        self.actions = Some(cx.dispatcher());
+        let mode = cx.mode();
+        self.seed.capture = mode == ui::framework::RunMode::Capture;
+        let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();
+        if launched.is_empty() {
+            self.seed.hermetic = !mode.is_live();
+            self.thumbnails.set_decoding(!self.seed.hermetic);
+            // A still render cannot wait on a background waveform compute.
+            self.render_pipeline.warm_waveforms_sync = self.seed.capture;
+        } else {
+            self.pending_imports = launched;
+            self.media_pipeline.auto_place_imports = true;
+        }
     }
 
     /// A `--shots` capture: the scenario's project is loaded; arrange the
     /// editor around it. See [`Self::stage_capture`].
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_capture(scenario);
+    }
+
+    /// Edits bound to this participant's playhead and measured mix,
+    /// published on the project beside its own actions.
+    fn bound_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Project>> {
+        crate::actions::surface_declarations(&self.video_resource_ctx())
     }
 }

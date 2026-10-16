@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
-import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
+import {readFile} from 'node:fs/promises';
+import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 
 const bytes={
   core:new Uint8Array([1,2,3]),
@@ -39,6 +40,34 @@ test('startup fetches only declared startup fonts and verifies immutable bytes',
   assert.deepEqual([...startup['core.ttf']],[1,2,3]);
   assert.deepEqual(requested.map(([url])=>new URL(url).pathname),['/app/fonts.json','/app/fonts/core.ttf']);
   assert(requested.every(([,options])=>options.mode==='same-origin'&&options.redirect==='error'&&options.credentials==='same-origin'));
+});
+
+test('the actual canonical catalog accepts multi-axis variable font filenames',async()=>{
+  const source=await readFile(new URL('../../../sdk/font-catalog/manifest.toml',import.meta.url),'utf8');
+  const assets=source.split('[[font]]').slice(1).filter(block=>/^scope = "product"$/m.test(block)).map(block=>({
+    name: /^file = "([^"\n]+)"$/m.exec(block)[1],
+    bytes: Number(/^bytes = (\d+)$/m.exec(block)[1]),
+    sha256: /^sha256 = "([0-9a-f]+)"$/m.exec(block)[1],
+    startup: /^browser_startup = true$/m.test(block),
+  }));
+  assert(assets.some(asset=>asset.name==='TiloSans[wdth,wght].ttf'&&asset.startup));
+  // Italics load when text first uses them.
+  assert(assets.some(asset=>asset.name==='TiloSans-Italic[wdth,wght].ttf'&&!asset.startup));
+  const manifest={schema:1,catalog:'actual-canonical-product',assets};
+  const loader=createFontLoader({baseURL:'https://example.test/app/',fetch:async url=>{
+    assert.equal(new URL(url).pathname,'/app/fonts.json');
+    return response(manifest);
+  }});
+  const parsed=await loader.manifest();
+  assert.deepEqual([...parsed.assets.keys()],assets.map(asset=>asset.name));
+});
+
+test('font descriptors still refuse paths, encoded paths and cross-origin names',async()=>{
+  for(const name of ['../secret.ttf','dir/font.ttf','dir\\font.ttf','https://evil.test/font.ttf','font%2fsecret.ttf','font.ttf?query']){
+    const manifest=await descriptor();manifest.assets[0].name=name;
+    const loader=createFontLoader({baseURL:'https://example.test/app/',fetch:async()=>response(manifest)});
+    await assert.rejects(loader.manifest(),/invalid canonical font asset descriptor/,name);
+  }
 });
 
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{
@@ -198,124 +227,6 @@ test('a successful retry clears only its prior font-specific availability issue'
     {font:'available',fontAsset:'arabic.ttf'},
   ]);
   assert.equal('error' in reports[0],false);assert.match(reports[0].fontError,/offline/);
-});
-
-function prewarmFixture({fail=new Set(),corrupt=new Set(),gate=false}={}){
-  const requested=[],gates=new Map(),arrivals=new Map();let manifest;
-  const arrival=name=>{if(!arrivals.has(name)){let resolve;arrivals.set(name,{seen:new Promise(r=>{resolve=r;}),resolve});}return arrivals.get(name);};
-  const fetch=async (url,options)=>{
-    if(String(url).endsWith('fonts.json'))return response(manifest);
-    const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');requested.push([name,options?.cache??'default']);arrival(name).resolve();
-    if(gate)await new Promise(resolve=>gates.set(name,resolve));
-    if(fail.has(name))throw TypeError('offline');
-    return response(corrupt.has(name)?new Uint8Array(bytes[name].byteLength):bytes[name]);
-  };
-  // fetched(name) settles once a fetch for name starts, however long the
-  // verification before it takes.
-  return {requested,gates,fetch,fetched:name=>arrival(name).seen,async ready(){manifest=await descriptor();return manifest;}};
-}
-
-test('pre-warm verifies optional fonts within budget and a later demand is a cache hit',async()=>{
-  const f=prewarmFixture();await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch});
-  // cjk (4 bytes) exceeds the per-asset bound; the total budget admits arabic + emoji.
-  const warmed=await loader.prewarm({maxAssetBytes:3,budgetBytes:3,prefer:['emoji.ttf']});
-  assert.deepEqual(warmed,['emoji.ttf','arabic.ttf']);
-  assert.deepEqual(f.requested.map(([name])=>name),['emoji','arabic']);
-  assert.deepEqual([...await loader.request('emoji.ttf')],[10]);
-  assert.deepEqual([...await loader.request('arabic.ttf')],[4,5]);
-  assert.equal(f.requested.length,2,'a warmed font is served from memory');
-  await loader.request('cjk.ttf');
-  assert.deepEqual(f.requested.map(([name])=>name),['emoji','arabic','cjk'],'an unwarmed font is a miss that fetches');
-});
-
-test('pre-warm keeps integrity checks: bytes that differ from the manifest digest are never retained',async()=>{
-  const f=prewarmFixture({corrupt:new Set(['arabic'])});await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch});
-  assert.deepEqual(await loader.prewarm(),['cjk.ttf','emoji.ttf']);
-  // The mismatch was reloaded once outside the HTTP cache and then dropped.
-  assert.deepEqual(f.requested.filter(([name])=>name==='arabic').map(([,cache])=>cache),['default','reload']);
-  await assert.rejects(loader.request('arabic.ttf'),/SHA-256 mismatch/);
-  assert.equal(f.requested.filter(([name])=>name==='arabic').length,4,'a demand re-verifies from the network, not from the pre-warm');
-});
-
-test('a new release manifest invalidates warmed bytes: loaders are per release root',async()=>{
-  const f=prewarmFixture();await f.ready();
-  const a=createFontLoader({baseURL:'https://example.test/releases/a/',crypto:webcrypto,fetch:f.fetch});
-  await a.prewarm({prefer:['emoji.ttf'],budgetBytes:1});
-  const changed=await descriptor();changed.catalog='release-b';changed.assets.find(asset=>asset.name==='emoji.ttf').sha256='0'.repeat(64);
-  const b=createFontLoader({baseURL:'https://example.test/releases/b/',crypto:webcrypto,fetch:async (url,options)=>String(url).endsWith('fonts.json')?response(changed):f.fetch(url,options)});
-  await assert.rejects(b.request('emoji.ttf'),/SHA-256 mismatch/,'bytes warmed for the old digest do not satisfy the new one');
-  assert.deepEqual([...await a.request('emoji.ttf')],[10]);
-});
-
-test('a failed pre-warm never arms the demand backoff',async()=>{
-  const f=prewarmFixture({fail:new Set(['emoji'])});await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch,now:()=>0});
-  assert.deepEqual(await loader.prewarm({prefer:['emoji.ttf'],budgetBytes:1}),[]);
-  await assert.rejects(loader.request('emoji.ttf'),/offline/);
-  assert.equal(f.requested.filter(([name])=>name==='emoji').length,2,'the demand fetched at once instead of waiting out a backoff');
-});
-
-test('a demand is never queued behind idle pre-warm work',async()=>{
-  const f=prewarmFixture({gate:true});await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch});
-  const warming=loader.prewarm({prefer:['emoji.ttf','arabic.ttf'],maxAssetBytes:2});
-  await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.requested.map(([name])=>name),['emoji'],'pre-warm uses one fetch at a time');
-  const cjk=loader.request('cjk.ttf');await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.requested.map(([name])=>name),['emoji','cjk'],'the demand starts beside the pre-warm fetch');
-  f.gates.get('cjk')();await cjk;
-  // Once emoji is verified, arabic's pre-warm fetch starts; a demand for it shares that fetch.
-  f.gates.get('emoji')();await f.fetched('arabic');
-  const arabic=loader.request('arabic.ttf');await new Promise(resolve=>setTimeout(resolve,0));
-  assert.equal(f.requested.filter(([name])=>name==='arabic').length,1);
-  f.gates.get('arabic')();
-  assert.deepEqual([...await arabic],[4,5]);
-  assert.deepEqual(await warming,['emoji.ttf','arabic.ttf']);
-});
-
-test('idle pre-warm runs once, on idle time with a timeout fallback',async()=>{
-  const calls=[];let ran=0;
-  const schedule=createIdlePrewarm(()=>{ran++;return 'warm';},{requestIdle:(fn,options)=>calls.push(['idle',options,fn])});
-  const first=schedule();assert.strictEqual(schedule(),first);
-  assert.equal(calls.length,1);assert.equal(calls[0][1].timeout,2000);assert.equal(ran,0);
-  calls[0][2]();assert.equal(await first,'warm');assert.equal(ran,1);
-  const timers=[];const failing=createIdlePrewarm(()=>{throw Error('ignored');},{requestIdle:undefined,setTimer:(fn,ms)=>timers.push([fn,ms])})();
-  assert.equal(timers[0][1],2000);timers[0][0]();assert.equal(await failing,undefined,'a failed pre-warm never rejects into the mount');
-});
-
-test('a demand for a queued pre-warm font promotes it to a demand fetch',async()=>{
-  const f=prewarmFixture({gate:true});await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch,optionalConcurrency:1});
-  const cjk=loader.request('cjk.ttf');await new Promise(resolve=>setTimeout(resolve,0));
-  const warming=loader.prewarm({prefer:['emoji.ttf'],budgetBytes:1});await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.requested.map(([name])=>name),['cjk'],'idle work waits while the demand holds the only slot');
-  const emoji=loader.request('emoji.ttf');
-  f.gates.get('cjk')();await cjk;await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.requested.map(([name])=>name),['cjk','emoji']);
-  f.gates.get('emoji')();
-  assert.deepEqual([...await emoji],[10]);assert.deepEqual(await warming,['emoji.ttf']);
-  assert.equal(f.requested.length,2);
-});
-
-test('idle installer installs only verified in-memory fonts, one per idle slice, and never fetches',async()=>{
-  const f=prewarmFixture();await f.ready();
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:f.fetch});
-  await loader.prewarm({prefer:['emoji.ttf'],budgetBytes:1});
-  const idle=[],installs=[];let live=true;
-  const installer=createIdleFontInstaller({loader,names:['emoji.ttf','arabic.ttf','cjk.ttf'],valid:()=>live,install:(name,value)=>installs.push([name,[...value]]),requestIdle:fn=>idle.push(fn)});
-  assert.equal(installer.start(),true);assert.equal(installer.start(),false);
-  const fetched=f.requested.length;
-  idle.shift()({didTimeout:false,timeRemaining:()=>2});
-  assert.deepEqual(installs,[],'a short idle slice defers the install');
-  idle.shift()({didTimeout:false,timeRemaining:()=>40});
-  assert.deepEqual(installs,[['emoji.ttf',[10]]]);
-  idle.shift()({didTimeout:false,timeRemaining:()=>40});
-  assert.deepEqual(installs.map(([name])=>name),['emoji.ttf'],'a font not pre-warmed is left to its demand');
-  live=false;idle.shift()({didTimeout:true,timeRemaining:()=>0});
-  assert.equal(installs.length,1,'a disposed mount installs nothing');
-  assert.equal(idle.length,0);assert.equal(f.requested.length,fetched);
 });
 
 test('an unavailable font is fetched, verified and installed again on retry, skipping its backoff',async()=>{

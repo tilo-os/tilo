@@ -10,6 +10,7 @@ use std::{
     thread::Thread,
     time::{Duration, Instant},
 };
+use tilo_lock::MutexRecover as _;
 
 pub(super) const MAX_DEVICE_WORKERS: usize = 8;
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
@@ -90,9 +91,7 @@ fn registry() -> Result<&'static Registry, AudioError> {
                 .spawn(move || {
                     loop {
                         {
-                            let mut slots = observed
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let mut slots = observed.lock_recover();
                             slots.retain(|slot| {
                                 let Some(state) = slot.upgrade() else {
                                     return false;
@@ -145,9 +144,7 @@ impl DevicePipeline {
             thread: OnceLock::new(),
         }));
         {
-            let mut slots = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut slots = registry.lock_recover();
             slots.retain(|slot| {
                 slot.upgrade()
                     .is_some_and(|state| !state.finished.load(Ordering::Acquire))
@@ -164,9 +161,18 @@ impl DevicePipeline {
             .spawn(move || {
                 let pipeline = RunningPipeline(worker_pipeline);
                 if worker_stop.allowed() {
-                    if pipeline.0.set_state(gst::State::Playing).is_err()
-                        || check_bus(&pipeline.0).is_err()
-                    {
+                    tracing::debug!(
+                        capture = needs_sample,
+                        "native voice device transition started"
+                    );
+                    let transition = pipeline.0.set_state(gst::State::Playing);
+                    tracing::debug!(
+                        capture = needs_sample,
+                        transition_ok = transition.is_ok(),
+                        state = ?pipeline.0.current_state(),
+                        "native voice device transition returned"
+                    );
+                    if transition.is_err() || check_bus(&pipeline.0).is_err() {
                         worker_stop.fail();
                     }
                 } else {

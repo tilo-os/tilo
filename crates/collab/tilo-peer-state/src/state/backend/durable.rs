@@ -16,6 +16,7 @@ pub(super) struct DecodedDurable {
     pub(super) wire: DurableV4,
     pub(super) exact: Option<BoundedExactAdmissions>,
     pub(super) version: u32,
+    pub(super) sealed: super::super::SealedHistory,
 }
 impl DecodedDurable {
     pub(super) fn decode(
@@ -35,8 +36,8 @@ impl DecodedDurable {
                     .map_err(DurableDecodeError::Resource)?
             };
         }
-        let (wire, exact) = match version {
-            4 => (decode!(DurableV4), None),
+        let (wire, exact, sealed) = match version {
+            4 => (decode!(DurableV4), None, Vec::new()),
             5 => {
                 let value = decode!(DurableV5<'_>);
                 if value.version != 5 || value.base.version != 4 {
@@ -46,10 +47,9 @@ impl DecodedDurable {
                 // index now, then move the owned V4 base.
                 let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
                     .map_err(DurableDecodeError::Resource)?;
-                (value.base, Some(exact))
+                (value.base, Some(exact), Vec::new())
             }
-            // Bounded reads refuse encrypted records, so the sealed history
-            // is only bounded here, never kept.
+            // Retain the bounded sealed history for authenticated replay.
             6 => {
                 let value = decode!(DurableV6<'_>);
                 if value.version != 6 || value.base.version != 4 || value.sealed.is_empty() {
@@ -57,7 +57,7 @@ impl DecodedDurable {
                 }
                 let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
                     .map_err(DurableDecodeError::Resource)?;
-                (value.base, Some(exact))
+                (value.base, Some(exact), value.sealed)
             }
             _ => return Err(DurableDecodeError::UnsupportedVersion),
         };
@@ -70,6 +70,7 @@ impl DecodedDurable {
             wire,
             exact,
             version,
+            sealed,
         })
     }
 }

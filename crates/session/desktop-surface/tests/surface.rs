@@ -3,8 +3,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
@@ -28,6 +26,11 @@ impl TileSource for Notices {
     }
 
     fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        if app.starts_with(NODE_APP) {
+            // Opened on the node; its window arrives from there.
+            NODE_LAUNCHES.with(|launches| launches.borrow_mut().push(app.into()));
+            return None;
+        }
         let title = app.strip_prefix("so.tilo.")?.to_owned();
         Some(Tab {
             id,
@@ -50,15 +53,32 @@ impl TileSource for Notices {
                 description: None,
                 unavailable: None,
             })
-            .chain([tilo_desktop_search::providers::AppEntry {
-                id: "so.tilo.imager".into(),
-                title: "Imager".into(),
-                category: Some("System".into()),
-                description: None,
-                unavailable: Some("Linux and macOS only".into()),
-            }])
+            .chain([
+                tilo_desktop_search::providers::AppEntry {
+                    id: "so.tilo.imager".into(),
+                    title: "Imager".into(),
+                    category: Some("System".into()),
+                    description: None,
+                    unavailable: Some("Linux and macOS only".into()),
+                },
+                tilo_desktop_search::providers::AppEntry {
+                    id: format!("{NODE_APP}app.so.tilo.terminal"),
+                    title: "Terminal".into(),
+                    category: Some("System".into()),
+                    description: Some("Runs on the node".into()),
+                    unavailable: None,
+                },
+            ])
             .collect()
     }
+}
+
+/// Launch prefix of an app a node runs for this desktop.
+const NODE_APP: &str = "node:";
+
+thread_local! {
+    /// The node apps this thread's desktops were asked to open.
+    static NODE_LAUNCHES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn tab(minter: &mut IdMinter, title: &str) -> Tab {
@@ -73,14 +93,14 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
     }
 }
 
-fn mount() -> (ui::headless::Driver, DesktopHandle, Rc<Cell<usize>>) {
+fn mount() -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -93,7 +113,11 @@ fn mount() -> (ui::headless::Driver, DesktopHandle, Rc<Cell<usize>>) {
     (driver, handle, built)
 }
 
-fn dispatch(driver: &mut ui::headless::Driver, handle: &DesktopHandle, wire: serde_json::Value) {
+fn dispatch(
+    driver: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
+    wire: serde_json::Value,
+) {
     let command: Command = serde_json::from_value(wire).unwrap();
     handle.dispatch(&command, "g").unwrap();
     driver.relayout();
@@ -238,7 +262,7 @@ fn a_replaced_tree_keeps_surviving_tabs_and_builds_only_new_ones() {
 #[test]
 fn an_idle_desktop_asks_its_host_for_no_frame() {
     let (mut driver, handle, _) = mount();
-    let idle = |driver: &ui::headless::Driver| {
+    let idle = |driver: &ui::headless::FrameHarness| {
         let schedule = driver.frame_schedule();
         !schedule.queued_work
             && !schedule.needs_animation_frame
@@ -342,7 +366,7 @@ fn only_the_focused_window_is_built_before_the_first_frame() {
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1, "the focused window only");
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -367,8 +391,8 @@ fn a_replaced_tree_builds_tabs_that_were_still_deferred() {
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1);
     handle.replace_tree(handle.read(Clone::clone));
-    let mut state = ui::automerge::AutoCommit::new();
-    ui::widget::Widget::update(&mut surface, &mut state, &ui::automerge::ROOT);
+    let state = ui::automerge::AutoCommit::new();
+    ui::widget::Widget::update(&mut surface, &state, &ui::automerge::ROOT);
     assert_eq!(
         built.get(),
         2,
@@ -396,7 +420,7 @@ fn a_restored_strip_opens_on_its_focused_window() {
     tree.set_active_group(strip_id, last);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -466,9 +490,6 @@ impl ui::widget::AppWidget for Hosted {
     }
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Glyph("H")
-    }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
     }
 }
 
@@ -544,24 +565,7 @@ impl ui::widget::Widget for CaretProbe {
         node: ui::taffy::NodeId,
         origin: ui::kurbo::Point,
     ) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = ui::kurbo::Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _: &mut ui::vello::Scene,
-        _: ui::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn name(&self) -> &'static str {
@@ -593,14 +597,14 @@ impl ui::presence::capability::PublishesPresence for CaretProbe {
 
 type Routes = Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>;
 
-fn mount_apps(titles: &[&str]) -> (ui::headless::Driver, DesktopHandle, Routes) {
+fn mount_apps(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Routes) {
     let mut minter = IdMinter::new(7);
     let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let routes = Routes::default();
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps(Rc::clone(&routes))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -615,7 +619,7 @@ fn mount_apps(titles: &[&str]) -> (ui::headless::Driver, DesktopHandle, Routes) 
 }
 
 fn try_dispatch(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     handle: &DesktopHandle,
     wire: serde_json::Value,
 ) -> Result<(), String> {
@@ -688,7 +692,7 @@ fn trackpad_swipe() -> Vec<f64> {
 
 /// Send one page wheel event as winit's web backend reports it: negated,
 /// in physical pixels.
-fn page_wheel(driver: &mut ui::headless::Driver, delta_x: f64, delta_y: f64) {
+fn page_wheel(driver: &mut ui::headless::FrameHarness, delta_x: f64, delta_y: f64) {
     driver.send(&ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),
         delta: ui::winit::event::MouseScrollDelta::PixelDelta(
@@ -720,7 +724,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
         "one swipe stays inside the strip: {total} of {max}"
     );
 
-    let first_window_x = |driver: &ui::headless::Driver| {
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
         find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
     };
     let drawn = first_window_x(&driver);
@@ -781,6 +785,97 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
         page_wheel(&mut driver, 1.0, 30.0);
     }
     assert!((pan_offset(&handle) - before).abs() < 0.01);
+}
+
+/// A browser page presents on animation frames, and a trackpad's wheel
+/// events outpace them: each event pans the strip at once, and the next
+/// frame moves the laid-out windows there without solving any size.
+#[test]
+fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
+    };
+    let drawn = first_window_x(&driver);
+    let start = pan_offset(&handle);
+    let frames = driver.relayout_frames();
+    let ((), wheels) = tilo_resource::profiling::observe(|| {
+        for _ in 0..3 {
+            driver.send_host_event(&pixel_wheel(-10.0, 0.0));
+        }
+    });
+    assert_eq!(driver.relayout_frames(), frames, "a wheel lays nothing out");
+    assert_eq!(
+        phase_calls(&wheels, "ui.host_tick"),
+        0,
+        "a strip pan is view-only: its tick is the frame's"
+    );
+    assert!(driver.frame_schedule().queued_work, "it asks for a frame");
+
+    let (polled, frame) = tilo_resource::profiling::observe(|| driver.poll_frame().unwrap());
+    assert!(polled);
+    assert_eq!(
+        phase_calls(&frame, "ui.host_tick"),
+        1,
+        "the frame ticks once"
+    );
+    assert_eq!(
+        driver.relayout_frames(),
+        frames + 1,
+        "one frame for all three"
+    );
+    let stats = driver.last_relayout();
+    assert!(
+        !stats.rebuilt && !stats.measured,
+        "a pan only re-applies positions: {stats:?}, asked by {:?}",
+        driver.layout_measure_requesters()
+    );
+    assert!(
+        (pan_offset(&handle) - start - 30.0).abs() < 0.01,
+        "each wheel panned the strip 1:1"
+    );
+    assert!(
+        (drawn - first_window_x(&driver) - 30.0).abs() < 0.01,
+        "the windows are laid out where the strip panned to"
+    );
+    assert!(
+        !driver.frame_schedule().queued_work,
+        "the frame took the wheels' work"
+    );
+}
+
+fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
+    ui::winit::event::WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+            ui::winit::dpi::PhysicalPosition::new(dx, dy),
+        ),
+        phase: ui::winit::event::TouchPhase::Moved,
+    }
+}
+
+fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize {
+    rows.iter()
+        .find(|row| row.phase == phase)
+        .map_or(0, |row| row.calls)
+}
+
+/// Only a wheel the strip pans with skips its own tick: one that reaches the
+/// window under the pointer may dispatch there, so it ticks at once.
+#[test]
+fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let start = pan_offset(&handle);
+    let ((), rows) = tilo_resource::profiling::observe(|| {
+        driver.send_host_event(&pixel_wheel(0.0, -10.0));
+    });
+    assert!(
+        (pan_offset(&handle) - start).abs() < 0.01,
+        "a vertical wheel pans nothing"
+    );
+    assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
 }
 
 #[test]
@@ -991,7 +1086,7 @@ fn a_tab_the_host_asks_to_rebuild_gets_its_content_again() {
 }
 
 #[test]
-fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
+fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() {
     fn groups(node: &ui::headless::InspectionNode, out: &mut Vec<[f64; 4]>) {
         if node.widget == "WindowGroup" {
             out.push(node.rect);
@@ -1007,7 +1102,7 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -1017,45 +1112,130 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     );
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
-    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        position: ui::winit::dpi::PhysicalPosition::new(600.0, 400.0),
-    });
-    // A mouse tilt wheel held sideways: one run of line-delta clicks.
-    for dx in [0.3, 1.0, 2.0, 1.0, 0.5] {
-        driver.send(&ui::winit::event::WindowEvent::MouseWheel {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            delta: ui::winit::event::MouseScrollDelta::LineDelta(dx, 0.0),
-            phase: ui::winit::event::TouchPhase::Moved,
-        });
+    let first = handle.snapshot("g", vec![]).active.unwrap();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    let shown = |driver: &ui::headless::FrameHarness, index: usize| {
+        let mut rects = Vec::new();
+        groups(&driver.inspection().root, &mut rects);
+        rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let [x, _, width, _] = rects[index];
+        x.max(0.0) < (x + width).min(1200.0) - width / 2.0
+    };
+    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    // A sideways wheel spun to the right as Firefox reports it: six lines a
+    // notch, which winit reports with negative x.
+    let before = pan_offset(&handle);
+    for _ in 0..4 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
     driver.relayout();
+    assert!(
+        (pan_offset(&handle) - before - 960.0).abs() < 0.5,
+        "four notches pan the strip four notches' travel"
+    );
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
-        entries[1].route,
-        "one run of clicks, one window along the strip"
+        first,
+        "the strip moves under focus while the wheel spins"
     );
-    for _ in 0..3 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        driver.send(&ui::winit::event::WindowEvent::MouseWheel {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            delta: ui::winit::event::MouseScrollDelta::LineDelta(1.0, 0.0),
-            phase: ui::winit::event::TouchPhase::Moved,
-        });
-        driver.relayout();
+    let spun = pan_offset(&handle);
+    settle(&mut driver);
+    let followed = handle.snapshot("g", vec![]).active.unwrap();
+    let index = entries.iter().position(|e| e.route == followed).unwrap();
+    assert!(index > 0, "focus follows the strip once the wheel stops");
+    assert!(
+        shown(&driver, index),
+        "to a window mostly in view, window {index}"
+    );
+    assert!(
+        (pan_offset(&handle) - spun).abs() < 0.5,
+        "and the strip stays where the wheel left it"
+    );
+
+    // A long spin stops at the strip's end and keeps the rest of the spin.
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
+    driver.relayout();
+    let pan = handle.snapshot("g", vec![]).desktop_pan.unwrap();
+    assert!((pan.offset - pan.max).abs() < 0.5, "hard stop at the end");
+    settle(&mut driver);
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
         entries[3].route,
-        "stops at the last window"
+        "focus follows to the last window"
     );
-    let mut rects = Vec::new();
-    groups(&driver.inspection().root, &mut rects);
-    rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
-    let [x, _, width, _] = rects[3];
+    assert!(shown(&driver, 3));
+}
+
+#[test]
+fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..4)
+        .map(|i| tab(&mut minter, &format!("App{i}")))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]).entries[3].route.clone();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+    }
+    driver.relayout();
+    settle(&mut driver);
+
+    // A spin whose notches arrive slowly, one or two at a time with pauses
+    // between them, as a busy page gets them: each pause ends a gesture and
+    // focus follows, but the strip still pans exactly the notches' travel.
+    let from = pan_offset(&handle);
+    for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
+        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
+        driver.relayout();
+        settle(&mut driver);
+    }
     assert!(
-        x >= 0.0 && x + width <= 1200.5,
-        "the focused window is in view: {rects:?}"
+        (pan_offset(&handle) - (from - 20.0 * 40.0)).abs() < 0.5,
+        "twenty slow notches pan twenty lines: {} from {from}",
+        pan_offset(&handle)
+    );
+
+    // Where the spin left the strip, windows are cut at both edges. A later
+    // change to the strip's geometry, here the last window a pixel wider,
+    // keeps it there rather than re-framing it onto a window's edge.
+    let held = pan_offset(&handle);
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
+    );
+    settle(&mut driver);
+    assert!(
+        (pan_offset(&handle) - held).abs() < 0.5,
+        "a window's width changing keeps the strip where the wheel left it: {} from {held}",
+        pan_offset(&handle)
     );
 }
 
@@ -1277,6 +1457,49 @@ fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
     );
 }
 
+#[test]
+fn search_opens_an_app_the_node_runs_for_this_desktop() {
+    use ui::a11y::Action;
+    let (mut driver, handle, _) = mount();
+    handle.toggle_search();
+    driver.relayout();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            Some("command-palette:query"),
+            &Action::SetValue("terminal".into()),
+        )
+        .unwrap();
+    driver.relayout();
+    let palette = find(&driver.inspection().root, "CommandPalette")
+        .unwrap()
+        .semantics
+        .clone()
+        .unwrap();
+    let first = palette.children[1]
+        .children
+        .first()
+        .expect("the node's app is listed");
+    assert_eq!(first.name.as_deref(), Some("Open Terminal"), "it opens");
+    assert!(
+        !format!("{first:?}").contains(" only"),
+        "the row offers it: {first:?}"
+    );
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            first.action_target.as_deref(),
+            &Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+    assert_eq!(
+        NODE_LAUNCHES.with(|launches| launches.borrow().clone()),
+        vec![format!("{NODE_APP}app.so.tilo.terminal")],
+        "the desktop asked the node to open it"
+    );
+}
+
 /// Each built tab and the window a panic hook would name while building it.
 type ScopedTabs = Rc<std::cell::RefCell<Vec<(u64, Option<u64>)>>>;
 
@@ -1303,7 +1526,7 @@ fn a_window_is_built_under_its_tab_for_a_panic_hook() {
     let built = Rc::new(std::cell::RefCell::new(Vec::new()));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Scoped(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -1369,4 +1592,65 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(own.clone(), &window), own);
     assert_eq!(published_selection(own.clone(), &[]), own);
     assert_eq!(published_selection(None, &[]), None);
+}
+
+/// A window's new-tab control asks which application to open, as the
+/// native shell's does, and the one chosen opens as a tab of that window.
+#[test]
+fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
+    // Mounted as its own type, so the test can find the control to press.
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    let before = handle.snapshot("g", vec![]);
+    let group = before.active.clone().unwrap().group;
+    let windows = |snapshot: &tilo_desktop_surface::navigation::Snapshot| {
+        snapshot
+            .entries
+            .iter()
+            .map(|e| e.route.group.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let plus = driver
+        .root::<DesktopSurface>()
+        .new_tab_rect(group.parse().unwrap())
+        .expect("the focused window offers a new tab");
+    driver.click_at(plus.center().x, plus.center().y);
+    driver.relayout();
+    assert!(handle.search_open(), "the control opens search");
+    assert_eq!(
+        labels(&handle.snapshot("g", vec![])),
+        labels(&before),
+        "nothing opens before an application is chosen"
+    );
+    driver.type_text("sheets");
+    driver.key("Enter");
+    driver.relayout();
+    assert!(!handle.search_open());
+    let after = handle.snapshot("g", vec![]);
+    let active = after.active.clone().unwrap();
+    let opened = after.entries.iter().find(|e| e.route == active).unwrap();
+    assert_eq!(opened.label, "sheets", "the chosen app is focused");
+    assert_eq!(active.group, group, "it opens as a tab of that window");
+    assert_eq!(windows(&after), windows(&before), "no window is added");
+
+    // Search opened otherwise opens an application as its own window.
+    handle.toggle_search();
+    driver.relayout();
+    driver.type_text("writer");
+    driver.key("Enter");
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]);
+    assert_ne!(last.active.as_ref().unwrap().group, group);
+    assert_eq!(windows(&last).len(), windows(&before).len() + 1);
 }

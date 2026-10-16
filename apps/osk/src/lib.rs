@@ -28,6 +28,10 @@
 //!   swipes, and renders a tappable **suggestion bar** above the keys.
 //!
 //! ## Text injection and session integration
+//! * [`OskShell`] is the app: the keyboard surface over its [`Osk`]
+//!   preferences, which follow the person across their devices.
+//! * [`service`] connects the keyboard's own process to the session it types
+//!   into.
 //! * [`imclient`] is the preferred `input-method-v2` commit path and drives
 //!   focus-based visibility plus content-purpose layouts.
 //! * [`output`] is the ordered preedit/commit/key stream the widget emits and
@@ -62,11 +66,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -91,10 +91,14 @@ pub mod futo;
 mod i18n;
 pub mod imclient;
 pub mod inject;
-pub mod layout;
+pub use tilo_keyboard_map::touch as layout;
+pub mod learned;
 pub mod output;
 pub mod predict;
+pub mod resource;
+pub mod service;
 pub mod suggest;
+pub mod surface;
 pub mod swipe;
 pub mod toolbar;
 pub mod touch_model;
@@ -119,7 +123,10 @@ pub use toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
 pub use touch_model::{NextKeyDistribution, TouchKey, TouchModel};
 pub use widget::{OskWidget, input_purpose_from_name, input_purpose_name};
 
-pub mod framework_history;
 mod presentation;
 
 pub mod actions;
+pub use actions::SetPreference;
+pub use resource::{Osk, OskPreferences, OskShell};
+pub use service::serve;
+pub use surface::OskSurface;

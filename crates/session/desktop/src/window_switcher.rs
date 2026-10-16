@@ -16,6 +16,7 @@
 //! through [`WindowSource`] and [`WindowThumbnails`].
 
 use std::collections::HashMap;
+use ui::num::f32_of_f64;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -27,7 +28,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::i18n::ArgValue;
 use ui::icons::AppImage;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::AppKind as UiAppKind;
@@ -35,6 +36,7 @@ use ui::widget::AppKind as UiAppKind;
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceId};
 
 use crate::i18n::{t, t_args};
+use ui::TextRole;
 
 /// Where a window's preview comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,7 +191,8 @@ impl WindowApp {
         match tile {
             TileContent::Foreign { app_id, .. }
             | TileContent::LocalApp { app_id, .. }
-            | TileContent::PeerWindow { app_id, .. } => Self {
+            | TileContent::PeerWindow { app_id, .. }
+            | TileContent::HostedWindow { app_id, .. } => Self {
                 key: format!("app:{app_id}"),
                 kind,
                 icon: source.app_icon(tile),
@@ -406,6 +409,7 @@ impl FocusHistory {
 }
 
 struct Session {
+    workspace: WorkspaceId,
     scope: SwitcherScope,
     windows: Vec<SwitcherWindow>,
     selected: usize,
@@ -431,37 +435,31 @@ struct Metrics {
     margin: f64,
     radius: f64,
     card_radius: f64,
-    title_size: f32,
-    caption_size: f32,
     caption_h: f64,
 }
 
 impl Metrics {
     fn from_tokens(tokens: &ui::tokens::Tokens) -> Self {
         let spacing = &tokens.spacing;
-        let scale = &tokens.typography.scale;
-        let title_size = scale.sm;
-        let caption_size = scale.base;
+        let line = |role| f64::from(tokens.typography.style(role).line_height_px());
         let inset = f64::from(spacing.s2);
-        let title_h = f64::from(title_size) * 1.4;
+        let title_h = line(TextRole::Label);
         let well_w = f64::from(spacing.s16) * 2.5;
         let well_h = well_w * 10.0 / 16.0;
         Self {
             icon: f64::from(spacing.s12),
             mark: f64::from(tokens.metrics.icon_sm),
             well_h,
-            well_radius: f64::from(tokens.radii.md),
+            well_radius: f64::from(tokens.radii.control),
             card_w: well_w + 2.0 * inset,
             card_h: inset + well_h + inset + title_h + inset,
             inset,
             gap: f64::from(spacing.s2),
             pad: f64::from(spacing.s4),
             margin: f64::from(spacing.s8),
-            radius: f64::from(tokens.radii.xl),
-            card_radius: f64::from(tokens.radii.lg),
-            title_size,
-            caption_size,
-            caption_h: f64::from(caption_size) * 1.4 + f64::from(spacing.s3),
+            radius: f64::from(tokens.radii.panel),
+            card_radius: f64::from(tokens.radii.control),
+            caption_h: line(TextRole::Subheading) + f64::from(spacing.s3),
         }
     }
 }
@@ -489,11 +487,6 @@ fn fit_count(span: f64, pitch: f64) -> usize {
         return 1;
     }
     ((span / pitch).floor().max(1.0)) as usize
-}
-
-#[expect(clippy::cast_possible_truncation, reason = "screen pixels fit f32")]
-fn f32_of(value: f64) -> f32 {
-    value as f32
 }
 
 /// Cards in rows, centred on the display, with the selected window's page
@@ -562,6 +555,8 @@ pub struct WindowSwitcher {
     host_rect: Rect,
     metrics: Metrics,
     hover: Option<usize>,
+    /// Geometry changed since the last visible frame; old pixels are inert.
+    pointer_dirty: bool,
 }
 
 impl Default for WindowSwitcher {
@@ -572,6 +567,7 @@ impl Default for WindowSwitcher {
             host_rect: Rect::ZERO,
             metrics: Metrics::from_tokens(&Theme::dark().tokens),
             hover: None,
+            pointer_dirty: false,
         }
     }
 }
@@ -585,6 +581,74 @@ impl WindowSwitcher {
     /// path moved it (click, keyboard, search, an app).
     pub fn observe(&mut self, tree: &DesktopTree) {
         self.history.observe(tree);
+        self.reconcile_session(tree);
+    }
+
+    /// Keep the opening order, but never arm an address that disappeared or moved.
+    fn reconcile_session(&mut self, tree: &DesktopTree) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if session.workspace != tree.active {
+            self.cancel();
+            return;
+        }
+        let Some(workspace) = tree.active_workspace() else {
+            self.cancel();
+            return;
+        };
+        let selected = session.windows.get(session.selected).map(|w| w.address.tab);
+        let hovered = self
+            .hover
+            .and_then(|i| session.windows.get(i))
+            .map(|w| w.address.tab);
+        let mut live = HashMap::new();
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    live.insert(
+                        tab.id,
+                        (
+                            WindowAddress {
+                                strip: strip.id,
+                                group: group.id,
+                                tab: tab.id,
+                            },
+                            tab,
+                        ),
+                    );
+                }
+            }
+        }
+        let Some(selected) = selected.filter(|id| live.contains_key(id)) else {
+            self.cancel();
+            return;
+        };
+        let before = session.windows.len();
+        session.windows.retain_mut(|window| {
+            let Some((address, tab)) = live.get(&window.address.tab) else {
+                return false;
+            };
+            window.address = *address;
+            if tab.title.trim().is_empty() {
+                window.title = t("window-switcher-untitled");
+            } else {
+                window.title.clone_from(&tab.title);
+            }
+            true
+        });
+        let Some(index) = session
+            .windows
+            .iter()
+            .position(|w| w.address.tab == selected)
+        else {
+            self.cancel();
+            return;
+        };
+        session.selected = index;
+        self.pointer_dirty |= session.windows.len() != before;
+        self.hover =
+            hovered.and_then(|id| session.windows.iter().position(|w| w.address.tab == id));
     }
 
     /// The windows Alt+Tab would walk right now, in order.
@@ -610,7 +674,7 @@ impl WindowSwitcher {
 
     /// A frame is needed to put the panel up once the delay has passed.
     pub fn needs_frame(&self, now: Instant) -> bool {
-        self.is_active() && !self.is_revealed(now)
+        self.is_active() && (!self.is_revealed(now) || self.pointer_dirty)
     }
 
     /// Treat Alt as having been held `by` longer than it has.
@@ -655,12 +719,14 @@ impl WindowSwitcher {
             1
         };
         self.session = Some(Session {
+            workspace: tree.active,
             scope,
             windows,
             selected,
             opened: now,
         });
         self.hover = None;
+        self.pointer_dirty = false;
         true
     }
 
@@ -688,6 +754,7 @@ impl WindowSwitcher {
 
     fn commit(&mut self) -> SwitcherOutcome {
         self.hover = None;
+        self.pointer_dirty = false;
         self.session
             .take()
             .and_then(|session| session.windows.get(session.selected).map(|w| w.address))
@@ -696,6 +763,7 @@ impl WindowSwitcher {
 
     fn cancel(&mut self) -> SwitcherOutcome {
         self.hover = None;
+        self.pointer_dirty = false;
         if self.session.take().is_some() {
             SwitcherOutcome::Cancelled
         } else {
@@ -827,6 +895,9 @@ impl WindowSwitcher {
     /// Lay out against the host's rect before the first paint, so pointer
     /// input and the semantic tree agree with what will be drawn.
     pub fn set_host_rect(&mut self, host: Rect) {
+        if self.is_active() && self.host_rect != host {
+            self.pointer_dirty = true;
+        }
         self.host_rect = host;
     }
 
@@ -842,16 +913,14 @@ impl WindowSwitcher {
             .map(|(index, _)| *index)
     }
 
-    /// The panel covers `point`.
-    pub fn panel_contains(&self, point: Point, now: Instant) -> bool {
-        self.is_revealed(now) && self.geometry().panel.contains(point)
-    }
-
     /// Pointer motion: hovering a card selects it, as it does in every
     /// desktop's switcher, so a release commits what the pointer rests on.
     pub fn pointer_moved(&mut self, point: Point, now: Instant) -> SwitcherOutcome {
         if !self.is_revealed(now) {
             return SwitcherOutcome::Ignored;
+        }
+        if self.pointer_dirty {
+            return SwitcherOutcome::Consumed;
         }
         let card = self.card_at(point, now);
         if card != self.hover {
@@ -868,6 +937,9 @@ impl WindowSwitcher {
     pub fn pointer_pressed(&mut self, point: Point, now: Instant) -> SwitcherOutcome {
         if !self.is_revealed(now) {
             return SwitcherOutcome::Ignored;
+        }
+        if self.pointer_dirty {
+            return SwitcherOutcome::Consumed;
         }
         match self.card_at(point, now) {
             Some(index) => {
@@ -912,6 +984,7 @@ impl WindowSwitcher {
                 let selected = index == session.selected;
                 let mut node = AccessNode::new(Role::ListItem)
                     .with_name(window.title.clone())
+                    .with_semantic_key(format!("window-switcher-window:{}", window.address.tab))
                     .with_position(index.saturating_add(1), total)
                     .with_state(
                         AccessState::new()
@@ -969,6 +1042,7 @@ impl WindowSwitcher {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         self.draw_panel(scene, transform, text_renderer, theme, previews);
+        self.pointer_dirty = false;
         text_renderer.set_text_scale(renderer_scale);
     }
 
@@ -1056,7 +1130,13 @@ impl WindowSwitcher {
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
         // elevation, like the overview and the palette.
-        ui::surface::shadow(scene, transform, panel, m.radius, &tokens.elevation.e4);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            m.radius,
+            &tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1109,18 +1189,16 @@ impl WindowSwitcher {
             } else {
                 window.title.clone()
             };
-            let text = text_renderer.elide_to_width_weighted(
+            let text = text_renderer.elide_to_width_style(
                 &caption,
-                m.caption_size,
-                f32_of(geometry.caption.width()),
-                TextWeight::Semibold,
+                f32_of_f64(geometry.caption.width()),
+                &theme.text(TextRole::Subheading),
             );
             let (w, h) =
-                text_renderer.measure_weighted(&text, m.caption_size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
+                text_renderer.measure_style(&text, None, &theme.text(TextRole::Subheading));
+            text_renderer.draw_style(
                 scene,
                 &text,
-                m.caption_size,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1130,7 +1208,7 @@ impl WindowSwitcher {
                         .into(),
                 ),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Subheading),
             );
         }
     }
@@ -1150,29 +1228,7 @@ impl WindowSwitcher {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.metrics;
-        let tier = ui::chrome::selection_tier(theme, state);
-        let rr = RoundedRect::from_rect(card, m.card_radius);
-        if tier.fill.components[3] > 0.0 {
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
-        }
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &rr,
-            );
-        }
-        if let Some(glow) = tier.inner_glow {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                glow,
-                None,
-                &RoundedRect::from_rect(card.inset(-1.0), (m.card_radius - 1.0).max(0.0)),
-            );
-        }
+        ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
         let well = Rect::new(
             card.x0 + m.inset,
             card.y0 + m.inset,
@@ -1197,8 +1253,12 @@ impl WindowSwitcher {
         let gap = f64::from(tokens.spacing.s1);
         let lead = if live { m.mark + gap } else { 0.0 };
         let title_w = (card.width() - 2.0 * m.inset - lead).max(0.0);
-        let title = text_renderer.elide_to_width(&window.title, m.title_size, f32_of(title_w));
-        let (w, h) = text_renderer.measure(&title, m.title_size, None);
+        let title = text_renderer.elide_to_width_style(
+            &window.title,
+            f32_of_f64(title_w),
+            &theme.text(TextRole::Label),
+        );
+        let (w, h) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Label));
         let line_top = well.y1 + m.inset;
         let line_w = lead + f64::from(w);
         let x0 = card.center().x - line_w * 0.5;
@@ -1213,10 +1273,9 @@ impl WindowSwitcher {
                 colors.text_primary,
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            m.title_size,
             if state.active {
                 colors.text_primary
             } else {
@@ -1224,6 +1283,7 @@ impl WindowSwitcher {
             },
             transform.pre_translate((x0 + lead, line_top).into()),
             None,
+            &theme.text(TextRole::Label),
         );
     }
 }
@@ -1254,7 +1314,7 @@ pub fn draw_preview_well(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.surfaces.window_card,
+        colors.surfaces.content,
         None,
         &well_rr,
     );
@@ -1275,7 +1335,7 @@ pub fn draw_preview_well(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.surfaces.window_card_border,
+        colors.surfaces.content_edge,
         None,
         &well_rr,
     );
@@ -1293,7 +1353,7 @@ pub fn draw_preview_well(
             ),
             window.app.icon.as_ref(),
             window.app.kind,
-            colors.on_card().ink,
+            colors.on_content().ink,
         );
     }
     live
@@ -1322,6 +1382,7 @@ mod tests {
             tabs,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }
     }
 
@@ -1467,5 +1528,196 @@ mod tests {
         assert!(many.cards.iter().any(|(index, _)| *index == 150));
         assert!(host.contains(many.panel.origin()));
         assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
+    }
+    #[test]
+    fn closing_an_unselected_candidate_preserves_the_selected_window_and_removes_its_card() {
+        let mut tree = tree();
+        let mut switcher = WindowSwitcher::default();
+        assert!(switcher.begin(
+            &tree,
+            &PlainWindows,
+            SwitcherScope::Workspace,
+            false,
+            Instant::now()
+        ));
+        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
+        tree.workspaces[0].strips[0].window_groups.remove(0);
+        focus(&mut tree, 30);
+        switcher.observe(&tree);
+        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
+        assert!(
+            !switcher
+                .session
+                .as_ref()
+                .expect("remaining candidates")
+                .windows
+                .iter()
+                .any(|window| window.address.tab == 1),
+            "the closed candidate must not remain painted or accessible"
+        );
+        assert!(
+            matches!(switcher.modifiers_changed(ModifiersState::empty()),
+            SwitcherOutcome::Commit(address) if address.tab == 2)
+        );
+    }
+
+    #[test]
+    fn closing_the_selected_candidate_cancels_before_alt_release() {
+        let mut tree = tree();
+        let mut switcher = WindowSwitcher::default();
+        assert!(switcher.begin(
+            &tree,
+            &PlainWindows,
+            SwitcherScope::Workspace,
+            false,
+            Instant::now()
+        ));
+        tree.workspaces[0].strips[0].window_groups.remove(1);
+        switcher.observe(&tree);
+        assert!(
+            !switcher.is_active(),
+            "a closed target must not remain armed"
+        );
+        assert_eq!(
+            switcher.modifiers_changed(ModifiersState::empty()),
+            SwitcherOutcome::Ignored
+        );
+        assert_eq!(
+            switcher.key(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+                ModifiersState::ALT
+            ),
+            SwitcherOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn moving_the_selected_candidate_updates_its_focus_address() {
+        let mut tree = tree();
+        let mut switcher = WindowSwitcher::default();
+        assert!(switcher.begin(
+            &tree,
+            &PlainWindows,
+            SwitcherScope::Workspace,
+            false,
+            Instant::now()
+        ));
+        let moved = tree.workspaces[0].strips[0]
+            .window_groups
+            .remove(1)
+            .tabs
+            .remove(0);
+        tree.workspaces[0].strips[0].window_groups[1]
+            .tabs
+            .push(moved);
+        switcher.observe(&tree);
+        assert!(
+            matches!(switcher.modifiers_changed(ModifiersState::empty()),
+            SwitcherOutcome::Commit(address) if address.tab == 2 && address.group == 30)
+        );
+    }
+    #[test]
+    fn switcher_live_candidate_capture_matrix_is_written() {
+        let out = std::env::var_os("TILO_SWITCHER_LIVE_SHOTS").map_or_else(
+            || std::path::PathBuf::from("target/switcher-live-candidates"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&out).expect("capture output");
+        for (name, theme, width, height) in [
+            ("dark", Theme::dark(), 960_u32, 540_u32),
+            ("light", Theme::light(), 960, 540),
+            ("high-contrast", Theme::high_contrast(), 960, 540),
+            ("large-text", Theme::dark().with_text_scale(2.0), 800, 600),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+                960,
+                640,
+            ),
+            ("narrow", Theme::dark().with_text_scale(2.0), 320, 480),
+        ] {
+            let mut tree = tree();
+            for (group, title) in tree.workspaces[0].strips[0]
+                .window_groups
+                .iter_mut()
+                .zip(["Terminal", "Files", "Browser", "Reader"])
+            {
+                group.tabs[0].title = title.to_owned();
+            }
+            let mut switcher = WindowSwitcher::default();
+            assert!(switcher.begin(
+                &tree,
+                &PlainWindows,
+                SwitcherScope::Workspace,
+                false,
+                Instant::now()
+            ));
+            switcher.elapse(REVEAL_DELAY + Duration::from_millis(20));
+            tree.workspaces[0].strips[0].window_groups.remove(2);
+            switcher.observe(&tree);
+            let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let mut scene = Scene::new();
+            switcher.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                viewport,
+                Instant::now(),
+                &mut NoThumbnails,
+            );
+            ui::offscreen::OffscreenRenderer::new(width, height).render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-other-candidate-closed.png")),
+            );
+        }
+    }
+    #[test]
+    fn a_press_on_a_removed_card_waits_for_the_replacement_frame() {
+        let mut tree = tree();
+        let mut switcher = WindowSwitcher::default();
+        assert!(switcher.begin(
+            &tree,
+            &PlainWindows,
+            SwitcherScope::Workspace,
+            false,
+            Instant::now()
+        ));
+        switcher.elapse(REVEAL_DELAY + Duration::from_millis(20));
+        let viewport = Rect::new(0.0, 0.0, 960.0, 600.0);
+        switcher.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            viewport,
+            Instant::now(),
+            &mut NoThumbnails,
+        );
+        let old_card = switcher.card_rect(2).expect("painted candidate");
+        let old_point = Point::new(old_card.x0 + old_card.width() / 4.0, old_card.center().y);
+        tree.workspaces[0].strips[0].window_groups.remove(2);
+        switcher.observe(&tree);
+        assert_eq!(
+            switcher.pointer_pressed(old_point, Instant::now()),
+            SwitcherOutcome::Consumed,
+            "the old Browser pixels must not activate another window"
+        );
+        assert!(switcher.is_active());
+        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
+        switcher.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            viewport,
+            Instant::now(),
+            &mut NoThumbnails,
+        );
+        let selected = switcher.card_rect(1).expect("repainted selection").center();
+        assert!(matches!(switcher.pointer_pressed(selected, Instant::now()),
+            SwitcherOutcome::Commit(address) if address.tab == 2));
     }
 }

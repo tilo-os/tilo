@@ -34,6 +34,34 @@ fn incremental_highlights_match_a_fresh_parse_across_edit_sequences() {
     unicode_newline_and_language_switches_match_fresh();
 }
 
+#[test]
+fn hardware_comment_edits_and_dialect_switches_match_fresh_highlights() {
+    check_sequence(&[
+        (Language::Verilog, "module mac;\nassign out = 8;\nendmodule"),
+        (
+            Language::Verilog,
+            "module mac;\n/*\nassign out = 8;\nendmodule",
+        ),
+        (
+            Language::Verilog,
+            "module mac;\n/*\nassign out = 8;\n*/\nendmodule",
+        ),
+        (Language::Verilog, "module mac;\nassign out = 8;\nendmodule"),
+        (
+            Language::SystemVerilog,
+            "module mac;\nlogic valid;\nendmodule",
+        ),
+        (
+            Language::SystemVerilog,
+            "module mac;\n/* logic valid; */\nendmodule",
+        ),
+        (
+            Language::PlainText,
+            "module mac;\n/* logic valid; */\nendmodule",
+        ),
+    ]);
+}
+
 fn prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh() {
     check_sequence(&[
         (Language::Rust, "fn main() {\n    let n = 1;\n}\n"),
@@ -177,4 +205,54 @@ fn representative_fixture_prepend_and_revert_reuse_the_unaffected_functions() {
         restored <= 8,
         "revert reparsed {restored} lines instead of stopping after the changed function"
     );
+}
+
+#[test]
+fn background_batches_match_continuous_grammars_and_cancel_replaced_work() {
+    let pumped = ui::rt::background::Pumped::new();
+    let background = pumped.background();
+    let _scope = background.enter();
+    for (language, opening, closing) in [
+        (Language::Rust, "/*", "*/ let outside = 1;"),
+        (Language::Python, "text = '''", "'''\nprint(text)"),
+        (
+            Language::JavaScript,
+            "let text = `",
+            "`;\nconsole.log(text);",
+        ),
+    ] {
+        let text = std::iter::once(opening.to_owned())
+            .chain((0..30).map(|line| format!("different source line {line}")))
+            .chain([closing.to_owned(), String::new()])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = std::sync::Arc::new(lines(&text));
+        let mut job = BackgroundHighlights::start(
+            language,
+            std::sync::Arc::clone(&lines),
+            ui::WakeHandle::new(),
+        )
+        .unwrap();
+        let mut spans = Vec::new();
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(job.collect(&mut spans));
+        assert_eq!(spans.len(), 8);
+        while {
+            pumped.run_pending();
+            job.collect(&mut spans)
+        } {}
+        assert_eq!(
+            spans,
+            fresh(language, &lines),
+            "every row agrees with the real continuous grammar"
+        );
+        let abandoned =
+            BackgroundHighlights::start(language, lines, ui::WakeHandle::new()).unwrap();
+        drop(abandoned);
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(
+            pumped.is_idle(),
+            "replacing a buffer schedules no stale continuation"
+        );
+    }
 }

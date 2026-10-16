@@ -47,7 +47,11 @@ use crate::shell::color_pipeline::{
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
 
 /// The GPU composite for PQ outputs; mirrors [`composite_hdr_pixel`].
-pub const COMPOSITE_SHADER_SOURCE: &str = include_str!("hdr_composite.wgsl");
+pub const COMPOSITE_SHADER_SOURCE: &str = concat!(
+    include_str!("output_orientation.wgsl"),
+    "\n",
+    include_str!("hdr_composite.wgsl")
+);
 
 /// Layers one frame can composite: one per weight channel.
 pub const MAX_HDR_LAYERS: usize = 3;
@@ -708,7 +712,6 @@ mod tests {
     use super::*;
     use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
     use crate::shell::color_pipeline::pq_inverse_eotf;
-    use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
 
     fn pq_signal() -> SurfaceSignal {
         SurfaceSignal::for_colorimetry(Colorimetry::hdr10(), HdrTonemapConfig::default())
@@ -716,18 +719,16 @@ mod tests {
     }
 
     fn image(width: u32, height: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
+        ui::raster::rgba8_premultiplied(
+            vec![
                 0_u8;
                 (width as usize)
                     .saturating_mul(height as usize)
                     .saturating_mul(4)
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            ],
             width,
             height,
-        }
+        )
     }
 
     fn close(a: [f32; 3], b: [f32; 3], relative: f32) -> bool {

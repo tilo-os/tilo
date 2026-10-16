@@ -8,11 +8,10 @@
 //! launcher paths used everywhere else.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ObjId, ReadDoc as _, ScalarValue, Value};
-use taffy::style_helpers::percent;
+use automerge::{ObjId, ReadDoc as _, ScalarValue, Value};
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::color_compat::ColorCompat;
@@ -24,24 +23,17 @@ use ui::widget::{Button, ButtonFace, TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::i18n::t;
+use ui::TextRole;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
 /// Whether "Open an app" was chosen, cleared from `doc` so it fires once.
-pub fn take_open_app(doc: &mut AutoCommit, root: &ObjId) -> bool {
-    let chosen = matches!(
-        doc.get(root, EMPTY_WORKSPACE_OPEN_APP),
-        Ok(Some((Value::Scalar(value), _)))
-            if matches!(value.as_ref(), ScalarValue::Boolean(true))
-    );
-    if chosen {
-        let _ = doc.put(root, EMPTY_WORKSPACE_OPEN_APP, false);
-    }
-    chosen
+pub fn take_open_app(doc: &mut ui::widget::Edits<'_>, root: &ObjId) -> bool {
+    consume_launchpad(doc, root, LaunchpadChoice::OpenApp)
 }
 
 pub const EMPTY_WORKSPACE_CHAT: &str = "shell.empty-workspace.chat";
@@ -51,7 +43,16 @@ pub const EMPTY_WORKSPACE_MEET: &str = "shell.empty-workspace.meet";
 pub const EMPTY_WORKSPACE_INVITE: &str = "shell.empty-workspace.invite";
 pub const EMPTY_WORKSPACE_ACTIVITY: &str = "shell.empty-workspace.activity";
 
+/// An action an app publishes, as a launchpad card names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaunchpadAppAction {
+    pub app_id: &'static str,
+    pub display_name: &'static str,
+    pub resource: &'static str,
+    pub action: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchpadAction {
     Chat,
     Notes,
@@ -91,8 +92,30 @@ impl LaunchpadAction {
         }
     }
 
+    /// The typed action a card invokes in its app: the app, the resource it
+    /// publishes the action on, and the action. The host delivers it to the
+    /// app in the workspace, launching the app first when it is closed, so
+    /// the card does what it names in one step.
+    pub const fn app_action(self) -> Option<LaunchpadAppAction> {
+        match self {
+            Self::Tasks => Some(LaunchpadAppAction {
+                app_id: "so.tilo.calendar",
+                display_name: "Calendar",
+                resource: "calendar.calendar",
+                action: "show-tasks",
+            }),
+            Self::Meet => Some(LaunchpadAppAction {
+                app_id: "so.tilo.chat",
+                display_name: "Chat",
+                resource: "chat.workspace",
+                action: "start-call",
+            }),
+            Self::Chat | Self::Notes | Self::Invite | Self::Activity => None,
+        }
+    }
+
     /// The card the person chose, cleared from `doc` so it fires once.
-    pub fn take(doc: &mut AutoCommit, root: &ObjId) -> Option<Self> {
+    pub fn take(doc: &mut ui::widget::Edits<'_>, root: &ObjId) -> Option<Self> {
         let action = Self::ALL.into_iter().find(|action| {
             matches!(
                 doc.get(root, action.path()),
@@ -100,11 +123,22 @@ impl LaunchpadAction {
                     if matches!(value.as_ref(), ScalarValue::Boolean(true))
             )
         })?;
-        let _ = doc.put(root, action.path(), false);
-        Some(action)
+        consume_launchpad(doc, root, LaunchpadChoice::Card(action)).then_some(action)
     }
 
-    fn label(self) -> String {
+    /// A stable, untranslated name for the card.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Notes => "notes",
+            Self::Tasks => "tasks",
+            Self::Meet => "meet",
+            Self::Invite => "invite",
+            Self::Activity => "activity",
+        }
+    }
+
+    pub fn label(self) -> String {
         match self {
             Self::Chat => t("launchpad-discuss"),
             Self::Notes => t("launchpad-notes"),
@@ -138,6 +172,101 @@ impl LaunchpadAction {
     }
 }
 
+const LAUNCHPAD_ACTION_TYPE: &str = "tilo.desktop.launchpad";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+enum LaunchpadChoice {
+    OpenApp,
+    Card(LaunchpadAction),
+}
+
+impl LaunchpadChoice {
+    fn path(&self) -> &'static str {
+        match self {
+            Self::OpenApp => EMPTY_WORKSPACE_OPEN_APP,
+            Self::Card(action) => action.path(),
+        }
+    }
+}
+
+/// A native launchpad request the desktop consumes through its public route.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ActivateLaunchpad {
+    root: String,
+    choice: LaunchpadChoice,
+}
+
+impl tilo_actions::Action for ActivateLaunchpad {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        let root = doc.import_obj(&self.root)?;
+        doc.put(&root, self.choice.path(), true)?;
+        Ok(())
+    }
+
+    fn locus(&self) -> tilo_actions::ExecutionLocus {
+        tilo_actions::ExecutionLocus::ClientLocal
+    }
+}
+
+/// A host acknowledges exactly one pending launchpad request.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ConsumeLaunchpad {
+    root: String,
+    choice: LaunchpadChoice,
+}
+
+impl tilo_actions::Action for ConsumeLaunchpad {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        let root = doc.import_obj(&self.root)?;
+        if !matches!(
+            doc.get(&root, self.choice.path())?,
+            Some((Value::Scalar(value), _))
+                if matches!(value.as_ref(), ScalarValue::Boolean(true))
+        ) {
+            return Err(tilo_actions::ActionError::Refused(
+                "the launchpad request is no longer pending".into(),
+            ));
+        }
+        doc.put(&root, self.choice.path(), false)?;
+        Ok(())
+    }
+
+    fn locus(&self) -> tilo_actions::ExecutionLocus {
+        tilo_actions::ExecutionLocus::ClientLocal
+    }
+}
+
+fn consume_launchpad(
+    edits: &mut ui::widget::Edits<'_>,
+    root: &ObjId,
+    choice: LaunchpadChoice,
+) -> bool {
+    if !matches!(
+        edits.doc().get(root, choice.path()),
+        Ok(Some((Value::Scalar(value), _)))
+            if matches!(value.as_ref(), ScalarValue::Boolean(true))
+    ) {
+        return false;
+    }
+    let action = ConsumeLaunchpad {
+        root: root.to_string(),
+        choice,
+    };
+    let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
+    match edits.apply(
+        &mut ui::action_host::ActionHost::new(),
+        "tilo.desktop.launchpad.consume",
+        &action,
+        context,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "launchpad request acknowledgement refused");
+            false
+        }
+    }
+}
+
 pub struct CollaborationLaunchpad {
     /// Horizontal room the host's floating workspace rail takes over a
     /// canvas of the given height.
@@ -158,6 +287,19 @@ pub struct CollaborationLaunchpad {
     hint_line_h: f64,
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
+    copy: LaunchpadCopy,
+    actions: ui::action_host::ActionHost,
+    targets: ui::widget::PaintedTargets,
+    target_geometry: Option<([Rect; 6], Rect)>,
+}
+
+/// Words a host puts in place of the launchpad's own: a desktop in the
+/// browser welcomes a new member and names its own keyboard chords.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchpadCopy {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub keyboard_hint: Option<String>,
 }
 
 /// Top of the keyboard hint, from the bottom of the last card.
@@ -183,11 +325,45 @@ impl CollaborationLaunchpad {
             selected: 0,
             app_button_size: (160.0, 36.0),
             hint_line_h: f64::from(
-                ui::text_render::TextStyle::new(ui::tokens::TypeScale::default().xs)
+                ui::Theme::dark()
+                    .text(ui::TextRole::Caption)
                     .line_height_px(),
             ),
             dirty: true,
+            copy: LaunchpadCopy::default(),
+            actions: ui::action_host::ActionHost::new(),
+            targets: ui::widget::PaintedTargets::new(),
+            target_geometry: None,
         }
+    }
+
+    /// Show `copy` where it names text, the launchpad's own words elsewhere.
+    #[must_use]
+    pub fn with_copy(mut self, copy: LaunchpadCopy) -> Self {
+        self.copy = copy;
+        self.dirty = true;
+        self
+    }
+
+    fn title(&self) -> String {
+        self.copy
+            .title
+            .clone()
+            .unwrap_or_else(|| t("launchpad-title"))
+    }
+
+    fn subtitle(&self) -> String {
+        self.copy
+            .subtitle
+            .clone()
+            .unwrap_or_else(|| t("launchpad-subtitle"))
+    }
+
+    fn keyboard_hint(&self) -> String {
+        self.copy
+            .keyboard_hint
+            .clone()
+            .unwrap_or_else(|| t("launchpad-keyboard-hint"))
     }
 
     /// Centre on `display` (with the rail's clearance when `beside_rail`)
@@ -196,6 +372,7 @@ impl CollaborationLaunchpad {
     pub fn set_presentation_area(&mut self, display: Option<Rect>, beside_rail: bool) {
         let presentation = display.map(|rect| (rect, beside_rail));
         if presentation != self.presentation {
+            self.targets.cancel_pointer_press();
             self.presentation = presentation;
             self.card_rects = self.cards();
             self.dirty = true;
@@ -230,8 +407,39 @@ impl CollaborationLaunchpad {
         Self::card_geometry(self.presentation_rect(), clearance)
     }
 
-    fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {
-        let _ = state.put(path, action.path(), true);
+    /// The cards and the "Open an app" button by stable name
+    /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
+    /// last frame, so a driver can press them like a person would.
+    pub fn targets(&self) -> Vec<(String, Rect)> {
+        LaunchpadAction::ALL
+            .iter()
+            .zip(self.card_rects)
+            .map(|(action, rect)| (format!("launchpad:{}", action.slug()), rect))
+            .chain(std::iter::once((
+                "launchpad:open-app".to_owned(),
+                self.app_button_rect(),
+            )))
+            .collect()
+    }
+
+    fn activate(
+        &mut self,
+        choice: LaunchpadChoice,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        let action = ActivateLaunchpad {
+            root: path.to_string(),
+            choice,
+        };
+        let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
+        match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "launchpad action refused");
+                false
+            }
+        }
     }
 
     /// The footer reservation under the grid: `FOOTER_TOP` below the last
@@ -342,84 +550,62 @@ impl CollaborationLaunchpad {
         (cards, columns)
     }
 
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "pointer scaling and bounded six-card grid navigation use checked/saturating indices"
-    )]
-    fn handle_launchpad_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        shift: bool,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-    ) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+    fn sync_targets(&mut self) {
+        let geometry = (self.card_rects, self.app_button_rect());
+        if self.target_geometry != Some(geometry) {
+            self.targets.begin_frame();
+            for (action, rect) in LaunchpadAction::ALL.into_iter().zip(self.card_rects) {
+                self.targets.target(action.path(), rect, action.label());
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.app_button_rect().contains(self.last_cursor) {
-                    self.selected = 6;
-                    let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
-                    *handled = true;
-                } else if let Some(index) = self.hovered() {
-                    self.selected = index;
-                    if let Some(action) = LaunchpadAction::ALL.get(index).copied() {
-                        Self::fire(action, state, path);
-                        *handled = true;
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if self.focused && event.state == ElementState::Pressed =>
-            {
-                let (_, columns) = self.card_layout();
-                let last_index = LaunchpadAction::ALL.len();
-                let next = match event.logical_key {
-                    Key::Named(NamedKey::ArrowRight) => {
-                        Some(self.selected.saturating_add(1).min(last_index))
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => Some(self.selected.saturating_sub(1)),
-                    Key::Named(NamedKey::ArrowDown) => {
-                        Some(self.selected.saturating_add(columns).min(last_index))
-                    }
-                    Key::Named(NamedKey::ArrowUp) => Some(self.selected.saturating_sub(columns)),
-                    Key::Named(NamedKey::Tab) => {
-                        if shift {
-                            Some(self.selected.checked_sub(1).unwrap_or(last_index))
-                        } else if self.selected >= last_index {
-                            Some(0)
-                        } else {
-                            Some(self.selected.saturating_add(1))
-                        }
-                    }
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        if self.selected == 6 {
-                            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
-                            *handled = true;
-                        } else if let Some(action) =
-                            LaunchpadAction::ALL.get(self.selected).copied()
-                        {
-                            Self::fire(action, state, path);
-                            *handled = true;
-                        }
-                        None
-                    }
-                    _ => None,
-                };
-                if let Some(next) = next {
-                    self.selected = next;
-                    *handled = true;
-                }
-            }
-            _ => {}
+            self.targets.target(
+                EMPTY_WORKSPACE_OPEN_APP,
+                geometry.1,
+                t("launchpad-open-app"),
+            );
+            self.target_geometry = Some(geometry);
         }
+        let id = LaunchpadAction::ALL
+            .get(self.selected)
+            .map_or(EMPTY_WORKSPACE_OPEN_APP, |action| action.path());
+        self.targets.focus(id);
+        self.targets.set_host_focus(self.focused);
+    }
+
+    fn navigate(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        let WindowEvent::KeyboardInput { event, .. } = event else {
+            return false;
+        };
+        if !self.focused || event.state != ElementState::Pressed {
+            return false;
+        }
+        let (_, columns) = self.card_layout();
+        let last_index = LaunchpadAction::ALL.len();
+        let next = match event.logical_key {
+            Key::Named(NamedKey::ArrowRight) => {
+                Some(self.selected.saturating_add(1).min(last_index))
+            }
+            Key::Named(NamedKey::ArrowLeft) => Some(self.selected.saturating_sub(1)),
+            Key::Named(NamedKey::ArrowDown) => {
+                Some(self.selected.saturating_add(columns).min(last_index))
+            }
+            Key::Named(NamedKey::ArrowUp) => Some(self.selected.saturating_sub(columns)),
+            Key::Named(NamedKey::Tab) => {
+                if ctx.modifiers.state().shift_key() {
+                    Some(self.selected.checked_sub(1).unwrap_or(last_index))
+                } else if self.selected >= last_index {
+                    Some(0)
+                } else {
+                    Some(self.selected.saturating_add(1))
+                }
+            }
+            _ => None,
+        };
+        if let Some(next) = next {
+            self.selected = next;
+            *ctx.handled = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -430,20 +616,13 @@ impl Widget for CollaborationLaunchpad {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
-            min_size: taffy::Size {
-                width: percent(0.0_f32),
-                height: percent(0.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
+            min_size: taffy::Size::from_percent(0.0_f32, 0.0_f32),
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -459,13 +638,11 @@ impl Widget for CollaborationLaunchpad {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        let old_rect = self.rect;
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        if self.rect != old_rect {
+            self.targets.cancel_pointer_press();
+        }
         let cards = self.cards();
         if cards != self.card_rects {
             self.card_rects = cards;
@@ -473,13 +650,7 @@ impl Widget for CollaborationLaunchpad {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -498,16 +669,16 @@ impl Widget for CollaborationLaunchpad {
         // Theme tokens already include accessibility scaling; TextRenderer
         // also applies its configured scale to authored font sizes.
         let scale = text.text_scale();
-        let base = theme.tokens.typography.scale.base / scale;
-        let small = theme.tokens.typography.scale.sm / scale;
-        let caption = theme.tokens.typography.scale.xs / scale;
-        let heading = theme.tokens.typography.scale.x3l / scale;
+        let base = theme.tokens.typography.size(TextRole::Body) / scale;
+        let small = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let caption = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let heading = theme.tokens.typography.size(TextRole::Display) / scale;
         let (button_w, button_h) = text.measure(&t("launchpad-open-app"), base, None);
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
-        let keyboard_hint = t("launchpad-keyboard-hint");
+        let keyboard_hint = self.keyboard_hint();
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
         self.card_rects = self.cards();
@@ -520,12 +691,15 @@ impl Widget for CollaborationLaunchpad {
         for card in &mut self.card_rects {
             *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
         }
+        self.sync_targets();
         let cards = self.card_rects;
-        let hovered = self.hovered();
+        let hovered = LaunchpadAction::ALL
+            .iter()
+            .position(|action| self.targets.interaction(action.path()).hovered);
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
-        let title = text.elide_to_width(&t("launchpad-title"), heading, panel_width as f32);
+        let title = text.elide_to_width(&self.title(), heading, panel_width as f32);
         text.draw_text(
             scene,
             &title,
@@ -535,11 +709,7 @@ impl Widget for CollaborationLaunchpad {
             None,
         );
         let (_, title_h) = text.measure(&title, heading, None);
-        let subtitle = text.elide_to_width(
-            &crate::i18n::t("launchpad-subtitle"),
-            small,
-            panel_width as f32,
-        );
+        let subtitle = text.elide_to_width(&self.subtitle(), small, panel_width as f32);
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
             // On the bare wallpaper, like the hint under the cards: the dim
@@ -554,18 +724,24 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
-        // Control role (HIG §9.1/§9.3): an action tile takes `radii.lg`. The
+        // Control role (HIG §9.1/§9.3): an action tile takes `radii.control`. The
         // hovered or keyboard-selected tile is a lift with the tier's
         // hairline — never an accent wash, which is reserved for live state
         // (§9.4) — and an idle tile rests on its translucent floor with an
         // edge derived from that floor (§9.5), so the six cards read as cards
         // on the dark grid as well as the light one.
-        let floor = theme.bg_primary.with_alpha_factor(0.78);
-        let idle_edge = ui::surface::edge_on(theme.bg_primary);
+        let floor = theme.tokens.colors.surfaces.raised.with_alpha_factor(0.78);
+        let idle_edge = ui::surface::edge_on(theme.tokens.colors.surfaces.raised);
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
-            let tier =
-                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
+            let tier = ui::chrome::selection_tier(
+                theme,
+                ui::chrome::SelectionState::new(
+                    active,
+                    hovered == Some(index),
+                    self.targets.interaction(action.path()).pressed,
+                ),
+            );
             let surface = if active { tier.fill } else { floor };
             let shape = RoundedRect::from_rect(
                 rect,
@@ -590,9 +766,13 @@ impl Widget for CollaborationLaunchpad {
                 rect.x0 + 42.0,
                 rect.y0 + 42.0,
             );
-            action
-                .icon()
-                .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
+            action.icon().draw_with_stroke(
+                scene,
+                transform,
+                icon_rect,
+                theme.tokens.colors.intent.inverted,
+                1.6,
+            );
             let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,
@@ -631,10 +811,10 @@ impl Widget for CollaborationLaunchpad {
             text,
             theme,
             &ButtonFace::new(button, &t("launchpad-open-app"))
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
-                .text_size(base)
+                .control_size(ui::widget::ControlSize::Large)
                 .focused(self.focused && self.selected == 6)
-                .hovered(button.contains(self.last_cursor)),
+                .hovered(self.targets.interaction(EMPTY_WORKSPACE_OPEN_APP).hovered)
+                .pressed(self.targets.interaction(EMPTY_WORKSPACE_OPEN_APP).pressed),
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
@@ -656,16 +836,35 @@ impl Widget for CollaborationLaunchpad {
         if *ctx.handled {
             return;
         }
-        let before = (self.hover_target(), self.selected);
-        self.handle_launchpad_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers.state().shift_key(),
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-        );
-        self.dirty |= (self.hover_target(), self.selected) != before;
+        let before = (self.hover_target(), self.selected, self.focused);
+        self.sync_targets();
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = ctx.logical(position);
+        }
+        if !self.navigate(event, ctx) {
+            self.dirty |= self.targets.handle_event(event, ctx);
+            if let Some(id) = self.targets.focused() {
+                self.selected = LaunchpadAction::ALL
+                    .iter()
+                    .position(|action| action.path() == id)
+                    .unwrap_or(6);
+            }
+            if matches!(event, WindowEvent::Focused(false)) {
+                self.focused = false;
+            }
+            for id in self.targets.take_activated() {
+                let choice = LaunchpadAction::ALL
+                    .into_iter()
+                    .find(|action| action.path() == id)
+                    .map_or(LaunchpadChoice::OpenApp, LaunchpadChoice::Card);
+                self.activate(choice, &mut ctx.state, ctx.path);
+            }
+        }
+        self.dirty |= (self.hover_target(), self.selected, self.focused) != before;
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.targets.wants_pointer_capture()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -681,6 +880,11 @@ impl Widget for CollaborationLaunchpad {
     fn set_focus(&mut self, focused: bool) {
         self.dirty |= self.focused != focused;
         self.focused = focused;
+        if !focused {
+            self.dirty |= self.targets.wants_pointer_capture();
+            self.targets.cancel_pointer_press();
+        }
+        self.targets.set_host_focus(focused);
     }
 
     fn is_focused(&self) -> bool {
@@ -706,7 +910,7 @@ impl Widget for CollaborationLaunchpad {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_name(t("launchpad-title"))
+                .with_name(self.title())
                 .with_bounds(self.content_bounds())
                 .with_description(t("launchpad-description"))
                 .with_children(
@@ -720,22 +924,22 @@ impl Widget for CollaborationLaunchpad {
                                 .with_bounds(bounds)
                                 .with_description(action.detail())
                                 .with_action_target(action.path())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == index,
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == index),
+                                )
                         })
                         .chain(std::iter::once(
                             AccessNode::new(Role::Button)
                                 .with_name(t("launchpad-open-app"))
                                 .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
                                 .with_bounds(self.app_button_rect())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == 6,
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == 6),
+                                ),
                         ))
                         .collect(),
                 ),
@@ -758,6 +962,7 @@ impl Widget for CollaborationLaunchpad {
         }
         self.focused = true;
         self.selected = *index;
+        self.dirty = true;
         true
     }
 
@@ -765,13 +970,12 @@ impl Widget for CollaborationLaunchpad {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
         if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
-            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
-            return true;
+            return self.activate(LaunchpadChoice::OpenApp, state, path);
         }
         let Some(item) = LaunchpadAction::ALL
             .into_iter()
@@ -782,19 +986,205 @@ impl Widget for CollaborationLaunchpad {
         if !matches!(action, Action::Activate) {
             return false;
         }
-        Self::fire(item, state, path);
-        true
+        self.activate(LaunchpadChoice::Card(item), state, path)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+
+    fn deliver(
+        pad: &mut CollaborationLaunchpad,
+        doc: &mut AutoCommit,
+        event: &WindowEvent,
+    ) -> bool {
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .send(pad, event)
+            .handled
+    }
+
+    use ui::synthetic_input::mouse_release;
+
+    #[test]
+    fn app_opener_waits_for_pointer_release_and_cancelled_drag_does_not_open() {
+        let mut pad = CollaborationLaunchpad::new(test_rail);
+        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        pad.card_rects = pad.cards();
+        let button = pad.app_button_rect().center();
+        let mut doc = AutoCommit::new();
+        deliver(&mut pad, &mut doc, &pointer_at(button));
+        assert!(deliver(&mut pad, &mut doc, &mouse_press()));
+        assert!(
+            !take_open_app(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT),
+            "a pointer press must not open Search before the person completes their click"
+        );
+        deliver(&mut pad, &mut doc, &pointer_at(Point::new(0.0, 0.0)));
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+        assert!(
+            !take_open_app(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT),
+            "dragging off the app opener cancels activation"
+        );
+        deliver(&mut pad, &mut doc, &pointer_at(button));
+        deliver(&mut pad, &mut doc, &mouse_press());
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+        assert!(take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(!take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+    }
+
+    #[test]
+    fn interrupted_app_opener_gestures_consume_release_and_can_be_retried() {
+        for interruption in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.cards();
+            pad.set_focus(true);
+            let mut doc = AutoCommit::new();
+            let button = pad.app_button_rect().center();
+            deliver(&mut pad, &mut doc, &pointer_at(button));
+            deliver(&mut pad, &mut doc, &mouse_press());
+            assert!(pad.wants_pointer_capture());
+            deliver(&mut pad, &mut doc, &interruption);
+            assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+            assert!(!pad.wants_pointer_capture());
+            assert!(!take_open_app(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            deliver(&mut pad, &mut doc, &mouse_press());
+            assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+            assert!(take_open_app(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+        }
+    }
+
+    #[test]
+    fn moving_the_launchpad_cancels_the_old_press_before_new_geometry_is_clicked() {
+        let mut pad = CollaborationLaunchpad::new(test_rail);
+        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        pad.card_rects = pad.cards();
+        let mut doc = AutoCommit::new();
+        let button = pad.app_button_rect().center();
+        deliver(&mut pad, &mut doc, &pointer_at(button));
+        deliver(&mut pad, &mut doc, &mouse_press());
+        pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)), false);
+        let moved_button = pad.app_button_rect().center();
+        deliver(&mut pad, &mut doc, &pointer_at(moved_button));
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+        assert!(!take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        deliver(&mut pad, &mut doc, &mouse_press());
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+        assert!(take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+    }
+
+    #[test]
+    fn app_opener_keyboard_repeat_is_consumed_without_a_second_request() {
+        let mut pad = CollaborationLaunchpad::new(test_rail);
+        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        pad.card_rects = pad.cards();
+        pad.focus_synthetic_accessibility(&[6]);
+        let mut doc = AutoCommit::new();
+        assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Enter)));
+        assert!(take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        let mut repeated = named_key(NamedKey::Enter);
+        assert!(matches!(repeated, WindowEvent::KeyboardInput { .. }));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut repeated {
+            event.repeat = true;
+        }
+        assert!(deliver(&mut pad, &mut doc, &repeated));
+        assert!(!take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Space)));
+        assert!(take_open_app(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+    }
+
+    #[test]
+    fn pending_requests_are_consumed_once_and_keep_false_witnesses() {
+        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut doc = AutoCommit::new();
+        let nested = doc
+            .put_object(automerge::ROOT, "launchpad", automerge::ObjType::Map)
+            .unwrap();
+        for root in [automerge::ROOT, nested] {
+            let choices = std::iter::once(LaunchpadChoice::OpenApp)
+                .chain(LaunchpadAction::ALL.into_iter().map(LaunchpadChoice::Card));
+            for choice in choices {
+                assert!(pad.perform_semantic_action(
+                    choice.path(),
+                    &Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                ));
+                match choice {
+                    LaunchpadChoice::OpenApp => {
+                        assert!(take_open_app(&mut ui::widget::Edits::lend(&mut doc), &root));
+                    }
+                    LaunchpadChoice::Card(action) => assert_eq!(
+                        LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root),
+                        Some(action)
+                    ),
+                }
+                assert!(
+                    matches!(
+                        doc.get(&root, choice.path()).unwrap(),
+                        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Boolean(false))
+                    ),
+                    "consuming a request preserves its false witness"
+                );
+                let before = (doc.base_heads(), doc.pending_ops());
+                assert!(!take_open_app(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root
+                ));
+                assert_eq!(
+                    LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root),
+                    None
+                );
+                assert_eq!(
+                    (doc.base_heads(), doc.pending_ops()),
+                    before,
+                    "polling a consumed request writes nothing"
+                );
+            }
+        }
+    }
 
     /// A host rail as wide as the shell's on a laptop display.
     fn test_rail(_height: f64) -> f64 {
         140.0
     }
+
+    fn pointer_at(point: Point) -> WindowEvent {
+        ui::synthetic_input::cursor_moved(point.x, point.y)
+    }
+
+    use ui::synthetic_input::mouse_press;
+
+    use ui::synthetic_input::named_key;
 
     #[test]
     fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
@@ -803,7 +1193,7 @@ mod tests {
         /// 0.72 alpha was invisible on the dark grid.
         fn launchpad_cards_keep_an_edge_on_every_palette() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let floor = theme.bg_primary;
+                let floor = theme.tokens.colors.surfaces.raised;
                 let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
                 assert!(
                     delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
@@ -851,7 +1241,7 @@ mod tests {
                     let button = pad.app_button_rect();
                     let (label_w, label_h) = text.measure(
                         "Open an app",
-                        theme.tokens.typography.scale.base / scale,
+                        theme.tokens.typography.size(TextRole::Body) / scale,
                         None,
                     );
                     assert!(
@@ -971,6 +1361,28 @@ mod tests {
             );
         }
 
+        fn tasks_and_call_cards_name_the_action_they_perform() {
+            let tasks = LaunchpadAction::Tasks.app_action().expect("tasks action");
+            assert_eq!(
+                (tasks.app_id, tasks.resource, tasks.action),
+                ("so.tilo.calendar", "calendar.calendar", "show-tasks")
+            );
+            let call = LaunchpadAction::Meet.app_action().expect("call action");
+            assert_eq!(
+                (call.app_id, call.resource, call.action),
+                ("so.tilo.chat", "chat.workspace", "start-call")
+            );
+            for card in LaunchpadAction::ALL {
+                if let Some(action) = card.app_action() {
+                    assert_eq!(
+                        card.app_target(),
+                        Some((action.app_id, action.display_name)),
+                        "{card:?} acts in the app it opens"
+                    );
+                }
+            }
+        }
+
         fn assistive_activation_publishes_the_same_action_as_a_card_click() {
             let mut launchpad = CollaborationLaunchpad::new(test_rail);
             let mut doc = AutoCommit::new();
@@ -979,7 +1391,7 @@ mod tests {
             assert!(launchpad.perform_semantic_action(
                 EMPTY_WORKSPACE_ACTIVITY,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(matches!(
@@ -992,6 +1404,51 @@ mod tests {
         desktop_launchpad_exposes_an_app_opener();
         every_card_has_a_unique_semantic_route();
         collaboration_cards_target_the_apps_that_own_those_features();
+        tasks_and_call_cards_name_the_action_they_perform();
         assistive_activation_publishes_the_same_action_as_a_card_click();
+    }
+
+    #[test]
+    fn a_card_publishes_its_own_action_by_click_or_keyboard() {
+        fn a_clicked_card_publishes_its_own_action_not_the_launcher() {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.cards();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let notes = pad.card_rects[1].center();
+            let mut handled = false;
+            for event in [pointer_at(notes), mouse_press(), mouse_release()] {
+                handled = deliver(&mut pad, &mut doc, &event);
+            }
+            assert!(handled);
+            assert_eq!(
+                LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root),
+                Some(LaunchpadAction::Notes)
+            );
+            assert!(
+                !take_open_app(&mut ui::widget::Edits::lend(&mut doc), &root),
+                "a card names its action; only the button opens the launcher"
+            );
+        }
+
+        fn arrow_keys_move_and_enter_opens_the_selected_card() {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.cards();
+            pad.set_focus(true);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            for key in [NamedKey::ArrowRight, NamedKey::Enter] {
+                assert!(deliver(&mut pad, &mut doc, &named_key(key)));
+            }
+            assert_eq!(
+                LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root),
+                Some(LaunchpadAction::Notes)
+            );
+        }
+
+        a_clicked_card_publishes_its_own_action_not_the_launcher();
+        arrow_keys_move_and_enter_opens_the_selected_card();
     }
 }

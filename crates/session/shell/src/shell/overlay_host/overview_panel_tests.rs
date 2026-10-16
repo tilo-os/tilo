@@ -7,8 +7,9 @@ use crate::shell::state::FreshId as _;
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::overview::room_cards;
-use crate::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb, WorkspaceTree};
+use crate::shell::state::{Access, CapOverride, Collaborator, Scope, Subject, WorkspaceTree};
 use tilo_desktop::overview::{room_access_label, room_shares_label};
+use ui::TextRole;
 use ui::widget::Container;
 
 /// A host laid out over a desktop-sized viewport with the overview
@@ -82,8 +83,10 @@ fn overview_rename_selection_is_directional_accessible_and_owned_by_the_palette(
 
     fn workspace_select_all_invalidates_painted_selection() {
         let mut name = "Home".to_string();
-        let (_, bump, selection) = ShellOverlayHost::apply_workspace_rename_ctrl_chord(
-            "a",
+        let (_, bump, selection) = ShellOverlayHost::apply_workspace_rename_key(
+            &Key::Character("a".into()),
+            true,
+            false,
             &mut name,
             ui::text_selection::Selection::collapsed(4),
         );
@@ -143,7 +146,32 @@ fn overview_rename_selection_is_directional_accessible_and_owned_by_the_palette(
         );
     }
 
+    fn an_input_method_types_into_the_rename_field_at_its_caret() {
+        let mut h = host_with(WorkspaceTree::bootstrap_default());
+        {
+            let mut chrome = h.chrome.as_ref().unwrap().borrow_mut();
+            chrome.overlays.ws_settings = true;
+            chrome.editing_workspace_name = Some("Home".into());
+            chrome.editing_workspace_name_selection = ui::text_selection::Selection::collapsed(4);
+        }
+        assert!(h.commit_into_chrome_field(" 家"));
+        let mut handled = false;
+        assert!(h.handle_workspace_rename_key(
+            &Key::Named(NamedKey::Backspace),
+            winit::event::Modifiers::default(),
+            &mut handled
+        ));
+        assert!(h.commit_into_chrome_field("👍🏽"));
+        let chrome = h.chrome.as_ref().unwrap().borrow();
+        assert_eq!(chrome.editing_workspace_name.as_deref(), Some("Home 👍🏽"));
+        assert_eq!(
+            chrome.editing_workspace_name_selection,
+            ui::text_selection::Selection::collapsed("Home 👍🏽".len())
+        );
+    }
+
     rename_arrows_collapse_selection_to_its_directional_edge();
+    an_input_method_types_into_the_rename_field_at_its_caret();
     workspace_select_all_invalidates_painted_selection();
     workspace_name_accessibility_exposes_current_selection();
     desktop_palette_owns_keys_above_an_active_rename_field();
@@ -168,25 +196,8 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         assert!(h.shortcut_help_button_is_suppressed());
         h.last_cursor = Some(h.shortcut_help_button_rect().center());
         let mut handled = false;
-        h.handle_shell_mouse_click_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            &mut handled,
-        );
+        h.handle_shell_mouse_click_event(&ui::synthetic_input::mouse_press(), &mut handled);
         assert!(!chrome.borrow().overlays.shortcut_help);
-    }
-
-    fn dismissed_palette_command_closes_focus_and_semantics() {
-        let mut h = host();
-        h.palette.open();
-        h.palette_visible = true;
-        h.dispatch_palette_command("unknown");
-        assert!(!h.palette_visible);
-        assert!(!h.palette.is_open());
-        assert!(h.palette.accessibility().unwrap().state.hidden);
     }
 
     fn desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits() {
@@ -237,11 +248,10 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         let mut scene = Scene::new();
         host.draw_shortcut_help_button(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
         let rect = host.shortcut_help_button_rect();
-        let (width, height) = renderer.measure_weighted(
-            "Help  F1 · Super+?",
-            theme.tokens.typography.scale.sm / 2.0,
+        let (width, height) = renderer.measure_style(
+            &crate::shell::i18n::t("help-pill"),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Label).strong(),
         );
         assert!(
             rect.width() >= f64::from(width) + 24.0 && rect.height() >= f64::from(height) + 12.0
@@ -255,7 +265,7 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
                 .resources
                 .glyph_runs
                 .iter()
-                .all(|run| run.font_size == theme.tokens.typography.scale.sm)
+                .all(|run| run.font_size == theme.tokens.typography.size(TextRole::Label))
         );
     }
 
@@ -302,7 +312,6 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
     }
 
     app_content_has_no_floating_help_hit_target();
-    dismissed_palette_command_closes_focus_and_semantics();
     desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits();
     desktop_help_text_is_scaled_once_and_inside_its_hit_target();
     desktop_overlay_text_applies_accessibility_scale_once();
@@ -340,11 +349,7 @@ fn overview_panel_bounds_hit_rooms_fit_the_viewport_and_scroll_when_long() {
         let mut h = host_with(WorkspaceTree::bootstrap_default());
         h.add_workspace_rect = h.overview_add_workspace_rect_for(1);
         h.last_cursor = Some(h.add_workspace_rect.center());
-        let event = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let event = ui::synthetic_input::mouse_press();
         let mut handled = false;
         h.handle_shell_overview_pointer_event(&event, 1.0, &mut handled);
         let chrome = h.chrome.as_ref().unwrap().borrow();
@@ -531,12 +536,12 @@ fn overview_room_rows_pin_the_current_room_and_grow_on_the_spacing_scale() {
         assert_eq!(m.row_pad, f64::from(spacing.s4));
         assert_eq!(
             m.panel_radius,
-            f64::from(theme.tokens.radii.xl),
+            f64::from(theme.tokens.radii.panel),
             "Panel role"
         );
         assert_eq!(
             m.row_radius,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(theme.tokens.radii.control),
             "Control role"
         );
         assert_eq!(OverviewMetrics::default(), m);
@@ -553,29 +558,30 @@ fn overview_room_rows_pin_the_current_room_and_grow_on_the_spacing_scale() {
         let m1 = OverviewMetrics::for_theme(&base);
         let m2 = OverviewMetrics::for_theme(&large);
         for (name, theme, m) in [("100%", &base, m1), ("200%", &large, m2)] {
-            let scale = &theme.tokens.typography.scale;
+            let scale = &theme.tokens.typography;
             assert!(
-                m.here_h >= lh(scale.x3l) + lh(scale.base),
+                m.here_h >= lh(scale.size(TextRole::Display)) + lh(scale.size(TextRole::Body)),
                 "{name}: the here block ({}) must hold its name and access lines",
                 m.here_h
             );
             assert!(
-                m.caption_h >= lh(scale.sm),
+                m.caption_h >= lh(scale.size(TextRole::Caption)),
                 "{name}: the caption band ({}) must hold its text",
                 m.caption_h
             );
             assert!(
-                m.share_row_h >= lh(scale.base),
+                m.share_row_h >= lh(scale.size(TextRole::Body)),
                 "{name}: a share row ({}) must hold its body line",
                 m.share_row_h
             );
             assert!(
-                m.room_row_h >= lh(scale.lg) + lh(scale.sm),
+                m.room_row_h
+                    >= lh(scale.size(TextRole::Heading)) + lh(scale.size(TextRole::Caption)),
                 "{name}: a room row ({}) must hold its name and sub-line",
                 m.room_row_h
             );
             assert!(
-                m.chip_h >= lh(scale.sm),
+                m.chip_h >= lh(scale.size(TextRole::Caption)),
                 "{name}: the chip ({}) must hold its label",
                 m.chip_h
             );
@@ -643,30 +649,23 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
         );
     }
 
-    /// The panel's people come from the room's capabilities, not from
+    /// The panel's people come from the room's membership, not from
     /// whoever this session has happened to hear from. Showing a face on
     /// a room states that person can reach it, which is a claim about
     /// access.
-    fn faces_come_from_capabilities_not_from_the_collaborator_list() {
+    fn faces_come_from_membership_not_from_the_collaborator_list() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].owner = None;
-        tree.desktop.workspaces[0].capabilities.clear();
+        tree.desktop.workspaces[0].policy.owner = None;
+        tree.desktop.workspaces[0].policy.members.clear();
         tree.desktop.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
         assert!(
             room_cards(&tree, &crate::shell::state::local_user_id())[0]
                 .people
                 .is_empty(),
-            "a person with no capability here is not on this room"
+            "a person who is no member here is not on this room"
         );
 
-        let room = tree.desktop.workspaces[0].id.raw().to_string();
-        tree.desktop.workspaces[0]
-            .capabilities
-            .push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::Room(room),
-                Verb::Write,
-            ));
+        tree.desktop.workspaces[0].admit("ada", crate::shell::state::CapRole::Editor);
         let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(
             card.people
@@ -674,7 +673,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
                 .map(|p| p.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["ada"],
-            "the member who holds a capability is exactly who the room shows"
+            "the member is exactly who the room shows"
         );
         assert_eq!(card.people[0].name, "Ada", "the roster supplies the name");
     }
@@ -684,13 +683,11 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     fn the_share_list_collapses_rather_than_growing_without_bound() {
         let mut tree = WorkspaceTree::bootstrap_default();
         for i in 0..12 {
-            tree.desktop.workspaces[0]
-                .capabilities
-                .push(CapOverride::grant(
-                    Subject::person("ada"),
-                    Scope::FsPath(format!("/var/workspace/doc{i}")),
-                    Verb::Read,
-                ));
+            tree.desktop.workspaces[0].sandbox.push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath(format!("/var/workspace/doc{i}")),
+                Access::Read,
+            ));
         }
         let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(card.shares.len(), 12, "the model keeps every share");
@@ -712,7 +709,459 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     opening_seeds_the_selection_from_the_room_you_are_in();
     closing_clears_the_selection();
     a_private_room_says_so_on_its_row();
-    faces_come_from_capabilities_not_from_the_collaborator_list();
+    faces_come_from_membership_not_from_the_collaborator_list();
     the_share_list_collapses_rather_than_growing_without_bound();
     a_room_that_shares_nothing_still_gets_a_row();
+}
+
+/// Fixture-only pixels make the native preview branch observable without
+/// sampling a desktop or changing preview disclosure policy.
+fn overview_controls_host_with_preview() -> ShellOverlayHost {
+    let mut h = host();
+    let tab = {
+        let chrome = h.chrome.as_ref().expect("fixture chrome").borrow();
+        h.overview_windows(&chrome.tree())
+            .first()
+            .expect("demo window")
+            .address
+            .tab
+    };
+    h.window_previews
+        .store(tab, std::sync::Arc::from([80, 90, 100, 255]), 1, 1, None);
+    assert!(!h.overview_row_windows().is_empty());
+    h
+}
+
+#[test]
+fn overview_controls_semantic_bounds_and_focus_follow_populated_child_order() {
+    let mut h = overview_controls_host_with_preview();
+    let count = h.overview_cards().len();
+    let tree = h.accessibility().expect("overview tree");
+    let overview = &tree.children[0];
+    assert_eq!(overview.name.as_deref(), Some("Workspace overview"));
+    assert_eq!(overview.children[count].role, ui::a11y::Role::List);
+    assert_eq!(
+        h.synthetic_accessibility_rect(&[0, count, 0]),
+        Some(h.overview_window_tile_rect(0)),
+        "a window-list child resolves to its painted preview, not the create row"
+    );
+    let create = count.saturating_add(1);
+    assert_eq!(
+        h.synthetic_accessibility_rect(&[0, create]),
+        overview.children[create]
+            .bounds
+            .map(ui::a11y::AccessBounds::to_rect)
+    );
+    assert!(h.focus_synthetic_accessibility(&[0, count, 0]));
+    assert_eq!(
+        h.overview_window_selection,
+        h.overview_row_windows()
+            .first()
+            .map(|window| window.address.tab)
+    );
+    assert!(h.focus_synthetic_accessibility(&[0, create]));
+    assert_eq!(h.overview_selection, Some(count));
+    assert_eq!(h.overview_window_selection, None);
+    let tree = h.accessibility().expect("focused overview");
+    assert!(tree.children[0].children[create].state.focused);
+    assert!(tree.children[0].children[create].state.focusable);
+    assert!(!h.focus_synthetic_accessibility(&[0, create, 0]));
+    assert!(!h.focus_synthetic_accessibility(&[0, count, usize::MAX]));
+    let target = h.overview_here_index().expect("current workspace");
+    assert!(h.focus_synthetic_accessibility(&[0, target]));
+    assert_eq!(h.overview_selection, Some(target));
+}
+
+#[test]
+fn overview_controls_tab_create_cancel_reopen_and_repeat_use_the_native_keyboard_route() {
+    use winit::event::Modifiers;
+    use winit::keyboard::ModifiersState;
+    let mut h = host_with(WorkspaceTree::bootstrap_default());
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(h.overview_selection, Some(1));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::from(ModifiersState::SHIFT),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(h.overview_selection, Some(0));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert_eq!(ws_count(&h), 1, "cancel never creates a workspace");
+    h.chrome
+        .as_ref()
+        .expect("chrome")
+        .borrow_mut()
+        .overlays
+        .overview = true;
+    h.force_overview_settled(true);
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(ws_count(&h), 2);
+    assert!(!h.overlay_flags().overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(!h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert_eq!(ws_count(&h), 2, "closed overview cannot create again");
+}
+
+#[test]
+fn overview_controls_production_capture_matrix_is_written() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let out = std::env::var_os("TILO_OVERVIEW_CONTROL_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/overview-controls-shots"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).expect("capture output");
+    let variants = vec![
+        ("dark", Theme::dark(), 1280_u32, 800_u32),
+        ("light", Theme::light(), 1280, 800),
+        ("high-contrast", Theme::high_contrast(), 1280, 800),
+        ("large-text", Theme::dark().with_text_scale(2.0), 1280, 800),
+        (
+            "ui-text-scaled",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            1280,
+            800,
+        ),
+        (
+            "compact-large-text",
+            Theme::dark().with_text_scale(2.0),
+            960,
+            540,
+        ),
+    ];
+    for (name, theme, w, h) in variants {
+        let mut renderer = OffscreenRenderer::new(w, h);
+        for target in ["workspace", "window", "create"] {
+            let mut host = overview_controls_host_with_preview();
+            host.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+            let mut warm = Scene::new();
+            host.draw_overview(
+                &mut warm,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            let count = host.overview_cards().len();
+            let path = match target {
+                "window" => vec![0, count, 0],
+                "create" => vec![0, count.saturating_add(1)],
+                _ => vec![0, count.saturating_sub(1)],
+            };
+            assert!(
+                host.focus_synthetic_accessibility(&path),
+                "capture focus target {target}"
+            );
+            let target_rect = host
+                .synthetic_accessibility_rect(&path)
+                .expect("focused target bounds");
+            let viewport = host.overview_content_rect();
+            assert!(
+                target_rect.y0 >= viewport.y0 && target_rect.y1 <= viewport.y1,
+                "focused target must be visible at {name}: {target_rect:?} in {viewport:?}"
+            );
+            let mut scene = Scene::new();
+            host.draw_overview(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            let path = out.join(format!("{name}-{target}.png"));
+            renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &path);
+            if target == "window" {
+                assert_overview_preview_focus_pixels(&mut renderer, &scene, &host, &theme, w);
+            }
+            assert!(
+                path.is_file(),
+                "production capture missing: {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn overview_controls_compact_page_keeps_creation_visible_after_focus_and_resize() {
+    let mut h = overview_controls_host_with_preview();
+    let theme = Theme::dark().with_text_scale(2.0);
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    h.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+    h.draw_overview(&mut scene, Affine::IDENTITY, &mut text, &theme);
+    assert_eq!(h.overview_panel_rect(), h.overlay_area());
+    let count = h.overview_cards().len();
+    assert!(
+        h.add_workspace_hit_rect().area() == 0.0,
+        "offscreen create action has no pointer target"
+    );
+    assert!(h.focus_synthetic_accessibility(&[0, count.saturating_add(1)]));
+    assert!(h.overview_scroll_y > 0.0);
+    let hidden_preview = h.overview_window_tile_rect(0).center();
+    assert!(!h.overview_content_rect().contains(hidden_preview));
+    assert_eq!(
+        h.hit_test_overview_window(hidden_preview),
+        None,
+        "clipped previews cannot receive pointer activation"
+    );
+    for viewport in [h.rect, Rect::new(0.0, 0.0, 800.0, 600.0)] {
+        h.rect = viewport;
+        h.draw_overview(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let content = h.overview_content_rect();
+        let create = h.add_workspace_hit_rect();
+        assert!(create.area() > 0.0);
+        assert!(create.y0 >= content.y0 && create.y1 <= content.y1);
+        assert_eq!(create, h.overview_add_workspace_rect_for(count));
+        assert_eq!(h.overview_selection, Some(count));
+    }
+}
+
+/// The shared focus ring remains visible outside the preview's painted
+/// frame, including the compact body's left edge. Assert actual pixels.
+fn assert_overview_preview_focus_pixels(
+    renderer: &mut crate::shell::osd::review_offscreen::OffscreenRenderer,
+    scene: &Scene,
+    host: &ShellOverlayHost,
+    theme: &Theme,
+    width: u32,
+) {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let tile = host.overview_window_tile_rect(0);
+    let x = tile.x0 - f64::from(theme.tokens.spacing.s1) - 1.0;
+    let y = tile.center().y;
+    let pixel_x = u32::try_from(ui::num::usize_of_f64(x.round())).expect("positive ring x");
+    let pixel_y = u32::try_from(ui::num::usize_of_f64(y.round())).expect("positive ring y");
+    let pixels = renderer.render_resilient(scene, theme.tokens.colors.surfaces.base);
+    let (red, green, blue, _) = OffscreenRenderer::sample(&pixels, width, pixel_x, pixel_y);
+    let expected = theme.border_focus.to_rgba8();
+    assert!(
+        red.abs_diff(expected.r) <= 2
+            && green.abs_diff(expected.g) <= 2
+            && blue.abs_diff(expected.b) <= 2,
+        "preview focus ring is clipped at ({pixel_x}, {pixel_y})"
+    );
+}
+
+#[test]
+fn overview_window_identity_survives_another_window_closing() {
+    let mut h = overview_controls_host_with_preview();
+    let windows = h.overview_row_windows();
+    let before = windows.first().expect("first fixture window").address.tab;
+    let selected = windows.get(1).expect("second fixture window").clone();
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), before)
+        .expect("production close transaction");
+    let tree = h.accessibility().expect("overview semantics");
+    let list = &tree.children[0].children[h.overview_cards().len()];
+    let focused = list
+        .children
+        .iter()
+        .find(|node| node.state.focused)
+        .expect("the surviving selected window retains focus");
+    assert_eq!(focused.name.as_deref(), Some(selected.title.as_str()));
+    assert_eq!(
+        focused.semantic_key.as_deref(),
+        Some(format!("overview-window:{}", selected.address.tab).as_str()),
+        "accessibility identity follows the surviving tab"
+    );
+    let mut handled = false;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert_eq!(chrome.borrow().active_tab_id(), Some(selected.address.tab));
+}
+
+#[test]
+fn overview_window_identity_does_not_activate_a_replacement_after_selected_close() {
+    let mut h = overview_controls_host_with_preview();
+    let selected = h
+        .overview_row_windows()
+        .get(1)
+        .expect("second fixture window")
+        .address
+        .tab;
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), selected)
+        .expect("production close transaction");
+    let active = chrome.borrow().active_tab_id();
+    let mut handled = false;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert!(
+        h.overlay_flags().overview,
+        "an interrupted preview activation stays in overview"
+    );
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        active,
+        "no different window is activated"
+    );
+}
+
+#[test]
+fn overview_window_identity_capture_matrix_is_written() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let out = std::env::var_os("TILO_OVERVIEW_IDENTITY_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/overview-window-identity"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).expect("capture output");
+    let variants = vec![
+        ("dark", Theme::dark(), 1280_u32, 800_u32),
+        ("light", Theme::light(), 1280, 800),
+        ("large-text", Theme::dark().with_text_scale(2.0), 960, 540),
+        ("high-contrast", Theme::high_contrast(), 1280, 800),
+    ];
+    for (name, theme, width, height) in variants {
+        for state in ["another-window-closed", "selected-window-closed"] {
+            let mut h = overview_controls_host_with_preview();
+            h.rect = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            h.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            let windows = h.overview_row_windows();
+            let first = windows.first().expect("first fixture window").address.tab;
+            let selected = windows.get(1).expect("second fixture window").address.tab;
+            h.select_overview_window(1);
+            let chrome = h.chrome.as_ref().expect("chrome").clone();
+            let closed = if state == "another-window-closed" {
+                first
+            } else {
+                selected
+            };
+            crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), closed)
+                .expect("production close transaction");
+            if state == "selected-window-closed" {
+                let mut handled = false;
+                h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled);
+            }
+            scene.reset();
+            h.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            OffscreenRenderer::new(width, height).render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-{state}.png")),
+            );
+        }
+    }
+}
+
+#[test]
+fn overview_window_identity_interruption_reconciles_shared_focus_and_native_navigation() {
+    use winit::event::Modifiers;
+    let mut h = overview_controls_host_with_preview();
+    let selected = h
+        .overview_row_windows()
+        .get(1)
+        .expect("second fixture window")
+        .address
+        .tab;
+    h.select_overview_window(1);
+    let chrome = h.chrome.as_ref().expect("chrome").clone();
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), selected)
+        .expect("production close transaction");
+    h.rect = Rect::new(0.0, 0.0, 800.0, 480.0);
+    let mut text = TextRenderer::new();
+    h.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark().with_text_scale(2.0),
+        &ui::presence::PresenceCtx::default(),
+    );
+    let here = h.overview_here_index().expect("current workspace");
+    let tree = h.accessibility().expect("overview accessibility");
+    assert!(
+        tree.children[0].children[here].state.focused,
+        "painting after removal restores the shared workspace focus"
+    );
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    assert!(
+        h.overlay_flags().overview,
+        "the interrupted activation is consumed once"
+    );
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::ArrowRight),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    let next = h
+        .overview_row_windows()
+        .first()
+        .expect("remaining window")
+        .address
+        .tab;
+    assert_eq!(h.overview_window_selection, Some(next));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled
+    ));
+    assert!(!h.overlay_flags().overview);
+    assert_eq!(chrome.borrow().active_tab_id(), Some(next));
+    chrome.borrow_mut().overlays.overview = true;
+    h.force_overview_settled(true);
+    assert_eq!(h.overview_window_selection, None);
+    assert!(!h.overview_window_interrupted);
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert!(!h.overlay_flags().overview);
 }

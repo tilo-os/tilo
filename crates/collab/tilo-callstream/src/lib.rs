@@ -8,27 +8,21 @@
 //!
 //! [`encoder`] (RGBA→access unit), [`decoder`] (access unit→RGBA), [`stream`]
 //! (per-subscriber framing + drop-oldest backpressure + sequence-gap
-//! detection, transport-decoupled), [`throttle`] (damage-aware frame-rate
-//! cap), [`session`] (the throttle+encode→frame / reframe→decode seam
-//! both the compositor and chat drive).
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! detection, transport-decoupled) and [`throttle`] (damage-aware frame-rate
+//! cap).
+//!
+//! Behind features, the compositor's halves of the stack: `surface_decoder`
+//! (`surface-decoder`: every wire codec, RGBA or P010, with the sender's
+//! colorimetry — what a peer's shared surface decodes through) and
+//! `mp4_recording` (`recording`: the MP4/MOV muxer behind screen recordings).
 
 pub mod decoder;
 pub mod encoder;
-pub mod session;
+#[cfg(feature = "recording")]
+pub mod mp4_recording;
 pub mod stream;
+#[cfg(feature = "surface-decoder")]
+pub mod surface_decoder;
 pub mod throttle;
 
 pub use decoder::{
@@ -38,7 +32,6 @@ pub use decoder::{
 pub use encoder::{EncodeError, VideoEncoder};
 pub use media::StreamCodec;
 pub use media::realtime::{CodecCapabilities, local_capabilities, negotiate};
-pub use session::{VideoStreamReceiver, VideoStreamSender};
 pub use stream::{
     FrameError, MAX_BUFFERED_STREAM_LEN, MAX_ENCODED_FRAME_LEN, PeerId, ReceiverEvent,
     SurfaceFrame, SurfaceId, SurfaceStreamReceiver, SurfaceStreamSender,

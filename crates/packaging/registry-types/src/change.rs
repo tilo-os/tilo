@@ -2,7 +2,9 @@
 //! `/entries` to add, update, or delete their entry.
 //!
 //! The publisher signs
-//! `blake3(ENTRY_DOMAIN || postcard(change_signing_payload))`
+//! `blake3(domain || postcard(change_signing_payload))`, the domain
+//! being the entry kind's (`ENTRY_DOMAIN` for apps, `BOT_ENTRY_DOMAIN` for
+//! bots),
 //! where `change_signing_payload = (action, entry_signing_payload)`.
 //! The registry server then verifies against the pubkey the
 //! publisher-allowlist assigns to the entry (see
@@ -17,7 +19,7 @@
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{ENTRY_DOMAIN, RegistryEntry};
+use crate::entry::RegistryEntry;
 
 /// What a change request asks the registry to do with an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +114,7 @@ pub fn change_signing_message(action: EntryAction, entry: &RegistryEntry) -> [u8
     };
     let body = postcard::to_stdvec(&payload).expect("postcard encode change payload");
     let mut hasher = blake3::Hasher::new();
-    hasher.update(ENTRY_DOMAIN);
+    hasher.update(entry.kind.signing_domain());
     hasher.update(&body);
     *hasher.finalize().as_bytes()
 }
@@ -139,13 +141,14 @@ pub fn sign_change_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::{RegistryVersion, sign_entry};
+    use crate::entry::{EntryKind, RegistryVersion, TappArtifact, VersionArtifact, sign_entry};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: EntryKind::App,
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
             tagline: "Edit together".into(),
@@ -160,17 +163,20 @@ mod tests {
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 1024,
                 released_at_unix: 100,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: crate::entry::RegistryTarget {
-                    platform: crate::entry::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                },
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                    tapp_root_hash_hex: "cd".repeat(32),
+                    tapp_size_bytes: 1024,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: crate::entry::RegistryTarget {
+                        platform: crate::entry::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),

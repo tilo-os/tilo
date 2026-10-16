@@ -1,4 +1,5 @@
-//! Heap bytes the current thread holds, for tests that pin what a document keeps in memory.
+//! Heap bytes the current thread holds and allocates, for tests that pin what a document keeps
+//! in memory or what a hot path costs.
 //!
 //! Install [`ThreadCounting`] as the test binary's `#[global_allocator]` and read [`held`]
 //! around the code under test. Counted per thread, so tests running in parallel on other threads
@@ -13,12 +14,17 @@ pub struct ThreadCounting;
 
 std::thread_local! {
     static LIVE: Cell<isize> = const { Cell::new(0) };
+    static ALLOCATED: Cell<usize> = const { Cell::new(0) };
 }
 
 fn add(bytes: usize) {
     let delta = isize::try_from(bytes).unwrap_or(isize::MAX);
     // A thread being torn down has no counter left; nothing is measured there.
     let _ = LIVE.try_with(|l| l.set(l.get().wrapping_add(delta)));
+}
+
+fn count(bytes: usize) {
+    let _ = ALLOCATED.try_with(|a| a.set(a.get().saturating_add(bytes)));
 }
 
 fn sub(bytes: usize) {
@@ -31,12 +37,14 @@ fn sub(bytes: usize) {
 unsafe impl GlobalAlloc for ThreadCounting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         add(layout.size());
+        count(layout.size());
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         add(layout.size());
+        count(layout.size());
         // SAFETY: as for `alloc`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -50,6 +58,8 @@ unsafe impl GlobalAlloc for ThreadCounting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         sub(layout.size());
         add(new_size);
+        // Only growth is newly allocated; the live figure moves either way.
+        count(new_size.saturating_sub(layout.size()));
         // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -70,6 +80,23 @@ pub fn held_by<T>(build: impl FnOnce() -> T) -> isize {
     let before = held();
     let value = build();
     let bytes = held().wrapping_sub(before);
+    drop(value);
+    bytes
+}
+
+/// Bytes allocated on this thread since it started, freed or not (only meaningful with
+/// [`ThreadCounting`] installed). A reallocation counts only its growth.
+#[must_use]
+pub fn allocated() -> usize {
+    ALLOCATED.with(Cell::get)
+}
+
+/// Bytes `run` allocates on this thread, including what it frees again before returning: the
+/// cost of running it, where [`held_by`] is what its result keeps.
+pub fn allocated_by<T>(run: impl FnOnce() -> T) -> usize {
+    let before = allocated();
+    let value = run();
+    let bytes = allocated().saturating_sub(before);
     drop(value);
     bytes
 }

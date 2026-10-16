@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use collab_types::{FilePermission, FileRecordId};
+use fs_protocol::{FilePermission, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -17,6 +17,7 @@ use crate::clock::unix_now_ms;
 use crate::share_link::{
     FILE_SHARE_LINK_V2_PREFIX, FileShareLinkV2, MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES,
 };
+use tilo_lock::MutexRecover as _;
 
 pub const RECORD_SUBSCRIPTION_STORE_VERSION: u16 = 1;
 pub const MAX_RECORD_SUBSCRIPTIONS: usize = 4_096;
@@ -142,11 +143,15 @@ impl RecordSubscriptionStore {
         let state = match std::fs::metadata(&path) {
             Ok(metadata) => {
                 validate_owner_only_permissions(&metadata)?;
-                if metadata.len() > MAX_RECORD_SUBSCRIPTION_FILE_BYTES {
-                    return Err(RecordSubscriptionStoreError::StateTooLarge);
+                let too_large = RecordSubscriptionStoreError::StateTooLarge;
+                match tilo_files::native::bounded::read_or(
+                    &path,
+                    MAX_RECORD_SUBSCRIPTION_FILE_BYTES,
+                    too_large,
+                )? {
+                    Some(bytes) => decode_document(&bytes, now_ms)?,
+                    None => BTreeMap::new(),
                 }
-                let bytes = std::fs::read(&path)?;
-                decode_document(&bytes, now_ms)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.into()),
@@ -162,10 +167,7 @@ impl RecordSubscriptionStore {
     }
 
     pub fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.state.lock_recover().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -174,16 +176,14 @@ impl RecordSubscriptionStore {
 
     pub fn get(&self, key: RecordSubscriptionKey) -> Option<RecordSubscription> {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .map(|stored| stored.subscription.clone())
     }
 
     pub fn subscriptions(&self) -> Vec<RecordSubscription> {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .values()
             .map(|stored| stored.subscription.clone())
             .collect()
@@ -226,10 +226,7 @@ impl RecordSubscriptionStore {
             workspace_id: link.invite.workspace_id,
             record_id: link.invite.record_id,
         };
-        let mut current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.state.lock_recover();
         if let Some(existing) = current.get(&key) {
             return if existing.uri == uri {
                 Ok(false)
@@ -300,10 +297,7 @@ impl RecordSubscriptionStore {
         key: RecordSubscriptionKey,
         update: impl FnOnce(&mut RecordSubscription),
     ) -> Result<(), RecordSubscriptionStoreError> {
-        let mut current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.state.lock_recover();
         if !current.contains_key(&key) {
             return Err(RecordSubscriptionStoreError::UnknownSubscription(key));
         }
@@ -345,7 +339,7 @@ impl RecordSubscriptionStore {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -451,7 +445,7 @@ pub enum RecordSubscriptionStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{FileInviteSpec, FileInviteSubject, mint_bearer_file_invite};
+    use fs_protocol::{FileInviteSpec, FileInviteSubject, mint_bearer_file_invite};
     use rand::{SeedableRng, rngs::StdRng};
 
     const NOW: u64 = 50_000;
@@ -539,7 +533,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let malformed = temp.path().join("malformed.json");
-            atomic_file::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
+            tilo_files::native::atomic::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
             assert!(matches!(
                 RecordSubscriptionStore::open_at(&malformed, NOW),
                 Err(RecordSubscriptionStoreError::MalformedState)
@@ -575,8 +569,12 @@ mod tests {
             document
                 .subscriptions
                 .push(document.subscriptions[0].clone());
-            atomic_file::write_with_mode(&path, &serde_json::to_vec(&document).unwrap(), 0o600)
-                .unwrap();
+            tilo_files::native::atomic::write_with_mode(
+                &path,
+                &serde_json::to_vec(&document).unwrap(),
+                0o600,
+            )
+            .unwrap();
             assert!(matches!(
                 RecordSubscriptionStore::open_at(&path, NOW),
                 Err(RecordSubscriptionStoreError::DuplicateCollision(_))

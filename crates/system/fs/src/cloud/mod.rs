@@ -38,4 +38,4 @@ pub mod service;
 pub mod volume;
 
 pub use service::{CloudService, InProcessLauncher, Launcher, ProcessLauncher, ServiceConfig};
-pub use volume::{CloudVolume, Health, VolumeConfig};
+pub use volume::{CloudVolume, VolumeConfig};

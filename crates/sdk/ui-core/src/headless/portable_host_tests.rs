@@ -14,9 +14,11 @@ fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<us
         .enumerate()
         .filter_map(|(position, tag)| {
             let found = (*tag == vello_encoding::DrawTag::COLOR
-                && encoding.draw_data[data_offset] == expected)
-                .then_some(position);
-            data_offset += usize::try_from(tag.info_size()).expect("draw info size fits usize");
+                && encoding.draw_data.get(data_offset) == Some(&expected))
+            .then_some(position);
+            // The scene data a tag carries (the shader's `scene_offset`), which
+            // differs from its info size for images and blurred rects.
+            data_offset += usize::try_from((tag.0 >> 2) & 0x07).expect("draw data size fits usize");
             found
         })
         .collect()
@@ -33,12 +35,7 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
     )
 }
 
-fn move_to(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use crate::synthetic_input::cursor_moved;
 
 fn focused(frame: &FrameHarness, name: &str) -> bool {
     frame.access_node_named(name, None).unwrap().state.focused
@@ -46,14 +43,14 @@ fn focused(frame: &FrameHarness, name: &str) -> bool {
 
 fn target_and_other() -> Column {
     Column::new()
-        .push(Box::new(Button::new("target", "Target", None)))
-        .push(Box::new(Button::new("other", "Other", None)))
+        .push(Box::new(Button::new("target", "Target")))
+        .push(Box::new(Button::new("other", "Other")))
 }
 
 fn behind_background(content: impl Widget + 'static) -> FrameHarness {
     frame(Box::new(
         Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(Button::new("background", "Background")))
             .push(Box::new(content)),
     ))
 }
@@ -66,9 +63,10 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .push(Box::new(
             crate::widget::Dropdown::new(vec!["First".into(), "Second".into()], "choice").open(),
         ))
-        .push(Box::new(
-            Container::new().with_fill(blocker).with_size(240.0, 80.0),
-        ));
+        .push(Box::new(Blocker {
+            color: blocker,
+            rect: Rect::ZERO,
+        }));
     let frame = frame(Box::new(root));
     let scene = frame.frame_output().scene;
 
@@ -76,16 +74,67 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .into_iter()
         .next()
         .expect("the later sibling paints its fixture color");
-    // The open list paints the panel ground (HIG §9.5), not the raised field.
-    let overlay_position = encoded_color_positions(scene, crate::chrome::panel_ground(&theme))
+    // The open list is the floating material (HIG §9.2): the panel ground,
+    // opaque or as the tint over a blurred backdrop.
+    let ground = crate::chrome::panel_ground(&theme);
+    let tint = ground.with_alpha(theme.tokens.colors.surfaces.material_opacity);
+    let overlay_position = encoded_color_positions(scene, ground)
         .into_iter()
-        .rfind(|position| *position > blocker_position)
-        .expect("the real open dropdown paints its raised menu after the later sibling");
+        .chain(encoded_color_positions(scene, tint))
+        .filter(|position| *position > blocker_position)
+        .max()
+        .expect("the real open dropdown paints its menu after the later sibling");
 
     assert!(
         overlay_position > blocker_position,
         "overlay paint must occupy the top layer"
     );
+}
+
+/// A later sibling that paints one fixture colour over its rect.
+struct Blocker {
+    color: vello::peniko::Color,
+    rect: Rect,
+}
+
+impl Widget for Blocker {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let style = taffy::Style {
+            size: taffy::Size::from_lengths(240.0_f32, 80.0_f32),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: vello::kurbo::Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            self.color,
+            None,
+            &self.rect,
+        );
+    }
+    fn name(&self) -> &'static str {
+        "Blocker"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 struct OverlayProbe {
@@ -94,7 +143,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    crate::testing::inert_widget_methods!(draw, name = "overlay-probe");
+    crate::testing::inert_widget_methods!(name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -103,10 +152,7 @@ impl Widget for OverlayProbe {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(100.0),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(100.0, 40.0),
                 ..Default::default()
             })
             .unwrap();
@@ -114,15 +160,7 @@ impl Widget for OverlayProbe {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::rect_geometry!();
 
     fn draw_overlay(
         &mut self,
@@ -133,10 +171,6 @@ impl Widget for OverlayProbe {
         _: &PresenceCtx,
     ) {
         self.draws.set(self.draws.get() + 1);
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -197,19 +231,13 @@ struct Scheduled {
     updates: Rc<Cell<usize>>,
 }
 impl Widget for Scheduled {
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "scheduled"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "scheduled");
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inspections.set(self.inspections.get() + 1);
         None
     }
 
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
     }
@@ -259,13 +287,13 @@ fn portable_review_clean_animation_and_delayed_wake_drive_frames() {
 #[test]
 fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
     let controls = Column::new()
-        .push(Box::new(Button::new("first", "First", None)))
-        .push(Box::new(Button::new("last", "Last", None)));
+        .push(Box::new(Button::new("first", "First")))
+        .push(Box::new(Button::new("last", "Last")));
     let modal = Container::new()
         .with_focus_trap()
         .with_child(Box::new(controls));
     let root = Column::new()
-        .push(Box::new(Button::new("background", "Background", None)))
+        .push(Box::new(Button::new("background", "Background")))
         .push(Box::new(modal));
     let mut frame = frame(Box::new(root));
     assert_eq!(
@@ -375,7 +403,7 @@ impl Widget for Gate {
 fn portable_review_modal_enter_leave_restores_semantic_focus() {
     let open = Rc::new(Cell::new(false));
     let gate = Gate {
-        content: Column::new().push(Box::new(Button::new("inside", "Inside", None))),
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
         delivered: Rc::default(),
@@ -392,11 +420,73 @@ fn portable_review_modal_enter_leave_restores_semantic_focus() {
     frame.relayout();
     assert!(focused(&frame, "background"));
 }
+
+/// Counts every time the focus-order walk asks whether it takes focus.
+struct FocusAsked {
+    asked: Rc<Cell<usize>>,
+}
+impl Widget for FocusAsked {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "focus-asked");
+    fn is_focusable(&self) -> bool {
+        self.asked.set(self.asked.get() + 1);
+        false
+    }
+}
+
+#[test]
+fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
+    let asked = Rc::new(Cell::new(0));
+    let open = Rc::new(Cell::new(false));
+    let gate = Gate {
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
+        open: open.clone(),
+        traps: true,
+        delivered: Rc::default(),
+    };
+    let mut frame = frame(Box::new(
+        Column::new()
+            .push(Box::new(Button::new("background", "Background")))
+            .push(Box::new(FocusAsked {
+                asked: asked.clone(),
+            }))
+            .push(Box::new(gate)),
+    ));
+    frame
+        .perform_named("background", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame.relayout();
+    asked.set(0);
+    let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+    for _ in 0..5 {
+        frame.relayout();
+        frame.dispatch_to_root(&wheel);
+        frame.relayout();
+    }
+    assert_eq!(
+        asked.get(),
+        0,
+        "untrapped idle and scroll frames walk no focus order, as the live App between rebuilds"
+    );
+    // The gate opens without a structure change, so no rebuild announces it.
+    open.set(true);
+    frame.relayout();
+    assert!(
+        focused(&frame, "inside"),
+        "a trap engages the frame it appears"
+    );
+    assert!(!focused(&frame, "background"));
+    open.set(false);
+    frame.relayout();
+    assert!(
+        focused(&frame, "background"),
+        "closing the trap restores the focus it saved"
+    );
+}
 #[test]
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
     let delivered = Rc::new(Cell::new(0));
     let gate = Gate {
-        content: Column::new().push(Box::new(Button::new("inside", "Inside", None))),
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: Rc::new(Cell::new(true)),
         traps: false,
         delivered: delivered.clone(),
@@ -515,7 +605,7 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         "inert point stays inside the 400x240 frame"
     );
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     let schedule = frame.frame_schedule();
     assert!(
         frame.last_send_skipped_relayout(),
@@ -525,18 +615,18 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         schedule.next_wake_deadline.map(|w| w <= Instant::now()),
         frame.redraw_sources()
     );
-    frame.send_host_event(&move_to(filler_point.0 + 8.0, filler_point.1 + 3.0));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 8.0, filler_point.1 + 3.0));
     assert!(
         frame.last_send_skipped_relayout(),
         "repeated inert motion stays skipped"
     );
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button is paint and produces a frame"
     );
-    frame.send_host_event(&move_to(button.center().x + 1.0, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x + 1.0, button.center().y));
     assert!(
         frame.last_send_skipped_relayout(),
         "motion inside the hovered button changes nothing"
@@ -558,12 +648,12 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     });
     assert!(!frame.last_send_skipped_relayout());
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     assert!(
         !frame.last_send_skipped_relayout(),
         "leaving the button repaints its resting state"
     );
-    frame.send_host_event(&move_to(filler_point.0 + 2.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 2.0, filler_point.1));
     assert!(frame.last_send_skipped_relayout());
 }
 
@@ -578,7 +668,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let filler = (button.center().x, other.max_y() + 40.0);
     let ids = frame.layout_node_ids();
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button paints"
@@ -591,7 +681,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let frames = frame.relayout_frames();
 
     for step in 0..3 {
-        frame.send_host_event(&move_to(
+        frame.send_host_event(&cursor_moved(
             button.center().x + 1.0 + f64::from(step),
             button.center().y,
         ));
@@ -601,7 +691,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         frames,
         "motion inside the hovered button runs no layout pass"
     );
-    frame.send_host_event(&move_to(filler.0, filler.1));
+    frame.send_host_event(&cursor_moved(filler.0, filler.1));
     assert_eq!(
         frame.relayout_frames(),
         frames + 1,
@@ -612,7 +702,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         "the leave repaints the retained tree"
     );
     for step in 0..3 {
-        frame.send_host_event(&move_to(filler.0 + f64::from(step), filler.1));
+        frame.send_host_event(&cursor_moved(filler.0 + f64::from(step), filler.1));
     }
     assert_eq!(
         frame.relayout_frames(),
@@ -672,49 +762,56 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     );
     frame.verify_retained_geometry().unwrap();
 
-    // Splitting the block is a structural change: the line count grows, so
-    // the tree is rebuilt (on the press frame; the release frame that follows
-    // retains the new tree). The block stack is one measured leaf, so the
-    // tree does not grow with the document.
+    // Splitting the block adds a line but no widget: the block stack is one
+    // measured leaf, so the editor restacks its lines in a relayout, and
+    // the composed tree (its node ids, focus) survives. The retained
+    // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
     frame.key("Enter");
+    assert_eq!(
+        frame.rebuilt_frames(),
+        rebuilt_before,
+        "inserting a block keeps the composition"
+    );
     assert!(
-        frame.rebuilt_frames() > rebuilt_before,
-        "inserting a block rebuilds the composition"
+        frame.last_relayout().measured,
+        "inserting a block re-solves sizes: {:?}",
+        frame.last_relayout()
     );
     assert_eq!(
-        frame.layout_node_ids().len(),
-        ids.len(),
-        "a split adds no layout node"
+        frame.layout_node_ids(),
+        ids,
+        "a split adds no layout node and keeps the others"
     );
+    assert_eq!(frame.focused(), focused, "focus survives a split");
     frame.verify_retained_geometry().unwrap();
 }
 
+/// A resize re-solves the retained tree against the new size; only a widget
+/// that composes from its allocation is composed again. Either way the result
+/// is what a fresh composition at that size gives.
 #[test]
-fn viewport_change_rebuilds_and_matches_a_fresh_composition() {
+fn viewport_change_re_solves_and_matches_a_fresh_composition() {
     let mut frame = frame(Box::new(target_and_other()));
     let ids = frame.layout_node_ids();
     frame.resize((360, 200)).unwrap();
     assert!(
-        frame.last_relayout().rebuilt,
-        "a viewport change recomposes"
+        !frame.last_relayout().rebuilt && frame.last_relayout().measured,
+        "a viewport change re-solves the retained tree"
     );
-    // Node ids restart on a fresh tree, so identical ids do not prove
-    // retention on their own; the stats do.
-    assert_eq!(frame.layout_node_ids().len(), ids.len());
-    let rebuilt = frame.layout_node_ids();
+    assert_eq!(frame.layout_node_ids(), ids, "the tree was kept");
+    frame.verify_retained_geometry().unwrap();
+
+    frame.set_full_relayout(Some(true));
     frame.relayout();
-    assert!(
-        !frame.last_relayout().rebuilt,
-        "the following frame retains the new tree"
-    );
-    assert_eq!(frame.layout_node_ids(), rebuilt);
+    frame.set_full_relayout(None);
+    assert!(frame.last_relayout().rebuilt);
     frame.verify_retained_geometry().unwrap();
 }
 
 #[test]
 fn full_relayout_valve_forces_the_rebuild_path() {
-    let root = Column::new().push(Box::new(Button::new("target", "Target", None)));
+    let root = Column::new().push(Box::new(Button::new("target", "Target")));
     let mut frame = frame(Box::new(root));
     frame.relayout();
     assert!(!frame.last_relayout().rebuilt, "retained by default");
@@ -735,4 +832,119 @@ fn full_relayout_valve_forces_the_rebuild_path() {
         !frame.last_relayout().rebuilt,
         "clearing the override restores retention"
     );
+}
+
+#[test]
+fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focus() {
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let root = Column::new().push(Box::new(
+        crate::widget::TextInput::from_state(&value).with_id("raw-input"),
+    ));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 360),
+    )
+    .unwrap();
+    let rect = *frame
+        .targets()
+        .get("raw-input")
+        .expect("retained input target");
+    assert!(rect.width() > 0.0 && rect.height() > 0.0);
+    let center = rect.center();
+    let modifiers = winit::event::Modifiers::default();
+    let frames = frame.relayout_frames();
+    let heads = frame.state.doc.get_heads();
+    let focused = frame.focused;
+    frame.dispatch_to_root_outcome(&cursor_moved(center.x, center.y), &modifiers);
+    let result = frame.dispatch_to_root_outcome(&crate::synthetic_input::mouse_press(), &modifiers);
+    assert!(
+        result.handled,
+        "wrapped input receives the actual pointer press"
+    );
+    let input_node = result.focus_target.expect("input requests focus");
+    assert!(frame.node_map.contains_key(&input_node));
+    assert_ne!(
+        input_node, frame.child_node,
+        "focus belongs to the retained input"
+    );
+    assert_eq!(
+        frame.focused, focused,
+        "raw dispatch reports focus without host routing"
+    );
+    assert_eq!(
+        frame.relayout_frames(),
+        frames,
+        "raw dispatch runs no frame"
+    );
+    assert_eq!(frame.state.doc.get_heads(), heads);
+    assert!(value.get().is_empty());
+}
+
+#[test]
+fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
+    use crate::widget::{ModalDialog, TextInput};
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let dialog = ModalDialog::new(
+        "Add item",
+        Column::new()
+            .push(Box::new(
+                TextInput::from_state(&value)
+                    .with_id("dialog-input")
+                    .with_accessible_name("Item name"),
+            ))
+            .push(Box::new(Button::new("dialog-last", "Last"))),
+    );
+    let root = Column::new()
+        .push(Box::new(Button::new("background", "Background")))
+        .push(Box::new(dialog));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 400),
+    )
+    .unwrap();
+    frame
+        .perform_named("background", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(true))
+        .unwrap();
+    assert_eq!(
+        frame.focused_access_node().unwrap().name.as_deref(),
+        Some("Item name")
+    );
+    frame.type_text("Harbour");
+    assert_eq!(value.get(), "Harbour");
+    for _ in 0..6 {
+        frame.tab(false);
+        assert!(matches!(
+            frame.focused_access_node().unwrap().name.as_deref(),
+            Some("Item name" | "Last")
+        ));
+    }
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(false))
+        .unwrap();
+    assert!(focused(&frame, "background"));
 }

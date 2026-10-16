@@ -73,7 +73,15 @@ endpoint id and local addresses on the current network. Set
 ## Wire protocol
 
 1. Iroh QUIC (NAT hole-punched, node id is stable).
-2. `tilo-relay/1` or `tilo-relay/3` (private actions and agent reads) ALPN.
+2. `tilo-relay/1`, `tilo-relay/3` (private actions and agent reads),
+   `tilo-relay/4` (device-signed actions), `tilo-relay/5` (`/4` whose
+   zero-signature deltas go without the signature), `tilo-relay/6` (`/5`
+   whose presence arrives batched and slot-coded) or `tilo-relay/7` (`/6`
+   whose live deltas arrive coded against the previous one from the same
+   author) ALPN. Every protocol
+   gets its presence coalesced and paced per connection
+   (`src/presence_mailbox.rs`), and presence that may go early rides in the
+   same write as a delta.
 3. Three-message auth handshake — mutual proof-of-possession of certified
    device signing keys. Home hosts require the same user root; provider hosts
    authenticate their pinned host identity and authorize tenant devices with
@@ -91,6 +99,69 @@ endpoint id and local addresses on the current network. Set
   after the replay reaches the wire. Retained bootstrap tails
   are compacted by periodic full checkpoints; a permanently offline app that
   never supplies a checkpoint can still accumulate a tail.
+
+- Who-is-here lines (`/peer/v1/here`, feature `web`) live in memory only, per
+  workspace and device, for five minutes after a person's last post, and
+  for at most 4096 people per workspace. Model prose for them is off unless
+  `TILO_RELAY_SUMMARY_*` configures a provider, and it is capped per person,
+  per call and per hour. The variables are in
+  `crates/hosting/tilo-room-service/README.md`.
+
+## Cost model
+
+What a relay costs per active collaborator is measured, not estimated:
+
+- **Egress counters.** The daemon counts every byte it writes to a peer
+  session (`bytes_sent`), the live fan-out part of it (`bytes_sent_live`),
+  both per room, and each connected session's total
+  (`Metrics::session_egress`). `tilo-relay-admin status` prints them.
+  They count framed bytes before QUIC; the load bench adds what the iroh
+  endpoint actually put on UDP.
+- **Presence bytes** (`peer::state_tests::presence_cost`): a controlled
+  60-move ingress schedule exercises production presence routing and writing
+  on both `/5` and `/6`. The actual accepted bytes must cost at most 70 bytes
+  per delivered presence on `/6`, and under a third of `/5`; both streams
+  must decode to identical attributed final states and event order. The
+  network scenario in `tests/presence_coalescing.rs` separately covers protocol
+  negotiation and delivery without using its scheduler-dependent byte mix
+  as a budget gate.
+- **Bytes per keystroke** (`tests/hosting_cost.rs`, per change): one
+  one-character edit on the production path, frame by frame, with byte
+  budgets, and the live egress counter checked against the frames the
+  subscribers read.
+- **Load bench** (`examples/relay_load`, nightly in
+  `perf-scheduled.yml`): 100 collaborators in rooms of four, each typing 30
+  characters, then pointing for four seconds at 30 Hz (which each client's
+  session writer paces to the relay's 20 Hz before it is sent), then idle, every
+  minute, against one relay process. It records CPU-seconds, resident MiB and
+  egress bytes per collaborator-hour; packets per collaborator-hour, from the
+  collaborators' own QUIC connection counters (datagrams they sent and of
+  those the ones carrying data, datagrams the relay sent and of those the
+  ones carrying only acknowledgements), so the same bytes in more packets
+  fail a budget too; fan-out latency, and the workspace
+  store's fsyncs per committed edit (`store::fsyncs`; the durability
+  contract is in `src/persistence.rs`).
+  `tools/perf/adapters.py hosting-load` prices each minute with
+  `tools/perf/prices.toml` (provider, VM price and date stated there) into $
+  per collaborator-hour and per active user-month (88 h);
+  `tools/perf/kpi-budgets.toml` holds the ceilings.
+- **Timed keystroke writes** (`examples/keystroke_writes`, nightly in the
+  same workflow's `hosting` job): the original 21-keystroke network scenario,
+  with one warm-up and 30 ms between edits, asserts a median of one write
+  for the delta and its presence. Run with
+  `cargo run --locked -p tilo-relay --example keystroke_writes`.
+  This scheduling-sensitive budget fails the scheduled job directly;
+  the normal gate tests exact one- and two-write schedules at the production
+  writer and separately checks complete network delivery without a timed budget.
+
+```bash
+cargo run --release -p tilo-relay --example relay_load -- \
+  --collaborators 100 --minutes 10 --out target/hosting
+python3 tools/perf/record.py env --profile release --renderer none \
+  --virtualization none --runner local > target/hosting/env.json
+python3 tools/perf/adapters.py hosting-load --env-json target/hosting/env.json \
+  target/hosting/hosting-load.json
+```
 
 See `crates/hosting/tilo-relay/src/lib.rs` for the module overview
 and `crates/hosting/tilo-relay/tests/` for end-to-end examples of

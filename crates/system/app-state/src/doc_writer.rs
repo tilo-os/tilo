@@ -23,7 +23,8 @@ use durable_store::{
 };
 
 use crate::{
-    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical, validate_canonical_schema_of,
+    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical_with, load_hint,
+    validate_canonical_schema_of,
 };
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
@@ -268,7 +269,16 @@ impl DocOwner {
         let Some(stored) = self.store.read(&self.key)? else {
             return Ok(None);
         };
-        let (doc, repair) = decode_canonical(&stored.bytes, recover_partial, &self.label)?;
+        let known = self
+            .store
+            .read_hint(&self.key)
+            .and_then(|hint| load_hint::hashes_for(&hint, &stored.bytes));
+        let (doc, repair) = decode_canonical_with(
+            &stored.bytes,
+            recover_partial,
+            &self.label,
+            known.as_deref(),
+        )?;
         Ok(Some(StoredLoad {
             doc,
             source: stored.bytes,
@@ -308,7 +318,10 @@ impl DocOwner {
                 WriteOp::Replace(bytes),
                 writer.then(|| self.actor.to_bytes()),
             )?;
-            match self.store.flush(Some(&self.key)) {
+            // Never waits on the disk: this runs on the thread that opens the
+            // record. The store commits on its own thread, and the pending
+            // write below is confirmed through `durability`.
+            match self.store.flush_without_waiting(&self.key) {
                 Ok(()) | Err(SeamError::Pending(_)) => {}
                 Err(error) => return Err(error.into()),
             }
@@ -343,7 +356,12 @@ impl DocOwner {
                 }
             }
         } else {
-            let durable = match self.store.flush(Some(&self.key)) {
+            // Bytes that were only read need their file and ancestors synced
+            // before they count as durable. That is the store's thread's work,
+            // not the opener's: `Pending` leaves the document usable at once and
+            // the writer confirms it (`confirmed_seed`) when the store reports
+            // it settled.
+            let durable = match self.store.flush_without_waiting(&self.key) {
                 Ok(()) => Some(heads.clone()),
                 // Read, but its host has not committed it yet (a peer's change
                 // stored for this record a moment ago): it is the document,
@@ -498,11 +516,17 @@ impl DocWriter {
         if self.owner.is_none() || self.progress.get_mut().error.is_some() {
             return;
         }
+        if let Err(error) = self.request_changed(doc) {
+            self.refuse(&error);
+        }
+    }
+
+    fn request_changed(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         let heads = doc.get_heads();
         if heads == self.sent {
-            return;
+            return Ok(());
         }
-        let result = if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
+        if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
             self.send_full(doc, heads)
         } else {
             let bytes = doc.save_after(&self.sent);
@@ -511,10 +535,32 @@ impl DocWriter {
                 self.appended = self.appended.saturating_add(len);
                 self.appends = self.appends.saturating_add(1);
             })
-        };
-        if let Err(error) = result {
-            self.refuse(&error);
         }
+    }
+
+    /// Offer current changes without waiting for host acknowledgement. An
+    /// accepted replacement may still have a sticky durability failure until
+    /// its own revision is acknowledged; that is not a submission refusal.
+    ///
+    /// # Errors
+    /// Returns a disabled writer or a synchronous store submission refusal.
+    pub fn offer(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
+        self.settle();
+        if self.owner.is_none() {
+            return Err(self
+                .last_error()
+                .unwrap_or_else(|| "writer disabled".to_owned()));
+        }
+        let result = if self.last_error().is_some() {
+            let heads = doc.get_heads();
+            self.send_full(doc, heads)
+        } else {
+            self.request_changed(doc)
+        };
+        result.map_err(|error| {
+            self.refuse(&error);
+            error.to_string()
+        })
     }
 
     /// Submit the full current document regardless of what was submitted
@@ -551,7 +597,17 @@ impl DocWriter {
     ) -> Result<(), StoreError> {
         let bytes = doc.save();
         let len = bytes.len();
+        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.submit(WriteOp::Replace(bytes), heads)?;
+        // Only the primary writer keeps one: shared writers' hints would race
+        // for one file.
+        if let (Some(owner), Some(hint)) = (&self.owner, hint)
+            && owner.is_primary()
+            && let Err(error) = owner.store.write_hint(&owner.key, &hint)
+        {
+            // Only the next open's speed depends on it.
+            tracing::debug!(document = %owner.label.display(), %error, "load hint not kept");
+        }
         self.base = len;
         self.appended = 0;
         self.full_writes = self.full_writes.saturating_add(1);
@@ -577,12 +633,31 @@ impl DocWriter {
         Ok(())
     }
 
+    /// The heads of the document as it was accepted, once the store has made
+    /// those bytes durable in the background; `None` before, or when the
+    /// writer has moved on from them.
+    fn confirmed_seed(&self, progress: &Progress) -> Option<Vec<ChangeHash>> {
+        let owner = self.owner.as_ref()?;
+        if progress.durable.is_some() || !progress.inflight.is_empty() {
+            return None;
+        }
+        let accepted = owner.accepted.borrow();
+        let accepted = accepted.as_ref()?;
+        (accepted.durable.is_none()
+            && accepted.pending.is_none()
+            && owner.store.is_settled(&owner.key))
+        .then(|| accepted.heads.clone())
+    }
+
     /// Fold resolved writes into the durable heads and sticky error.
     fn settle(&self) {
         let Some(owner) = &self.owner else {
             return;
         };
         let mut progress = self.progress.borrow_mut();
+        if let Some(heads) = self.confirmed_seed(&progress) {
+            progress.durable = Some(heads);
+        }
         while let Some(front) = progress.inflight.front() {
             match owner.store.durability(&owner.key, front.revision) {
                 Durability::Pending => break,
@@ -611,7 +686,10 @@ impl DocWriter {
     pub fn durability_snapshot(&self) -> DurabilitySnapshot {
         let progress = self.progress.borrow();
         let mut snapshot = DurabilitySnapshot {
-            durable_heads: progress.durable.clone(),
+            durable_heads: progress
+                .durable
+                .clone()
+                .or_else(|| self.confirmed_seed(&progress)),
             error: progress.error.clone(),
         };
         let Some(owner) = &self.owner else {
@@ -778,6 +856,58 @@ mod tests {
             let loaded = owner.load().unwrap().expect("stored document");
             owner.accept(loaded).unwrap()
         }
+    }
+
+    /// Opening a record that is already stored must never wait on the disk:
+    /// it runs on the compositor's thread, where a directory sync that blocks
+    /// on a busy journal stops every window. The store's own thread makes the
+    /// read bytes durable, and the writer learns when it has.
+    #[test]
+    fn accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("profile");
+        let key = StorageKey::record("so.tilo.test", "room", "opened");
+        {
+            let store: Rc<dyn DurableStore> =
+                Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+            let mut doc = owner.new_document().unwrap();
+            let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, "stored").unwrap();
+            let writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            writer.try_flush().unwrap();
+        }
+
+        let fs = Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+        let store: Rc<dyn DurableStore> = fs.clone();
+        let opener = std::thread::current().id();
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key).unwrap());
+        let loaded = owner.load().unwrap().expect("stored document");
+        let mut doc = owner.accept(loaded).unwrap();
+        let writer = DocWriter::try_start(&owner).unwrap();
+        assert_eq!(
+            text(&doc, "body"),
+            "stored",
+            "the document is usable at once"
+        );
+        assert!(
+            !fs.faults().sync_threads.contains(&opener),
+            "opening synced a file or directory on the opening thread"
+        );
+
+        let started = std::time::Instant::now();
+        while writer.durability_snapshot().durable_heads != Some(doc.get_heads()) {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the store never confirmed the opened document durable"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let sync_threads = fs.faults().sync_threads.clone();
+        assert!(
+            !sync_threads.is_empty() && !sync_threads.contains(&opener),
+            "the sync belongs to the store's thread: {sync_threads:?}"
+        );
     }
 
     fn text(doc: &AutoCommit, key: &str) -> String {
@@ -1125,5 +1255,75 @@ mod tests {
             assert!(writer.try_flush().is_err());
             assert_eq!(writer.document_path(), Path::new(""));
         }
+    }
+
+    #[test]
+    fn a_full_save_keeps_a_load_hint_only_a_load_of_those_bytes_takes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Rc<dyn DurableStore> =
+            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+        let key = StorageKey::record("so.tilo.test", "room", "large");
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
+        for i in 0..6_000_u64 {
+            let value = blake3::hash(&i.to_le_bytes()).to_hex().to_string();
+            doc.put(&items, format!("item-{i:05}"), value).unwrap();
+            if i % 50 == 0 {
+                doc.commit();
+            }
+        }
+        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        writer.try_flush().unwrap();
+        let saved = store.read(&key).unwrap().unwrap().bytes;
+        assert!(saved.len() >= load_hint::MIN_HINTED_BYTES);
+        let hashes = doc.committed_document().change_hashes().to_vec();
+        let hint = store.read_hint(&key).expect("a full save keeps a hint");
+        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+        // A later edit is appended after the hinted chunk.
+        doc.put(ROOT, "later", "appended").unwrap();
+        writer.request(&mut doc);
+        writer.try_flush().unwrap();
+        let stored = store.read(&key).unwrap().unwrap().bytes;
+        assert!(stored.len() > saved.len() && stored.starts_with(&saved));
+        drop(writer);
+        let appended = doc.committed_document().change_hashes().to_vec();
+        assert_eq!(appended.len(), hashes.len() + 1);
+        let loaded_hashes = |owner: &DocOwner| {
+            let loaded = owner.load().unwrap().expect("stored document");
+            loaded
+                .document()
+                .committed_document()
+                .change_hashes()
+                .to_vec()
+        };
+        assert_eq!(loaded_hashes(&owner), appended);
+
+        // The load takes the hint as given: two changes listed in swapped
+        // order (heads unchanged) come back swapped, which a rebuild
+        // would never produce.
+        let mut swapped = hashes;
+        swapped.swap(1, 2);
+        store
+            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+            .unwrap();
+        let mut expected = appended.clone();
+        expected.swap(1, 2);
+        assert_eq!(loaded_hashes(&owner), expected);
+
+        // A hint made for other bytes is ignored and every change rebuilt.
+        let mut other = doc.fork();
+        other.put(ROOT, "other", 1).unwrap();
+        let other_saved = other.save();
+        let mut other_swapped = other.committed_document().change_hashes().to_vec();
+        other_swapped.swap(1, 2);
+        store
+            .write_hint(
+                &key,
+                &load_hint::encode(&other_saved, &other_swapped).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(loaded_hashes(&owner), appended);
     }
 }

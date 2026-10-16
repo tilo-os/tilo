@@ -1,18 +1,5 @@
 //! tilo-launcher binary entry.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::Read;
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
@@ -21,9 +8,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
-
-const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
+use launcher::registration_gate::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
+use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {
@@ -41,12 +27,22 @@ fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
 )]
 fn wait_for_shell_registration() -> Result<(), String> {
-    let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
-        return Ok(());
-    };
+    let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
+    let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
     // SAFETY: process startup is single-threaded; remove the internal handoff
     // before any launched app environment can inherit it.
-    unsafe { std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV) };
+    unsafe {
+        std::env::remove_var(LAUNCH_REGISTRATION_STDIN_ENV);
+        std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
+    }
+    if on_stdin {
+        return launcher::registration_gate::wait_on_stdin()
+            .map_err(|error| format!("launch-registration handoff failed: {error}"));
+    }
+    // A host from before the stdin handoff names an inherited descriptor.
+    let Ok(raw_fd) = raw_fd else {
+        return Ok(());
+    };
     let fd = raw_fd
         .parse::<RawFd>()
         .map_err(|_| "invalid launch-registration descriptor".to_string())?;
@@ -71,6 +67,9 @@ enum Cmd {
         /// Path to the package manifest (TOML).
         #[arg(long)]
         manifest: PathBuf,
+        /// Refuse if the actual signed installation differs from this root.
+        #[arg(long)]
+        expected_package_hash: Option<String>,
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
@@ -121,6 +120,8 @@ enum Cmd {
         /// Files and mounted read-only at its fixed projection path.
         #[arg(long)]
         trusted_identities: Option<PathBuf>,
+        #[command(flatten)]
+        action_authority: Box<ActionAuthorityArgs>,
         /// App id the caller launched; must equal the manifest's package id.
         /// Capabilities naming another app are ignored.
         #[arg(long)]
@@ -262,7 +263,7 @@ struct RunHostArgs {
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
-/// [`RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
+/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
 /// sources are always in `0..=255` in practice — a POSIX wait status is
 /// already masked to the low byte, and `RunError`'s codes are small
 /// constants — so the `1` fallback (generic failure) never fires for a real
@@ -272,10 +273,12 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    tilo_startup_metrics::handoff_mark("launcher-start");
     if let Err(error) = wait_for_shell_registration() {
         eprintln!("tilo-launcher: {error}");
         return ExitCode::from(126);
     }
+    tilo_startup_metrics::handoff_mark("shell-registered");
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -288,6 +291,7 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::Run {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -299,6 +303,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             trusted_identities,
+            action_authority,
             app_id,
             identity,
             render_node,
@@ -308,6 +313,7 @@ fn main() -> ExitCode {
             rest,
         } => run_gui_command(RunCliArgs {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -319,6 +325,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             trusted_identities,
+            action_authority: action_authority.action_authority,
             app_id,
             identity,
             render_node,
@@ -369,6 +376,13 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Debug, clap::Args)]
+struct ActionAuthorityArgs {
+    /// Host-staged, app-scoped action authority; mounted read-only.
+    #[arg(long)]
+    action_authority: Option<PathBuf>,
+}
+
 /// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count
 /// against clippy's argument limit — this is argv plumbing, not a sandbox
 /// policy struct (see [`ExecArgs`] below for the same pattern).
@@ -378,6 +392,7 @@ fn main() -> ExitCode {
 )]
 struct RunCliArgs {
     manifest: PathBuf,
+    expected_package_hash: Option<String>,
     payload_root: PathBuf,
     runtime: Option<PathBuf>,
     no_services: bool,
@@ -389,6 +404,7 @@ struct RunCliArgs {
     workspace_id: Option<String>,
     capabilities: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
+    action_authority: Option<PathBuf>,
     app_id: Option<String>,
     identity: Option<PathBuf>,
     render_node: Option<PathBuf>,
@@ -410,6 +426,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         );
     }
     let opts = RunOptions {
+        expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
         runtime_root: args.runtime,
         bwrap_bin: None,
@@ -435,13 +452,57 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
         trusted_identities_host_path: args.trusted_identities,
+        action_authority_host_path: args.action_authority,
         app_id: args.app_id,
         render_node: args.render_node,
         open_document: args.open,
         open_uri: args.open_uri,
     };
-    match run(&args.manifest, &args.payload_root, &opts) {
+    // Held from before the package is verified until the app exits, so an
+    // update meanwhile leaves the build this launch runs alone
+    // (`launcher::lease`).
+    let _payload_held = match launcher::lease::hold_payload(&args.payload_root) {
+        Ok(held) => held,
+        Err(e) => {
+            eprintln!("tilo-launcher: {e}");
+            return exit_code(e.to_exit_code());
+        }
+    };
+    // Joining the app's scope (a round trip to the user manager) and
+    // verifying the package (reading and hashing its files) need nothing
+    // from each other, so they run side by side. The join completes before
+    // anything below starts a process: every process of the launch, the
+    // D-Bus proxies and the sandbox included, starts inside the scope.
+    let manifest = std::thread::scope(|scope| {
+        let joining = opts.app_id.as_deref().map(|app_id| {
+            std::thread::Builder::new()
+                .name("launch-scope".into())
+                .spawn_scoped(scope, move || enter_app_scope(app_id))
+                .map_err(|_| app_id)
+        });
+        let manifest = launch_manifest(&args.manifest, &args.payload_root, &opts);
+        match joining {
+            Some(Ok(handle)) => {
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            // No thread to spare: join here, as before.
+            Some(Err(app_id)) => enter_app_scope(app_id),
+            None => {}
+        }
+        manifest
+    });
+    match manifest.and_then(|manifest| run_manifest(&manifest, &args.payload_root, &opts)) {
         Ok(status) => {
+            // How the app ended, said where its output goes: a signal leaves
+            // no exit code of its own, and is folded into 1 below.
+            if !status.success() {
+                eprintln!(
+                    "tilo-launcher: {} ended: {status}",
+                    opts.app_id.as_deref().unwrap_or("the app")
+                );
+            }
             if let Some(code) = status.code() {
                 exit_code(code)
             } else {
@@ -453,6 +514,18 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
             exit_code(e.to_exit_code())
         }
     }
+}
+
+/// Move this launcher into the app's own systemd user scope before it forks
+/// the sandbox, so the app's memory, OOM handling and lifetime are its own
+/// and never the compositor's (see [`launcher::scope`]). The compositor
+/// always names the app; without a reachable user manager the app still
+/// starts, where the launcher already runs.
+fn enter_app_scope(app_id: &str) {
+    if let Err(error) = launcher::scope::join(app_id, app_id) {
+        eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
+    }
+    tilo_startup_metrics::handoff_mark("scope-joined");
 }
 
 fn admit_share_and_open(
@@ -523,13 +596,13 @@ fn request_received_mount(
     uri: String,
     stream: &mut (impl std::io::Read + std::io::Write),
 ) -> Result<PathBuf, String> {
-    let request = collab_types::RecipientControlRequestV1 {
-        protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-        operation: collab_types::RecipientControlOperationV1::AdmitV2 { uri },
+    let request = fs_protocol::RecipientControlRequestV1 {
+        protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+        operation: fs_protocol::RecipientControlOperationV1::AdmitV2 { uri },
     };
     let request = collab_types::canonical_bytes(&request)
         .map_err(|_| "could not encode received-file request".to_string())?;
-    let framing = collab_types::RECIPIENT_CONTROL_FRAMING;
+    let framing = fs_protocol::RECIPIENT_CONTROL_FRAMING;
     let request = framing
         .encode(&request)
         .map_err(|_| "received-file request exceeds its bound".to_string())?;
@@ -544,15 +617,15 @@ fn request_received_mount(
         }
         Err(_) => return Err("received-file service response was truncated".into()),
     };
-    let response: collab_types::RecipientControlResponseV1 =
+    let response: fs_protocol::RecipientControlResponseV1 =
         collab_types::canonical::from_canonical_bytes(&response)
             .map_err(|_| "received-file service returned an invalid response".to_string())?;
     let status = match response.result {
-        collab_types::RecipientControlResultV1::Admitted { status, .. } => status,
-        collab_types::RecipientControlResultV1::Error { code } => {
+        fs_protocol::RecipientControlResultV1::Admitted { status, .. } => status,
+        fs_protocol::RecipientControlResultV1::Error { code } => {
             return Err(format!("received-file service refused the link ({code:?})"));
         }
-        collab_types::RecipientControlResultV1::Status(_) => {
+        fs_protocol::RecipientControlResultV1::Status(_) => {
             return Err("received-file service returned the wrong response".into());
         }
     };
@@ -608,7 +681,7 @@ fn received_file_capability(
         collab_types::Subject::app("so.tilo.file-explorer"),
         collab_types::Scope::FsPath(path.display().to_string()),
         collab_types::Effect::Grant,
-        collab_types::Verb::Read,
+        collab_types::caps::Access::Read,
     );
     let bytes = serde_json::to_vec(&vec![capability])
         .map_err(|_| "could not encode the received-file capability".to_string())?;
@@ -647,7 +720,9 @@ struct ExecArgs {
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
 fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // Held from the lookup until the app exits, so an update meanwhile
+    // leaves the build this launch runs alone (`launcher::lease`).
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -771,7 +846,8 @@ fn run_installed(
     minimal_libs: bool,
     rest: Vec<String>,
 ) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // As in `exec_installed`.
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -823,6 +899,7 @@ fn run_installed(
         );
     let opts = RunOptions {
         no_services,
+        expected_package_hash: None,
         runtime_root: None,
         bwrap_bin: None,
         sandbox_shim_bin: None,
@@ -841,6 +918,7 @@ fn run_installed(
         identity: IdentitySource::UserStore,
         data_home: None,
         trusted_identities_host_path: None,
+        action_authority_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.
         wayland_socket: None,
@@ -895,13 +973,6 @@ fn init_tracing() {
         .try_init();
 }
 
-// Expose RunError so the binary can use #[derive] paths cleanly.
-#[allow(
-    dead_code,
-    reason = "the link-only helper keeps RunError reachable for derive-generated binary paths"
-)]
-fn _link_run_error(_: &RunError) {}
-
 #[cfg(test)]
 mod admit_share_tests {
     use super::*;
@@ -933,12 +1004,12 @@ mod admit_share_tests {
             let body_len = u32::try_from(stream.written.len() - 4).unwrap();
             assert_eq!(stream.written[..4], body_len.to_be_bytes());
             let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
-            let request: collab_types::RecipientControlRequestV1 =
+            let request: fs_protocol::RecipientControlRequestV1 =
                 collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length])
                     .unwrap();
             assert!(matches!(
                 request.operation,
-                collab_types::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
+                fs_protocol::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
             ));
         }
         // Phase `admission_refuses_a_relative_mount_from_the_service`.
@@ -966,19 +1037,19 @@ mod admit_share_tests {
     }
 
     fn response(path: &str) -> ScriptedStream {
-        let response = collab_types::RecipientControlResponseV1 {
-            protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-            result: collab_types::RecipientControlResultV1::Admitted {
+        let response = fs_protocol::RecipientControlResponseV1 {
+            protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+            result: fs_protocol::RecipientControlResultV1::Admitted {
                 inserted: true,
-                status: collab_types::RecipientSubscriptionStatusV1 {
-                    key: collab_types::RecipientSubscriptionKeyV1 {
+                status: fs_protocol::RecipientSubscriptionStatusV1 {
+                    key: fs_protocol::RecipientSubscriptionKeyV1 {
                         workspace_id: uuid::Uuid::nil(),
-                        record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(1)),
+                        record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
                     },
-                    permission: collab_types::FilePermission::View,
+                    permission: fs_protocol::FilePermission::View,
                     last_success_at_ms: None,
                     last_error: None,
-                    mount: Some(collab_types::RecipientMountStatusV1 {
+                    mount: Some(fs_protocol::RecipientMountStatusV1 {
                         path: path.into(),
                         running: true,
                     }),
@@ -1002,5 +1073,39 @@ mod admit_share_tests {
         assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
         assert!(!host_launch_env_is_secret("TILO_HOST_ACTIVATION_TOKEN"));
         assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
+    }
+}
+
+#[cfg(test)]
+mod action_authority_tests {
+    use super::*;
+    #[test]
+    fn action_authority_cli_keeps_host_selected_path_and_room() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "run",
+            "--manifest",
+            "/manifest.toml",
+            "--payload-root",
+            "/payload",
+            "--workspace-id",
+            "room-a",
+            "--action-authority",
+            "/private/current.json",
+        ])
+        .unwrap();
+        let Cmd::Run {
+            action_authority,
+            workspace_id,
+            ..
+        } = parsed.cmd
+        else {
+            panic!("run subcommand did not parse");
+        };
+        assert_eq!(
+            action_authority.action_authority,
+            Some(PathBuf::from("/private/current.json"))
+        );
+        assert_eq!(workspace_id.as_deref(), Some("room-a"));
     }
 }

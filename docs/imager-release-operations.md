@@ -406,7 +406,7 @@ the private board images. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
-signing. The WPE buildroot snapshot workflow uses the same token and signing
+signing. The kernel buildroot snapshot workflow uses the same token and signing
 secrets as the other snapshot workflows; see below.
 The source job's `github.token` is deliberately never used for binary
 publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
@@ -479,25 +479,25 @@ compiled with `TILO_IMAGER_INTERNAL_INSTALL=1` after the VM round trip
 passes. What export proves offline, and what remains for that round trip, is
 listed in the header of `os/dev/internal-bundle.py`.
 
-## WPE buildroot snapshot credentials
+## Kernel buildroot snapshot credentials
 
 `build-buildroots.yml` authenticates, signs and lands its pins exactly
 like `build-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
 variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
 - The job token (`secrets.GITHUB_TOKEN`, logged in with
-  `docker/login-action`) pushes `tilo/tilo-wpe-buildroot` to
+  `docker/login-action`) pushes `tilo/tilo-kernel-buildroot` to
   `registry.tilo.so`; the mirrored base is anonymously readable there.
 - `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
   buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
   preflight job refuses to start the multi-hour builds unless the KMS public
   key equals `keys/cosign.pub`.
-- The job token pushes an `automation/wpe-buildroot-snapshot-<digest>` branch
+- The job token pushes an `automation/kernel-buildroot-snapshot-<digest>` branch
   and `RELEASE_TOKEN` opens the protected-main pull request through
   `os/dev/open-snapshot-pr.py`.
 
 Each architecture builds on its native runner with `no-cache`, publishes by
-digest, and must carry a matching `/usr/lib/tilo/wpe-buildroot-arch` marker,
+digest, and must carry a matching `/usr/lib/tilo/kernel-buildroot-arch` marker,
 a recorded package list, and no remaining yum repositories. Both signatures
 are verified with `keys/cosign.pub` before either reference is recorded, and
 promotion refuses to proceed if any snapshot input changed on main while the

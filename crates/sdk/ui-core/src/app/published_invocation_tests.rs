@@ -29,17 +29,11 @@ fn deliver_remote(app: &mut App, request: &crate::invocation_scope::PublishedInv
 fn original_remote_grant(
     now: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> crate::permissions::PermissionContext {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
-    crate::permissions::PermissionContext::from_capabilities(
-        Actor::person(None, "remote:original"),
-        vec![
-            CapOverride::grant(
-                Subject::person("remote:original"),
-                Scope::App("test.counter".into()),
-                crate::permissions::Verb::Write,
-            )
-            .with_expiry(100),
-        ],
+    crate::permissions::PermissionContext::granted(
+        "remote:original",
+        &crate::permissions::TreePath::root().app("test.counter"),
+        crate::permissions::policy::KindSet::ALL,
+        Some(100),
     )
     .with_policy_time_sampler(std::sync::Arc::new(move || {
         Ok(now.load(std::sync::atomic::Ordering::Acquire))
@@ -92,7 +86,7 @@ fn original_remote_authorizer_with_spec(
                 grant
                     .check(&crate::permissions::PermissionScope::app(
                         "test.counter",
-                        crate::permissions::Verb::Write,
+                        crate::permissions::ActionKind::Undoable,
                     ))
                     .then_some(())
                     .ok_or_else(|| "original remote grant expired".into())
@@ -116,10 +110,11 @@ fn published_authorization_delayed_original_remote_grant_denies_before_document_
     let grant = original_remote_grant(time.clone());
     assert!(grant.check(&crate::permissions::PermissionScope::app(
         "test.counter",
-        crate::permissions::Verb::Write
+        crate::permissions::ActionKind::Undoable
     )));
     let request = remote_request(851, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(request.clone(), grant))
         .unwrap();
@@ -141,6 +136,7 @@ fn published_authorization_missing_unknown_or_mismatched_request_never_executes(
         let expected = remote_request(852, "bump");
         let mut delivered = expected.clone();
         let mut app = app();
+        app.collaboration.manager = admitted_delivery_manager();
         app.require_published_invocation_authorizer();
         if case != 0 {
             app.install_published_invocation_authorizer(original_remote_authorizer(
@@ -166,6 +162,7 @@ fn published_authorization_wrong_lease_never_executes() {
     use std::sync::Arc;
     let request = remote_request(853, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(Arc::new(move |delivered| {
         let mut wrong = delivered.clone();
@@ -210,6 +207,7 @@ fn published_authorization_accepted_continuation_retains_failed_custody() {
     let request = remote_request(855, "async-bump");
     let (mut app, store, checkout, _temp) =
         owned_counter(CounterCard::with_async_post_bump_reset());
+    app.collaboration.manager = disconnected_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(
         request.clone(),
@@ -312,6 +310,11 @@ fn owned_counter(
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(tile));
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
+    app.collaboration.manager = admitted_delivery_manager();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
     app.init_layout();
     (app, store, checkout, temp)
 }
@@ -321,7 +324,6 @@ fn owned_count(store: &crate::record::RecordStore, checkout: &crate::RecordCheck
 
 #[test]
 fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_progress() {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -347,16 +349,11 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                 200
             };
             let now = sampled.clone();
-            let permission = crate::permissions::PermissionContext::from_capabilities(
-                Actor::person(None, &request.actor),
-                vec![
-                    CapOverride::grant(
-                        Subject::person(&request.actor),
-                        Scope::App("test.counter".into()),
-                        crate::permissions::Verb::Write,
-                    )
-                    .with_expiry(expiry),
-                ],
+            let permission = crate::permissions::PermissionContext::granted(
+                &request.actor,
+                &crate::permissions::TreePath::root().app("test.counter"),
+                crate::permissions::policy::KindSet::ALL,
+                Some(expiry),
             )
             .with_policy_time_sampler(Arc::new(move || Ok(now.load(Ordering::Acquire))));
             crate::invocation_scope::PublishedInvocationLease::new(
@@ -370,7 +367,7 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                     permission
                         .check(&crate::permissions::PermissionScope::app(
                             "test.counter",
-                            crate::permissions::Verb::Write,
+                            crate::permissions::ActionKind::Undoable,
                         ))
                         .then_some(())
                         .ok_or_else(|| "original grant expired".into())
@@ -413,6 +410,104 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
 }
 
 #[test]
+fn completed_owned_job_retires_retained_handler_and_worker_custody() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    struct TerminalTransport(std::rc::Rc<RefCell<Vec<CollabRequest>>>);
+    impl crate::collaboration::PeerTransport for TerminalTransport {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            self.0.borrow_mut().push(request);
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            vec![]
+        }
+        fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+            Ok(())
+        }
+        fn send_to_route(
+            &mut self,
+            _: crate::collaboration::RouteSpec,
+            request: CollabRequest,
+        ) -> Result<(), String> {
+            self.send(request)
+        }
+    }
+    let time = Arc::new(AtomicU64::new(99));
+    let (mut app, store, checkout, _temp) =
+        owned_counter(CounterCard::with_async_post_bump_reset());
+    let request = remote_request(8991, "async-bump");
+    // Exercise the production terminal gate with an admitted publication route.
+    // This transport proves queue admission, not a remote durability receipt.
+    let sent = std::rc::Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(TerminalTransport(sent.clone()));
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.publish_owned_documents();
+    app.require_published_invocation_authorizer();
+    app.install_published_invocation_authorizer(original_remote_authorizer(
+        request.clone(),
+        original_remote_grant(time),
+    ))
+    .unwrap();
+    deliver_remote(&mut app, &request);
+    let scope = app.actions.directed_invocations[&request.invocation]
+        .authorization
+        .clone()
+        .unwrap();
+    let worker = scope.effect_scope().unwrap();
+    assert!(scope.check().is_ok());
+    app.refresh_focus_order();
+    assert_eq!(owned_count(&store, &checkout), 1);
+    assert!(
+        app.poll_directed_invocations(),
+        "the real terminal update arrived"
+    );
+    assert_eq!(app.action_publication_failure, None);
+    assert!(
+        !app.actions
+            .directed_invocations
+            .contains_key(&request.invocation)
+    );
+    assert!(
+        scope.check().is_err(),
+        "completed handlers cannot submit late work"
+    );
+    let mut ran = false;
+    assert!(
+        worker
+            .with_effect(|| {
+                ran = true;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(
+        !ran,
+        "a retained worker cannot act after the original job ended"
+    );
+    assert!(
+        !app.poll_directed_invocations(),
+        "late polling cannot answer twice"
+    );
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|request| matches!(request,
+                CollabRequest::UpdateInvocation { update, .. } if update.is_terminal()
+            ))
+            .count(),
+        1,
+        "the original job has exactly one terminal receipt"
+    );
+}
+
+#[test]
 fn published_authorization_original_spec_missing_or_changed_never_mutates_actual_record() {
     use std::sync::{Arc, atomic::AtomicU64};
     for case in 0..5 {
@@ -421,7 +516,7 @@ fn published_authorization_original_spec_missing_or_changed_never_mutates_actual
         let mut spec = original_counter_spec("bump");
         match case {
             1 => spec.kind = tilo_actions::OperationKind::Effect,
-            2 => spec.contract.permission = tilo_actions::PermissionRequirement::Read,
+            2 => spec.contract.kind = tilo_actions::ActionKind::Read,
             3 => spec.params.push(tilo_actions::ActionParam::optional(
                 "extra",
                 tilo_actions::ParamType::Text,
@@ -481,6 +576,77 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
             owned_count(&store, &checkout),
             i64::from(!stale),
             "stale original revision must refuse before mutation; identical control must still run"
+        );
+    }
+}
+
+/// #3928: a caller that names no revision is admitted against the one the
+/// owner resolved the action at, and the broker binds the admission to the
+/// revision that resolution names. When the directory moves on between that
+/// resolution and the host running the action (the owner's actions changed),
+/// the host refuses before the handler runs, exactly as it does for a
+/// revision the caller named. Two controls run: the same invocation with no
+/// change, and one resolved after the change.
+#[test]
+fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    // (the directory moves on, the invocation is resolved after it moved)
+    for (case, (moved, resolved_after)) in [(false, false), (true, false), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let request = remote_request(900 + u64::try_from(case).unwrap(), "bump");
+        let (mut app, store, checkout, _temp) = owned_counter(CounterCard::new());
+        if moved && resolved_after {
+            let _ = app.action_registry_mut();
+        }
+        // Publish the directory as the app does, then resolve one of its
+        // published actions with no revision, as the broker asks for a
+        // caller naming none. The revision is the whole directory's: it
+        // binds every action the app runs, `bump` among them.
+        let resources = app.publication_resources();
+        let descriptors = tilo_actions::door::survey(&resources);
+        app.capture_action_directory_snapshot(&resources, &descriptors);
+        let published = &descriptors
+            .first()
+            .expect("the counter publishes its directory")
+            .address;
+        let resolution = app.resolve_action_directory("", &published.resource, &published.action);
+        let runtime_collab::ActionDirectoryResolution::Found {
+            revision: Some(resolved),
+            ..
+        } = resolution.clone()
+        else {
+            panic!(
+                "an empty revision resolves the directory as it is now, and names it: \
+                 {resolution:?}"
+            );
+        };
+        assert_eq!(resolved, app.action_directory_revision());
+        // What the broker admits: the revision the resolution named.
+        let mut spec = original_counter_spec("bump");
+        spec.directory_revision = Some(resolved.clone());
+        if moved && !resolved_after {
+            let _ = app.action_registry_mut();
+            assert_ne!(
+                app.action_directory_revision(),
+                resolved,
+                "the owner's change moved the directory"
+            );
+        }
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer_with_spec(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+            Some(spec),
+        ))
+        .unwrap();
+        deliver_remote(&mut app, &request);
+        assert_eq!(
+            owned_count(&store, &checkout),
+            i64::from(!moved || resolved_after),
+            "case {case}: a directory that moved after a revisionless resolution must refuse \
+             before mutation; an unchanged one, or one resolved after the change, must run"
         );
     }
 }

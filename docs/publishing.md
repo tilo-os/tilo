@@ -21,23 +21,26 @@ each one can still change.
 
 ## Your publisher key
 
-`tilo-app keys new` writes a new Ed25519 key to
-`$XDG_CONFIG_HOME/tilo/publisher-key.json` (`--key PATH` elsewhere), readable
-only by you, and prints its public half. It never replaces an existing key.
-Back the file up: the key is your identity as a publisher, and an update
+`tilo-app keys new` creates a new Ed25519 key in your secret store (the Secret
+Service on Linux, the login Keychain on macOS, or sealed files in
+`$TILO_SECRETS_DIR` on a machine without one) and prints its public half. It
+never replaces an existing key. Back it up with `tilo-app keys export`, which
+prints the secret seed: the key is your identity as a publisher, and an update
 signed by any other key is refused.
 
 The same key signs your packages and the registry requests `tilo-app publish`
 sends: `tilo-app package` uses it whenever it can find it, and a throwaway key
 otherwise (`--identity FILE` picks another). `tilo-app keys show` prints the
 public key and the proof line described below. Every command that needs the
-key reads `--key`, then `$TILO_PUBLISHER_KEY` (the file's contents or its bare
-hex seed, which is how CI passes it), then the default path.
+key reads `--key FILE` (a `{"secret_key_hex": ...}` identity file or the bare
+hex seed), then `$TILO_PUBLISHER_KEY` (the hex seed, which is how CI passes
+it), then the secret store.
 
 On Tilo OS, the App Publisher app does the same with buttons and actions:
 it creates the key, shows the public key and proof line, copies the key for a
 CI secret, applies for namespaces and checks the application. It uses the
-same file, which the sandbox keeps private to App Publisher.
+same key: the secret store holds it under App Publisher's app id, which
+`tilo-app` reads too.
 
 ## Your namespace
 
@@ -67,6 +70,54 @@ and what it found at each place when a proof is missing. The owner then
 reviews the application; approval checks the proofs once more, so leave them
 in place until `tilo-app apply --status` says `approved`.
 
+## Your Store page
+
+Write a `store.json` alongside your app before publishing. The same signed
+metadata feeds the Store's cards, detail page and semantic inspection:
+
+```json
+{
+  "name": { "en": "Reading List" },
+  "tagline": { "en": "Keep your next good read close." },
+  "description": {
+    "en": "Collect books, keep notes and share your reading list with a workspace."
+  },
+  "supported_languages": ["en"],
+  "images": {
+    "en": [
+      {
+        "kind": "screenshot",
+        "url": "https://example.com/reading-list.png",
+        "alt": "A reading list with books grouped by reading progress"
+      }
+    ]
+  },
+  "source_url": "https://github.com/your-org/reading-list",
+  "homepage": "https://example.com/reading-list"
+}
+```
+
+Replace the example URLs with your project's credential-free HTTPS URLs.
+Use a short tagline for catalogue browsing; put the full explanation in
+`description`. The detail page shows previews and the description before
+package facts. `images` also accepts `icon` and `banner`; image descriptions
+(`alt`) are required by the registry. The Store shows up to three screenshots.
+
+Each localized text map needs an `en` fallback. Add translations using
+canonical language tags such as `es` or `pt-BR`. `supported_languages` names
+the languages your **app UI** actually supports, independently of the Store
+page's translations; keep the list sorted and unique. The Store displays that
+list, and an agent can read it by inspecting the specific app.
+
+Submit it with the builds:
+
+```bash
+tilo-app publish --metadata store.json
+```
+
+Publication still queues an owner review. A missing field or invalid locale
+is refused rather than silently dropping your presentation.
+
 ## Releasing
 
 Build and sign each platform you ship, then publish everything in `dist/`:
@@ -95,17 +146,6 @@ A Tilo OS package declares the one architecture it carries: the level
 `[package.isa]` names for it, else `v3` on x86_64 and `aarch64` (ARMv8-A) on
 ARM, the floor the scaffolded `.cargo/config.toml` builds at.
 
-A web package, `dist/<package>-web-wasm32.tapp`, carries the app as a
-WebAssembly side module of the browser's toolkit core
-([The web](app-development.md#the-web)). Its signed `[target]` names the
-`web` platform, `wasm32`, the WebAssembly features the module uses and the
-core's runtime ABI id (`tilo-runtime/2026.07+wasm.<id>`). The registry lists
-it beside the app's other builds, and a page installs it only into a core with
-that id, so a module built against another core is refused before it links.
-The core itself is Tilo's to publish (`so.tilo.runtime.web`); an app never
-ships one. That core exports what Tilo's own web apps import, so a module
-that needs more of a shared crate than they do does not link in it yet.
-
 An Android package, `dist/<package>-android-<arch>.tapp`, carries the
 release-signed APK as `bin/<package>.apk`; the `.apk` and the `.aab` beside it
 are for sideloading and for Google Play. Its signed `[target]` names the
@@ -129,8 +169,8 @@ the app's directory. Every push and pull request runs `tilo-app check`, then
 packages each platform and uploads the packages as build artifacts. Pushing a
 tag named `v*` also runs one `tilo-app publish` over all of them.
 
-Add one secret, `TILO_PUBLISHER_KEY`, holding the contents of your
-`publisher-key.json`. Builds without it, such as pull requests from forks, are
+Add one secret, `TILO_PUBLISHER_KEY`, holding what `tilo-app keys export`
+prints. Builds without it, such as pull requests from forks, are
 signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
 
@@ -146,6 +186,49 @@ image Tilo itself builds in, so a package built in CI links the same system
 libraries and CPU floor as the OS it runs on, and the web job finds the web
 toolchain there. Each job installs `tilo-app` from the Tilo revision your
 `Cargo.lock` pins and caches it.
+
+### Reuse a GitHub build workflow
+
+On GitHub, `add ci` writes two files: `.github/workflows/tilo.yml` handles
+pushes, pull requests and tags; `.github/workflows/tilo-build.yml` is a
+[reusable workflow](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+The caller passes the app directory and lockfile, explicitly names the three
+signing secrets, and requests publication only for `v*` tags. `--dry-run`
+lists both files without writing them; `--force` replaces both. Existing
+files are preserved unless you request replacement.
+
+To use the build from another GitHub repository, commit the generated
+`tilo-build.yml` to a shared repository and call its exact commit:
+
+```yaml
+name: Tilo app
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  app:
+    uses: your-org/app-builds/.github/workflows/tilo-build.yml@<full-commit-sha>
+    with:
+      working-directory: .
+      lockfile: Cargo.lock
+```
+
+Replace the repository and commit with your actual shared workflow. GitHub
+must allow the caller to access that repository. This is a callable workflow
+you own; it does not require an assumed Tilo repository on GitHub.
+The workflow checks out **the caller's app**, builds the existing ten
+platform/architecture targets, and installs the CLI from **the caller's SDK
+pin**, rather than the shared workflow repository's SDK.
+
+Publication defaults to false. For a release caller, set `publish: true`
+and explicitly pass `TILO_PUBLISHER_KEY` under the job's `secrets`; Android
+release signing also uses `TILO_ANDROID_KEYSTORE` and
+`TILO_ANDROID_KEYSTORE_PASS`. `registry` optionally selects another registry;
+`linux-runner` overrides the default Linux x86 runner. Pull request events
+never run the publish job, even if the caller requests it. Publication still
+submits a request for owner review; it does not approve a release.
+
+Forgejo and Gitea keep their existing single-file workflow.
 
 ## Decisions
 
@@ -166,9 +249,12 @@ constraint of the design, and may change before Tilo leaves alpha.
 4. **The registry hosts the bytes.** `publish` uploads each package, signed by
    your key, and the entry points at
    `https://apps.tilo.so/artifacts/<blake3>.tapp`. An upload stays private
-   until review approves the entry that names it.
+   until review approves the entry that names it. The registry then also
+   serves a compressed copy at `<url>.zst`, which clients download and
+   decompress before checking it against your signed hash; your signature
+   covers only the package.
 5. **One key per publisher.** The same Ed25519 key signs packages and registry
-   requests, kept in `publisher-key.json` or, in CI, in
+   requests, kept in your secret store or, in CI, in
    `$TILO_PUBLISHER_KEY`. The App Publisher app manages keys on Tilo OS.
 6. **Desktop builds are self-contained.** A Windows or macOS build is one
    static executable with the toolkit linked in, up to 64 MiB, using the

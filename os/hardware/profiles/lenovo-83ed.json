@@ -3,8 +3,44 @@
   "id": "lenovo-83ed",
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
+  "kernel_args": [
+    "systemd.tpm2_wait=0"
+  ],
   "system_firmware": [
-    "qcom/a740_sqe.fw"
+    "qcom/a740_sqe.fw",
+    "qcom/gen70500_sqe.fw",
+    "qcom/gen70500_gmu.bin",
+    "qcom/x1e80100/gen70500_zap.mbn",
+    "ath12k/WCN7850/hw2.0/amss.bin",
+    "ath12k/WCN7850/hw2.0/m3.bin",
+    "ath12k/WCN7850/hw2.0/board-2.bin",
+    "regulatory.db",
+    "regulatory.db.p7s"
+  ],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "brcmfmac-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
+  "boot_modules": [
+    "cfg80211",
+    "mac80211",
+    "mhi",
+    "qrtr",
+    "qrtr-mhi",
+    "qmi_helpers",
+    "ath12k",
+    "ath12k_wifi7",
+    "pwrseq-qcom-wcn",
+    "pci-pwrctrl-pwrseq",
+    "phy-qcom-qmp-pcie"
   ],
   "firmware": {
     "qcdxkmsuc8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcdxkmsuc8380.mbn",
@@ -13,5 +49,15 @@
     "adsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/adsp_dtbs.elf",
     "qccdsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qccdsp8380.mbn",
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
-  }
+  },
+  "wifi_wake_on_wlan": 0,
+  "internal_keyboards": [
+    {
+      "name": "hid-over-i2c 048D:8987",
+      "bus": "i2c",
+      "vendor": "048D",
+      "product": "8987",
+      "devicetree_compatible": "lenovo,yoga-slim7x"
+    }
+  ]
 }

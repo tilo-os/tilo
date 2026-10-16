@@ -15,17 +15,18 @@
 //! pairing-channel handshake payload and the `tilo://invite/...` URL.
 
 use std::collections::HashMap;
+use zeroize::Zeroizing;
 
 use qrcode::{EcLevel, QrCode};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -39,9 +40,10 @@ pub struct QrWidget {
     rect: Rect,
     test_id: String,
     alt: String,
-    payload: Vec<u8>,
+    payload: Zeroizing<Vec<u8>>,
+    secret: bool,
     /// Width × Width row-major matrix. `true` = dark module.
-    matrix: Vec<bool>,
+    matrix: Zeroizing<Vec<bool>>,
     /// Number of modules along one side of the encoded matrix (not
     /// counting the quiet zone).
     matrix_size: usize,
@@ -61,8 +63,9 @@ impl QrWidget {
             rect: Rect::ZERO,
             test_id: "qr_widget".to_owned(),
             alt: "QR code".to_owned(),
-            payload: Vec::new(),
-            matrix: Vec::new(),
+            payload: Zeroizing::new(Vec::new()),
+            secret: false,
+            matrix: Zeroizing::new(Vec::new()),
             matrix_size: 0,
             quiet_modules: DEFAULT_QUIET_MODULES,
             error_correction: EcLevel::M,
@@ -70,6 +73,15 @@ impl QrWidget {
         };
         w.set_payload(payload);
         w
+    }
+
+    /// Mark pairing material as private. A nonempty code participates in the
+    /// host's existing screenshot, recording and screen-sharing exclusion.
+    /// Its accessible name should describe the operation without the payload.
+    #[must_use]
+    pub fn with_secret(mut self) -> Self {
+        self.secret = true;
+        self
     }
 
     /// Give the generated image a stable address for accessibility,
@@ -98,20 +110,27 @@ impl QrWidget {
     /// A failure to encode (most commonly: payload too large for the
     /// chosen EC level) is stored in `self.error` for inline display.
     pub fn set_payload(&mut self, payload: impl Into<Vec<u8>>) {
-        self.payload = payload.into();
+        self.payload = Zeroizing::new(payload.into());
+        if self.payload.is_empty() {
+            self.matrix = Zeroizing::new(Vec::new());
+            self.matrix_size = 0;
+            self.error = None;
+            return;
+        }
         match QrCode::with_error_correction_level(&self.payload, self.error_correction) {
             Ok(code) => {
                 self.matrix_size = code.width();
-                self.matrix = code
-                    .to_colors()
-                    .into_iter()
-                    .map(|c| matches!(c, qrcode::Color::Dark))
-                    .collect();
+                self.matrix = Zeroizing::new(
+                    code.to_colors()
+                        .into_iter()
+                        .map(|c| matches!(c, qrcode::Color::Dark))
+                        .collect(),
+                );
                 self.error = None;
             }
             Err(e) => {
                 self.matrix_size = 0;
-                self.matrix.clear();
+                self.matrix = Zeroizing::new(Vec::new());
                 self.error = Some(format!("{e}"));
             }
         }
@@ -154,26 +173,14 @@ impl Widget for QrWidget {
     ) -> NodeId {
         // Default 240x240 box; callers can wrap us in a sized container.
         // The module side recomputes in draw from the resolved rect.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(240.0),
-                height: Dimension::length(240.0),
-            },
+        let style = Style {
+            size: Size::from_lengths(240.0, 240.0),
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
+    crate::rect_geometry!();
 
     // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
     // is a small widget-construction constant, so every `usize -> f64` cast
@@ -190,6 +197,9 @@ impl Widget for QrWidget {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        if self.secret && !self.payload.is_empty() {
+            crate::secret_paint::note_secret_painted();
+        }
         // Fixed white/black regardless of theme, so a dark theme never
         // paints a black-on-black QR a scanner can't see.
         let light = Color::from_rgb8(0xFF, 0xFF, 0xFF);
@@ -207,13 +217,13 @@ impl Widget for QrWidget {
             )]
             let text_transform =
                 transform * Affine::translate((self.rect.x0 + inset, self.rect.y0 + inset));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &msg,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 text_transform,
                 None,
+                &theme.text(TextRole::Caption),
             );
             return;
         }
@@ -254,14 +264,11 @@ impl Widget for QrWidget {
         Some(&self.test_id)
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
 
         let mut node = AccessNode::new(Role::Image).with_name(self.alt.clone());
+        node.state = node.state.protected(self.secret);
         if let Some(error) = &self.error {
             node = node.with_description(format!("QR encoding failed: {error}"));
         }
@@ -272,6 +279,61 @@ impl Widget for QrWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_pairing_qr_marks_real_paint_and_clears_when_cancelled() {
+        use crate::secret_paint::SecretPaint;
+        let mut code =
+            QrWidget::new(b"sgnl://linkdevice?uuid=synthetic&pub_key=synthetic".to_vec())
+                .with_secret()
+                .with_alt("Link this device to Signal");
+        let presence = PresenceCtx::empty();
+        let mut renderer = TextRenderer::new();
+        let painted = SecretPaint::begin();
+        code.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &presence,
+        );
+        assert!(painted.finish());
+        let semantics = code.accessibility().unwrap();
+        assert_eq!(
+            semantics.name.as_deref(),
+            Some("Link this device to Signal")
+        );
+        assert!(semantics.description.is_none());
+        assert!(semantics.value.is_none());
+        assert!(semantics.state.protected);
+        code.set_payload(Vec::new());
+        assert_eq!(code.matrix_size, 0);
+        assert!(code.matrix.is_empty());
+        let painted = SecretPaint::begin();
+        code.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::light(),
+            &presence,
+        );
+        assert!(!painted.finish());
+    }
+
+    #[test]
+    fn public_qr_paint_keeps_capture_available() {
+        use crate::secret_paint::SecretPaint;
+        let mut code = QrWidget::new(b"https://example.test/public".to_vec());
+        let painted = SecretPaint::begin();
+        code.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(!painted.finish());
+    }
 
     #[test]
     fn qr_matrix_encodes_payloads_with_a_quiet_zone() {

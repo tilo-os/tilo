@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use tilo_ui::permissions::UserId;
@@ -47,22 +37,22 @@ fn author_attribution_scopes_what_undo_reaches() {
             // Pops the top entry (alice's own, v=3 becomes v=2). Caret state is
             // irrelevant here, hence None/None throughout this file.
             let popped = state
-                .undo_for_author(&UserId("alice".into()), None, None)
+                .undo_as(Some(&UserId("alice".into())), None, None, None)
                 .expect("alice entry");
             assert_eq!(popped.author, Some(UserId("alice".into())));
             // Next alice undo: must skip bob's entry and pop the earlier alice entry.
             let popped = state
-                .undo_for_author(&UserId("alice".into()), None, None)
+                .undo_as(Some(&UserId("alice".into())), None, None, None)
                 .expect("alice entry again");
             assert_eq!(popped.author, Some(UserId("alice".into())));
             // No more alice entries: return None (bob's remains untouched).
             assert!(
                 state
-                    .undo_for_author(&UserId("alice".into()), None, None)
+                    .undo_as(Some(&UserId("alice".into())), None, None, None)
                     .is_none()
             );
             let popped = state
-                .undo_for_author(&UserId("bob".into()), None, None)
+                .undo_as(Some(&UserId("bob".into())), None, None, None)
                 .expect("bob entry");
             assert_eq!(popped.author, Some(UserId("bob".into())));
         }
@@ -86,7 +76,7 @@ fn author_attribution_scopes_what_undo_reaches() {
         state.commit_action_authored(None, None, Some(them));
 
         let popped = state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("my unattributed action is still reachable under theirs");
         assert_eq!(
             popped.author, None,
@@ -122,7 +112,7 @@ fn keyboard_undo_and_redo_drive_button_actions() {
         state.record_committed_action(before, None, None);
 
         assert!(
-            state.undo_as(Some(&me), None, None).is_some(),
+            state.undo_as(Some(&me), None, None, None).is_some(),
             "Ctrl+Z must revert a button-driven action"
         );
         assert!(
@@ -140,10 +130,10 @@ fn keyboard_undo_and_redo_drive_button_actions() {
         let before = state.doc.get_heads();
         state.doc.put(&state.root, "v", 1).unwrap();
         state.record_committed_action(before, None, None);
-        state.undo_as(Some(&me), None, None).expect("undo");
+        state.undo_as(Some(&me), None, None, None).expect("undo");
 
         assert!(
-            state.redo_as(Some(&me), None, None).is_some(),
+            state.redo_as(Some(&me), None, None, None).is_some(),
             "Ctrl+Shift+Z must re-apply the action it just reverted"
         );
         assert!(
@@ -157,7 +147,7 @@ fn keyboard_undo_and_redo_drive_button_actions() {
 fn baseline_moves_past_uncommitted_and_empty_changes() {
     // Case `an_empty_commit_moves_the_baseline_past_a_change_nobody_committed_here`.
     // A change can reach a document without a local commit — a peer's ops merged
-    // in, or the shared schema a `qdoc` document adopts rather than mints. The
+    // in, or the shared schema a `tilo-doc` document adopts rather than mints. The
     // baseline the *next* action brackets against has to move past it, or one
     // Ctrl+Z takes the document's own containers out along with the keystroke.
     // Here the move happens on an empty commit (a selection drag, a focus move).
@@ -165,7 +155,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         let mut state = State::new();
         let me = UserId("someone".into());
         let root = state.root.clone();
-        qdoc::model::init(&mut state.doc, &root);
+        tilo_doc::model::init(&mut state.doc, &root);
 
         assert!(
             !state.commit_action_authored(None, None, Some(me.clone())),
@@ -176,14 +166,14 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         state.commit_action_authored(None, None, Some(me.clone()));
 
         state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("the keystroke is undoable");
         assert!(
             state.doc.get(&root, "typed").unwrap().is_none(),
             "the keystroke is reverted"
         );
         assert!(
-            qdoc::model::open(&state.doc, &root).is_ok(),
+            tilo_doc::model::open(&state.doc, &root).is_ok(),
             "and the schema nobody committed here is still standing"
         );
     }
@@ -196,7 +186,7 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         let mut state = State::new();
         let me = UserId("someone".into());
         let root = state.root.clone();
-        qdoc::model::init(&mut state.doc, &root);
+        tilo_doc::model::init(&mut state.doc, &root);
 
         let before = state.doc.get_heads();
         state.record_committed_action(before, None, None);
@@ -205,14 +195,14 @@ fn baseline_moves_past_uncommitted_and_empty_changes() {
         state.commit_action_authored(None, None, Some(me.clone()));
 
         state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("the keystroke is undoable");
         assert!(
             state.doc.get(&root, "typed").unwrap().is_none(),
             "the keystroke is reverted"
         );
         assert!(
-            qdoc::model::open(&state.doc, &root).is_ok(),
+            tilo_doc::model::open(&state.doc, &root).is_ok(),
             "and the schema nobody committed here is still standing"
         );
     }

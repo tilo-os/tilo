@@ -14,6 +14,19 @@ SPEC.loader.exec_module(contract)
 
 
 class AppResourceActionContractTests(unittest.TestCase):
+    def test_code_runs_preserve_delimiters_lifetimes_and_unicode(self):
+        cases = [
+            ("let ratio = α / β;\n", "let ratio = α / β;\n"),
+            ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
+            ("a// hidden\nb", "a         \nb"),
+            ("a/* hidden */b", "a            b"),
+            ('a"hidden\\\"text"b', "a              b"),
+            ("a('/', '\"')b", "a(   ,    )b"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(contract.code_only(source), expected)
+
     def fixture(
         self,
         source: str,
@@ -33,6 +46,33 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
+
+    def test_char_literals_do_not_hide_the_code_after_them(self):
+        code = contract.code_only(
+            "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
+            "fn handler() { start_operation(); }\n"
+        )
+        self.assertIn("fn handler() { start_operation(); }", code)
+        self.assertIn("fn f<'a>(s: &'a str)", code)
+        self.assertNotIn('"', code)
+
+    def test_repeated_audits_observe_source_changes_at_the_same_path(self):
+        valid = (
+            "pub struct Note;\n"
+            "impl Resource for Note { fn register(registry: &mut ActionRegistry) {} }\n"
+            "struct Sample;\n"
+            "impl ResourceApp for Sample { type Resource = Note; }\n"
+        )
+        root = self.fixture(valid)
+        source = root / "apps/sample/src/lib.rs"
+        (source.parent / "main.rs").write_text("ui::main!(sample::Sample);\n")
+        self.assertEqual(contract.audit(root), ([], 1))
+        source.write_text("struct Sample;\nimpl ResourceApp for Sample {}\n")
+        violations, apps = contract.audit(root)
+        self.assertEqual(apps, 1)
+        self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        source.write_text(valid)
+        self.assertEqual(contract.audit(root), ([], 1))
 
     def test_resource_surface_requires_a_real_nonempty_resource_provider(self):
         with self.subTest(phase='resource action app passes'):
@@ -54,6 +94,21 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
                 "struct Sample;\n"
                 "impl ResourceApp for Sample { type Resource = Note; }\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+        with self.subTest(phase='a framework app whose tests check published effects passes'):
+            root = self.fixture(
+                "pub struct Vault;\n"
+                "impl Resource for Vault { fn register(registry: &mut ActionRegistry) {} }\n"
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Vault; }\n"
+                "#[cfg(test)]\nmod tests {\n"
+                " fn copy_is_an_effect(spec: ActionSpec) { assert_eq!(spec.kind, OperationKind::Effect); }\n"
+                "}\n"
+            )
+            (root / "apps" / "sample" / "src" / "main.rs").write_text(
+                "ui::main!(sample::Sample);\n", encoding="utf-8"
             )
             violations, _ = contract.audit(root)
             self.assertEqual(violations, [])
@@ -92,7 +147,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "pub fn app_root() {\n"
                 " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
                 " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
-                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
                 "}\n"
             )
             violations, _ = contract.audit(root)
@@ -105,6 +160,43 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
+
+    def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
+        compute_manifest = (
+            '[package]\nid="so.tilo.sample"\nkind="service"\n'
+            '[entrypoint]\nbin="bin/sample-batch"\ntype="cli"\n'
+            '[cli]\ncommands=["sample-batch"]\n'
+        )
+        with self.subTest(phase='a cli service with commands needs no facade or resources'):
+            root = self.fixture("fn main() {}\n", dependencies="")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, apps = contract.audit(root)
+            self.assertEqual(violations, [])
+            self.assertEqual(apps, 1)
+        with self.subTest(phase='a compute package still may not bypass the facade'):
+            root = self.fixture(
+                "fn main() {}\n",
+                dependencies='ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
+            )
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+        for phase, manifest in (
+            ("a cli service without commands", compute_manifest.replace('"sample-batch"', "")),
+            ("a gui app with commands", compute_manifest.replace('type="cli"', 'type="gui"')),
+            ("a cli app that is not a service", compute_manifest.replace('"service"', '"app"')),
+        ):
+            with self.subTest(phase=f"{phase} must publish its own surface"):
+                root = self.fixture("fn main() {}\n", dependencies="")
+                (root / "apps" / "sample" / "tilo-app.toml").write_text(manifest, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                reasons = "\n".join(item.reason for item in violations)
+                self.assertIn("tilo-app", reasons)
+                self.assertIn("Widget::resources", reasons)
 
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
@@ -266,24 +358,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertFalse(any("not reachable" in item.reason for item in violations))
-
-    def test_agent_uses_generic_broker_catalogue_and_receipts(self):
-        with self.subTest(phase='agent must use generic broker catalogue and receipts'):
+        with self.subTest(phase='framework surface answering typed effects passes'):
             root = self.fixture(
-                "fn resources() {}\nstruct ActionDescriptor;\n",
-                app_name="agent",
-            )
-            violations, _ = contract.audit(root)
-            reasons = "\n".join(item.reason for item in violations)
-            self.assertIn("generic action catalogue", reasons)
-            self.assertIn("invoke and observe", reasons)
-        with self.subTest(phase='generic broker agent passes'):
-            root = self.fixture(
-                "fn resources() {}\n"
-                "struct ActionDescriptor;\n"
-                "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
-                "RemoteActionMessage::Observe;\n",
-                app_name="agent",
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"sample.note\", label = \"Note\")]\n"
+                "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Note; }\n"
+                "impl ResourceSurface<Note, Show> for View {\n"
+                " fn effect(&mut self, effect: Show, cx: &mut EffectCx<Note, Self>) -> EffectAnswer { todo() } }\n"
+                "fn check(spec: &ActionSpec) -> bool { spec.kind == OperationKind::View }\n"
             )
             violations, _ = contract.audit(root)
             self.assertEqual(violations, [])
@@ -361,7 +445,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -385,7 +469,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -393,6 +477,22 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+        with self.subTest(phase="each ceiling lives in its app's baseline file"):
+            root = self.fixture(
+                "use tilo_actions::ActionSpec;\n"
+                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+            )
+            baseline = root / contract.BASELINE / "other.toml"
+            baseline.parent.mkdir(parents=True)
+            baseline.write_text(
+                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("belongs in" in item.reason for item in violations))
 
     def test_bespoke_automation_palette_and_search_activation_paths_fail(self):
         with self.subTest(phase='new bespoke automation entry point fails'):
@@ -605,6 +705,122 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("production app launch" in item.reason for item in violations))
+
+
+    def test_old_app_apis_are_ratcheted_per_file_in_apps_and_examples(self):
+        def ratchet(root: Path, relative: str, source: str, baseline: str = ""):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+            if baseline:
+                file = root / contract.baseline_file(relative)
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(baseline, encoding="utf-8")
+            violations: list = []
+            contract.audit_ratchets(
+                root,
+                [(path, source)],
+                contract.load_ratchet_baseline(root),
+                violations,
+                workspace=True,
+                legacy_only=True,
+            )
+            return [item.reason for item in violations]
+
+        old = (
+            "impl tilo_resource::Resource for Notes { }\n"
+            "fn f(args: &Args, doc: &mut AutoCommit) {\n"
+            " let a = ActionAddress::new(\"notes\", \"rename\");\n"
+            " let d = ActionDecl::new(\"rename\", \"Rename\");\n"
+            " let s = ActionSpec::immediate(\"go\");\n"
+            " let t = args.text(\"title\");\n"
+            " doc.put(automerge::ROOT, \"title\", t);\n"
+            "}\n"
+        )
+        rules = [
+            "hand_resource_impl",
+            "action_address_new",
+            "action_decl_new",
+            "action_spec",
+            "untyped_action_args",
+            "direct_automerge_write",
+        ]
+        with self.subTest(phase="each old API is refused without a ceiling"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            reasons = ratchet(root, "examples/apps/notes/src/lib.rs", old)
+            self.assertEqual(len(reasons), len(rules), reasons)
+            self.assertTrue(all("example-notes.toml" in reason for reason in reasons))
+        with self.subTest(phase="today's counts are the ceiling"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            baseline = "".join(f'[ratchets.{rule}]\n"apps/notes/src/lib.rs" = 1\n' for rule in rules)
+            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", old, baseline), [])
+            reasons = ratchet(root, "apps/notes/src/lib.rs", old + "fn g() { ActionDecl::new(); }\n")
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn("audited ceiling 1", reasons[0])
+            reasons = ratchet(root, "apps/notes/src/lib.rs", "fn g() {}\n")
+            self.assertEqual(len(reasons), len(rules), reasons)
+            self.assertTrue(all("lower 1 to 0" in reason for reason in reasons))
+        def counts(source: str) -> dict[str, int]:
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            reasons = ratchet(root, "apps/notes/src/lib.rs", source)
+            found = {}
+            for rule, (_, reason) in contract.LEGACY_API_RATCHETS.items():
+                for line in reasons:
+                    if line.startswith(reason):
+                        found[rule] = int(line.split("(")[-1].split(" found")[0])
+            return found
+
+        document_writes = [
+            "fn f(doc: &mut AutoCommit) { doc.put(&obj, \"k\", 1); }\n",
+            "fn f(state: &mut automerge::AutoCommit) { state.put(&obj, \"k\", 1); }\n",
+            "fn f<T: Transactable>(target: &mut T) { target.put(&obj, \"k\", 1); }\n",
+            "fn f(tx: &mut impl Transactable) { tx.put(&obj, \"k\", 1); }\n",
+            "fn f() { let mut source = AutoCommit::new(); source.put(&obj, \"k\", 1); }\n",
+            "fn f(d: &Doc) { let mut copy = d.clone();\n copy\n .put(automerge::ROOT, \"k\", 1); }\n",
+            "fn f() { apply(|doc| doc.put(ROOT, \"k\", 1)); }\n",
+            "fn f(dm: &mut Fixture) { use automerge::ObjId; dm.splice_text(&id, 0, 0, \"a\"); }\n",
+            "fn f(x: &mut Fixture) { use automerge::ObjType; x.put_object(&id, \"k\", ObjType::Map); }\n",
+        ]
+        for source in document_writes:
+            with self.subTest(phase="a document write is counted", source=source):
+                self.assertEqual(counts(source).get("direct_automerge_write"), 1, source)
+        other_puts = [
+            "use automerge::ROOT;\nfn f(content: &ContentStore) { content.put(&bytes); }\n",
+            "use automerge::ROOT;\nfn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n",
+            "use automerge::ROOT;\nfn f(&self) { self.inner.content_store().put(PNG); }\n",
+            "use automerge::ROOT;\nfn f(cache: &mut Lru) { cache.put(key, tile); }\n",
+            "fn f(store: &mut Vault) { store.put(\"account\", secret); }\n",
+        ]
+        for source in other_puts:
+            with self.subTest(phase="a store's or a cache's put is not a document write", source=source):
+                self.assertNotIn("direct_automerge_write", counts(source), source)
+        action_args = [
+            "fn f(args: &ActionArgs) { args.text(\"title\"); }\n",
+            "fn f(args: &tilo_actions::ActionArgs) { args.get(name); }\n",
+            "fn f(args: &serde_json::Value) { args.get(\"title\"); }\n",
+            "fn f() { on(|args| args.get(\"title\")); }\n",
+            "fn f() { on(|args| args.boolean(\"on\")); }\n",
+        ]
+        for source in action_args:
+            with self.subTest(phase="untyped action arguments are counted", source=source):
+                self.assertEqual(counts(source).get("untyped_action_args"), 1, source)
+        command_lines = [
+            "fn main() { let args: Vec<String> = std::env::args().collect(); args.get(1); }\n",
+            "fn run(args: &[String]) { let mode = args.get(2); }\n",
+            "fn call(args: &[Expr]) { let (a, b) = (args.first(), args.get(1)); }\n",
+            "fn step(args: &BTreeMap<String, Value>) { args.get(param.name.as_ref()); }\n",
+        ]
+        for source in command_lines:
+            with self.subTest(phase="a command line or a list read by index is not action arguments", source=source):
+                self.assertNotIn("untyped_action_args", counts(source), source)
+        with self.subTest(phase="the model's own APIs and other puts are not counted"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            new = (
+                "#[resource(kind = \"notes\")] impl Notes { #[action] fn rename(&mut self) {} }\n"
+                "impl ResourceSurface<Notes, NotesView> for NotesApp {}\n"
+                "fn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n"
+            )
+            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", new), [])
 
 
 if __name__ == "__main__":

@@ -1,331 +1,244 @@
-//! Granular, immediate local preference authoring through the canonical action door.
-use crate::framework_history::{EMOJI_RECENTS, LAYOUT, PERSONALIZATION, SUGGESTIONS};
-use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+//! The keyboard's preferences: what may change in them ([`SetPreference`]),
+//! the effects through which a palette, an agent or a script changes them,
+//! and the preference rows the keyboard surface publishes.
+//!
+//! Preferences are the person's settings ([`OskPreferences`]), not the
+//! content of a record: they follow the person to their other devices,
+//! carry no history and are never undone.
 use serde::{Deserialize, Serialize};
-use ui::tilo_actions::{
-    Action, ActionArgs, ActionBinding, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    ControlInvocation, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource,
-    RetryPolicy,
-};
-pub const TYPE_ID: &str = "osk.preference";
+use ui::framework::LiveRow;
+use ui::tilo_actions::ActionSpec;
+use ui::tilo_resource::{self, Effect};
+
+use crate::resource::OskPreferences;
+
+/// The letter layouts every keyboard carries; a preference names one of them.
+pub const LETTER_LAYOUTS: [(&str, &str); 2] = [
+    ("qwerty", "English (QWERTY)"),
+    ("azerty", "French (AZERTY)"),
+];
+
+/// The letter layout names a preference may take.
+pub use tilo_keyboard_map::touch::LAYOUT_NAMES;
+
+/// One keyboard preference set to a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Preference {
+pub enum SetPreference {
+    /// The letter layout text fields open in.
     Layout(String),
+    /// Whether the suggestion bar offers words.
     Suggestions(bool),
+    /// Whether the keyboard adapts to what this person types. Turning it off
+    /// also forgets the recent emoji.
     Personalization(bool),
-    /// This user's recently picked emoji, as the JSON `emoji::Recents`.
-    EmojiRecents(String),
+    /// This person's recently picked emoji, most recent first.
+    EmojiRecents(Vec<String>),
 }
-impl Preference {
-    pub fn index(&self) -> usize {
+
+impl SetPreference {
+    /// Apply this change to `preferences`.
+    ///
+    /// # Errors
+    /// A layout the keyboard does not carry.
+    pub fn apply(&self, preferences: &mut OskPreferences) -> Result<(), String> {
         match self {
-            Self::Layout(_) => 0,
-            Self::Suggestions(_) => 1,
-            Self::Personalization(_) => 2,
-            Self::EmojiRecents(_) => 3,
-        }
-    }
-    fn key(&self) -> &'static str {
-        match self {
-            Self::Layout(_) => LAYOUT,
-            Self::Suggestions(_) => SUGGESTIONS,
-            Self::Personalization(_) => PERSONALIZATION,
-            Self::EmojiRecents(_) => EMOJI_RECENTS,
-        }
-    }
-    fn scalar(&self) -> ScalarValue {
-        match self {
-            Self::Layout(v) | Self::EmojiRecents(v) => v.as_str().into(),
-            Self::Suggestions(v) | Self::Personalization(v) => (*v).into(),
-        }
-    }
-    pub fn matches(&self, doc: &Doc) -> bool {
-        doc.get(ROOT, self.key())
-            .ok()
-            .flatten()
-            .is_some_and(|(v, _)| {
-                v == automerge::Value::Scalar(std::borrow::Cow::Owned(self.scalar()))
-            })
-    }
-    fn address(&self) -> (&'static str, &'static str) {
-        match self {
-            Self::Layout(_) => ("osk.keyboard.layout", "set"),
-            Self::Suggestions(_) => ("osk.keyboard.suggestions", "set"),
-            Self::Personalization(_) => ("osk.keyboard.suggestions", "set-personal"),
-            Self::EmojiRecents(_) => ("osk.keyboard.emoji", "set-recents"),
-        }
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SetPreference {
-    pub value: Preference,
-    pub draft: Option<String>,
-}
-impl Action for SetPreference {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        if !self.value.matches(doc) {
-            doc.put(ROOT, self.value.key(), self.value.scalar())?;
+            Self::Layout(layout) => {
+                if !LAYOUT_NAMES.contains(&layout.as_str()) {
+                    return Err(format!("no letter layout named {layout:?}"));
+                }
+                if preferences.layouts.is_empty() {
+                    preferences.layouts =
+                        LAYOUT_NAMES.iter().map(|name| (*name).to_owned()).collect();
+                }
+                if !preferences.layouts.contains(&preferences.layout)
+                    && LAYOUT_NAMES.contains(&preferences.layout.as_str())
+                {
+                    preferences.layouts.push(preferences.layout.clone());
+                }
+                layout.clone_into(&mut preferences.layout);
+                if !preferences.layouts.contains(layout) {
+                    preferences.layouts.push(layout.clone());
+                }
+            }
+            Self::Suggestions(enabled) => preferences.suggestions = *enabled,
+            Self::Personalization(enabled) => {
+                preferences.personalization = *enabled;
+                if !enabled {
+                    preferences.emoji_recents.clear();
+                }
+            }
+            Self::EmojiRecents(recents) => recents.clone_into(&mut preferences.emoji_recents),
         }
         Ok(())
     }
-    fn locus(&self) -> ExecutionLocus {
-        ExecutionLocus::ClientLocal
+}
+
+/// What the keyboard does on request: change one of the person's
+/// preferences, or forget what it learned.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "osk.keyboard")]
+pub enum OskEffect {
+    /// Set the letter layout text fields open in.
+    #[effect(kind = "read", label = "Set keyboard layout")]
+    SetLayout {
+        #[param("Letter layout", choices = LAYOUT_NAMES)]
+        value: String,
+    },
+    /// Enable or disable the suggestion bar.
+    #[effect(kind = "read", label = "Set suggestions")]
+    SetSuggestions {
+        #[param("Enabled")]
+        value: bool,
+    },
+    /// Enable or disable adapting to what this person types.
+    #[effect(kind = "read", label = "Set personalization")]
+    SetPersonalization {
+        #[param("Enabled")]
+        value: bool,
+    },
+    /// Replace this person's recent emoji list.
+    #[effect(kind = "read", label = "Set recent emoji")]
+    SetEmojiRecents {
+        #[param("Recent emoji, most recent first")]
+        value: Vec<String>,
+    },
+    /// Forget what the keyboard learned from typing.
+    ///
+    /// Learned word rankings, tap positions, kept words and recent emoji;
+    /// the personalization preference stays as it is.
+    #[effect(row, kind = "read", destructive, label = "Clear learned suggestions")]
+    ClearPersonal,
+}
+
+impl OskEffect {
+    /// The preference change this effect asks for; `None` for one that
+    /// changes no preference.
+    #[must_use]
+    pub fn preference(&self) -> Option<SetPreference> {
+        Some(match self {
+            Self::SetLayout { value } => SetPreference::Layout(value.clone()),
+            Self::SetSuggestions { value } => SetPreference::Suggestions(*value),
+            Self::SetPersonalization { value } => SetPreference::Personalization(*value),
+            Self::SetEmojiRecents { value } => SetPreference::EmojiRecents(value.clone()),
+            Self::ClearPersonal => return None,
+        })
     }
 }
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<SetPreference>(TYPE_ID);
+
+/// `effect` offered as `id`, labelled `label`.
+fn offer(id: &str, label: &str, effect: &OskEffect) -> ActionSpec {
+    let mut spec = effect.bound();
+    id.clone_into(&mut spec.id);
+    label.clone_into(&mut spec.label);
+    spec
 }
-#[allow(
-    clippy::expect_used,
-    reason = "preference action contains only serializable scalar values"
-)]
-fn encode(value: Preference, draft: Option<String>) -> EncodedAction {
-    EncodedAction::encode(TYPE_ID, &SetPreference { value, draft })
-        .expect("scalar preferences serialize")
+
+/// `effect` offered as `id`, still asking for its `value`.
+fn asking(id: &str, effect: &OskEffect) -> ActionSpec {
+    let mut spec = effect.bound_asking(&["value"]);
+    id.clone_into(&mut spec.id);
+    spec
 }
-pub(crate) fn decode(encoded: &EncodedAction) -> Option<SetPreference> {
-    if encoded.type_id != TYPE_ID {
-        return None;
-    }
-    serde_json::from_slice(&encoded.payload).ok()
-}
-#[allow(
-    clippy::too_many_lines,
-    reason = "one catalogue for the preference fields and their existing named affordances"
-)]
-pub(crate) fn resources(layouts: Vec<String>, preferred: &str) -> Vec<Resource> {
-    let mut root = Resource::new("osk.keyboard", "osk.keyboard", "On-screen keyboard");
-    let mut layout = Resource::new(
+
+/// The preference rows the keyboard publishes beside its resource: the
+/// layout, the suggestions and the recent emoji as they stand, each with the
+/// changes it offers.
+pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
+    let mut layout = LiveRow::new(
         "osk.keyboard.layout",
         "osk.layout",
-        format!("Keyboard layout ({})", preferred.to_uppercase()),
-    );
-    layout.actions.push(ActionSpec::typed(
+        format!("Keyboard layout ({})", preferences.layout.to_uppercase()),
+    )
+    .operation(asking(
         "set",
-        "Set keyboard layout",
-        "Registered layout",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("value", ParamType::Text, "Registered layout")
-                .with_choices(layouts),
-            ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-        ],
-        |args: &ActionArgs| {
-            encode(
-                Preference::Layout(args.text("value").unwrap_or_default().into()),
-                args.text("draft").map(str::to_owned),
-            )
+        &OskEffect::SetLayout {
+            value: preferences.layout.clone(),
         },
     ));
-    for (id, label) in [
-        ("qwerty", "English (QWERTY)"),
-        ("azerty", "French (AZERTY)"),
-    ] {
-        layout.actions.push(ActionSpec::immediate_encoded(
+    for (id, label) in LETTER_LAYOUTS {
+        layout = layout.operation(offer(
             id,
             label,
-            ExecutionLocus::ClientLocal,
-            encode(Preference::Layout(id.into()), None),
-        ));
-    }
-    let mut suggestions = Resource::new(
-        "osk.keyboard.suggestions",
-        "osk.suggestions",
-        "Suggestions and privacy",
-    );
-    for (id, label, personal) in [
-        ("set", "Set suggestions", false),
-        ("set-personal", "Set personalization", true),
-    ] {
-        suggestions.actions.push(ActionSpec::typed(
-            id,
-            label,
-            "Enabled",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required("value", ParamType::Boolean, "Enabled"),
-                ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-            ],
-            move |args: &ActionArgs| {
-                encode(
-                    if personal {
-                        Preference::Personalization(args.boolean("value").unwrap_or(true))
-                    } else {
-                        Preference::Suggestions(args.boolean("value").unwrap_or(true))
-                    },
-                    args.text("draft").map(str::to_owned),
-                )
+            &OskEffect::SetLayout {
+                value: id.to_owned(),
             },
         ));
     }
-    for (id, label, value) in [
-        (
-            "enable",
-            "Turn on suggestions",
-            Preference::Suggestions(true),
-        ),
-        (
-            "disable",
-            "Turn off suggestions",
-            Preference::Suggestions(false),
-        ),
-        (
-            "enable-personal",
-            "Turn on personalized suggestions",
-            Preference::Personalization(true),
-        ),
-        (
-            "disable-personal",
-            "Turn off personalized suggestions",
-            Preference::Personalization(false),
-        ),
-    ] {
-        suggestions.actions.push(ActionSpec::immediate_encoded(
-            id,
-            label,
-            ExecutionLocus::ClientLocal,
-            encode(value, None),
-        ));
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "clear-personal",
-        "Clear learned suggestions",
-        OperationKind::Effect,
+    let suggestions = LiveRow::new(
+        "osk.keyboard.suggestions",
         "osk.suggestions",
-        &"clear-personal",
-    ) {
-        suggestions
-            .actions
-            .push(spec.retry_policy(RetryPolicy::AtMostOnce));
-    }
-    let mut emoji = Resource::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji");
-    emoji.actions.push(ActionSpec::typed(
+        "Suggestions and privacy",
+    )
+    .operation(asking(
+        "set",
+        &OskEffect::SetSuggestions {
+            value: preferences.suggestions,
+        },
+    ))
+    .operation(asking(
+        "set-personal",
+        &OskEffect::SetPersonalization {
+            value: preferences.personalization,
+        },
+    ))
+    .operation(offer(
+        "enable",
+        "Turn on suggestions",
+        &OskEffect::SetSuggestions { value: true },
+    ))
+    .operation(offer(
+        "disable",
+        "Turn off suggestions",
+        &OskEffect::SetSuggestions { value: false },
+    ))
+    .operation(offer(
+        "enable-personal",
+        "Turn on personalized suggestions",
+        &OskEffect::SetPersonalization { value: true },
+    ))
+    .operation(offer(
+        "disable-personal",
+        "Turn off personalized suggestions",
+        &OskEffect::SetPersonalization { value: false },
+    ))
+    .operation(OskEffect::ClearPersonal.bound());
+    let emoji = LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
         "set-recents",
-        "Set recent emoji",
-        "Recent emoji",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("value", ParamType::Text, "Recent emoji, as JSON"),
-            ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-        ],
-        |args: &ActionArgs| {
-            encode(
-                Preference::EmojiRecents(args.text("value").unwrap_or_default().into()),
-                args.text("draft").map(str::to_owned),
-            )
+        &OskEffect::SetEmojiRecents {
+            value: preferences.emoji_recents.clone(),
         },
     ));
-    root.children = vec![layout, suggestions, emoji];
-    vec![root]
+    vec![layout, suggestions, emoji]
 }
 
-pub(crate) struct Draft {
-    pub value: Preference,
-    pub token: String,
-}
-pub(crate) struct PreferenceDrafts {
-    lifetime: String,
-    pub fields: [Option<Draft>; 4],
-    offers: [Option<ControlInvocation>; 4],
-    consumed: [bool; 4],
-}
-impl Default for PreferenceDrafts {
-    fn default() -> Self {
-        Self {
-            lifetime: ui::tilo_actions::ActionId::new().0.to_string(),
-            fields: std::array::from_fn(|_| None),
-            offers: std::array::from_fn(|_| None),
-            consumed: [false; 4],
-        }
-    }
-}
-impl PreferenceDrafts {
-    pub fn stage(&mut self, value: Preference) {
-        let index = value.index();
-        if let (Some(field), Some(offer)) = (self.fields.get_mut(index), self.offers.get_mut(index))
-        {
-            *field = Some(Draft {
-                value,
-                token: format!("{}:{}", self.lifetime, ui::tilo_actions::ActionId::new().0),
-            });
-            *offer = None;
-        }
-    }
-    pub fn pending(&self) -> bool {
-        self.fields.iter().any(Option::is_some)
-    }
-    pub fn has(&self, index: usize) -> bool {
-        self.fields.get(index).is_some_and(Option::is_some)
-    }
-    /// Only an ordinary model pass offers retries. Availability/resource queries
-    /// and drain/acknowledgement paths never regenerate an in-flight offer.
-    pub fn prepare_after_sync(&mut self, resources: &[Resource]) {
-        self.consumed.fill(false);
-        for (draft, offer) in self.fields.iter().zip(self.offers.iter_mut()) {
-            let Some(draft) = draft else {
-                continue;
-            };
-            if offer.is_some() {
-                continue;
-            }
-            let (resource_id, action_id) = draft.value.address();
-            let Some(resource) = resources
-                .iter()
-                .flat_map(|root| &root.children)
-                .find(|r| r.id.as_str() == resource_id)
-            else {
-                continue;
-            };
-            let Some(spec) = resource.actions.iter().find(|a| a.id == action_id) else {
-                continue;
-            };
-            let arguments = serde_json::Map::from_iter([
-                (
-                    "draft".into(),
-                    serde_json::Value::String(draft.token.clone()),
-                ),
-                (
-                    "value".into(),
-                    match &draft.value {
-                        Preference::Layout(v) | Preference::EmojiRecents(v) => v.clone().into(),
-                        Preference::Suggestions(v) | Preference::Personalization(v) => (*v).into(),
-                    },
-                ),
-            ]);
-            if let Ok(binding) = ActionBinding::new(resource, spec, |arguments| arguments) {
-                *offer = binding.invoke(arguments).ok();
-            }
-        }
-    }
-    pub fn take(&mut self) -> Option<ControlInvocation> {
-        for (offer, consumed) in self.offers.iter_mut().zip(&mut self.consumed) {
-            if !*consumed && let Some(offer) = offer.take() {
-                *consumed = true;
-                return Some(offer);
-            }
-        }
-        None
-    }
-    /// Explicit local resource success supersedes an older same-field draft.
-    /// Correlated successes settle only their exact root lifetime/generation.
-    pub fn acknowledge(&mut self, action: &SetPreference, doc: &Doc) -> bool {
-        if !action.value.matches(doc) {
-            return false;
-        }
-        let index = action.value.index();
-        let (Some(field), Some(offer)) = (self.fields.get_mut(index), self.offers.get_mut(index))
-        else {
-            return false;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_action_preserves_legacy_choices_and_explicit_single_source() {
+        let mut preferences = OskPreferences {
+            layout: "azerty".into(),
+            suggestions: false,
+            ..Default::default()
         };
-        if let Some(token) = &action.draft
-            && !field
-                .as_ref()
-                .is_some_and(|draft| &draft.token == token && draft.value == action.value)
-        {
-            return false;
-        }
-        *field = None;
-        *offer = None;
-        true
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["qwerty", "azerty"]);
+        assert_eq!(preferences.layout, "azerty");
+        assert!(!preferences.suggestions);
+        preferences.layouts = vec!["azerty".into()];
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty"]);
+        assert_eq!(
+            SetPreference::Layout("qwerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty", "qwerty"]);
     }
 }

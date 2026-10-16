@@ -1,17 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
-use shell::shell::state::{
-    AppKind, CapRole, Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceTree,
-};
+use shell::shell::state::{WindowWidth, WorkspaceTree};
 
 #[test]
 fn default_tree_builds_three_workspaces_and_a_shell_root() {
@@ -57,12 +44,13 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
     // Phase `window_width_clamp`.
     {
         // A width is a fraction of the strip, so out-of-range fractions clamp
-        // into the legal share band rather than into a pixel band.
-        assert_eq!(WindowWidth::Fraction(5).permille(), 150);
-        assert_eq!(WindowWidth::Fraction(9999).permille(), 1000);
-        // And the resolved pixels track the display, which is the point.
-        assert!((WindowWidth::Fraction(9999).resolve(1600.0) - 1600.0).abs() <= f64::EPSILON);
-        assert!((WindowWidth::Fraction(9999).resolve(3840.0) - 3840.0).abs() <= f64::EPSILON);
+        // into the storable band rather than into a pixel band.
+        assert_eq!(WindowWidth::Fraction(0).permille(), 1);
+        assert_eq!(WindowWidth::Fraction(65_000).permille(), 10_000);
+        // And the resolved pixels track the display, which is the point: a
+        // group may be wider than the strip, which then scrolls.
+        assert!((WindowWidth::Fraction(1500).resolve(1600.0) - 2400.0).abs() < 1e-9);
+        assert!((WindowWidth::Fraction(1500).resolve(3840.0) - 5760.0).abs() < 1e-9);
     }
 
     // Phase `fraction_widths_round_trip_through_persisted_json`.
@@ -77,20 +65,6 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
             WindowWidth::Fraction(742),
         );
     }
-}
-
-// Reference the remaining imports so this compiles before the widget code
-// that exercises them lands.
-#[allow(dead_code, reason = "never called: only keeps the imports referenced")]
-fn _type_refs() {
-    let _ = std::marker::PhantomData::<Workspace>;
-    let _ = std::marker::PhantomData::<Strip>;
-    let _ = std::marker::PhantomData::<WindowGroup>;
-    let _ = std::marker::PhantomData::<Tab>;
-    let _ = std::marker::PhantomData::<TileContent>;
-    let _ = std::marker::PhantomData::<AppKind>;
-    let _ = std::marker::PhantomData::<CapRole>;
-    let _ = std::marker::PhantomData::<Collaborator>;
 }
 
 #[test]

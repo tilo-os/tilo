@@ -20,7 +20,12 @@ use std::time::Duration;
 use zbus::blocking::Connection;
 use zbus::zvariant::Value;
 
-use crate::{Notification, Notifier, NotifyError, PriorityContact};
+use crate::{
+    AlarmSchedule, AlarmState, CalendarAlarm, Notification, Notifier, NotifyError, PriorityContact,
+    Scheduled, SystemTime,
+};
+
+type AlarmStateWire = (String, (u8, u8, u8, i64), Vec<i64>, Vec<i64>, String);
 
 const CALL_BUDGET: Duration = Duration::from_secs(3);
 
@@ -236,9 +241,13 @@ fn freedesktop_notify(connection: &Connection, app: &str, n: &Notification) -> z
         .ok()
         .and_then(|ids| ids.get(&n.tag).copied())
         .unwrap_or(0);
-    let hints: HashMap<&str, Value<'_>> = HashMap::new();
+    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+    // The specification has no warning level; only an error is critical.
+    if n.severity == crate::Severity::Error {
+        hints.insert("urgency", Value::U8(2));
+    }
     let actions: Vec<&str> = if n.activation.is_some() {
-        vec![DEFAULT_ACTION, "Open"]
+        vec![DEFAULT_ACTION, n.action.as_deref().unwrap_or("Open")]
     } else {
         Vec::new()
     };
@@ -312,7 +321,178 @@ fn remember(service: Service) {
     }
 }
 
+fn schedule_notification(
+    notification: &Notification,
+    at: SystemTime,
+    calendar: Vec<(u8, u8, u8, i64, String)>,
+) -> Result<(), NotifyError> {
+    crate::validate(notification)?;
+    let millis = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .ok_or(NotifyError::Invalid("invalid notification deadline"))?;
+    let args = (
+        notification.tag.clone(),
+        notification.title.clone(),
+        notification.body.clone(),
+        notification.activation.clone().unwrap_or_default(),
+        millis,
+        calendar,
+    );
+    on_bus(move |connection| {
+        let (dest, path, iface) = FREEDESKTOP;
+        connection
+            .call_method(
+                Some(dest),
+                path,
+                Some(iface),
+                "XTiloScheduleNotification",
+                &args,
+            )
+            .map(drop)
+            .map_err(schedule_error)
+    })
+}
+
+fn decode_deadline(values: &[i64]) -> Result<Option<SystemTime>, NotifyError> {
+    match values {
+        [] => Ok(None),
+        [millis] => {
+            let millis = u64::try_from(*millis)
+                .map_err(|_| NotifyError::Invalid("invalid alarm deadline"))?;
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_millis(millis))
+                .map(Some)
+                .ok_or(NotifyError::Invalid("invalid alarm deadline"))
+        }
+        _ => Err(NotifyError::Invalid("expected at most one alarm deadline")),
+    }
+}
+
+fn schedule_error(error: zbus::Error) -> NotifyError {
+    if missing(&error) {
+        NotifyError::Unsupported(crate::Unsupported {
+            feature: crate::Feature::Schedule,
+            reason: "This desktop does not provide Tilo's durable notification scheduler.",
+        })
+    } else {
+        failed(error)
+    }
+}
+
 impl Notifier for SessionNotifier {
+    fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
+        schedule_notification(notification, at, Vec::new())
+    }
+
+    fn schedule_alarm(
+        &self,
+        notification: &Notification,
+        at: SystemTime,
+        schedule: AlarmSchedule,
+    ) -> Result<(), NotifyError> {
+        let alarm = schedule.alarm;
+        if !alarm.valid() {
+            return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
+        }
+        schedule_notification(
+            notification,
+            at,
+            vec![(
+                alarm.hour,
+                alarm.minute,
+                alarm.weekdays,
+                schedule.enabled_at_ms,
+                schedule
+                    .last_rung
+                    .map(|date| date.to_string())
+                    .unwrap_or_default(),
+            )],
+        )
+    }
+
+    fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
+        on_bus(|connection| {
+            let (dest, path, iface) = FREEDESKTOP;
+            let response = connection
+                .call_method(
+                    Some(dest),
+                    path,
+                    Some(iface),
+                    "XTiloScheduledNotifications",
+                    &(),
+                )
+                .map_err(schedule_error)?;
+            let rows: Vec<(String, i64)> = response.body().deserialize().map_err(failed)?;
+            rows.into_iter()
+                .map(|(tag, at)| {
+                    let millis = u64::try_from(at)
+                        .map_err(|_| NotifyError::Invalid("invalid stored deadline"))?;
+                    let at = SystemTime::UNIX_EPOCH
+                        .checked_add(Duration::from_millis(millis))
+                        .ok_or(NotifyError::Invalid("invalid stored deadline"))?;
+                    Ok(Scheduled { tag, at })
+                })
+                .collect()
+        })
+    }
+
+    fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
+        on_bus(|connection| {
+            let (dest, path, iface) = FREEDESKTOP;
+            let response = connection
+                .call_method(Some(dest), path, Some(iface), "XTiloScheduledAlarms", &())
+                .map_err(schedule_error)?;
+            let rows: Vec<AlarmStateWire> = response.body().deserialize().map_err(failed)?;
+            rows.into_iter()
+                .map(
+                    |(tag, (hour, minute, weekdays, enabled_at_ms), next, last, date)| {
+                        let last_rung = if date.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(
+                                    |_| NotifyError::Invalid("invalid delivered alarm date"),
+                                )?,
+                            )
+                        };
+                        Ok(AlarmState {
+                            tag,
+                            alarm: CalendarAlarm {
+                                hour,
+                                minute,
+                                weekdays,
+                            },
+                            enabled_at_ms,
+                            next_at: decode_deadline(&next)?,
+                            last_at: decode_deadline(&last)?,
+                            last_rung,
+                        })
+                    },
+                )
+                .collect()
+        })
+    }
+
+    fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
+        crate::validate_tag(tag)?;
+        let tag = tag.to_owned();
+        on_bus(move |connection| {
+            let (dest, path, iface) = FREEDESKTOP;
+            connection
+                .call_method(
+                    Some(dest),
+                    path,
+                    Some(iface),
+                    "XTiloCancelScheduledNotification",
+                    &(tag,),
+                )
+                .map(drop)
+                .map_err(schedule_error)
+        })
+    }
+
     fn show(&self, notification: &Notification) -> Result<(), NotifyError> {
         crate::validate(notification)?;
         let notification = notification.clone();

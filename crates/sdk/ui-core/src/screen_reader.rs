@@ -64,6 +64,7 @@ mod phrase {
             Role::RadioButton => ("sr-role-radio-button", "radio button"),
             Role::Switch => ("sr-role-switch", "switch"),
             Role::Slider => ("sr-role-slider", "slider"),
+            Role::Separator => ("sr-role-separator", "separator"),
             Role::SpinButton => ("sr-role-spin-button", "spin button"),
             Role::ComboBox => ("sr-role-combo-box", "combo box"),
             Role::TextInput => ("sr-role-text-input", "edit text"),
@@ -380,6 +381,14 @@ impl ScreenReader {
         self.speaker.set_voice(voice);
     }
 
+    /// Speak at the rate and in the voice the person chose in Settings.
+    pub fn configure(&mut self, settings: &settings_store::accessibility::ScreenReaderSettings) {
+        self.set_rate(settings.rate);
+        if let Some(voice) = settings.voice.engine_voice() {
+            self.set_voice(voice);
+        }
+    }
+
     /// The single funnel every utterance goes through. An interrupting push
     /// first stops in-flight speech, then drains the coalesced queue into
     /// the speaker — immediately, which keeps the `NullSpeaker` test path
@@ -685,6 +694,7 @@ pub fn is_form_field(node: &AccessNode) -> bool {
             | Role::RadioButton
             | Role::Switch
             | Role::Slider
+            | Role::Separator
             | Role::SpinButton
             | Role::ComboBox
             | Role::TextInput
@@ -713,6 +723,7 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
 mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
+    use crate::widget::TaffyTreeExt;
     use tts::NullSpeaker;
 
     fn n(role: Role) -> AccessNode {
@@ -1142,31 +1153,13 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &kids)
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
-        }
-        fn draw(
-            &mut self,
-            _s: &mut vello::Scene,
-            _t: vello::kurbo::Affine,
-            _tr: &mut crate::text_render::TextRenderer,
-            _th: &Theme,
-            _p: &crate::presence::PresenceCtx,
-        ) {
+            taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
         }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(Box::as_ref).collect()
         }
         fn name(&self) -> &'static str {
             "tw"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()

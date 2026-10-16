@@ -6,14 +6,13 @@
 //! a [`GlobalShortcutsService`] request to ask for consent and install the
 //! actual key grabs.  There is deliberately no generic D-Bus key-grab path.
 
-#[cfg(target_os = "linux")]
 use super::lifecycle::LifecycleEntry;
 #[cfg(target_os = "linux")]
 use super::lifecycle::LifecycleResource;
+use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
+#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
@@ -116,26 +115,7 @@ pub trait GlobalShortcutsService: Send + Sync {
     fn cancel_bind(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-pub struct GlobalShortcutsServiceHandle(Arc<dyn GlobalShortcutsService>);
-impl GlobalShortcutsServiceHandle {
-    pub fn new(service: Arc<dyn GlobalShortcutsService>) -> Self {
-        Self(service)
-    }
-    pub fn request_bind(
-        &self,
-        request: GlobalShortcutBindingRequest,
-        reply: oneshot::Sender<PortalResult<GlobalShortcutConsent>>,
-    ) -> PortalResult<()> {
-        self.0.request_bind(request, reply)
-    }
-    fn release_session(&self, session: &str) {
-        self.0.release_session(session)
-    }
-    pub fn cancel_bind(&self, handle: &str) {
-        self.0.cancel_bind(handle);
-    }
-}
+pub type GlobalShortcutsServiceHandle = Arc<dyn GlobalShortcutsService>;
 
 pub struct UnavailableGlobalShortcuts;
 impl GlobalShortcutsService for UnavailableGlobalShortcuts {
@@ -479,14 +459,7 @@ struct Session {
     owner: String,
     caller: PortalCaller,
     shortcuts: Vec<GlobalShortcut>,
-    #[cfg(any(test, target_os = "linux"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
+    #[cfg(target_os = "linux")]
     binding: bool,
 }
 
@@ -524,6 +497,7 @@ pub struct GlobalShortcutsHandle {
     state: Arc<Mutex<ShortcutState>>,
     lifecycle: PortalLifecycle,
     service: GlobalShortcutsServiceHandle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 impl GlobalShortcutsHandle {
@@ -559,6 +533,8 @@ impl GlobalShortcutsHandle {
             timestamp,
             edge,
         });
+        drop(state);
+        self.wake.poke();
         true
     }
 
@@ -593,14 +569,15 @@ impl GlobalShortcutsHandle {
                         preferred_trigger: None,
                     })
                     .collect(),
-                #[cfg(any(test, target_os = "linux"))]
+                #[cfg(target_os = "linux")]
                 binding: false,
             },
         );
         Self {
             state: Arc::new(Mutex::new(state)),
             lifecycle: PortalLifecycle::new(),
-            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            service: Arc::new(UnavailableGlobalShortcuts),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -650,6 +627,7 @@ pub struct GlobalShortcutsBackend {
     state: Arc<Mutex<ShortcutState>>,
     service: GlobalShortcutsServiceHandle,
     lifecycle: PortalLifecycle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 #[cfg(target_os = "linux")]
@@ -661,11 +639,7 @@ impl GlobalShortcutsBackend {
     }
 
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
-        Self::with_service(
-            ctx,
-            GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
-            lifecycle,
-        )
+        Self::with_service(ctx, Arc::new(UnavailableGlobalShortcuts), lifecycle)
     }
 
     pub fn with_service(
@@ -678,6 +652,7 @@ impl GlobalShortcutsBackend {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             service,
             lifecycle,
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -686,6 +661,7 @@ impl GlobalShortcutsBackend {
             state: self.state.clone(),
             lifecycle: self.lifecycle.clone(),
             service: self.service.clone(),
+            wake: self.wake.clone(),
         }
     }
 
@@ -701,8 +677,7 @@ impl GlobalShortcutsBackend {
             .sessions
             .get(session.as_str())
             .cloned()?;
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &record.caller.app_id, None)
+        let auth = authenticate_call(&self.ctx, &hdr, &record.caller.app_id, None)
             .await
             .ok()?;
         (record.owner == auth.owner.as_str() && record.caller == auth.caller)
@@ -726,63 +701,62 @@ impl GlobalShortcutsBackend {
         session: ObjectPath<'_>,
         app_id: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let parent_window = option_text(&options, "parent_window").unwrap_or_default();
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(
-            &self.ctx,
-            sender.as_ref(),
-            &app_id,
-            (!parent_window.is_empty()).then_some(parent_window.as_str()),
-        )
-        .await
-        else {
-            return (2, HashMap::new());
-        };
-        let key = session.to_string();
-        let entry_app_id = auth.caller.app_id.clone();
-        let inserted = self.state.lock().is_ok_and(|mut state| {
-            if state.sessions.len() >= MAX_SESSIONS || state.sessions.contains_key(&key) {
-                return false;
-            }
-            state.sessions.insert(
-                key.clone(),
-                Session {
-                    owner: auth.owner.to_string(),
-                    caller: auth.caller,
-                    shortcuts: Vec::new(),
-                    binding: false,
-                },
-            );
-            true
-        });
-        if !inserted {
-            return (2, HashMap::new());
-        }
-        let state = self.state.clone();
-        let service = self.service.clone();
-        let cleanup_path = key.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: entry_app_id,
-            resource: LifecycleResource::GlobalShortcuts,
-        };
-        let registered = self
-            .lifecycle
-            .register_session(connection, &key, entry, move |_| {
-                if let Ok(mut state) = state.lock() {
-                    state.sessions.remove(&cleanup_path);
+    ) -> Reply {
+        answer(async move {
+            let parent_window =
+                crate::portal::option::<String>(&options, "parent_window").unwrap_or_default();
+            let auth = authenticate_call(
+                &self.ctx,
+                &hdr,
+                &app_id,
+                (!parent_window.is_empty()).then_some(parent_window.as_str()),
+            )
+            .await
+            .or_fail()?;
+            let key = session.to_string();
+            let entry_app_id = auth.caller.app_id.clone();
+            let inserted = self.state.lock().is_ok_and(|mut state| {
+                if state.sessions.len() >= MAX_SESSIONS || state.sessions.contains_key(&key) {
+                    return false;
                 }
-                service.release_session(&cleanup_path);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            if let Ok(mut state) = self.state.lock() {
-                state.sessions.remove(&key);
+                state.sessions.insert(
+                    key.clone(),
+                    Session {
+                        owner: auth.owner.to_string(),
+                        caller: auth.caller,
+                        shortcuts: Vec::new(),
+                        binding: false,
+                    },
+                );
+                true
+            });
+            ensure(inserted)?;
+            let state = self.state.clone();
+            let service = self.service.clone();
+            let cleanup_path = key.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: entry_app_id,
+                resource: LifecycleResource::GlobalShortcuts,
+            };
+            let registered = self
+                .lifecycle
+                .register_session(connection, &key, entry, move |_| {
+                    if let Ok(mut state) = state.lock() {
+                        state.sessions.remove(&cleanup_path);
+                    }
+                    service.release_session(&cleanup_path);
+                })
+                .await;
+            if !matches!(registered, Ok(true)) {
+                if let Ok(mut state) = self.state.lock() {
+                    state.sessions.remove(&key);
+                }
+                return Err(Ended::Failed);
             }
-            return (2, HashMap::new());
-        }
-        (0, HashMap::new())
+            Ok(Results::new())
+        })
+        .await
     }
 
     async fn bind_shortcuts(
@@ -794,153 +768,136 @@ impl GlobalShortcutsBackend {
         shortcuts: Vec<ShortcutWire>,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let connection = sig.connection();
-        let Some((auth, current)) = self.authenticate_session(hdr, &session).await else {
-            return (2, HashMap::new());
-        };
-        let Some(shortcuts) = decode_shortcuts(shortcuts) else {
-            return (2, HashMap::new());
-        };
-        if !valid_parent(&parent_window) {
-            return (2, HashMap::new());
-        }
-        let key = session.to_string();
-        let marked = self.state.lock().is_ok_and(|mut state| {
-            state.sessions.get_mut(&key).is_some_and(|record| {
-                if record.owner != auth.owner.as_str()
-                    || record.caller != auth.caller
-                    || record.binding
-                {
-                    false
-                } else {
-                    record.binding = true;
-                    true
-                }
-            })
-        });
-        if !marked {
-            return (2, HashMap::new());
-        }
-        let request_path = handle.to_string();
-        let state = self.state.clone();
-        let service = self.service.clone();
-        let cleanup_session = key.clone();
-        let cleanup_request = request_path.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        let registered = self
-            .lifecycle
-            .register_request(connection, &request_path, entry, move |_| {
+    ) -> Reply {
+        answer(async move {
+            let connection = sig.connection();
+            let Some((auth, current)) = self.authenticate_session(hdr, &session).await else {
+                return Err(Ended::Failed);
+            };
+            let shortcuts = decode_shortcuts(shortcuts).or_fail()?;
+            ensure(valid_parent(&parent_window))?;
+            let key = session.to_string();
+            let marked = self.state.lock().is_ok_and(|mut state| {
+                state.sessions.get_mut(&key).is_some_and(|record| {
+                    if record.owner != auth.owner.as_str()
+                        || record.caller != auth.caller
+                        || record.binding
+                    {
+                        false
+                    } else {
+                        record.binding = true;
+                        true
+                    }
+                })
+            });
+            ensure(marked)?;
+            let request_path = handle.to_string();
+            let state = self.state.clone();
+            let service = self.service.clone();
+            let cleanup_session = key.clone();
+            let cleanup_request = request_path.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
+            };
+            let cancel = move |_: &LifecycleEntry| {
                 if let Ok(mut state) = state.lock() {
                     if let Some(record) = state.sessions.get_mut(&cleanup_session) {
                         record.binding = false;
                     }
                 }
                 service.cancel_bind(&cleanup_request);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            if let Ok(mut state) = self.state.lock() {
-                if let Some(record) = state.sessions.get_mut(&key) {
-                    record.binding = false;
-                }
-            }
-            return (2, HashMap::new());
-        }
-        let request = GlobalShortcutBindingRequest {
-            handle: request_path.clone(),
-            session: key.clone(),
-            app_id: current.caller.app_id.clone(),
-            parent_window,
-            shortcuts: shortcuts.clone(),
-        };
-        let (reply, rx) = oneshot::channel();
-        let outcome = match self.service.request_bind(request, reply) {
-            PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
-            PortalResult::Cancelled => PortalResult::Cancelled,
-            PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
-            PortalResult::Failed(error) => PortalResult::Failed(error),
-        };
-        let approved = match outcome {
-            PortalResult::Success(GlobalShortcutConsent::Allowed(bindings)) => {
-                let requested: HashSet<_> = shortcuts
-                    .iter()
-                    .map(|shortcut| shortcut.id.as_str())
-                    .collect();
-                let mut seen = HashSet::new();
-                if bindings.iter().all(|shortcut| {
-                    requested.contains(shortcut.id.as_str())
-                        && seen.insert(shortcut.id.clone())
-                        && shortcut
-                            .preferred_trigger
-                            .as_deref()
-                            .and_then(canonical_accelerator)
-                            .is_some()
-                }) {
-                    Some(bindings)
-                } else {
-                    None
-                }
-            }
-            PortalResult::Success(GlobalShortcutConsent::Denied) => Some(Vec::new()),
-            PortalResult::Cancelled | PortalResult::Unavailable(_) | PortalResult::Failed(_) => {
-                None
-            }
-        };
-        let Some(approved) = approved else {
-            if let Ok(mut state) = self.state.lock() {
-                if let Some(record) = state.sessions.get_mut(&key) {
-                    record.binding = false;
-                }
-            }
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
+            };
+            let outcome = self
+                .lifecycle
+                .with_request(connection, &request_path, entry, cancel, async {
+                    let request = GlobalShortcutBindingRequest {
+                        handle: request_path.clone(),
+                        session: key.clone(),
+                        app_id: current.caller.app_id.clone(),
+                        parent_window,
+                        shortcuts: shortcuts.clone(),
+                    };
+                    let (reply, rx) = oneshot::channel();
+                    let outcome = match self.service.request_bind(request, reply) {
+                        PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+                        PortalResult::Cancelled => PortalResult::Cancelled,
+                        PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+                        PortalResult::Failed(error) => PortalResult::Failed(error),
+                    };
+                    let approved = match outcome {
+                        PortalResult::Success(GlobalShortcutConsent::Allowed(bindings)) => {
+                            let requested: HashSet<_> = shortcuts
+                                .iter()
+                                .map(|shortcut| shortcut.id.as_str())
+                                .collect();
+                            let mut seen = HashSet::new();
+                            if bindings.iter().all(|shortcut| {
+                                requested.contains(shortcut.id.as_str())
+                                    && seen.insert(shortcut.id.clone())
+                                    && shortcut
+                                        .preferred_trigger
+                                        .as_deref()
+                                        .and_then(canonical_accelerator)
+                                        .is_some()
+                            }) {
+                                Some(bindings)
+                            } else {
+                                None
+                            }
+                        }
+                        PortalResult::Success(GlobalShortcutConsent::Denied) => Some(Vec::new()),
+                        PortalResult::Cancelled
+                        | PortalResult::Unavailable(_)
+                        | PortalResult::Failed(_) => None,
+                    };
+                    let approved = approved.or_fail()?;
+                    let approved: HashMap<_, _> = approved
+                        .into_iter()
+                        .map(|shortcut| (shortcut.id, shortcut.preferred_trigger))
+                        .collect();
+                    let selected: Vec<_> = shortcuts
+                        .into_iter()
+                        .filter_map(|mut shortcut| {
+                            let trigger = approved.get(&shortcut.id)?.clone()?;
+                            shortcut.preferred_trigger = Some(trigger);
+                            Some(shortcut)
+                        })
+                        .collect();
+                    let wire = selected
+                        .iter()
+                        .map(GlobalShortcut::wire)
+                        .collect::<Vec<_>>();
+                    let stored = self.state.lock().is_ok_and(|mut state| {
+                        state.sessions.get_mut(&key).is_some_and(|record| {
+                            if record.owner != auth.owner.as_str() || record.caller != auth.caller {
+                                false
+                            } else {
+                                record.shortcuts = selected;
+                                record.binding = false;
+                                true
+                            }
+                        })
+                    });
+                    if !stored {
+                        self.service.release_session(&key);
+                        return Err(Ended::Failed);
+                    }
+                    let _ = Self::shortcuts_changed(&sig, session, wire).await;
+                    Ok(Results::new())
+                })
                 .await;
-            return (2, HashMap::new());
-        };
-        let approved: HashMap<_, _> = approved
-            .into_iter()
-            .map(|shortcut| (shortcut.id, shortcut.preferred_trigger))
-            .collect();
-        let selected: Vec<_> = shortcuts
-            .into_iter()
-            .filter_map(|mut shortcut| {
-                let trigger = approved.get(&shortcut.id)?.clone()?;
-                shortcut.preferred_trigger = Some(trigger);
-                Some(shortcut)
-            })
-            .collect();
-        let wire = selected
-            .iter()
-            .map(GlobalShortcut::wire)
-            .collect::<Vec<_>>();
-        let stored = self.state.lock().is_ok_and(|mut state| {
-            state.sessions.get_mut(&key).is_some_and(|record| {
-                if record.owner != auth.owner.as_str() || record.caller != auth.caller {
-                    false
-                } else {
-                    record.shortcuts = selected;
-                    record.binding = false;
-                    true
-                }
-            })
-        });
-        if !stored {
-            self.service.release_session(&key);
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        let _ = Self::shortcuts_changed(&sig, session, wire).await;
-        self.lifecycle
-            .complete_request_object(connection, &request_path)
-            .await;
-        (0, HashMap::new())
+            // A bind that did not complete frees the session for the next one.
+            if outcome.is_err()
+                && let Ok(mut state) = self.state.lock()
+                && let Some(record) = state.sessions.get_mut(&key)
+            {
+                record.binding = false;
+            }
+            outcome
+        })
+        .await
     }
 
     async fn list_shortcuts(
@@ -948,21 +905,22 @@ impl GlobalShortcutsBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         session: ObjectPath<'_>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let Some((_, record)) = self.authenticate_session(hdr, &session).await else {
-            return (2, HashMap::new());
-        };
-        let mut results = HashMap::new();
-        let wire = record
-            .shortcuts
-            .iter()
-            .map(GlobalShortcut::wire)
-            .collect::<Vec<_>>();
-        let Ok(value) = OwnedValue::try_from(Value::new(wire)) else {
-            return (2, HashMap::new());
-        };
-        results.insert("shortcuts".into(), value);
-        (0, results)
+    ) -> Reply {
+        answer(async move {
+            let Some((_, record)) = self.authenticate_session(hdr, &session).await else {
+                return Err(Ended::Failed);
+            };
+            let mut results = HashMap::new();
+            let wire = record
+                .shortcuts
+                .iter()
+                .map(GlobalShortcut::wire)
+                .collect::<Vec<_>>();
+            let value = OwnedValue::try_from(Value::new(wire)).or_fail()?;
+            results.insert("shortcuts".into(), value);
+            Ok(results)
+        })
+        .await
     }
 
     async fn configure_shortcuts(
@@ -1109,10 +1067,13 @@ pub fn spawn_signal_emitter(
         let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));
         loop {
-            interval.tick().await;
-            for activation in handle.drain_activations() {
+            let activations = handle.drain_activations();
+            if activations.is_empty() {
+                handle.wake.wait().await;
+                continue;
+            }
+            for activation in activations {
                 let Ok(session) = ObjectPath::try_from(activation.session.as_str()) else {
                     continue;
                 };
@@ -1154,8 +1115,8 @@ fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
             if !valid_id(&id) || !ids.insert(id.clone()) {
                 return None;
             }
-            let description = option_text(&options, "description");
-            let preferred_trigger = option_text(&options, "preferred_trigger");
+            let description = crate::portal::option::<String>(&options, "description");
+            let preferred_trigger = crate::portal::option::<String>(&options, "preferred_trigger");
             if description.as_deref().is_some_and(|text| !valid_text(text))
                 || preferred_trigger
                     .as_deref()
@@ -1170,13 +1131,6 @@ fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
             })
         })
         .collect()
-}
-#[cfg(any(test, target_os = "linux"))]
-fn option_text(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)
-        .and_then(|value| value.try_clone().ok())
-        .and_then(|value| String::try_from(value).ok())
 }
 #[cfg(any(test, target_os = "linux"))]
 fn valid_id(value: &str) -> bool {
@@ -1553,6 +1507,7 @@ mod tests {
                         description: None,
                         preferred_trigger: None,
                     }],
+                    #[cfg(target_os = "linux")]
                     binding: false,
                 },
             );
@@ -1579,7 +1534,7 @@ mod tests {
                 Some("CTRL+SHIFT+KEYK")
             );
             assert!(canonical_accelerator("k").is_none());
-            assert!(is_reserved_accelerator("SUPER+KEYK", &defaults()));
+            assert!(is_reserved_accelerator("SUPER+SPACE", &defaults()));
             assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYK", &defaults()));
             let modifiers = Modifiers::default();
             assert!(accelerator_for_code("KeyK", modifiers).is_none());
@@ -1596,7 +1551,7 @@ mod tests {
                     GlobalShortcut {
                         id: "shell".into(),
                         description: None,
-                        preferred_trigger: Some("Super+K".into()),
+                        preferred_trigger: Some("Super+Space".into()),
                     },
                     GlobalShortcut {
                         id: "ok".into(),
@@ -1662,11 +1617,19 @@ mod tests {
             shortcuts: vec![GlobalShortcut {
                 id: "talk".into(),
                 description: None,
-                preferred_trigger: Some("Ctrl+Shift+T".into()),
+                preferred_trigger: Some("Ctrl+Shift+M".into()),
             }],
         };
+        assert!(
+            service.is_reserved("CTRL+SHIFT+KEYT"),
+            "reopen is owned by the shell"
+        );
+        assert!(
+            !service.is_reserved("CTRL+SHIFT+KEYM"),
+            "the grant fixture is unreserved"
+        );
         assert_eq!(service.install_approved(&request), vec!["talk"]);
-        let key = PhysicalKey::Code(KeyCode::KeyT);
+        let key = PhysicalKey::Code(KeyCode::KeyM);
         let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert!(service.claims(&key, chord));
         assert!(!service.claims(&key, Modifiers::from(ModifiersState::CONTROL)));
@@ -1707,7 +1670,6 @@ mod tests {
             "SUPER+PAGEUP",
             "SUPER+ESCAPE",
             "SUPER+SPACE",
-            "SUPER+KEYK",
             "CTRL+TAB",
             "SUPER+TAB",
             "SUPER+ARROWLEFT",
@@ -1782,7 +1744,8 @@ mod tests {
         GlobalShortcutsHandle {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             lifecycle: PortalLifecycle::new(),
-            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            service: Arc::new(UnavailableGlobalShortcuts),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 }

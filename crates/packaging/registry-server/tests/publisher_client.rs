@@ -4,7 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -98,7 +97,7 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
         let editor = package(&dir, &key, "com.example.editor", "x86_64 = \"v3\"");
         let editor_arm = package(&dir, &key, "com.example.editor", "aarch64 = \"aarch64\"");
         let builds = [editor.clone(), editor_arm];
-        let refused = registry_client::publish(&client, &key, &builds, None, None).unwrap_err();
+        let refused = publish(&client, &key, &builds).unwrap_err();
         assert!(format!("{refused:#}").contains("403"), "{refused:#}");
 
         let status = registry_client::apply(
@@ -112,20 +111,20 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
         )
         .unwrap();
         assert_eq!(status["status"], "pending");
-        applications::approve(&storage, &pubkey, "owner", unix_now(), &proofs).unwrap();
+        applications::approve(&storage, &pubkey, "owner", tilo_clock::unix_now(), &proofs).unwrap();
         assert_eq!(
             client.application(&pubkey).unwrap().unwrap()["status"],
             "approved"
         );
 
         let outside = package(&dir, &key, "org.example.editor", "x86_64 = \"v3\"");
-        let rejected = registry_client::publish(&client, &key, &[outside], None, None).unwrap_err();
+        let rejected = publish(&client, &key, &[outside]).unwrap_err();
         assert!(
             format!("{rejected:#}").contains("outside this publisher's verified namespaces"),
             "{rejected:#}"
         );
 
-        let published = registry_client::publish(&client, &key, &builds, None, None).unwrap();
+        let published = publish(&client, &key, &builds).unwrap();
         assert_eq!(published.len(), 2);
         assert!(
             published
@@ -147,7 +146,7 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
             .entry
             .versions
             .iter()
-            .map(|version| version.target.architecture.as_str())
+            .map(|version| version.tapp().unwrap().target.architecture.as_str())
             .collect();
         architectures.sort_unstable();
         assert_eq!(
@@ -188,7 +187,7 @@ fn a_release_before_review_extends_the_waiting_request(
         "only the publisher reads its pending entry"
     );
     let next = release(dir, key, "com.example.editor", "x86_64 = \"v3\"", "1.1.0");
-    let again = registry_client::publish(client, key, &[next], None, None).unwrap();
+    let again = publish(client, key, &[next]).unwrap();
     assert_eq!(
         again.first().and_then(|build| build.action),
         Some(registry_types::EntryAction::Add),
@@ -201,7 +200,7 @@ fn a_release_before_review_extends_the_waiting_request(
         .map(|version| {
             (
                 version.version.as_str(),
-                version.target.architecture.as_str(),
+                version.tapp().unwrap().target.architecture.as_str(),
             )
         })
         .collect();
@@ -216,9 +215,11 @@ fn a_release_before_review_extends_the_waiting_request(
     );
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+fn publish(
+    client: &RegistryClient,
+    key: &SigningKey,
+    builds: &[Vec<u8>],
+) -> anyhow::Result<Vec<registry_client::Published>> {
+    let retention = registry_types::retention::RetentionPolicy::default();
+    registry_client::publish(client, key, builds, None, None, &retention)
 }

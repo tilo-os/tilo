@@ -23,37 +23,39 @@ path = "src/android.rs"
 crate-type = ["cdylib"]
 required-features = ["android"]
 
+# Input→display latency on an owned 27-note notebook; see its header.
+[[example]]
+name = "notes-latency"
+path = "examples/notes-latency.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 android = []
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-# Single-writer custody of a notebook directory.
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
-tilo-app-state = { path = "../../crates/system/app-state" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 # Page bodies are rich text, edited in the SDK rich-text editor.
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
+base64.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
+# A pasted or dropped image larger than a notebook asset is re-encoded smaller.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tempfile.workspace = true
 url.workspace = true
 vello.workspace = true
@@ -61,8 +63,14 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+# Decides the changes Notes makes against its committed surface, as receivers do.
+collab-types = { path = "../../crates/collab/collab-types" }
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Mounts Notes in the desktop surface the browser desktop hosts apps in.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"

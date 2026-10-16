@@ -13,23 +13,29 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+hex.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
+tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
+unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
 # `$HOME/.config`), shared with every other reader of the settings file.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-# Directory watch behind `watch_settings`; only long-lived readers opt in.
-notify = { workspace = true, optional = true }
+# The sections' types as models, so an app edits them by path.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [features]
-watch = ["dep:notify"]
+# Directory watch behind `watch_settings`; only long-lived readers opt in.
+watch = ["tilo-files/watch"]
+model = ["dep:tilo-resource"]
 
 [dev-dependencies]
-tilo-atomic-file = { path = "../atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

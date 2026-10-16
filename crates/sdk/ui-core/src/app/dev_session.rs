@@ -11,10 +11,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::RouteSnapshot;
 
-/// Directory set by `tilo-app dev`. The checkpoint file inside it is
-/// `checkpoint.bin`.
-pub const DEV_SESSION_ENV: &str = "TILO_DEV_SESSION";
-
 const DEV_CHECKPOINT_VERSION: u32 = 1;
 const CHECKPOINT_FILE: &str = "checkpoint.bin";
 
@@ -46,7 +42,7 @@ impl App {
         if let Some(route) = checkpoint.route.as_ref() {
             self.root_widget.restore_dev_route(route);
             let root = self.state.root.clone();
-            self.root_widget.sync(&mut self.state.doc, &root);
+            self.root_widget.sync(&self.state.doc, &root);
         }
         Some(frozen.view)
     }
@@ -90,16 +86,10 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     replace_file(&dir.join(CHECKPOINT_FILE), &bytes)
 }
 
-/// Write `bytes` beside `destination`, then rename them over it, so a reader
-/// never sees a partial file.
+/// Replace `destination` atomically, so a reader never sees a partial file.
 #[cfg(any(feature = "native", test))]
 fn replace_file(destination: &Path, bytes: &[u8]) -> bool {
-    let mut temporary = destination.as_os_str().to_os_string();
-    temporary.push(".partial");
-    if std::fs::write(&temporary, bytes).is_err() {
-        return false;
-    }
-    std::fs::rename(&temporary, destination).is_ok()
+    tilo_files::native::atomic::write(destination, bytes).is_ok()
 }
 
 /// Appended to a reloaded library's path for the file that records where that
@@ -309,30 +299,8 @@ impl crate::widget::Widget for DevCaretField {
         node
     }
 
-    fn apply_layout(
-        &mut self,
-        _taffy: &taffy::TaffyTree<()>,
-        _node: taffy::NodeId,
-        _origin: vello::kurbo::Point,
-    ) {
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &str {
         "DevCaretField"
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 
     fn is_focusable(&self) -> bool {
@@ -394,7 +362,7 @@ fn dev_checkpoint_restores_document_and_route() {
                 caret: String::new(),
             }))
         } else {
-            Ok(Box::new(Button::new(route, route, None)))
+            Ok(Box::new(Button::new(route, route)))
         }
     }
     let router = Router::new("home", ["home", "settings"], &theme, screen).unwrap();
@@ -409,7 +377,7 @@ fn dev_checkpoint_restores_document_and_route() {
         future: Vec::new(),
     });
     let root = app.state.root.clone();
-    app.root_widget.sync(&mut app.state.doc, &root);
+    app.root_widget.sync(&app.state.doc, &root);
     app.autofocus_first = true;
     app.init_layout();
     let focused = app.focused_node.expect("settings caret field is focused");

@@ -1,0 +1,46 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "firewall.config"
+label = "Firewall"
+version = 1
+fields = [
+  { path = "enabled", type = "bool", readonly = true },
+  { path = "panic_mode", type = "bool", readonly = true },
+  { path = "default_zone", type = "ZoneKind" },
+  { path = "zones", type = "BTreeMap<String, StoredZone>" },
+]
+
+[[resources.verbs]]
+id = "start"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "stop"
+destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "enter-panic-mode"
+destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "exit-panic-mode"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "delete-rule"
+kind = "undoable"
+params = [
+  { name = "zone", required = true, schema = { type = "string", enum = ["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"] } },
+  { name = "rule", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import"
+kind = "undoable"
+params = [
+  { name = "config", required = true, schema = {} },
+]
+

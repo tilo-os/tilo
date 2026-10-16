@@ -110,6 +110,51 @@ pub async fn start_host_plain(
             },
             allowed_origins: Vec::new(),
             plain_listen,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
+        })
+        .await
+        .unwrap();
+    TestHost { relay, web }
+}
+
+/// A host that governs rooms rather than one pinned workspace, serving
+/// browsers on an ephemeral port. With `keep_web_identity` its development
+/// certificate is stored under `state`, so a restarted host presents the
+/// same one.
+pub async fn start_room_host(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    keep_web_identity: bool,
+) -> TestHost {
+    let relay = Relay::start(
+        tilo_relay::RelayConfig {
+            state_root: state.to_path_buf(),
+            ..Default::default()
+        },
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host.key.clone(),
+            device_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let web = relay
+        .serve_web(WebConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            tls: TlsSource::Development {
+                hosts: vec!["localhost".into(), "127.0.0.1".into()],
+                store: keep_web_identity.then(|| state.join("web-dev-identity")),
+            },
+            allowed_origins: Vec::new(),
+            plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -224,6 +269,7 @@ pub fn start_peer_with_store(
             cert,
             host_cert,
             revocations: RevocationList::new(),
+            watching: false,
         },
         Arc::new(key),
         store,
@@ -236,6 +282,19 @@ pub async fn ready(peers: &[&PeerHandle]) {
             .iter()
             .all(|peer| PeerSnapshot::from_status(&peer.status()).phase == "ready")
             .then_some(())
+    })
+    .await;
+}
+
+/// Wait until the room's steward admitted `peer` to the note's channel.
+pub async fn admitted(peer: &PeerHandle) {
+    wait_for("the steward to admit the page", || {
+        let ready = peer
+            .status()
+            .channels
+            .lines()
+            .any(|line| line.starts_with("route ") && line.contains(": ready;"));
+        async move { ready.then_some(()) }
     })
     .await;
 }

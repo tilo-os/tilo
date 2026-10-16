@@ -20,13 +20,16 @@ pub mod about;
 pub mod accessibility;
 pub mod accounts;
 pub mod agent_models;
+pub(crate) mod agent_vertex;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;
 pub mod device_mesh;
+pub mod disk_unlock;
 pub mod display;
 pub mod display_arrangement;
 pub mod keyboard_shortcuts;
+pub mod model;
 pub mod mouse_keyboard;
 pub mod network;
 pub mod notifications;
@@ -41,62 +44,96 @@ pub mod time_date;
 pub mod updates;
 pub mod users;
 
-/// Semantic provenance for a pane whose bound controls exclusively edit
-/// durable preferences. Callers pass a latch set only while that pane handles
-/// an input event, so initial seeding, status refreshes, and passive
-/// synchronisation remain unstamped.
-///
-/// Mixed command/status panes deliberately do not use this helper: accounts,
-/// users, network, Bluetooth, audio, displays, printers, storage, and updates
-/// combine durable operations with transient form, progress, refresh, or
-/// confirmation keys. Notifications already dispatches durable mutations via
-/// `SettingsAction`. About and Permissions have no preference mutations.
-pub(crate) fn preference_commit_context(
-    pending: bool,
-    slug: &str,
-    label: &str,
-    action_label: &str,
-) -> Option<ui::tilo_actions::ActionContext> {
-    pending.then(|| {
-        ui::tilo_actions::ActionContext::for_resource(
-            action_label,
-            format!("settings.preference:{slug}"),
-            "settings.preference-pane",
-            label,
-        )
-        .with_app("so.tilo.settings", "Settings")
-    })
+/// A pane's own node: a full-width column around its composed `child`,
+/// registered for `pane`.
+pub(crate) fn pane_node(
+    taffy: &mut ui::taffy::TaffyTree<()>,
+    child: ui::taffy::NodeId,
+    node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    pane: &mut (dyn ui::widget::Widget + 'static),
+) -> ui::taffy::NodeId {
+    use ui::widget::TaffyTreeExt as _;
+    let style = ui::taffy::Style {
+        display: ui::taffy::Display::Flex,
+        flex_direction: ui::taffy::FlexDirection::Column,
+        size: ui::taffy::Size {
+            width: ui::taffy::Dimension::percent(1.0),
+            height: ui::taffy::Dimension::auto(),
+        },
+        ..Default::default()
+    };
+    taffy.widget_node(style, &[child], node_map, pane)
 }
 
-/// The "Sound" category renders the audio pane.
-pub mod sound {
-    pub use super::audio::build;
+/// `build_layout` for a pane whose content is `self.build_composition()`
+/// held in `self.composed`, wrapped in [`pane_node`], plus forwarding the
+/// rest of the widget to that composition.
+macro_rules! composed_pane {
+    () => {
+        fn build_layout(
+            &mut self,
+            taffy: &mut ui::taffy::TaffyTree<()>,
+            theme: &ui::theme::Theme,
+            node_map: &mut std::collections::HashMap<
+                ui::taffy::NodeId,
+                *mut dyn ui::widget::Widget,
+            >,
+        ) -> ui::taffy::NodeId {
+            let composition = self.build_composition();
+            let child = self
+                .composed
+                .build_layout(composition, taffy, theme, node_map);
+            crate::panes::pane_node(taffy, child, node_map, self)
+        }
+
+        ui::forward_to_composed!(composed);
+    };
+}
+pub(crate) use composed_pane;
+
+/// Why this process cannot tell which programs the device has installed,
+/// when it cannot: no directory on `PATH` is visible to it. A lookup would
+/// then report every program as missing, which says nothing about the device.
+pub(crate) fn installed_programs_unreadable() -> Option<String> {
+    programs_unreadable_on(std::env::var_os("PATH").as_deref())
+}
+
+fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
+    let Some(path) = path else {
+        return Some("PATH is not set".to_string());
+    };
+    if std::env::split_paths(path).any(|dir| dir.is_dir()) {
+        None
+    } else {
+        Some(format!(
+            "none of {} is visible to Settings",
+            path.to_string_lossy()
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A `PATH` none of whose directories is visible cannot say a program is
+    /// missing; one visible directory can.
     #[test]
-    fn preference_context_exists_only_for_a_pending_user_edit() {
+    fn programs_are_unreadable_only_when_no_path_directory_is_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("usr-bin");
+        let unreadable = programs_unreadable_on(Some(hidden.as_os_str()));
         assert!(
-            preference_commit_context(false, "power", "Power", "Change power preferences")
-                .is_none(),
-            "seeding and passive refreshes stay out of semantic history"
+            unreadable
+                .as_deref()
+                .is_some_and(|error| error.ends_with("is visible to Settings")),
+            "{unreadable:?}"
         );
-        let context = preference_commit_context(true, "power", "Power", "Change power preferences")
-            .expect("pending preference context");
-        assert_eq!(context.action_label, "Change power preferences");
+        let mixed = std::env::join_paths([hidden.as_path(), dir.path()]).unwrap();
+        assert_eq!(programs_unreadable_on(Some(&mixed)), None);
         assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some("settings.preference:power")
-        );
-        assert_eq!(
-            context.app.as_ref().map(|app| app.id.as_str()),
-            Some("so.tilo.settings")
+            programs_unreadable_on(None).as_deref(),
+            Some("PATH is not set")
         );
     }
 }

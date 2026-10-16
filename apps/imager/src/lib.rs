@@ -12,13 +12,11 @@
     clippy::items_after_statements,
     clippy::large_enum_variant,
     clippy::large_stack_arrays,
-    clippy::manual_clamp,
     clippy::manual_let_else,
     clippy::many_single_char_names,
     clippy::match_wildcard_for_single_variants,
     clippy::missing_const_for_thread_local,
     clippy::missing_errors_doc,
-    clippy::needless_borrow,
     clippy::needless_continue,
     clippy::needless_lifetimes,
     clippy::needless_option_as_deref,
@@ -32,7 +30,6 @@
     clippy::significant_drop_tightening,
     clippy::similar_names,
     clippy::struct_excessive_bools,
-    clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
     clippy::too_many_lines,
     clippy::type_complexity,
@@ -52,7 +49,7 @@
 //! Disk Imager — Tilo native app for writing an OS image to a drive, and for
 //! installing Tilo (CRDT-native, built on the `ui` toolkit).
 //!
-//! A single guided **wizard** with a six-station step indicator, covering both
+//! A single guided **wizard** with a six-step stepper, covering both
 //! "write this image to a USB stick" and "install Tilo onto a disk":
 //!
 //!   1. **Source** — pick a local `.iso` / `.img` via the platform's native
@@ -76,13 +73,13 @@
 //! authentication for a short-lived helper. The wizard, downloads, and
 //! customization remain in the user's unprivileged session.
 //!
-//! `app_root()` is the live integration point; `app_root_for_shot()` stages
-//! only peer-local capture state before returning the same widget. The live binary sets
-//! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe and the
-//! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
-//! screenshot is deterministic offline. Immediately before writing, the live
-//! inventory is read again and its stable device identity, size, and system-
-//! disk status must still match the confirmed target.
+//! [`ImagerShell`] is the app: the wizard, the guided setup (`--setup`) and
+//! the folder imports (`--import-folders`) are its flows over one resource. A
+//! window someone uses probes real drives and starts genuinely blank; a
+//! screenshot scenario stages sample content so it is deterministic offline.
+//! Immediately before writing, the live inventory is read again and its
+//! stable device identity, size, and system-disk status must still match the
+//! confirmed target.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -99,226 +96,33 @@
     test,
     allow(
         clippy::string_slice,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod customize;
-pub mod doc;
-mod export_dialog;
+pub mod customize_image;
 pub mod handoff;
+mod helpers;
 mod host;
 pub mod model;
+mod page;
 pub mod probe;
 pub mod profile;
 pub mod profile_cli;
 pub mod release;
+pub mod resource;
 pub mod setup;
 pub mod write;
 pub mod write_setup;
 
-/// The imager's spacing rhythm (HIG §7b): the same relationship always gets
-/// the same step, and every step is a token of `Spacing::BASE` — the
-/// compile-time reference the wizard's immediate-mode hit layout and the
-/// setup pages' retained compositions both need, because neither receives a
-/// `Theme` when its geometry is declared. Declared once here; every view
-/// imports the steps it uses instead of restating them.
-pub(crate) mod rhythm {
-    use ui::tokens::Spacing;
-    const S: Spacing = Spacing::BASE;
-    /// A label and its control; an icon and its label; two lines of one block.
-    pub const LABEL: f64 = S.s1 as f64;
-    /// Related rows that read as one group: a title and its explanation, a
-    /// section caption and its list, help copy under a field.
-    pub const RELATED: f64 = S.s2 as f64;
-    /// Siblings of equal weight: list rows, cards in a list, the two footer
-    /// actions, a card and the banner that follows it.
-    pub const SIBLING: f64 = S.s3 as f64;
-    /// Section padding: the inset inside a card or row; the compact page gutter.
-    pub const SECTION: f64 = S.s4 as f64;
-    /// Before the next group; the page gutter.
-    pub const GROUP: f64 = S.s6 as f64;
-    /// Between major regions: the step rail and the step body, the progress
-    /// ring and its bars, the hero disc and its headline.
-    pub const REGION: f64 = S.s8 as f64;
-    /// The Done hero's stand-off from the content top.
-    pub const HERO: f64 = S.s16 as f64;
-
-    /// The same steps as `f32`, for the retained setup pages whose taffy
-    /// styles and `Column` / `Row` gaps take `f32`.
-    pub mod px {
-        /// A title and its explanation.
-        pub const RELATED: f32 = super::RELATED as f32;
-        /// Siblings: the cards of one section, the page's own bands.
-        pub const SIBLING: f32 = super::SIBLING as f32;
-        /// Before the next group of the page; between the saved folders of
-        /// one card.
-        pub const GROUP: f32 = super::GROUP as f32;
-        /// The page gutter, all four sides.
-        pub const PAGE_GUTTER: f32 = super::GROUP as f32;
-        /// The scrollbar's footprint beside the content.
-        pub const SCROLLBAR_GUTTER: f32 = super::SECTION as f32;
-        /// A sticky footer's clean edge inside the scroll viewport.
-        pub const FOOTER_INSET: f32 = super::LABEL as f32;
-    }
-}
-
-/// Below a 520 px content width — scaled by the text scale, so a 1000 px
-/// column at 2× (the room of a 500 px one) counts as compact too — the
-/// wizard's steps and the customization panel take their compact form. One
-/// decision for the chrome, the heading floor and the form's column split, so
-/// no width exists where one is compact and the other is not.
-pub(crate) fn compact_content(width: f64, text_scale: f64) -> bool {
-    width < 520.0 * text_scale
-}
-
 pub use app::ImagerApp;
-pub use customize::CustomizePanel;
 pub use model::{
-    Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
-    TargetKind,
+    Action, Filesystem, InstallProfile, Source, SourceKind, Step, TargetDrive, TargetKind,
 };
 
-use ui::widget::Widget;
+pub use resource::{Imager, ImagerShell};
 
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(ImagerApp::new())
-}
-
-/// Build the same widget as [`app_root`], with only peer-local shot state
-/// staged outside the collaborative document.
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    if scenario.starts_with("import-") {
-        return Box::new(setup::import_view::ImportApp::for_shot(scenario));
-    }
-    if scenario.starts_with("setup-") {
-        return Box::new(setup::view::SetupApp::for_shot(scenario));
-    }
-    let mut app = ImagerApp::new();
-    app.seed_local_shot_state(scenario);
-    if scenario == "confirm" {
-        app.seed_confirmation_for_shot("sdb");
-    } else if scenario == "export" {
-        app.seed_export_for_shot();
-    } else if scenario == "customize-timezone-open" {
-        app.shot_open_customize_timezone();
-    }
-    Box::new(app)
-}
-
-/// The ordered `--shots` scenarios: one per meaningful wizard station, named so
-/// the offscreen renderer can walk them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &[
-    "source",
-    "source-empty",
-    "drive",
-    "drive-empty",
-    "drive-internal",
-    "customize",
-    "customize-timezone-open",
-    "export",
-    "confirm",
-    "progress",
-    "done",
-    "done-failed",
-    "setup-experience-checking",
-    "setup-experience",
-    "setup-experience-failed",
-    "setup-folders-copy",
-    "setup-folders-connected",
-    "setup-folders-later",
-    "setup-review",
-    "setup-desktop-installed",
-    "setup-full-review",
-    "setup-full-restart",
-    "import-first-login",
-    "import-first-login-waiting",
-    "import-first-login-later",
-    "import-progress",
-    "import-retry-progress",
-    "import-partial",
-    "import-conflict",
-    "import-complete",
-    "import-issue-pages",
-];
-
-/// Pose the document for one named `--shots` scenario. Sample content is seeded
-/// here via `ImagerDoc::seed_demo` — never by the live app — so a screenshot
-/// is the only place this state is set. Unknown names fall back to the source
-/// step.
-pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
-    use crate::doc::ImagerDoc;
-
-    // The empty-drive scenario is the one case with no sample inventory: seed an
-    // empty document so the honest "insert a drive" state renders.
-    if scenario == "drive-empty" {
-        seed_scenario_drive_empty(doc);
-        return;
-    }
-    // The Source step as the live app actually opens it: nothing browsed yet,
-    // no release known to be on this machine. This is the state a real run
-    // starts in, so it is the one worth looking at.
-    if scenario == "source-empty" {
-        seed_scenario_source_empty(doc);
-        return;
-    }
-    // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
-    // the guard active (the system disk locked, both acknowledgements visible).
-    if scenario == "drive-internal" {
-        seed_scenario_drive_internal(doc);
-        return;
-    }
-
-    // Every other scenario builds on the demo document (sample drives + a Tilo
-    // image + recent history), then poses the wizard station on top.
-    ImagerDoc::seed_demo(doc);
-    seed_scenario_common(doc, scenario);
-}
-
-/// The ISO source shared by the `drive-empty` and `drive` scenarios.
-fn demo_iso_source() -> crate::model::Source {
-    use crate::model::{Source, SourceKind};
-    Source {
-        kind: SourceKind::IsoFile,
-        path: "/home/quinten/Downloads/Fedora-Workstation-Live-42.iso".into(),
-        name: "Fedora-Workstation-Live-42.iso".into(),
-        size: 2_113_929_216,
-        label: "Fedora-WS-Live-42-1-1".into(),
-        installable: false,
-        identity: None,
-        expected_sha256: None,
-    }
-}
-
-fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&demo_iso_source()));
-}
-
-fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
-}
-
-fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    use crate::model::sample_source;
-    ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&sample_source()));
-}
-
-/// Pose the "drive", "customize", "confirm", "progress", "done" and
-/// "done-failed" stations (plus the "source"/unknown default) on top of the
-/// already-seeded demo document.
-fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
-    use crate::doc::ImagerDoc;
-    if scenario == "drive" {
-        ImagerDoc::set_source(doc, Some(&demo_iso_source()));
-    }
-}
+pub mod export_dialog;

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
+use tilo_lock::MutexRecover as _;
 
 mod profiles;
 
@@ -17,7 +18,7 @@ pub use profiles::{
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum OutputTransform {
     #[default]
     Normal,
@@ -25,6 +26,8 @@ pub enum OutputTransform {
     Rotate180,
     Rotate270,
 }
+
+crate::read_through_json_value!(OutputTransform);
 
 /// An output's extent in the logical desktop layout: its `mode` divided by
 /// its UI `scale`, then rotated. [`OutputConfig::x`]/[`OutputConfig::y`] are
@@ -62,6 +65,7 @@ pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OutputMode {
     pub width: u32,
     pub height: u32,
@@ -69,20 +73,21 @@ pub struct OutputMode {
     pub refresh_mhz: u32,
 }
 
+crate::read_through_json_value!(OutputMode);
+
 impl OutputMode {
+    /// How a person reads the mode: `1920 × 1080 at 60 Hz`, with the rate's
+    /// fraction only when it has one (`59.94 Hz`).
     pub fn label(self) -> String {
-        format!(
-            "{} × {} · {:.2} Hz",
-            self.width,
-            self.height,
-            f64::from(self.refresh_mhz) / 1000.0
-        )
+        let hz = format!("{:.2}", f64::from(self.refresh_mhz) / 1000.0);
+        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        format!("{} × {} at {hz} Hz", self.width, self.height)
     }
 }
 
 /// What a sink's EDID says it is. Empty strings mean the EDID did not say.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct MonitorIdentity {
     /// Manufacturer name, or its three-letter PNP id when the name is not
     /// known, e.g. `Dell` or `XYZ`.
@@ -94,6 +99,8 @@ pub struct MonitorIdentity {
     pub serial: String,
     pub physical_size_mm: Option<(u32, u32)>,
 }
+
+crate::read_through_json_value!(MonitorIdentity);
 
 impl MonitorIdentity {
     /// The name a person recognises, e.g. `Dell U2720Q`. Monitor-name
@@ -119,6 +126,7 @@ impl MonitorIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OutputDescriptor {
     /// Collision-free output key used by persisted display intent. This is
     /// the familiar DRM connector label when it is unique, and a
@@ -136,6 +144,8 @@ pub struct OutputDescriptor {
     /// EDID identity, `None` for a sink that exposes no readable EDID.
     pub monitor: Option<MonitorIdentity>,
 }
+
+crate::read_through_json_value!(OutputDescriptor);
 
 impl OutputDescriptor {
     /// Connector label suitable for a compact user-facing description. The
@@ -164,6 +174,7 @@ impl OutputDescriptor {
 /// authority that can say which modes and output features are actually
 /// usable by the active renderer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct DisplayOutputSnapshot {
     pub descriptor: OutputDescriptor,
     pub current_mode: OutputMode,
@@ -190,6 +201,8 @@ pub struct DisplayOutputSnapshot {
     pub color_profile_labels: BTreeMap<String, String>,
 }
 
+crate::read_through_json_value!(DisplayOutputSnapshot);
+
 impl DisplayOutputSnapshot {
     /// The entry that describes this output as it runs with none saved: the
     /// defaults at the compositor's own scale.
@@ -200,7 +213,7 @@ impl DisplayOutputSnapshot {
 
 /// Why an HDR-capable sink cannot be driven in HDR by the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum HdrUnavailable {
     /// The kernel driver lacks a connector property HDR signalling needs:
     /// `HDR_OUTPUT_METADATA`, a `BT2020_RGB` `Colorspace`, or a `max bpc`
@@ -212,9 +225,11 @@ pub enum HdrUnavailable {
     DriverRejected,
 }
 
+crate::read_through_json_value!(HdrUnavailable);
+
 /// Why an adaptive-sync-capable sink cannot have it enabled by the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum AdaptiveSyncUnavailable {
     /// The kernel driver offers no `VRR_ENABLED` property on any CRTC that
     /// could drive this connector.
@@ -223,11 +238,13 @@ pub enum AdaptiveSyncUnavailable {
     DriverRejected,
 }
 
+crate::read_through_json_value!(AdaptiveSyncUnavailable);
+
 /// Read-only state written atomically by the compositor in the private user
 /// runtime directory. It is deliberately separate from durable intent:
 /// unplugging a monitor changes this document, not the user's saved layout.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayHardwareSnapshot {
     pub generated_unix_ms: u64,
     pub backend: String,
@@ -242,8 +259,11 @@ pub struct DisplayHardwareSnapshot {
     pub layout: Vec<LiveOutputPlacement>,
 }
 
+crate::read_through_json_value!(DisplayHardwareSnapshot);
+
 /// One enabled output's live rectangle in combined desktop coordinates.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct LiveOutputPlacement {
     /// Collision-free output key, as in [`OutputDescriptor::connector`].
     pub connector: String,
@@ -253,9 +273,18 @@ pub struct LiveOutputPlacement {
     pub height: u32,
 }
 
+crate::read_through_json_value!(LiveOutputPlacement);
+
+/// The display snapshot this process last published.
+static PUBLISHED_DISPLAYS: crate::published::Published<DisplayHardwareSnapshot> =
+    crate::published::Published::new();
+
 impl DisplayHardwareSnapshot {
+    /// The live publisher's snapshot, read from its runtime file. The
+    /// publishing process itself reads [`Self::published`] instead.
     pub fn load() -> Option<Self> {
         let path = display_snapshot_path()?;
+        crate::published::note_file_read();
         let snapshot: Self = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
         publisher_live_in(
             path.parent()?,
@@ -272,9 +301,22 @@ impl DisplayHardwareSnapshot {
     pub fn save(&self) -> std::io::Result<()> {
         let path = display_snapshot_path()
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        PUBLISHED_DISPLAYS.set(&path, self.clone());
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
         tilo_files::native::atomic::write_creating_parent(&path, &body)
+    }
+
+    /// The snapshot this process last [`saved`](Self::save), from memory:
+    /// the compositor's own readers take its displays from here, never from
+    /// the file it wrote for Settings.
+    pub fn published() -> Option<std::sync::Arc<Self>> {
+        PUBLISHED_DISPLAYS.get(&display_snapshot_path()?)
+    }
+
+    /// Moves every time this process publishes a snapshot.
+    pub fn published_generation() -> u64 {
+        PUBLISHED_DISPLAYS.generation()
     }
 }
 
@@ -295,9 +337,9 @@ pub fn publisher_identity() -> std::io::Result<(u32, u64)> {
 }
 
 /// Readers cannot check a publisher through `/proc/<pid>`: the compositor
-/// makes itself non-dumpable while it holds identity keys, and the image
-/// mounts `/proc` with `hidepid=invisible`, which hides a non-dumpable
-/// process even from its own user. So the publisher holds an exclusive
+/// makes itself non-dumpable while it holds identity keys, so its `/proc`
+/// entries belong to root, and a `/proc` mounted with `hidepid` hides it even
+/// from its own user. So the publisher holds an exclusive
 /// `flock` on `publisher-<pid>-<start ticks>.lock` beside its snapshots for
 /// as long as it lives; the kernel releases it however the process ends, and
 /// a PID with a different start time names a different file.
@@ -313,11 +355,9 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
     let start_ticks = process_start_ticks(pid)
         .ok_or_else(|| std::io::Error::other("this process has no readable start time"))?;
     let path = publisher_lease_path(dir, pid, start_ticks);
-    let mut leases = LEASES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut leases = LEASES.lock_recover();
     if !leases.iter().any(|(held, _)| *held == path) {
-        std::fs::create_dir_all(dir)?;
+        tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
             .map_err(|error| match error {
                 advisory_lock::TryLockError::WouldBlock => {
@@ -364,7 +404,7 @@ pub fn process_start_ticks(pid: u32) -> Option<u64> {
 /// commits durable intent. A timeout or `RevertRequested` restores
 /// `previous`, including after Settings itself crashed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DisplayTransactionState {
     #[default]
     Requested,
@@ -376,8 +416,13 @@ pub enum DisplayTransactionState {
     Rejected,
 }
 
+crate::read_through_json_value!(DisplayTransactionState);
+
+/// The section a [`DisplayTransaction`] is stored in, whole.
+pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayTransaction {
     pub id: u64,
     pub state: DisplayTransactionState,
@@ -389,6 +434,8 @@ pub struct DisplayTransaction {
     pub deadline_unix_ms: Option<u64>,
     pub message: Option<String>,
 }
+
+crate::read_through_json_value!(DisplayTransaction);
 
 impl Default for DisplayTransaction {
     fn default() -> Self {
@@ -411,18 +458,35 @@ impl DisplayTransaction {
     ///
     /// Returns an error if the transaction can't be serialised or written.
     pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        let transaction = Self::prepare_request(set, candidate)?;
+        transaction.save()?;
+        Ok(transaction)
+    }
+
+    /// Construct an admitted request without writing storage. Its identity
+    /// stays unique among requests in this process even within one clock tick.
+    /// The request becomes effective only after its normal durable save.
+    ///
+    /// # Errors
+    /// Returns an error if the request identity counter is exhausted.
+    pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
         let now = unix_now_ms();
-        let transaction = Self {
-            id: now,
+        let previous = LAST_REQUEST
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                previous.checked_add(1).map(|next| next.max(now))
+            })
+            .map_err(|_| std::io::Error::other("display request identities exhausted"))?;
+        Ok(Self {
+            id: previous.saturating_add(1).max(now),
             state: DisplayTransactionState::Requested,
             previous: DisplayConfig::load_for(&set),
             set,
             candidate,
             deadline_unix_ms: None,
             message: None,
-        };
-        transaction.save()?;
-        Ok(transaction)
+        })
     }
 
     pub fn load() -> Option<Self> {
@@ -552,6 +616,8 @@ pub struct InputHardwareSnapshot {
     /// outlive its compositor.
     pub publisher_start_ticks: u64,
     pub devices: Vec<InputDeviceSnapshot>,
+    /// Last typing keyboard; presentation state, never a saved assignment.
+    pub active_keyboard: Option<String>,
 }
 
 impl InputHardwareSnapshot {
@@ -616,8 +682,9 @@ pub const TABLETS_KEY: &str = "tablets";
 /// What a pen barrel button does. `Default` reports the button as itself:
 /// tablet-aware apps see a pen button, everything else a right (lower
 /// button) or middle (upper button) click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum StylusButtonAction {
     #[default]
     Default,
@@ -631,10 +698,13 @@ pub enum StylusButtonAction {
     Disabled,
 }
 
+crate::read_through_json_value!(StylusButtonAction);
+
 /// What the eraser end of a pen does. `Native` reports it as an eraser:
 /// tablet-aware apps erase with it, everything else sees a left click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum EraserAction {
     #[default]
     Native,
@@ -648,11 +718,14 @@ pub enum EraserAction {
     Shortcut(ShortcutAction),
 }
 
+crate::read_through_json_value!(EraserAction);
+
 /// What turning a pad's touch ring or sliding along its strip does in an app
 /// that does not take tablet input itself. Tablet-aware apps always get the
 /// ring and strip as they are.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum PadDialAction {
     Nothing,
     /// Scroll whatever is under the pointer.
@@ -667,6 +740,8 @@ pub enum PadDialAction {
     /// Step the display brightness.
     Brightness,
 }
+
+crate::read_through_json_value!(PadDialAction);
 
 /// A pad control that turns or slides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -727,8 +802,9 @@ pub fn feel_for_pressure_curve(curve: [f64; 4]) -> f64 {
 
 /// One drawing tablet's settings, stored per device identity so each
 /// tablet keeps its own mapping when several are used.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct TabletConfig {
     /// Collision-free output key ([`OutputDescriptor::connector`]) the
     /// tablet maps onto; `None` spans the whole desktop.
@@ -761,6 +837,11 @@ pub struct TabletConfig {
     /// [`Self::pad_rings`].
     pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
 }
+
+crate::read_through_json_value!(TabletConfig);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(TabletConfig);
 
 impl TabletConfig {
     fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
@@ -874,7 +955,7 @@ pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
               other crates read and persist them directly"
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct OutputConfig {
     pub enabled: bool,
     pub primary: bool,
@@ -896,6 +977,8 @@ pub struct OutputConfig {
     pub vrr: bool,
     pub color_profile: Option<String>,
 }
+
+crate::read_through_json_value!(OutputConfig);
 
 impl OutputConfig {
     /// The defaults at `scale`, or at 1x when `scale` is not a usable
@@ -938,10 +1021,12 @@ pub const DEFAULT_SDR_BRIGHTNESS_NITS: u16 = 203;
 pub const SDR_BRIGHTNESS_NITS_RANGE: std::ops::RangeInclusive<u16> = 80..=480;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayConfig {
     pub outputs: BTreeMap<String, OutputConfig>,
 }
+
+crate::read_through_json_value!(DisplayConfig);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayConfigError {
@@ -1136,11 +1221,34 @@ pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 /// means off.
 pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
+/// The section of [`RichInputConfig`]: pointer, touchpad and keyboard.
+pub const INPUT_SECTION: &str = "input";
+/// The section of [`DisplayConfig`] and the display toggles below.
+pub const DISPLAY_SECTION: &str = "display";
+
+/// Whether touchpads send events at all ([`TOUCHPAD_ENABLED_KEY`]).
+pub const TOUCHPAD_ENABLED: crate::Key<bool> =
+    crate::Key::new(INPUT_SECTION, TOUCHPAD_ENABLED_KEY, || true);
+/// Mouse keys: the numeric keypad moves the pointer. The Shift+Alt+Num Lock
+/// chord flips it.
+pub const MOUSE_KEYS: crate::Key<bool> =
+    crate::Key::new(crate::magnifier::SECTION, "mouse_keys", || false);
+/// Whether the built-in panel stays put when a convertible is turned (the
+/// Quick Settings rotation tile).
+pub const ROTATION_LOCK: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "rotation_lock", || false);
+/// Whether the backlight follows the ambient light sensor.
+pub const AUTO_BRIGHTNESS: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "auto_brightness", || false);
+/// Night light (the Quick Settings tile).
+pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "night_light", || false);
+
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
 /// these it supports; the compositor asks only for a supported one.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum TouchpadClickMethod {
     /// The bottom strip is split into left, middle and right button areas.
     Areas,
@@ -1155,13 +1263,16 @@ pub enum TouchpadClickMethod {
     Default,
 }
 
+crate::read_through_json_value!(TouchpadClickMethod);
+
 impl TouchpadClickMethod {
     pub const ALL: [Self; 3] = [Self::Default, Self::Areas, Self::Clickfinger];
 }
 
 /// When a touchpad produces scrolling instead of pointer motion.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum TouchpadScrollMethod {
     /// One finger along the right or bottom edge scrolls.
     Edge,
@@ -1171,6 +1282,8 @@ pub enum TouchpadScrollMethod {
     #[serde(other)]
     TwoFinger,
 }
+
+crate::read_through_json_value!(TouchpadScrollMethod);
 
 impl TouchpadScrollMethod {
     pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
@@ -1214,14 +1327,6 @@ pub fn scroll_speed_to_slider(speed: f64) -> f64 {
     f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
 }
 
-/// Default bounce-keys window: a second press of the same key this soon
-/// after its release is treated as a bounce, not a keystroke.
-pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
-/// Shortest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
-/// Longest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
-
 fn default_scroll_speed() -> f64 {
     1.0
 }
@@ -1237,11 +1342,8 @@ pub struct RichInputConfig {
     pub pointer_speed: f64,
     pub touchpad_pointer_speed: Option<f64>,
     pub mouse_pointer_speed: Option<f64>,
-    /// Legacy fallback for settings written before mouse/touchpad scrolling
-    /// were independently configurable.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
+    pub mouse_natural_scroll: bool,
     pub tap_to_click: bool,
     pub tap_drag: bool,
     /// Keep a tap-and-drag going after the finger lifts, until the next tap.
@@ -1261,6 +1363,11 @@ pub struct RichInputConfig {
     pub keyboard_layout: String,
     /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit XKB physical model, bounded to the supported PC geometries.
+    pub keyboard_model: String,
+    /// Scoped keyboard choices survive device removal; the default retains legacy fields.
+    #[serde(deserialize_with = "crate::keyboard_sources::lenient_profiles")]
+    pub keyboard_assignments: BTreeMap<String, crate::keyboard_sources::KeyboardProfile>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1283,9 +1390,8 @@ impl Default for RichInputConfig {
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
             mouse_pointer_speed: None,
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL),
-            mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             tap_drag: true,
             tap_drag_lock: false,
@@ -1298,6 +1404,8 @@ impl Default for RichInputConfig {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
+            keyboard_assignments: BTreeMap::new(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -1447,78 +1555,89 @@ fn valid_xkb_name(value: &str) -> bool {
 }
 
 impl RichInputConfig {
-    /// Parse the input section using field-by-field defaults, then reconcile
-    /// old single-layout documents with the ordered source list. Invalid and
-    /// duplicate ids are ignored; the active legacy source is inserted when
-    /// it is absent, so `{"keyboard_layout":"de"}` migrates to one German
-    /// source instead of silently falling back to US.
+    /// The persisted input section, parsed by [`Self::from_section`].
+    pub fn load() -> Self {
+        Self::from_section(&super::load_section(INPUT_SECTION))
+    }
+
+    /// Parse the input section field by field: a missing or wrong-typed
+    /// value only resets itself to its default. Old single-layout documents
+    /// are then reconciled with the ordered source list, so
+    /// `{"keyboard_layout":"de"}` becomes one German source instead of
+    /// German plus the default US. A section that names no layout at all
+    /// types the machine's own layout
+    /// ([`crate::keyboard_sources::system_sources`]), not US.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        Self::from_section_or(section, &crate::keyboard_sources::system_sources)
+    }
+
+    /// [`Self::from_section`] with the machine's layouts supplied by `system`,
+    /// which is asked only when the section names none.
+    fn from_section_or(
+        section: &serde_json::Map<String, serde_json::Value>,
+        system: &dyn Fn() -> Vec<String>,
+    ) -> Self {
+        let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(Self::default())
+        else {
+            return Self::default();
+        };
+        if !section.contains_key("keyboard_layouts") {
+            fields.insert("keyboard_layouts".into(), serde_json::json!([]));
+        }
+        for (key, value) in section {
+            let Some(previous) = fields.insert(key.clone(), value.clone()) else {
+                // Not one of ours (the touchpad switches, the inspector state).
+                fields.remove(key);
+                continue;
+            };
+            if serde_json::from_value::<Self>(serde_json::Value::Object(fields.clone())).is_err() {
+                fields.insert(key.clone(), previous);
+            }
+        }
         let mut config: Self =
-            serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
-        // `natural_scroll` predates per-device preferences.  It must still
-        // win for an old document, but an unset document gets the distinct
-        // platform defaults rather than one global direction for every device.
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        config.natural_scroll = legacy_natural_scroll.unwrap_or(false);
-        config.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL));
-        config.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(DEFAULT_MOUSE_NATURAL_SCROLL));
-        // Read the keyboard fields independently as well: a wrong-typed
-        // pointer field must not discard an otherwise valid input-source
-        // list merely because serde rejected the whole rich object.
-        config.keyboard_layout = section
+            serde_json::from_value(serde_json::Value::Object(fields)).unwrap_or_default();
+        config.scroll_speed = clamp_scroll_speed(config.scroll_speed);
+        if !matches!(
+            config.keyboard_model.as_str(),
+            "pc104" | "pc105" | "jp106" | "kr106"
+        ) {
+            config.keyboard_model = "pc105".into();
+        }
+        let names_layout = section
             .get("keyboard_layout")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("us")
-            .to_string();
-        config.keyboard_layouts = section
-            .get("keyboard_layouts")
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        config.compose_key = section
-            .get("compose_key")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        // Likewise for the touchpad choices: each is read on its own so one
-        // unexpected value only resets itself.
-        config.touchpad_click_method = section
-            .get("touchpad_click_method")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        config.touchpad_scroll_method = section
-            .get("touchpad_scroll_method")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        config.scroll_speed = section
-            .get(SCROLL_SPEED_KEY)
-            .and_then(serde_json::Value::as_f64)
-            .map_or(1.0, clamp_scroll_speed);
-        config.caps_lock = section
-            .get("caps_lock")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        config.normalise_sources();
+            .is_some_and(serde_json::Value::is_string)
+            || section
+                .get("keyboard_layouts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| values.iter().any(serde_json::Value::is_string));
+        if !names_layout {
+            // Nobody chose a layout: type what the machine was set up with
+            // (the installer's, localed's). Passing an explicit `us` here
+            // would also stop libxkbcommon applying `XKB_DEFAULT_LAYOUT`.
+            config.keyboard_layouts = system();
+            config.keyboard_layout = config.keyboard_layouts.first().cloned().unwrap_or_default();
+        }
+        config.normalise_sources_or(&|| system().into_iter().next());
         config
     }
 
+    /// Reconcile the active source with the ordered list. A document that
+    /// names no usable layout falls back to the machine's primary layout
+    /// ([`crate::keyboard_sources::fallback_layout`]).
     pub fn normalise_sources(&mut self) {
-        let active = InputSource::parse(&self.keyboard_layout).or_else(|| InputSource::parse("us"));
+        self.normalise_sources_or(&|| Some(crate::keyboard_sources::fallback_layout()));
+    }
+
+    /// [`Self::normalise_sources`] with the fallback layout supplied by
+    /// `fallback`, asked only when the document names no usable layout; US
+    /// when it has none either.
+    fn normalise_sources_or(&mut self, fallback: &dyn Fn() -> Option<String>) {
+        let fallback = || {
+            fallback()
+                .filter(|id| KeyboardInputSource::parse(id).is_some())
+                .unwrap_or_else(|| "us".into())
+        };
+        let active = InputSource::parse(&self.keyboard_layout);
         let mut sources = Vec::<String>::new();
         let mut layouts = 0_usize;
         for source in &self.keyboard_layouts {
@@ -1554,14 +1673,14 @@ impl RichInputConfig {
                 sources.push(engine.source_id());
                 engine.source_id()
             }
-            None => "us".into(),
+            None => sources.first().cloned().unwrap_or_else(fallback),
         };
         // An engine types on a layout, so the list always keeps one.
         if !sources
             .iter()
             .any(|id| InputMethodEngine::from_source_id(id).is_none())
         {
-            sources.insert(0, "us".into());
+            sources.insert(0, fallback());
         }
         self.keyboard_layout = active;
         self.keyboard_layouts = sources;
@@ -1660,8 +1779,9 @@ impl RichInputConfig {
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ShortcutAction {
     Search,
     WorkspaceOverview,
@@ -1672,6 +1792,8 @@ pub enum ShortcutAction {
     FocusNextWindow,
     PreviousTab,
     NextTab,
+    /// Show the focused tab's shell context menu.
+    TabMenu,
     PreviousStrip,
     NextStrip,
     PreviousWorkspace,
@@ -1719,7 +1841,12 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    DictationToggle,
+    DictationFinish,
+    DictationCancel,
 }
+
+crate::read_through_json_value!(ShortcutAction);
 
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.
@@ -2120,6 +2247,7 @@ impl KeyChord {
             "space" => "Space",
             "delete" => "Delete",
             "f1" => "F1",
+            "f10" => "F10",
             other => other,
         };
         ["Super", "Ctrl", "Alt", "Shift"]
@@ -2244,7 +2372,7 @@ impl Default for ShortcutConfig {
             }
         }
         let bindings = [
-            (ShortcutAction::Search, super_chord("k")),
+            (ShortcutAction::Search, super_chord("space")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
@@ -2261,6 +2389,7 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
+            (ShortcutAction::TabMenu, super_chord("f10")),
             // Arrows move focus across the plane; Shift carries the focused
             // group the same way (docs/architecture/window-management.md).
             (ShortcutAction::PreviousStrip, super_chord("up")),
@@ -2293,9 +2422,9 @@ impl Default for ShortcutConfig {
             ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
-            // Browsers' reopen-closed-tab chord, on the desktop's own
-            // modifier; plain Super+T keeps adding a tab.
-            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            // Restore the most recently closed frame in this workspace.
+            // Plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
             (ShortcutAction::FocusGroup1, super_chord("1")),
             (ShortcutAction::FocusGroup2, super_chord("2")),
             (ShortcutAction::FocusGroup3, super_chord("3")),
@@ -2326,6 +2455,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            (ShortcutAction::DictationToggle, super_shift_chord("d")),
+            (ShortcutAction::DictationFinish, super_alt_chord("d")),
+            (ShortcutAction::DictationCancel, super_shift_chord("escape")),
         ]
         .into_iter()
         .collect();
@@ -2340,9 +2472,12 @@ impl Default for ShortcutConfig {
 /// sorted order, key)`. Never remove an entry: a settings file written by
 /// any earlier release may still carry it.
 const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
     (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
+    (ShortcutAction::Search, &["Super"], "k"),
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
 ];
 
 impl ShortcutConfig {
@@ -2351,17 +2486,11 @@ impl ShortcutConfig {
     /// caller cannot install ambiguous ownership in a running session.
     /// # Errors
     ///
-    /// Returns an error when a chord is invalid or reserved, when the lock
-    /// shortcut differs from its immutable safety binding, or when two
+    /// Returns an error when a chord is invalid or reserved, or when two
     /// actions claim the same chord.
     pub fn validate(&self) -> Result<(), ShortcutConfigError> {
-        let defaults = Self::default();
-        let default_lock = defaults.bindings.get(&ShortcutAction::Lock);
         let mut seen = BTreeMap::<&KeyChord, ShortcutAction>::new();
         for (action, chord) in &self.bindings {
-            if *action == ShortcutAction::Lock && Some(chord) != default_lock {
-                return Err(ShortcutConfigError::InvalidChord);
-            }
             if chord.is_reserved_system_key() {
                 return Err(ShortcutConfigError::ReservedSystemKey);
             }
@@ -2470,11 +2599,6 @@ impl ShortcutConfig {
         chord: KeyChord,
     ) -> Result<(), ShortcutConfigError> {
         let defaults = Self::default();
-        if action == ShortcutAction::Lock
-            && defaults.bindings.get(&ShortcutAction::Lock) != Some(&chord)
-        {
-            return Err(ShortcutConfigError::InvalidChord);
-        }
         if chord.is_reserved_system_key() {
             return Err(ShortcutConfigError::ReservedSystemKey);
         }
@@ -2510,7 +2634,9 @@ impl ShortcutConfig {
         Self::from_section(super::load_section_at(path, "shortcuts"))
     }
 
-    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
+    /// The configuration a `shortcuts` section holds, repaired as
+    /// [`Self::normalise`] repairs it.
+    pub fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
         let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default();
         Self::normalise(loaded)
@@ -2530,9 +2656,6 @@ impl ShortcutConfig {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
-            if action == ShortcutAction::Lock {
-                continue;
-            }
             if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
                 *retired == action
                     && chord.key == *key
@@ -2591,7 +2714,12 @@ impl ShortcutConfig {
         super::update_section_at(path, "shortcuts", self.section()?)
     }
 
-    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
+    /// The `shortcuts` section holding this configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised.
+    pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
     }
@@ -2820,13 +2948,52 @@ mod tests {
     }
 
     #[test]
-    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+    fn reopen_closed_tab_defaults_to_ctrl_shift_t_without_colliding() {
         let cfg = ShortcutConfig::default();
         assert_eq!(
             cfg.bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Super+Shift+T").unwrap()
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
+
+    #[test]
+    fn saved_reopen_default_migrates_without_overwriting_a_custom_chord() {
+        let mut loaded = ShortcutConfig::default();
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Super+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded.clone()).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Alt+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Alt+Shift+T").unwrap()
+        );
+    }
+
+    #[test]
+    fn reopening_migrates_the_old_default_and_preserves_custom_bindings() {
+        let action = ShortcutAction::ReopenClosedTab;
+        let mut old = ShortcutConfig::default();
+        old.bindings
+            .insert(action, KeyChord::parse("Super+Shift+T").unwrap());
+        let migrated = ShortcutConfig::normalise(old);
+        assert_eq!(
+            migrated.bindings[&action],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        assert!(migrated.validate().is_ok());
+        let custom = KeyChord::parse("Ctrl+Alt+Shift+T").unwrap();
+        let mut edited = ShortcutConfig::default();
+        edited.set(action, custom.clone()).unwrap();
+        assert_eq!(ShortcutConfig::normalise(edited).bindings[&action], custom);
     }
 
     #[test]
@@ -2860,6 +3027,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -2931,8 +3099,11 @@ mod tests {
             let mut cfg = ShortcutConfig::default();
             let old = cfg.bindings[&ShortcutAction::Lock].clone();
             assert_eq!(
-                cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-                Err(ShortcutConfigError::InvalidChord)
+                cfg.set(
+                    ShortcutAction::Lock,
+                    KeyChord::parse("Super+Space").unwrap()
+                ),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
             assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
         }
@@ -2983,13 +3154,13 @@ mod tests {
             let repaired = ShortcutConfig::normalise(corrupt);
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Search].display(),
-                "Super+k",
+                "Super+Space",
                 "reserved persisted keys revert to their action default"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Lock].display(),
-                "Super+l",
-                "the native lock chord is immutable"
+                "Alt+l",
+                "the lock chord is rebindable like every other action"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::PreviousTab].display(),
@@ -3057,7 +3228,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 46);
+            assert_eq!(cfg.bindings.len(), 50);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3113,7 +3284,7 @@ mod tests {
         );
         assert_eq!(
             cfg.set_action(
-                KeyChord::parse("Super+K").unwrap(),
+                KeyChord::parse("Super+Space").unwrap(),
                 target("shortcuts.shortcut:b"),
                 "Run B"
             ),
@@ -3145,19 +3316,45 @@ mod tests {
             assert_eq!(cfg.keyboard_layouts, ["de"]);
             assert_eq!(cfg.active_source_index(), 0);
         }
-        // Phase `scroll_defaults_match_gnome_and_keep_legacy_global_documents`.
+        // Phase `an_unset_layout_follows_the_machine_and_a_chosen_one_wins`.
         {
-            let empty = RichInputConfig::from_section(&serde_json::Map::new());
-            assert_eq!(empty.touchpad_natural_scroll, Some(true));
-            assert_eq!(empty.mouse_natural_scroll, Some(false));
-
-            let legacy = serde_json::json!({ "natural_scroll": false })
+            let machine = || vec!["de".to_string(), "us".to_string()];
+            let unset = RichInputConfig::from_section_or(&serde_json::Map::new(), &machine);
+            assert_eq!(unset.keyboard_layouts, ["de", "us"]);
+            assert_eq!(unset.keyboard_layout, "de");
+            let chosen = serde_json::json!({ "keyboard_layout": "fr" })
                 .as_object()
                 .unwrap()
                 .clone();
-            let legacy = RichInputConfig::from_section(&legacy);
-            assert_eq!(legacy.touchpad_natural_scroll, Some(false));
-            assert_eq!(legacy.mouse_natural_scroll, Some(false));
+            let chosen = RichInputConfig::from_section_or(&chosen, &|| {
+                panic!("a chosen layout never asks the machine")
+            });
+            assert_eq!(chosen.keyboard_layouts, ["fr"]);
+            let bare = RichInputConfig::from_section_or(&serde_json::Map::new(), &Vec::new);
+            assert_eq!(bare.keyboard_layouts, ["us"], "no layout anywhere: US");
+            // A damaged document falls back to the machine, not to US.
+            let damaged = serde_json::json!({ "keyboard_layout": "../evil" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let damaged = RichInputConfig::from_section_or(&damaged, &machine);
+            assert_eq!(damaged.keyboard_layouts, ["de"]);
+            assert_eq!(damaged.keyboard_layout, "de");
+            let engine_only = serde_json::json!({
+                "keyboard_layout": "ime/rime",
+                "keyboard_layouts": ["ime/rime"]
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let engine_only = RichInputConfig::from_section_or(&engine_only, &machine);
+            assert_eq!(engine_only.keyboard_layouts, ["de", "ime/rime"]);
+        }
+        // Phase `scroll_defaults_match_gnome`.
+        {
+            let empty = RichInputConfig::from_section(&serde_json::Map::new());
+            assert!(empty.touchpad_natural_scroll);
+            assert!(!empty.mouse_natural_scroll);
         }
         // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
         {
@@ -3235,7 +3432,7 @@ mod tests {
     fn publisher_liveness_is_its_held_lease_not_its_proc_entry() {
         let dir = tempfile::tempdir().unwrap();
         // No process has this PID, so /proc cannot vouch for it, as it cannot
-        // for a non-dumpable compositor under hidepid. Holding its lease can.
+        // for a non-dumpable compositor. Holding its lease can.
         let (pid, start_ticks) = (4_000_000, 7);
         let lease_path = publisher_lease_path(dir.path(), pid, start_ticks);
         assert!(
@@ -3284,6 +3481,7 @@ mod tests {
             publisher_pid,
             publisher_start_ticks,
             devices: vec![pen.clone(), pen],
+            active_keyboard: None,
         };
         live.save_at(&path).unwrap();
         let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");

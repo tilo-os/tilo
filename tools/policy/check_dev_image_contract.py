@@ -2,7 +2,7 @@
 """Keep the dev image and the production image apart.
 
 os/Containerfile.dev builds the dev VM image FROM the production image: it adds
-an SSH server, `dev-overrides` binaries, tilo-control, tilo-vmd and a build
+an SSH server, `dev-overrides` binaries, tilo-vmd and a build
 toolchain, and it is unsealed. Two ways that could leak into production:
 
 1. The dev image is published or tagged as a production image. So:

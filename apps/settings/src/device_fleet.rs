@@ -1,26 +1,13 @@
-//! Small Settings-facing view of the root-signed personal-device fleet.
+//! The person's trusted devices, as the host's identity actions answer
+//! them.
 //!
-//! The shell owns enrollment transport, while this module reads and updates
-//! the same versioned fleet file for the explicit decommission flow. Secret
-//! key material never enters widget/Automerge state.
+//! The host keeps the root-signed device fleet and the root key a
+//! revocation is signed with. Settings asks it for the list and to revoke
+//! one, through the action door, so neither the fleet file nor any secret
+//! enters this process; the answers never enter widget or Automerge state.
 
-use std::io;
-use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
-use tilo_user_identity::{
-    DeviceCert, RevocationEntry, RevocationReason, revocation_signing_digest, verify_device_cert,
-    verify_revocation_entry,
-};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredFleet {
-    schema_version: u32,
-    identity_id: String,
-    certificates: Vec<DeviceCert>,
-    revocations: Vec<RevocationEntry>,
-}
+use ui::tilo_actions::remote::identity_admin::{self, FleetDevice};
+use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeviceView {
@@ -32,146 +19,80 @@ pub(crate) struct DeviceView {
     pub can_host: bool,
 }
 
-fn active_identity() -> io::Result<(PathBuf, runtime_identity::IdentitySummary)> {
-    let dir = runtime_identity::identity_dir_from_env()?;
-    let summary = runtime_identity::list_identities(&dir)?
+/// Ask the host for the devices trusted under the workspace's identity.
+pub(crate) fn list(remote: &ui::RemoteActions) -> ui::LocalState<ui::InvocationCall> {
+    remote.invoke(
+        identity_admin::target(identity_admin::DEVICES),
+        InvokeArgument::None,
+        None,
+    )
+}
+
+/// Ask the host to revoke `device` for `reason` (`lost`, `stolen`,
+/// `retired` or `compromised`). Choosing the destructive row is the
+/// person's confirmation; the host signs the revocation with the root key.
+pub(crate) fn revoke(
+    remote: &ui::RemoteActions,
+    device: &[u8; 32],
+    reason: &str,
+) -> ui::LocalState<ui::InvocationCall> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("device".into(), hex::encode(device).into());
+    arguments.insert("reason".into(), reason.into());
+    arguments.insert("confirm".into(), true.into());
+    remote.invoke(
+        identity_admin::target(identity_admin::REVOKE),
+        InvokeArgument::Json(arguments),
+        Some(Confirmation::Confirmed),
+    )
+}
+
+/// The devices the host's list answered.
+///
+/// # Errors
+///
+/// When the answer is not a device list.
+pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
+    let listed: Vec<FleetDevice> =
+        serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
+            .map_err(|_| "the device list the host answered is not readable".to_string())?;
+    listed
         .into_iter()
-        .find(|identity| identity.active)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no active identity"))?;
-    Ok((dir, summary))
-}
-
-fn fleet_path(dir: &Path, identity_id: &str) -> PathBuf {
-    dir.join("fleets").join(format!("{identity_id}.json"))
-}
-
-fn load_stored(dir: &Path, identity_id: &str) -> io::Result<StoredFleet> {
-    let fleet: StoredFleet = serde_json::from_slice(&std::fs::read(fleet_path(dir, identity_id))?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if fleet.schema_version != 1 || fleet.identity_id != identity_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "device fleet identity/schema mismatch",
-        ));
-    }
-    for certificate in &fleet.certificates {
-        verify_device_cert(certificate)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    }
-    for revocation in &fleet.revocations {
-        verify_revocation_entry(revocation)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    }
-    Ok(fleet)
-}
-
-fn current_device_key() -> io::Result<[u8; 32]> {
-    let paths =
-        tilo_user_identity::IdentityPaths::under(super::panes::device_mesh::identity_root());
-    tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-        .map_err(|error| io::Error::other(error.to_string()))
-        .map(|key| key.verifying_key().to_bytes())
-}
-
-fn fingerprint(key: &[u8; 32]) -> String {
-    key[..6]
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-pub(crate) fn list() -> io::Result<Vec<DeviceView>> {
-    let (dir, identity) = active_identity()?;
-    let fleet = load_stored(&dir, &identity.id)?;
-    if fleet
-        .certificates
-        .iter()
-        .any(|certificate| certificate.user_public_key != identity.public_key)
-        || fleet
-            .revocations
-            .iter()
-            .any(|revocation| revocation.user_public_key != identity.public_key)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "device fleet contains another identity",
-        ));
-    }
-    let current = current_device_key()?;
-    Ok(fleet
-        .certificates
-        .iter()
-        .map(|certificate| DeviceView {
-            label: certificate.device_label.clone(),
-            key: certificate.device_public_key,
-            fingerprint: fingerprint(&certificate.device_public_key),
-            current: current == certificate.device_public_key,
-            revoked: fleet
-                .revocations
-                .iter()
-                .any(|entry| entry.revoked_device_public_key == certificate.device_public_key),
-            can_host: certificate.capabilities.can_act_as_host,
+        .map(|device| {
+            let mut key = [0; 32];
+            hex::decode_to_slice(&device.key_hex, &mut key)
+                .map_err(|_| "the host answered a malformed device key".to_string())?;
+            Ok(DeviceView {
+                label: device.label,
+                key,
+                fingerprint: device.fingerprint,
+                current: device.current,
+                revoked: device.revoked,
+                can_host: device.can_host,
+            })
         })
-        .collect())
+        .collect()
 }
 
-pub(crate) fn revoke(device: [u8; 32], reason: RevocationReason) -> io::Result<()> {
-    let (dir, identity) = active_identity()?;
-    if current_device_key()? == device {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "use another trusted device to revoke the device you are using",
-        ));
+/// What a settled host call answered, or why it did not.
+///
+/// # Errors
+///
+/// The host's refusal or failure, or that it was cancelled.
+pub(crate) fn settled(
+    call: &ui::LocalState<ui::InvocationCall>,
+) -> Option<Result<ui::tilo_actions::ActionOutput, String>> {
+    use ui::tilo_actions::InvocationUpdate;
+    let answer = call.get();
+    if !answer.is_settled() {
+        return None;
     }
-    let mut fleet = load_stored(&dir, &identity.id)?;
-    if !fleet
-        .certificates
-        .iter()
-        .any(|certificate| certificate.device_public_key == device)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "device is not enrolled",
-        ));
-    }
-    if fleet
-        .revocations
-        .iter()
-        .any(|entry| entry.revoked_device_public_key == device)
-    {
-        return Ok(());
-    }
-    let record = runtime_identity::resolve_active_identity(&dir)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "active identity is unavailable"))?;
-    let signer = runtime_identity::load_from_path(record)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    if signer.group_public_key() != identity.public_key {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "active signing identity does not match its device fleet",
-        ));
-    }
-    let revoked_at_ns = ui::time::wall()
-        .duration_since(ui::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        });
-    let mut entry = RevocationEntry {
-        user_public_key: identity.public_key,
-        revoked_device_public_key: device,
-        revoked_at_ns,
-        reason,
-        signature: [0; 64],
-    };
-    let digest =
-        revocation_signing_digest(&entry).map_err(|error| io::Error::other(error.to_string()))?;
-    entry.signature = signer
-        .sign(&digest)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
-    fleet.revocations.push(entry);
-    let bytes = serde_json::to_vec_pretty(&fleet)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    tilo_files::native::atomic::write_with_mode(&fleet_path(&dir, &identity.id), &bytes, 0o600)
+    Some(match answer {
+        ui::RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+        ui::RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => Err(error.message),
+        ui::RemoteCall::Refused(error) => Err(error.to_string()),
+        ui::RemoteCall::Done(_) | ui::RemoteCall::Pending => {
+            Err("the host stopped before it answered".into())
+        }
+    })
 }

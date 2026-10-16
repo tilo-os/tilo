@@ -30,6 +30,15 @@ max_tapp_bytes=${MAX_TAPP_BYTES:-$policy_max_tapp_bytes}
 (( max_tapp_bytes <= policy_max_tapp_bytes )) \
     || { printf 'MAX_TAPP_BYTES cannot exceed the %s-byte app policy\n' "$policy_max_tapp_bytes" >&2; exit 1; }
 target_dir=$(realpath -m "${CARGO_TARGET_DIR:-$repo_root/target}")
+# A directory with what an earlier compile-only run built (release/ with tilo-app-package and
+# tilo-runtime-bundle, thin-app/ with the apps, the runtime and its engines): package and sign
+# those without compiling, so the signing step runs no build script or compiler.
+prebuilt=${TILO_APP_PREBUILT:-}
+if [[ -n $prebuilt ]]; then
+    [[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] \
+        || { printf 'TILO_APP_PREBUILT and TILO_APP_COMPILE_ONLY exclude each other\n' >&2; exit 2; }
+    target_dir=$(realpath -e "$prebuilt")
+fi
 release_dir=$target_dir/release
 thin_app_dir=$target_dir/thin-app
 
@@ -69,6 +78,7 @@ runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
+if [[ -z $prebuilt ]]; then
 (cd "$repo_root" && cargo build --release --locked -p tilo-app-package-cli -p runtime-bundle)
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always resolve the shared runtime against
@@ -77,6 +87,7 @@ features=$(jq -r '.features | join(",")' "$runtime_plan")
 # selection and therefore safe to combine with unchanged tapps.
 INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_PACKAGES="${packages[*]}" APP_FEATURES="$features" \
     "$repo_root/os/scripts/build-thin-apps.sh"
+fi
 mapfile -t app_binaries < <(
     jq -r --arg root "$thin_app_dir" \
         '.catalog[] | $root + "/" + .binary' "$plan"
@@ -86,8 +97,8 @@ mapfile -t app_binaries < <(
 # second invocation, whose Cargo builds are then already fresh.
 [[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0
 
-runtime_version=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
-[[ $runtime_version =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
+runtime_release=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
+[[ $runtime_release =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]
 if [[ -z $runtime_identity ]]; then
     runtime_identity="$out/work/runtime-publisher.json"
     "$release_dir/tilo-runtime-bundle" key generate --out "$runtime_identity"
@@ -95,15 +106,52 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
+# The runtime engines build-thin-apps.sh built with this runtime, whichever
+# apps were selected: each is signed beside the runtime, which is
+# what makes the runtime id cover it, and only its app loads it.
+[[ -f $thin_app_dir/runtime-engines ]] || {
+    printf 'build-thin-apps.sh left no runtime engine list in %s\n' "$thin_app_dir" >&2
+    exit 1
+}
+runtime_engines=()
+while IFS= read -r engine; do
+    [[ $engine =~ ^lib[a-z0-9_]+\.so$ && -f $thin_app_dir/$engine ]] || {
+        printf 'runtime engine %s is not a built library in %s\n' "$engine" "$thin_app_dir" >&2
+        exit 1
+    }
+    runtime_engines+=("$thin_app_dir/$engine")
+done < "$thin_app_dir/runtime-engines"
+# The default SDK also serves osk/settings's native keyboard-map dependency.
+# Include this fixed platform root for every selection: using only the emitted
+# apps' dependencies would change the SDK identity for a partial release.
+keyboard_libdir=$(pkg-config --variable=libdir xkbcommon)
+keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
+[[ -n $keyboard_libdir && -f $keyboard_library ]] || {
+    printf 'default SDK keyboard library is missing: %s\n' "$keyboard_library" >&2
+    exit 1
+}
+# Every retained SDK owns the product catalog its apps were compiled against.
+# Prepare verified bytes before signing; checkout cache paths are not available
+# inside an installed app's private namespace.
+runtime_fonts="$out/work/fonts"
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
-OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
+OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
+    VERSION_OUT="$out/work/runtime-version" \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
-    EXTRA_LIBS="$runtime_dylib $rust_libstd" \
+    FONT_CATALOG_ROOT="$runtime_fonts" \
+    EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
+# Every app below links this exact runtime build and names it.
+runtime_version=$(<"$out/work/runtime-version")
+runtime_id="tilo-runtime/$runtime_version"
+"$repo_root/os/scripts/verify-runtime-bundle-closure.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" "${app_binaries[@]}"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
@@ -129,9 +177,17 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     staged_manifest="$out/work/manifest-$name.toml"
     mkdir -p "$payload/bin"
     install -pm 0755 "$built" "$payload/bin/$binary"
+    # The app's public surface ships at the payload root, as `tilo-app package`
+    # stages it: the launcher names that file to the app, which reads it from
+    # there, and relays fetch it from the registry by the hash its ops name.
+    surface="$repo_root/$(dirname "$manifest")/surface.toml"
+    if [[ -f $surface ]]; then
+        install -pm 0644 "$surface" "$payload/surface.toml"
+    fi
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     python3 "$repo_root/tools/apps/dev_app_versions.py" --manifest "$staged_manifest" --version "$version"
+    "$repo_root/os/scripts/stamp-runtime.sh" "$staged_manifest" "$runtime_id"
     python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$native_arch" \
         --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     tapp="$out/tapp/$name-$version-$(uname -m).tapp"
@@ -149,8 +205,14 @@ while IFS=$'\t' read -r name package binary id version manifest; do
         exit "$pack_status"
     fi
     tapp_bytes=$(stat -c %s "$tapp")
-    printf 'packed app=%s output=%s tapp_bytes=%s limit=%s\n' \
-        "$name" "$tapp" "$tapp_bytes" "$max_tapp_bytes"
+    # What a client downloads: the compressed twin the registry publishes
+    # beside the .tapp. Measured here, then dropped; publishing writes its own.
+    twin="$out/work/$name.tapp.zst"
+    "$release_dir/tilo-app-package" compress --output "$twin" "$tapp" >/dev/null
+    zst_bytes=$(stat -c %s "$twin")
+    rm -f "$twin"
+    printf 'packed app=%s output=%s tapp_bytes=%s limit=%s zst_bytes=%s\n' \
+        "$name" "$tapp" "$tapp_bytes" "$max_tapp_bytes" "$zst_bytes"
     "$release_dir/tilo-app-package" verify --trusted-key "$pubkey" "$tapp"
     (( tapp_bytes <= max_tapp_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \
@@ -159,14 +221,26 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     }
 done < <(jq -r '.catalog[] | [.name,.package,.binary,.id,.version,.manifest] | @tsv' "$plan")
 
-python3 - "$plan" "$out/tapp" "$out/index.json" "$(uname -m)" "${GITHUB_SHA:-unknown}" <<'PY'
+# The runtime itself, as the registry offers it: a `kind = "runtime"`
+# package whose payload is the signed bundle above, split into its thin
+# form plus content-addressed payload objects that are uploaded beside it.
+runtime_package_version=0.1.0
+if [[ -n ${TILO_APP_RELEASE_SOURCE:-} ]]; then
+    runtime_package_version="0.1.${TILO_APP_RELEASE_SEQUENCE}+g${TILO_APP_RELEASE_SOURCE}"
+fi
+"$repo_root/tools/apps/pack-runtime-package.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" so.tilo.runtime "Tilo runtime" \
+    "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package" >/dev/null
+
+python3 - "$plan" "$out/tapp" "$out/index.json" "$(uname -m)" "${GITHUB_SHA:-unknown}" "$runtime_id" <<'PY'
 import hashlib, json, pathlib, sys
 plan = json.load(open(sys.argv[1], encoding="utf-8"))
 directory = pathlib.Path(sys.argv[2])
 entries = []
 for app in plan["catalog"]:
     path = next(directory.glob(f"{app['name']}-{app['version']}-*.tapp"))
-    entries.append({**app, "file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    entries.append({**app, "runtime": sys.argv[6], "file": path.name,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY

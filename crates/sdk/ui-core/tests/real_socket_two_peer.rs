@@ -1,15 +1,5 @@
 //! Two-peer RPC integration test for the production typed collaboration client.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::support::{document_mutation, typed_collab::TypedBroker};
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use tilo_ui::presence::PresenceKey;

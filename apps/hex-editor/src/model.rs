@@ -1,30 +1,66 @@
-//! Pure data model for the hex editor.
+//! Pure data model for the hex editor's view.
 //!
-//! Holds the editable byte buffer plus the editor's view state — cursor
+//! Holds the view's copy of the buffer plus its presentation state — cursor
 //! position, selection, edit mode, active column, bytes-per-row, and the
-//! set of bytes that have been modified since load. None of this knows
-//! about rendering or collaboration storage; it is plain logic so every operation is
-//! unit-testable in isolation.
+//! set of bytes that have been modified since load. A keystroke edits the
+//! copy at once and records the [`BufferEdit`] it made, which the view
+//! submits as the resource's action; the resource's state replaces the copy
+//! whenever it differs (an undo, a collaborator, the palette). None of this
+//! knows about rendering or storage; it is plain logic so every operation
+//! is unit-testable in isolation.
 
 use std::collections::BTreeSet;
 
-/// One primitive device-local buffer mutation. Every byte edit reduces to an
-/// insert, delete, or overwrite at a concrete offset; cursor movement,
-/// selection, scroll, and mode/column/endian changes remain presentation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+// `#[derive(JsonSchema)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, JsonSchema};
+
+use crate::buffer::Hex;
+
+/// One primitive buffer mutation. Every byte edit reduces to an insert,
+/// delete, or overwrite at a concrete offset; cursor movement, selection,
+/// scroll, and mode/column/endian changes remain presentation. It is also
+/// the edit of the record's bytes at their path
+/// ([`ByteBuffer`](crate::buffer::ByteBuffer)).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum BufferEdit {
     /// Splice `bytes` in *before* `offset`, growing the buffer.
-    Insert { offset: usize, bytes: Vec<u8> },
+    Insert { offset: usize, bytes: Hex },
     /// Remove `len` bytes starting at `offset`.
     Delete { offset: usize, len: usize },
-    /// Replace the bytes already at `offset..offset+bytes.len()` in place.
-    Overwrite { offset: usize, bytes: Vec<u8> },
+    /// Replace the bytes already at `offset..offset+bytes.len()` in place;
+    /// the buffer never grows, so bytes past its end are dropped.
+    Overwrite { offset: usize, bytes: Hex },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalEdit {
-    pub undo: BufferEdit,
-    pub redo: BufferEdit,
+impl BufferEdit {
+    /// The edited span `(offset, len)`.
+    fn span(&self) -> (usize, usize) {
+        match self {
+            Self::Insert { offset, bytes } | Self::Overwrite { offset, bytes } => {
+                (*offset, bytes.0.len())
+            }
+            Self::Delete { offset, len } => (*offset, *len),
+        }
+    }
+
+    /// Whether `next`, right after `self`, continues the same run of typing
+    /// or deleting: the next nibble or byte typed, the next byte deleted.
+    #[must_use]
+    pub fn continues(&self, next: &Self) -> bool {
+        let ((at, len), (next_at, next_len)) = (self.span(), next.span());
+        match (self, next) {
+            (
+                Self::Insert { .. } | Self::Overwrite { .. },
+                Self::Insert { .. } | Self::Overwrite { .. },
+            ) => next_at >= at && next_at <= at.saturating_add(len),
+            // Delete steps in place (Delete) or backwards (Backspace).
+            (Self::Delete { .. }, Self::Delete { .. }) => {
+                next_at == at || next_at.saturating_add(next_len) == at
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Which of the two parallel columns the keyboard cursor is editing.
@@ -65,8 +101,8 @@ impl EditMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            EditMode::Overwrite => "OVR",
-            EditMode::Insert => "INS",
+            EditMode::Overwrite => "Overwrite",
+            EditMode::Insert => "Insert",
         }
     }
 }
@@ -89,10 +125,19 @@ impl Endian {
 
     pub fn label(self) -> &'static str {
         match self {
-            Endian::Little => "LE",
-            Endian::Big => "BE",
+            Endian::Little => "Little endian",
+            Endian::Big => "Big endian",
         }
     }
+}
+
+/// How many trailing items `a` and `b` share.
+pub(crate) fn common_suffix<T: PartialEq>(a: &[T], b: &[T]) -> usize {
+    a.iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
 }
 
 /// The full editor state: the bytes plus where we are in them.
@@ -121,67 +166,11 @@ pub struct HexModel {
     bytes_per_row: usize,
     /// First row visible in the viewport (scroll position, in rows).
     top_row: usize,
-    pending_history: Vec<LocalEdit>,
+    /// The edits made since [`Self::take_edits`] last collected them.
+    edits: Vec<BufferEdit>,
 }
 
 impl HexModel {
-    /// Apply a canonical local edit and retain its compact inverse locally.
-    pub fn apply_local_edit(&mut self, edit: &BufferEdit) {
-        let undo = match edit {
-            BufferEdit::Insert { offset, bytes } => BufferEdit::Delete {
-                offset: (*offset).min(self.bytes.len()),
-                len: bytes.len(),
-            },
-            BufferEdit::Delete { offset, len } => {
-                let end = offset.saturating_add(*len).min(self.bytes.len());
-                BufferEdit::Insert {
-                    offset: *offset,
-                    bytes: self.bytes.get(*offset..end).unwrap_or_default().to_vec(),
-                }
-            }
-            BufferEdit::Overwrite { offset, bytes } => BufferEdit::Overwrite {
-                offset: *offset,
-                bytes: self
-                    .bytes
-                    .get(*offset..offset.saturating_add(bytes.len()))
-                    .unwrap_or_default()
-                    .to_vec(),
-            },
-        };
-        self.apply_history_edit(edit);
-        self.pending_history.push(LocalEdit {
-            undo,
-            redo: edit.clone(),
-        });
-    }
-
-    /// Apply an already-recorded history delta without making a new entry.
-    pub fn apply_history_edit(&mut self, edit: &BufferEdit) {
-        self.pending_nibble = None;
-        match edit {
-            BufferEdit::Insert { offset, bytes } => {
-                let at = (*offset).min(self.bytes.len());
-                self.bytes.splice(at..at, bytes.iter().copied());
-                self.dirty.extend(at..at + bytes.len());
-            }
-            BufferEdit::Delete { offset, len } => {
-                let end = offset.saturating_add(*len).min(self.bytes.len());
-                if *offset < end {
-                    self.bytes.drain(*offset..end);
-                    self.cursor = self.cursor.min(self.bytes.len().saturating_sub(1));
-                }
-            }
-            BufferEdit::Overwrite { offset, bytes } => {
-                for (index, byte) in bytes.iter().copied().enumerate() {
-                    let at = offset.saturating_add(index);
-                    if let Some(slot) = self.bytes.get_mut(at) {
-                        *slot = byte;
-                        self.dirty.insert(at);
-                    }
-                }
-            }
-        }
-    }
     /// Build a model around an initial byte buffer.
     pub fn new(bytes: Vec<u8>) -> Self {
         Self {
@@ -195,14 +184,85 @@ impl HexModel {
             endian: Endian::Little,
             bytes_per_row: 16,
             top_row: 0,
-            pending_history: Vec::new(),
+            edits: Vec::new(),
         }
     }
 
-    // --- buffer-edit journal --------------------------------------------
+    // --- edits and the resource's bytes ---------------------------------
 
-    pub fn take_local_history(&mut self) -> Vec<LocalEdit> {
-        std::mem::take(&mut self.pending_history)
+    /// The edits made since the last call, in order.
+    pub fn take_edits(&mut self) -> Vec<BufferEdit> {
+        std::mem::take(&mut self.edits)
+    }
+
+    /// Show `bytes`, the buffer as the resource holds it now, keeping the
+    /// cursor (clamped) and the view settings. Bytes the change touched are
+    /// marked changed; where the buffer is as long as `saved`, the bytes
+    /// that differ from `saved` are exactly the changed ones (an undo
+    /// clears its byte's mark).
+    pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
+        if bytes == self.bytes.as_slice() {
+            return;
+        }
+        if bytes.len() == saved.len() {
+            self.dirty = bytes
+                .iter()
+                .zip(saved)
+                .enumerate()
+                .filter_map(|(index, (now, was))| (now != was).then_some(index))
+                .collect();
+        } else {
+            let prefix = self
+                .bytes
+                .iter()
+                .zip(bytes)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = common_suffix(
+                self.bytes.get(prefix..).unwrap_or_default(),
+                bytes.get(prefix..).unwrap_or_default(),
+            );
+            let old_end = self.bytes.len() - suffix;
+            let new_end = bytes.len() - suffix;
+            self.dirty = self
+                .dirty
+                .iter()
+                .filter_map(|&d| {
+                    if d < prefix {
+                        Some(d)
+                    } else if d >= old_end {
+                        Some(d - old_end + new_end)
+                    } else {
+                        None
+                    }
+                })
+                .chain(prefix..new_end)
+                .collect();
+        }
+        // Reuse the buffer: a large file is not reallocated per edit.
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
+        self.pending_nibble = None;
+        self.clamp_cursor();
+    }
+
+    /// Show `bytes` as a freshly loaded buffer: nothing changed, the cursor
+    /// at the start.
+    pub fn load(&mut self, bytes: Vec<u8>) {
+        self.bytes = bytes;
+        self.dirty.clear();
+        self.edits.clear();
+        self.pending_nibble = None;
+        self.anchor = None;
+        self.cursor = 0;
+        self.top_row = 0;
+    }
+
+    fn clamp_cursor(&mut self) {
+        let max = self.bytes.len().saturating_sub(1);
+        self.cursor = self.cursor.min(max);
+        self.anchor = self.anchor.map(|anchor| anchor.min(max));
+        self.top_row = self.top_row.min(self.row_count().saturating_sub(1));
     }
 
     // --- read accessors -------------------------------------------------
@@ -290,23 +350,10 @@ impl HexModel {
         }
     }
 
-    /// The byte at the cursor, if the cursor is within bounds.
-    pub fn byte_at_cursor(&self) -> Option<u8> {
-        self.bytes.get(self.cursor).copied()
-    }
-
     // --- view configuration --------------------------------------------
 
     pub fn set_bytes_per_row(&mut self, n: usize) {
         self.bytes_per_row = n.max(1);
-    }
-
-    /// Cycle 16 -> 8 -> 16. The two classic layouts.
-    pub fn cycle_bytes_per_row(&mut self) {
-        self.bytes_per_row = match self.bytes_per_row {
-            16 => 8,
-            _ => 16,
-        };
     }
 
     pub fn set_top_row(&mut self, row: usize) {
@@ -452,18 +499,11 @@ impl HexModel {
     pub fn set_byte(&mut self, offset: usize, value: u8) -> bool {
         if let Some(slot) = self.bytes.get_mut(offset) {
             if *slot != value {
-                let previous = *slot;
                 *slot = value;
                 self.dirty.insert(offset);
-                self.pending_history.push(LocalEdit {
-                    undo: BufferEdit::Overwrite {
-                        offset,
-                        bytes: vec![previous],
-                    },
-                    redo: BufferEdit::Overwrite {
-                        offset,
-                        bytes: vec![value],
-                    },
+                self.edits.push(BufferEdit::Overwrite {
+                    offset,
+                    bytes: Hex(vec![value]),
                 });
             }
             true
@@ -486,12 +526,9 @@ impl HexModel {
             .collect();
         self.dirty = shifted;
         self.dirty.insert(at);
-        self.pending_history.push(LocalEdit {
-            undo: BufferEdit::Delete { offset: at, len: 1 },
-            redo: BufferEdit::Insert {
-                offset: at,
-                bytes: vec![value],
-            },
+        self.edits.push(BufferEdit::Insert {
+            offset: at,
+            bytes: Hex(vec![value]),
         });
     }
 
@@ -509,13 +546,7 @@ impl HexModel {
             .map(|&d| if d > offset { d - 1 } else { d })
             .collect();
         self.dirty = shifted;
-        self.pending_history.push(LocalEdit {
-            undo: BufferEdit::Insert {
-                offset,
-                bytes: vec![removed],
-            },
-            redo: BufferEdit::Delete { offset, len: 1 },
-        });
+        self.edits.push(BufferEdit::Delete { offset, len: 1 });
         Some(removed)
     }
 
@@ -528,9 +559,6 @@ impl HexModel {
             return;
         }
         let removed = end - offset;
-        let Some(removed_bytes) = self.bytes.get(offset..end).map(<[u8]>::to_vec) else {
-            return;
-        };
         self.bytes.drain(offset..end);
         let shifted: BTreeSet<usize> = self
             .dirty
@@ -546,15 +574,9 @@ impl HexModel {
             })
             .collect();
         self.dirty = shifted;
-        self.pending_history.push(LocalEdit {
-            undo: BufferEdit::Insert {
-                offset,
-                bytes: removed_bytes,
-            },
-            redo: BufferEdit::Delete {
-                offset,
-                len: removed,
-            },
+        self.edits.push(BufferEdit::Delete {
+            offset,
+            len: removed,
         });
     }
 
@@ -730,16 +752,27 @@ mod tests {
         assert_eq!(m.cursor(), 1); // advanced after completing the byte
         assert!(m.is_dirty(0));
 
-        // Local history uses inverse edits, not a buffer snapshot.
-        let mut history_model = HexModel::new(vec![0x10, 0x20]);
-        assert!(history_model.set_byte(1, 0xAB));
-        let history = history_model.take_local_history();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history_model.bytes(), &[0x10, 0xAB]);
-        history_model.apply_local_edit(&history[0].undo);
-        assert_eq!(history_model.bytes(), &[0x10, 0x20]);
-        history_model.apply_local_edit(&history[0].redo);
-        assert_eq!(history_model.bytes(), &[0x10, 0xAB]);
+        // Every change is recorded as the edit that makes it.
+        let mut edited = HexModel::new(vec![0x10, 0x20]);
+        assert!(edited.set_byte(1, 0xAB));
+        assert!(
+            edited.set_byte(1, 0xAB),
+            "an unchanged byte records nothing"
+        );
+        edited.move_to(0, false);
+        edited.move_to(1, true);
+        edited.delete_at_cursor();
+        assert_eq!(
+            edited.take_edits(),
+            [
+                BufferEdit::Overwrite {
+                    offset: 1,
+                    bytes: Hex(vec![0xAB])
+                },
+                BufferEdit::Delete { offset: 0, len: 2 },
+            ]
+        );
+        assert!(edited.take_edits().is_empty());
 
         // Insert-mode hex grows the buffer.
         let mut m = HexModel::new(vec![0xAA]);
@@ -776,6 +809,30 @@ mod tests {
     }
 
     #[test]
+    fn shown_bytes_keep_the_cursor_and_mark_what_differs_from_the_saved_file() {
+        let saved = vec![0x10, 0x20, 0x30, 0x40];
+        let mut m = HexModel::new(saved.clone());
+        m.move_to(3, false);
+        // An edit from elsewhere marks its byte; undoing it clears the mark.
+        m.show_bytes(&[0x10, 0xFF, 0x30, 0x40], &saved);
+        assert!(m.is_dirty(1));
+        assert_eq!(m.cursor(), 3);
+        m.show_bytes(&saved, &saved);
+        assert_eq!(m.dirty_count(), 0);
+        // A shorter buffer clamps the cursor and marks the changed span.
+        m.show_bytes(&[0x10, 0x40], &saved);
+        assert_eq!(m.cursor(), 1);
+        assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
+        m.show_bytes(&[0x10, 0x99, 0x40], &saved);
+        assert!(m.is_dirty(1));
+        assert!(!m.is_dirty(2));
+        // A load starts clean.
+        m.load(vec![1, 2, 3]);
+        assert_eq!(m.dirty_count(), 0);
+        assert_eq!(m.cursor(), 0);
+    }
+
+    #[test]
     fn viewport_scrolls_minimally_and_cycles_row_width() {
         // scroll_into_view scrolls the minimum.
         let mut m = HexModel::new((0u8..=255).collect());
@@ -784,13 +841,5 @@ mod tests {
         assert_eq!(m.top_row(), 7); // 10 + 1 - 4
         m.scroll_into_view(2, 4);
         assert_eq!(m.top_row(), 2);
-
-        // Cycling bytes-per-row flips 16 <-> 8.
-        let mut m = model();
-        assert_eq!(m.bytes_per_row(), 16);
-        m.cycle_bytes_per_row();
-        assert_eq!(m.bytes_per_row(), 8);
-        m.cycle_bytes_per_row();
-        assert_eq!(m.bytes_per_row(), 16);
     }
 }

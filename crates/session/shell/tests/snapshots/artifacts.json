@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "e2e-tab-drag-reorder-settled.png",
+      "sha256": "99f270c7dc9e3d130d3b0aa0a2e650690795454daee4bb417dd8a578ecd655b0",
+      "bytes": 21670,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/99f270c7dc9e3d130d3b0aa0a2e650690795454daee4bb417dd8a578ecd655b0/e2e-tab-drag-reorder-settled.png"
+    },
+    {
+      "file": "e2e-maximized-tile-controls.png",
+      "sha256": "9c69f6022db7c0120c3b012d312eb2c87b907d28b867dff32c237ca99bef8879",
+      "bytes": 20752,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9c69f6022db7c0120c3b012d312eb2c87b907d28b867dff32c237ca99bef8879/e2e-maximized-tile-controls.png"
+    },
+    {
+      "file": "three-spokes.png",
+      "sha256": "912363ccf9ba4669844209e5bbfa612ab0e775070f541baa05c8b7331010e53e",
+      "bytes": 25821,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/912363ccf9ba4669844209e5bbfa612ab0e775070f541baa05c8b7331010e53e/three-spokes.png"
+    }
+  ]
+}

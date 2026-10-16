@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::limits::TrustedProxies;
+
 pub struct Config {
     /// Plain HTTP room API and page assets (behind the ingress's TLS).
     pub api: SocketAddr,
@@ -15,7 +17,8 @@ pub struct Config {
     /// PEM chain and key for `*.<domain>`; a self-signed pair when absent.
     pub certificate: Option<(PathBuf, PathBuf)>,
     pub relay_binary: PathBuf,
-    /// The browser runtime bundle and the join page, served under `/app/`.
+    /// The browser runtime bundle, served under `/app/` and, as the web
+    /// entry guest links name, `/open/`.
     pub assets: PathBuf,
     pub state: PathBuf,
     pub max_rooms: usize,
@@ -24,9 +27,9 @@ pub struct Config {
     pub max_guests: usize,
     pub port_base: u16,
     /// Page origins that create rooms and join them (the site), besides the
-    /// API's own origin, which serves the join page.
+    /// API's own origin, which serves the entry pages.
     pub site_origins: Vec<String>,
-    /// The API's public base URL, for join links and `/app/`.
+    /// The API's public base URL, for guest links and the bundle.
     pub public_api: String,
     /// Rooms serve browsers on their own port (TCP and UDP, the relay's own
     /// certificate) instead of behind the TLS front, so the live plane
@@ -38,16 +41,138 @@ pub struct Config {
     /// the HTTPS stream fallback unless WebTransport reaches the room's
     /// TLS port.
     pub local: bool,
+    /// One always-on public room instead of short-lived ones.
+    pub persistent: Option<PersistentConfig>,
 }
+
+/// The settings of a persistent public room (`TILO_ROOMS_PERSISTENT`).
+pub struct PersistentConfig {
+    /// The room's name: its directory under `TILO_ROOMS_STATE`.
+    pub name: String,
+    /// The name people see for it (`TILO_ROOMS_NAME`); unset, the relay
+    /// shows `name` with a capital first letter.
+    pub shown_name: Option<String>,
+    /// The channels its Chat opens with while it has none
+    /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, none.
+    pub chat_channels: Vec<String>,
+    /// The strips, by name, the room's shared desktop has
+    /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
+    pub strips: Vec<String>,
+    /// Proxies whose `X-Forwarded-For` names the visitor.
+    pub trusted_proxies: TrustedProxies,
+    /// User public keys (hex) made Owners of the room at start.
+    pub owners: Vec<String>,
+    /// User public keys (hex) made Moderators of the room at start.
+    pub moderators: Vec<String>,
+    /// Bot directory entries, with their inputs, installed at first start.
+    pub bots: Vec<String>,
+    /// Apps authored into the room at first start.
+    pub seed_apps: Vec<String>,
+    /// Seconds between resets of the seeded non-chat content; 0 never.
+    pub reset_secs: u64,
+    /// Minutes a guest may be away (no session) before the relay removes
+    /// them from the room (`TILO_ROOMS_PRUNE_AFTER_MINS`); a guest who
+    /// comes back later joins through the door again as the same person.
+    pub prune_after_mins: u64,
+    /// The room's owner root, mounted from the operator's encrypted secrets.
+    pub root_file: PathBuf,
+    /// The Discord bot token, when the bridge runs.
+    pub discord_token_file: Option<PathBuf>,
+    /// The model API key the room's moderation agent asks with, when it
+    /// runs; mounted from the operator's encrypted secrets.
+    pub moderation_key_file: Option<PathBuf>,
+    /// The model the moderation agent asks, when not the default.
+    pub moderation_model: Option<String>,
+    /// Spectator sessions (the homepage embed) at once.
+    pub max_spectators: usize,
+    /// Guest joins one address may make (`TILO_ROOMS_GUEST_JOINS_PER_10_MIN`,
+    /// `TILO_ROOMS_GUEST_JOINS_PER_DAY`). An office or a mobile carrier puts
+    /// many visitors behind one address, and each one past the limit only
+    /// watches until it frees up.
+    pub guest_joins: crate::limits::JoinRates,
+    /// Spectator certificates one address may take
+    /// (`TILO_ROOMS_SPECTATES_PER_10_MIN`; no daily cap).
+    pub spectator_joins: crate::limits::JoinRates,
+    /// The relay's published origin when it is reached through the ingress
+    /// (TLS ends there and forwards to `relay_plain`), so no public port or
+    /// load balancer of its own is needed.
+    pub relay_origin: Option<String>,
+    /// The relay's plain HTTP listener that the ingress forwards to.
+    pub relay_plain: SocketAddr,
+    /// The Tilo app's web entry (`https://app.example/`) the relay announces,
+    /// so `share-link` and bots mint links that open the room there.
+    pub web_entry: Option<String>,
+    /// WebTransport reached directly, beside an ingress that passes HTTP
+    /// only.
+    pub live: Option<LiveListener>,
+}
+
+/// The relay's own QUIC listener for WebTransport, published under a name
+/// that bypasses the HTTP-only proxy in front of `relay_origin`. Browsers
+/// try it first and fall back to the HTTPS stream through the ingress.
+#[derive(Clone, Debug)]
+pub struct LiveListener {
+    /// The `https://` origin browsers dial, e.g. `https://live.rooms.example`.
+    pub origin: String,
+    /// The certificate's host name: `origin` without scheme and port.
+    pub host: String,
+    /// Where the relay listens (UDP for WebTransport; HTTPS on TCP too).
+    pub listen: SocketAddr,
+    /// PEM chain and key for `host`, re-read when renewed in place.
+    pub certificate: (PathBuf, PathBuf),
+}
+
+/// Reads the direct WebTransport listener, which only makes sense beside an
+/// ingress origin.
+fn live_listener(
+    var: impl Fn(&str) -> Option<String> + Copy,
+    relay_origin: Option<&str>,
+) -> Result<Option<LiveListener>> {
+    let Some(origin) = var("TILO_ROOMS_LIVE_ORIGIN") else {
+        return Ok(None);
+    };
+    let origin = origin.trim_end_matches('/').to_owned();
+    let authority = origin.strip_prefix("https://").unwrap_or_default();
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| port.parse::<u16>().is_ok())
+        .map_or(authority, |(host, _)| host);
+    ensure!(
+        !host.is_empty() && !authority.contains('/'),
+        "TILO_ROOMS_LIVE_ORIGIN must be an https:// origin like https://live.rooms.example"
+    );
+    ensure!(
+        relay_origin.is_some(),
+        "TILO_ROOMS_LIVE_ORIGIN goes with TILO_ROOMS_RELAY_ORIGIN: it bypasses that ingress"
+    );
+    let path =
+        |name: &str, default: &str| PathBuf::from(var(name).unwrap_or_else(|| default.into()));
+    Ok(Some(LiveListener {
+        host: host.to_owned(),
+        origin,
+        listen: parsed(
+            var,
+            "TILO_ROOMS_LIVE_LISTEN",
+            SocketAddr::from(([0, 0, 0, 0], 9781)),
+        )?,
+        certificate: (
+            path("TILO_ROOMS_LIVE_TLS_CERT", "/run/live-tls/tls.crt"),
+            path("TILO_ROOMS_LIVE_TLS_KEY", "/run/live-tls/tls.key"),
+        ),
+    }))
+}
+
+/// What a persistent room seeds when `TILO_ROOMS_SEED_APPS` is unset.
+pub const DEFAULT_SEED_APPS: [&str; 3] = ["so.tilo.chat", "so.tilo.notes", "so.tilo.canvas"];
 
 /// Offset of a local room's plain HTTP port from its TLS port.
 pub const LOCAL_PLAIN_OFFSET: u16 = 64;
 
-fn var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
-}
-
-fn parsed<T: std::str::FromStr>(name: &str, default: T) -> Result<T>
+fn parsed<T: std::str::FromStr>(
+    var: impl Fn(&str) -> Option<String>,
+    name: &str,
+    default: T,
+) -> Result<T>
 where
     T::Err: std::error::Error + Send + Sync + 'static,
 {
@@ -58,6 +183,14 @@ where
 
 impl Config {
     pub fn from_env() -> Result<Self> {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    /// Reads the configuration through `lookup`, which answers an
+    /// environment variable's value; an empty value counts as unset.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let var = |name: &str| lookup(name).filter(|value| !value.is_empty());
+        let persistent = persistent(&var)?;
         let path =
             |name: &str, default: &str| PathBuf::from(var(name).unwrap_or_else(|| default.into()));
         let certificate = match (var("TILO_ROOMS_TLS_CERT"), var("TILO_ROOMS_TLS_KEY")) {
@@ -66,8 +199,16 @@ impl Config {
             _ => anyhow::bail!("TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY go together"),
         };
         let config = Self {
-            api: parsed("TILO_ROOMS_API", SocketAddr::from(([0, 0, 0, 0], 8790)))?,
-            tls: parsed("TILO_ROOMS_TLS", SocketAddr::from(([0, 0, 0, 0], 9443)))?,
+            api: parsed(
+                var,
+                "TILO_ROOMS_API",
+                SocketAddr::from(([0, 0, 0, 0], 8790)),
+            )?,
+            tls: parsed(
+                var,
+                "TILO_ROOMS_TLS",
+                SocketAddr::from(([0, 0, 0, 0], 9443)),
+            )?,
             domain: var("TILO_ROOMS_DOMAIN").unwrap_or_else(|| "localhost".into()),
             public_port: var("TILO_ROOMS_PUBLIC_PORT")
                 .map(|port| port.parse().context("TILO_ROOMS_PUBLIC_PORT is invalid"))
@@ -76,10 +217,14 @@ impl Config {
             relay_binary: path("TILO_ROOMS_RELAY_BIN", "/usr/local/bin/tilo-relay"),
             assets: path("TILO_ROOMS_ASSETS", "/srv/tilo-room-assets"),
             state: path("TILO_ROOMS_STATE", "/run/tilo-rooms"),
-            max_rooms: parsed("TILO_ROOMS_MAX", 8)?,
-            ttl: Duration::from_secs(parsed("TILO_ROOMS_TTL_SECS", 1800)?),
-            max_guests: parsed("TILO_ROOMS_MAX_GUESTS", 4)?,
-            port_base: parsed("TILO_ROOMS_PORT_BASE", 9700)?,
+            max_rooms: parsed(var, "TILO_ROOMS_MAX", 8)?,
+            ttl: Duration::from_secs(parsed(var, "TILO_ROOMS_TTL_SECS", 1800)?),
+            max_guests: parsed(
+                var,
+                "TILO_ROOMS_MAX_GUESTS",
+                if persistent.is_some() { 300 } else { 4 },
+            )?,
+            port_base: parsed(var, "TILO_ROOMS_PORT_BASE", 9700)?,
             site_origins: var("TILO_ROOMS_SITE_ORIGINS")
                 .unwrap_or_else(|| "http://localhost:4321".into())
                 .split(',')
@@ -92,6 +237,7 @@ impl Config {
                 .to_owned(),
             direct_ports: var("TILO_ROOMS_DIRECT_PORTS").is_some_and(|value| value == "1"),
             local: var("TILO_ROOMS_LOCAL").is_some_and(|value| value == "1"),
+            persistent,
         };
         ensure!(
             !(config.local && config.direct_ports),
@@ -110,8 +256,20 @@ impl Config {
             "TILO_ROOMS_ASSETS and TILO_ROOMS_STATE must be absolute"
         );
         ensure!(
-            (1..=64).contains(&config.max_rooms) && config.max_guests <= 16,
-            "TILO_ROOMS_MAX must be 1-64 and TILO_ROOMS_MAX_GUESTS at most 16"
+            (1..=64).contains(&config.max_rooms)
+                && config.max_guests
+                    <= if config.persistent.is_some() {
+                        10_000
+                    } else {
+                        16
+                    },
+            "TILO_ROOMS_MAX must be 1-64 and TILO_ROOMS_MAX_GUESTS at most 16 (10000 for a persistent room)"
+        );
+        ensure!(
+            config.persistent.as_ref().is_none_or(|persistent| {
+                persistent.relay_origin.is_some() || config.direct_ports || config.local
+            }),
+            "a persistent room is reached through the ingress or on its own port: set TILO_ROOMS_RELAY_ORIGIN (or TILO_ROOMS_DIRECT_PORTS=1, or TILO_ROOMS_LOCAL=1)"
         );
         ensure!(
             (60..=24 * 3600).contains(&config.ttl.as_secs()),
@@ -125,6 +283,31 @@ impl Config {
             "TILO_ROOMS_PORT_BASE leaves no room for 128 ports"
         );
         Ok(config)
+    }
+
+    /// The persistent room's origin, which browsers join: the ingress's
+    /// relay host when set, else the relay itself on its port.
+    pub fn persistent_origin(&self) -> String {
+        if self.local {
+            return format!(
+                "http://localhost:{}",
+                self.port_base.saturating_add(LOCAL_PLAIN_OFFSET)
+            );
+        }
+        if let Some(origin) = self
+            .persistent
+            .as_ref()
+            .and_then(|persistent| persistent.relay_origin.clone())
+        {
+            return origin;
+        }
+        format!("https://{}:{}", self.domain, self.port_base)
+    }
+
+    /// The pages allowed to frame this service's pages
+    /// (`Content-Security-Policy: frame-ancestors`).
+    pub fn frame_ancestors(&self) -> String {
+        self.site_origins.join(" ")
     }
 
     /// `https://<room>.<domain>[:port]`; with direct ports, the room's own
@@ -165,5 +348,571 @@ impl Config {
                 .site_origins
                 .iter()
                 .any(|allowed| allowed == origin || allowed == "*")
+    }
+}
+
+/// The relay's public origin and the Tilo app's web entry its links open
+/// in, each checked for shape.
+fn public_origins(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    let relay_origin =
+        var("TILO_ROOMS_RELAY_ORIGIN").map(|origin| origin.trim_end_matches('/').to_owned());
+    if let Some(origin) = &relay_origin {
+        let host = origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"))
+            .unwrap_or_default();
+        ensure!(
+            !host.is_empty() && !host.contains('/'),
+            "TILO_ROOMS_RELAY_ORIGIN must be an origin like https://rooms.example"
+        );
+    }
+    let web_entry = var("TILO_ROOMS_WEB_ENTRY");
+    if let Some(entry) = &web_entry {
+        let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+            .iter()
+            .any(|prefix| entry.starts_with(prefix));
+        ensure!(
+            (entry.starts_with("https://") || loopback) && entry.ends_with('/'),
+            "TILO_ROOMS_WEB_ENTRY must be an https URL ending in /, like https://app.example/"
+        );
+    }
+    Ok((relay_origin, web_entry))
+}
+
+/// The persistent room's settings, when `TILO_ROOMS_PERSISTENT` names one.
+fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<PersistentConfig>> {
+    let Some(name) = var("TILO_ROOMS_PERSISTENT") else {
+        return Ok(None);
+    };
+    ensure!(
+        name.len() <= 32
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-'),
+        "TILO_ROOMS_PERSISTENT must be a short lowercase name"
+    );
+    let list = |name: &str, separator: char| -> Vec<String> {
+        var(name)
+            .unwrap_or_default()
+            .split(separator)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let keys = |name: &str| -> Result<Vec<String>> {
+        let keys = list(name, ',');
+        ensure!(
+            keys.iter()
+                .all(|key| tilo_relay_protocol::room_operator::hex32(key).is_some()),
+            "{name} must list 64-character lowercase hex user public keys"
+        );
+        Ok(keys)
+    };
+    let (relay_origin, web_entry) = public_origins(var)?;
+    let live = live_listener(var, relay_origin.as_deref())?;
+    let max_spectators = parsed(var, "TILO_ROOMS_MAX_SPECTATORS", 1000_usize)?;
+    ensure!(
+        (1..=100_000).contains(&max_spectators),
+        "TILO_ROOMS_MAX_SPECTATORS must be 1-100000"
+    );
+    let (guest_joins, spectator_joins) = join_rates(var)?;
+    let token = PathBuf::from("/run/secrets/discord-bot-token");
+    let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
+    let moderation_model = moderation_model(var)?;
+    Ok(Some(PersistentConfig {
+        name,
+        shown_name: shown_name(var)?,
+        chat_channels: chat_channels(var)?,
+        strips: strips(var)?,
+        trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .parse()
+            .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")?,
+        owners: keys("TILO_ROOMS_OWNERS")?,
+        moderators: keys("TILO_ROOMS_MODERATORS")?,
+        bots: list("TILO_ROOMS_BOTS", ';'),
+        // Unset: chat, a welcome note and a canvas, so a visitor has
+        // something to do at once.
+        seed_apps: if var("TILO_ROOMS_SEED_APPS").is_some() {
+            list("TILO_ROOMS_SEED_APPS", ',')
+        } else {
+            DEFAULT_SEED_APPS
+                .iter()
+                .map(|app| (*app).to_owned())
+                .collect()
+        },
+        reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
+        prune_after_mins: prune_after_mins(var)?,
+        root_file: var("TILO_ROOMS_ROOT_FILE")
+            .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
+        discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
+            .map(PathBuf::from)
+            .or_else(|| token.is_file().then_some(token)),
+        moderation_key_file: var("TILO_ROOMS_MODERATION_KEY_FILE")
+            .map(PathBuf::from)
+            .or_else(|| moderation_key.is_file().then_some(moderation_key)),
+        moderation_model,
+        max_spectators,
+        guest_joins,
+        spectator_joins,
+        relay_origin,
+        web_entry,
+        relay_plain: parsed(
+            var,
+            "TILO_ROOMS_RELAY_PLAIN",
+            SocketAddr::from(([0, 0, 0, 0], 9780)),
+        )?,
+        live,
+    }))
+}
+
+/// The longest `TILO_ROOMS_PRUNE_AFTER_MINS` takes: a year.
+const MAX_PRUNE_AFTER_MINS: u64 = 365 * 24 * 60;
+
+/// `TILO_ROOMS_PRUNE_AFTER_MINS`: minutes without a session after which
+/// the relay removes a guest, 60 unless set.
+fn prune_after_mins(var: &impl Fn(&str) -> Option<String>) -> Result<u64> {
+    let minutes = parsed(var, "TILO_ROOMS_PRUNE_AFTER_MINS", 60_u64)?;
+    ensure!(
+        (1..=MAX_PRUNE_AFTER_MINS).contains(&minutes),
+        "TILO_ROOMS_PRUNE_AFTER_MINS must be 1-{MAX_PRUNE_AFTER_MINS}"
+    );
+    Ok(minutes)
+}
+
+/// The per-address join limits: guests' and spectators'.
+fn join_rates(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<(crate::limits::JoinRates, crate::limits::JoinRates)> {
+    let defaults = crate::limits::JoinRates::GUESTS;
+    let guest_joins = crate::limits::JoinRates {
+        per_ten_minutes: parsed(
+            var,
+            "TILO_ROOMS_GUEST_JOINS_PER_10_MIN",
+            defaults.per_ten_minutes,
+        )?,
+        per_day: parsed(var, "TILO_ROOMS_GUEST_JOINS_PER_DAY", defaults.per_day)?,
+    };
+    ensure!(
+        (1..=100_000).contains(&guest_joins.per_ten_minutes)
+            && (guest_joins.per_ten_minutes..=1_000_000).contains(&guest_joins.per_day),
+        "TILO_ROOMS_GUEST_JOINS_PER_10_MIN must be 1-100000 and TILO_ROOMS_GUEST_JOINS_PER_DAY at least that, up to 1000000"
+    );
+    let spectator_joins = crate::limits::JoinRates {
+        per_ten_minutes: parsed(
+            var,
+            "TILO_ROOMS_SPECTATES_PER_10_MIN",
+            crate::limits::JoinRates::SPECTATORS.per_ten_minutes,
+        )?,
+        ..crate::limits::JoinRates::SPECTATORS
+    };
+    ensure!(
+        (1..=100_000).contains(&spectator_joins.per_ten_minutes),
+        "TILO_ROOMS_SPECTATES_PER_10_MIN must be 1-100000"
+    );
+    Ok((guest_joins, spectator_joins))
+}
+
+/// The name people see for the persistent room, `TILO_ROOMS_NAME`, when set.
+fn shown_name(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let Some(name) = var("TILO_ROOMS_NAME") else {
+        return Ok(None);
+    };
+    let name = name.trim().to_owned();
+    ensure!(
+        (1..=80).contains(&name.chars().count()) && !name.chars().any(char::is_control),
+        "TILO_ROOMS_NAME must be 1-80 characters"
+    );
+    Ok(Some(name))
+}
+
+/// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each
+/// lowercase letters, digits and `-` (the relay derives each channel's id
+/// from its name, so two names may not share one).
+fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let channels: Vec<String> = var("TILO_ROOMS_CHAT_CHANNELS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in &channels {
+        ensure!(
+            name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "TILO_ROOMS_CHAT_CHANNELS names channels of up to 64 lowercase letters, digits and -, not {name:?}"
+        );
+    }
+    let mut unique = channels.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    ensure!(
+        unique.len() == channels.len(),
+        "TILO_ROOMS_CHAT_CHANNELS names a channel twice"
+    );
+    Ok(channels)
+}
+
+/// `TILO_ROOMS_STRIPS`: comma-separated strip names, each 1-48
+/// characters, none twice.
+fn strips(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let strips: Vec<String> = var("TILO_ROOMS_STRIPS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in &strips {
+        ensure!(
+            name.chars().count() <= 48 && !name.chars().any(char::is_control),
+            "TILO_ROOMS_STRIPS names strips of up to 48 characters, not {name:?}"
+        );
+    }
+    let mut unique = strips.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    ensure!(
+        unique.len() == strips.len(),
+        "TILO_ROOMS_STRIPS names a strip twice"
+    );
+    Ok(strips)
+}
+
+/// `TILO_ROOMS_MODERATION_MODEL`, a model id.
+fn moderation_model(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let moderation_model = var("TILO_ROOMS_MODERATION_MODEL");
+    ensure!(
+        moderation_model.as_deref().is_none_or(|model| {
+            !model.is_empty()
+                && model.len() <= 128
+                && model
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | ':' | '@'))
+        }),
+        "TILO_ROOMS_MODERATION_MODEL must be a model id like claude-haiku-5-5"
+    );
+    Ok(moderation_model)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn config(vars: &[(&str, &str)]) -> Result<Config> {
+        let vars: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect();
+        Config::from_lookup(|name| vars.get(name).cloned())
+    }
+
+    #[test]
+    fn persistent_mode_reads_its_settings_and_defaults_to_two_hundred_guests() {
+        let owner = "ab".repeat(32);
+        let config = config(&[
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example/"),
+            (
+                "TILO_ROOMS_SITE_ORIGINS",
+                "https://site.example,https://app.example",
+            ),
+            ("TILO_ROOMS_TRUSTED_PROXIES", "10.42.0.0/16"),
+            ("TILO_ROOMS_OWNERS", &owner),
+            ("TILO_ROOMS_SEED_APPS", "so.tilo.chat"),
+            ("TILO_ROOMS_BOTS", "so.tilo.bots.discord-bridge guild=1"),
+            ("TILO_ROOMS_ROOT_FILE", "/secrets/root"),
+            // The room API and the relay share one origin; the ingress
+            // sends `/peer/` to the relay.
+            ("TILO_ROOMS_PUBLIC_API", "https://rooms.example"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+        ])
+        .unwrap();
+        assert_eq!(config.api_origin(), config.persistent_origin());
+        let persistent = config.persistent.as_ref().unwrap();
+        assert_eq!(persistent.name, "plaza");
+        assert_eq!(persistent.owners, vec![owner]);
+        assert!(persistent.moderators.is_empty());
+        assert_eq!(persistent.seed_apps, vec!["so.tilo.chat".to_owned()]);
+        assert_eq!(
+            persistent.bots,
+            vec!["so.tilo.bots.discord-bridge guild=1".to_owned()]
+        );
+        assert_eq!(persistent.root_file, PathBuf::from("/secrets/root"));
+        assert_eq!(
+            persistent.web_entry.as_deref(),
+            Some("https://app.example/")
+        );
+        assert_eq!(persistent.max_spectators, 1000);
+        assert_eq!(persistent.guest_joins, crate::limits::JoinRates::GUESTS);
+        assert_eq!(
+            persistent.spectator_joins,
+            crate::limits::JoinRates::SPECTATORS
+        );
+        assert_eq!(
+            persistent.relay_plain,
+            SocketAddr::from(([0, 0, 0, 0], 9780))
+        );
+        assert!(
+            persistent
+                .trusted_proxies
+                .contains("10.42.3.4".parse().unwrap())
+        );
+        assert_eq!(config.max_guests, 300);
+        assert_eq!(config.persistent_origin(), "https://rooms.example");
+        assert_eq!(
+            config.frame_ancestors(),
+            "https://site.example https://app.example"
+        );
+        assert!(persistent.live.is_none());
+    }
+
+    #[test]
+    fn webtransport_can_bypass_an_http_only_ingress_on_its_own_origin() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+        ];
+        let with = |extra: &[(&str, &str)]| {
+            config(&[base.as_slice(), extra].concat()).map(|c| c.persistent.unwrap().live)
+        };
+        let live = with(&[("TILO_ROOMS_LIVE_ORIGIN", "https://live.rooms.example:9781/")])
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.origin, "https://live.rooms.example:9781");
+        assert_eq!(live.host, "live.rooms.example");
+        assert_eq!(live.listen, SocketAddr::from(([0, 0, 0, 0], 9781)));
+        assert_eq!(
+            live.certificate,
+            (
+                PathBuf::from("/run/live-tls/tls.crt"),
+                PathBuf::from("/run/live-tls/tls.key")
+            )
+        );
+        let moved = with(&[
+            ("TILO_ROOMS_LIVE_ORIGIN", "https://live.example"),
+            ("TILO_ROOMS_LIVE_LISTEN", "0.0.0.0:443"),
+            ("TILO_ROOMS_LIVE_TLS_CERT", "/c"),
+            ("TILO_ROOMS_LIVE_TLS_KEY", "/k"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (moved.host.as_str(), moved.listen.port()),
+            ("live.example", 443)
+        );
+        assert_eq!(
+            moved.certificate,
+            (PathBuf::from("/c"), PathBuf::from("/k"))
+        );
+        assert!(with(&[("TILO_ROOMS_LIVE_ORIGIN", "http://live.example")]).is_err());
+        assert!(with(&[("TILO_ROOMS_LIVE_ORIGIN", "https://live.example/moq")]).is_err());
+        // Without an ingress there is nothing to bypass.
+        assert!(
+            config(&[
+                ("TILO_ROOMS_PERSISTENT", "plaza"),
+                ("TILO_ROOMS_LOCAL", "1"),
+                ("TILO_ROOMS_LIVE_ORIGIN", "https://live.example"),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_persistent_room_seeds_chat_notes_and_canvas_and_resets_every_six_hours_by_default() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        let defaults = config(&base).unwrap().persistent.unwrap();
+        assert_eq!(defaults.seed_apps, DEFAULT_SEED_APPS);
+        assert_eq!(defaults.reset_secs, 21_600);
+        assert_eq!(defaults.shown_name, None);
+        let named = config(&[base[0], base[1], ("TILO_ROOMS_NAME", " Town Square ")]).unwrap();
+        assert_eq!(
+            named.persistent.unwrap().shown_name.as_deref(),
+            Some("Town Square")
+        );
+        assert!(defaults.chat_channels.is_empty());
+        let channels = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_CHAT_CHANNELS", "general, help,,show-and-tell"),
+        ])
+        .unwrap();
+        assert_eq!(
+            channels.persistent.unwrap().chat_channels,
+            ["general", "help", "show-and-tell"]
+        );
+        for bad in ["General", "a_b", "a b", "help,help"] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_CHAT_CHANNELS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(defaults.strips.is_empty());
+        let strips = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_STRIPS", " Main, Games night,,Quiet "),
+        ])
+        .unwrap();
+        assert_eq!(
+            strips.persistent.unwrap().strips,
+            ["Main", "Games night", "Quiet"]
+        );
+        let long = "x".repeat(49);
+        for bad in ["Main,Main", long.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_STRIPS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
+        let off = config(&[base[0], base[1], ("TILO_ROOMS_RESET_SECS", "0")]).unwrap();
+        assert_eq!(off.persistent.unwrap().reset_secs, 0);
+    }
+
+    #[test]
+    fn guests_are_pruned_after_an_hour_away_unless_the_operator_says_otherwise() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        assert_eq!(
+            config(&base).unwrap().persistent.unwrap().prune_after_mins,
+            60
+        );
+        let soon = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]).unwrap();
+        assert_eq!(soon.persistent.unwrap().prune_after_mins, 1);
+        let year = MAX_PRUNE_AFTER_MINS.to_string();
+        let late = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", &year)]).unwrap();
+        assert_eq!(
+            late.persistent.unwrap().prune_after_mins,
+            MAX_PRUNE_AFTER_MINS
+        );
+        let past = (MAX_PRUNE_AFTER_MINS + 1).to_string();
+        for bad in ["0", "-1", "soon", past.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_persistent_room_on_its_own_port_or_locally_names_that_origin() {
+        let direct = config(&[
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_DOMAIN", "rooms.example"),
+            ("TILO_ROOMS_DIRECT_PORTS", "1"),
+        ])
+        .unwrap();
+        assert_eq!(direct.persistent_origin(), "https://rooms.example:9700");
+        let local = config(&[
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ])
+        .unwrap();
+        assert_eq!(local.persistent_origin(), "http://localhost:9764");
+    }
+
+    #[test]
+    fn short_rooms_keep_their_limits_and_bad_values_are_refused() {
+        let short = config(&[]).unwrap();
+        assert_eq!(short.max_guests, 4);
+        assert!(short.persistent.is_none());
+        assert!(config(&[("TILO_ROOMS_MAX_GUESTS", "17")]).is_err());
+        let ingress = ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example");
+        let plaza = ("TILO_ROOMS_PERSISTENT", "plaza");
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_MAX_GUESTS", "10000")]).is_ok());
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_MAX_GUESTS", "10001")]).is_err());
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_OWNERS", "nothex")]).is_err());
+        let moderated = config(&[
+            plaza,
+            ingress,
+            ("TILO_ROOMS_MODERATION_KEY_FILE", "/secrets/model"),
+            ("TILO_ROOMS_MODERATION_MODEL", "claude-sonnet-5-5"),
+        ])
+        .unwrap();
+        let moderated = moderated.persistent.unwrap();
+        assert_eq!(
+            moderated.moderation_key_file,
+            Some(PathBuf::from("/secrets/model"))
+        );
+        assert_eq!(
+            moderated.moderation_model.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_MODERATION_MODEL", "a b")]).is_err());
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_NAME", " ")]).is_err());
+        assert!(config(&[("TILO_ROOMS_PERSISTENT", "../x"), ingress]).is_err());
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_TRUSTED_PROXIES", "10.0.0.0/33")
+            ])
+            .is_err()
+        );
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_MAX_SPECTATORS", "0")]).is_err());
+        let office = config(&[
+            plaza,
+            ingress,
+            ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "200"),
+            ("TILO_ROOMS_GUEST_JOINS_PER_DAY", "2000"),
+            ("TILO_ROOMS_SPECTATES_PER_10_MIN", "500"),
+        ])
+        .unwrap();
+        let office = office.persistent.unwrap();
+        assert_eq!(
+            office.guest_joins,
+            crate::limits::JoinRates {
+                per_ten_minutes: 200,
+                per_day: 2000
+            }
+        );
+        assert_eq!(office.spectator_joins.per_ten_minutes, 500);
+        assert_eq!(office.spectator_joins.per_day, usize::MAX);
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "0")]).is_err());
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "50"),
+                ("TILO_ROOMS_GUEST_JOINS_PER_DAY", "10")
+            ])
+            .is_err(),
+            "a day allows at least what ten minutes do"
+        );
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_SPECTATES_PER_10_MIN", "0")]).is_err());
+        assert!(config(&[plaza, ("TILO_ROOMS_RELAY_ORIGIN", "https://a/b")]).is_err());
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_WEB_ENTRY", "https://app.example")
+            ])
+            .is_err()
+        );
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_WEB_ENTRY", "http://app.example/")
+            ])
+            .is_err()
+        );
+        // A persistent room is reached through the ingress, directly or
+        // locally, never through the short rooms' TLS front.
+        assert!(config(&[plaza]).is_err());
     }
 }

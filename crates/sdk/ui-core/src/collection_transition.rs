@@ -3,6 +3,13 @@
 //! Owners snapshot only their visible window plus overscan. Reconciliation
 //! then animates surviving keys between geometries, fades arriving keys in,
 //! and retains the old payload for departing-row paint ghosts.
+//!
+//! A transition only moves rows toward where they are now: a surviving or
+//! arriving row ends at the geometry its owner passes to
+//! [`KeyedTransitionSet::visual`] (a row measured after the snapshot was
+//! taken still lands at its measured height), and once the transition has
+//! run its course every row stands where it is laid out and the finished
+//! tracks are dropped ([`KeyedTransitionSet::settle`]).
 
 use crate::time::{Duration, Instant};
 
@@ -78,6 +85,14 @@ impl<K, P> KeyedTransitionSet<K, P> {
         !self.tracks.is_empty() && now.saturating_duration_since(self.started) < self.duration
     }
 
+    /// Drop every track once the transition has run its course, so nothing
+    /// is held at a snapshot's geometry afterwards.
+    pub fn settle(&mut self, now: Instant) {
+        if !self.tracks.is_empty() && !self.is_active(now) {
+            self.tracks.clear();
+        }
+    }
+
     /// Compare two bounded snapshots. Reduced motion and zero duration both
     /// snap by clearing all tracks.
     pub fn reconcile(
@@ -149,18 +164,27 @@ impl<K, P> KeyedTransitionSet<K, P> {
             };
         };
         let progress = self.progress(now);
-        let to = track.to.unwrap_or(settled);
+        if progress >= 1.0 || !self.is_active(now) {
+            return TransitionVisual {
+                geometry: settled,
+                opacity: 1.0,
+            };
+        }
+        // Toward where the row stands now, not where it stood when the
+        // snapshot was taken: a row measured since lands at its height.
+        let from = if track.entering { settled } else { track.from };
         TransitionVisual {
-            geometry: interpolate(track.from, to, progress),
+            geometry: interpolate(from, settled, progress),
             opacity: if track.entering { progress } else { 1.0 },
         }
     }
 
     pub fn exiting(&self, now: Instant) -> impl Iterator<Item = (&K, &P, TransitionVisual)> {
         let progress = self.progress(now);
+        let active = self.is_active(now);
         self.tracks
             .iter()
-            .filter(|track| track.to.is_none())
+            .filter(move |track| active && track.to.is_none())
             .map(move |track| {
                 (
                     &track.key,
@@ -201,6 +225,36 @@ mod tests {
             geometry: RowGeometry::new(top, 20.0),
             payload: "row",
         }
+    }
+
+    #[test]
+    fn finished_transitions_stand_rows_where_they_are_laid_out() {
+        let now = crate::time::now();
+        let mut set = KeyedTransitionSet::new();
+        // A row captured at an estimate before it was measured.
+        set.reconcile(
+            &[row(1, 0.0), row(2, 20.0)],
+            &[row(1, 40.0), row(3, 20.0)],
+            now,
+            Duration::from_millis(200),
+            Curve::Linear,
+            false,
+        );
+        let measured = RowGeometry::new(40.0, 32.0);
+        // Mid-way the row moves toward its measured geometry, not the
+        // snapshot's.
+        let middle = set.visual(&1, measured, now + Duration::from_millis(100));
+        assert!((middle.geometry.top - 20.0).abs() < 1e-9);
+        assert!((middle.geometry.height - 26.0).abs() < 1e-9);
+        // Once the transition has run its course it stands where it is laid
+        // out, and the finished tracks are dropped.
+        let done = now + Duration::from_millis(250);
+        assert_eq!(set.visual(&1, measured, done).geometry, measured);
+        assert_eq!(set.visual(&3, measured, done).opacity, 1.0);
+        assert_eq!(set.exiting(done).count(), 0);
+        set.settle(done);
+        assert!(!set.is_active(done));
+        assert_eq!(set.exiting(now).count(), 0, "settled tracks are gone");
     }
 
     #[test]

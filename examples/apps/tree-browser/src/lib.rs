@@ -1,7 +1,7 @@
 //! Tree browser: master-detail navigation that adapts to the window.
 //!
 //! A `TreeView` on the left picks a notebook section; the detail pane on the
-//! right edits that section's notes. `AppShell` shows both panes side by
+//! right edits that section's notes. `NavShell` shows both panes side by
 //! side in a wide window and one full-width pane at a time in a compact one,
 //! with an accessible Back between them.
 //!
@@ -16,10 +16,6 @@ pub const APP_ID: &str = "so.tilo.example.tree-browser";
 pub const APP_TITLE: &str = "Tree Browser";
 
 pub mod locales;
-
-fn install_catalog() {
-    locales::install();
-}
 
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -48,51 +44,40 @@ fn section_key(id: u64) -> Id {
 }
 
 impl Notebook {
-    /// The section `id`, as stored (absent until first edited).
+    /// Every section, empty: what a new notebook holds, the same on every
+    /// device that creates one.
+    #[must_use]
+    pub fn with_sections() -> Self {
+        let mut notebook = Self::default();
+        for id in SECTIONS {
+            notebook.sections.push(section_key(id), Section::default());
+        }
+        notebook
+    }
+
+    /// The section `id`.
     pub fn section(&self, id: u64) -> Option<&Section> {
         self.sections.get(&section_key(id))
     }
 
-    fn edit(&mut self, id: u64) -> Result<&mut Section, &'static str> {
-        if !SECTIONS.contains(&id) {
-            return Err("no such section");
-        }
-        let key = section_key(id);
-        if !self.sections.contains(&key) {
-            self.sections.push(key.clone(), Section::default());
-        }
-        self.sections.get_mut(&key).ok_or("no such section")
+    /// The paths of section `id`, where its fields are edited.
+    #[must_use]
+    pub fn section_paths(id: u64) -> SectionPaths<Notebook> {
+        Self::paths().sections.item(&section_key(id))
     }
 }
 
-#[resource(kind = "example.notebook", label = "Notebook")]
+/// A section's title and notes are edited at their paths
+/// ([`Notebook::section_paths`]); sharing it is a verb.
+#[resource(kind = "example.notebook", label = "Notebook", initialize = Notebook::with_sections)]
 impl Notebook {
-    /// Set a section's title.
-    #[action]
-    pub fn set_title(
-        &mut self,
-        #[param("Stable section id")] id: u64,
-        #[param("Section title")] title: String,
-    ) -> Result<(), &'static str> {
-        self.edit(id)?.title = title;
-        Ok(())
-    }
-
-    /// Set a section's notes.
-    #[action]
-    pub fn set_notes(
-        &mut self,
-        #[param("Stable section id")] id: u64,
-        #[param("Section notes")] notes: String,
-    ) -> Result<(), &'static str> {
-        self.edit(id)?.notes = notes;
-        Ok(())
-    }
-
     /// Share a section.
     #[action]
     pub fn share(&mut self, #[param("Stable section id")] id: u64) -> Result<(), &'static str> {
-        self.edit(id)?.shared = true;
+        self.sections
+            .get_mut(&section_key(id))
+            .ok_or("no such section")?
+            .shared = true;
         Ok(())
     }
 }
@@ -112,33 +97,18 @@ fn node_label(id: u64) -> String {
 /// The detail pane of one section. Built again, with its own bindings, each
 /// time the selection changes.
 fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
+    let section = Notebook::section_paths(id);
     let title = cx
-        .input(
-            move |notebook| {
-                notebook
-                    .section(id)
-                    .map(|section| section.title.clone())
-                    .unwrap_or_default()
-            },
-            Notebook::SET_TITLE.map(move |title| (id, title)),
-        )
+        .input(section.title)
         .with_id("tree-title-input")
         .with_placeholder("tree-title-placeholder");
     let notes = cx
-        .input(
-            move |notebook| {
-                notebook
-                    .section(id)
-                    .map(|section| section.notes.clone())
-                    .unwrap_or_default()
-            },
-            Notebook::SET_NOTES.map(move |notes| (id, notes)),
-        )
+        .input(section.notes)
         .with_id("tree-notes-input")
         .with_placeholder("tree-notes-placeholder")
         .multiline(true);
     let share = cx.actions().bind_invocation(
-        Button::new("tree-share", "tree-share", None),
+        Button::new("tree-share", "tree-share"),
         Notebook::SHARE.with(id),
     );
     Box::new(ui::column![
@@ -169,12 +139,18 @@ impl ResourceApp for App {
     type Resource = Notebook;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1000, 640);
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1000, 640)
+    }
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        install_catalog();
         let selected = cx.local(3_u64);
-        let narrow_screen = cx.local(NarrowScreen::Content);
+        let narrow_screen = cx.local(NavPane::Content);
         let selected_from_tree = selected.clone();
         let screen_from_tree = narrow_screen.clone();
         let tree = TreeView::new(TreeNode::branch(
@@ -206,7 +182,7 @@ impl ResourceApp for App {
             if SECTIONS.contains(&id) {
                 selected_from_tree.set(id);
             }
-            screen_from_tree.set(NarrowScreen::Content);
+            screen_from_tree.set(NavPane::Content);
         })
         .with_viewport(560.0, 36.0)
         .with_accessible_name("tree-accessible-name");
@@ -218,10 +194,12 @@ impl ResourceApp for App {
         let detail = cx.switch(&selected, |cx, id| detail_pane(cx, *id));
 
         Box::new(
-            AppShell::new(Box::new(master), detail)
+            NavShell::new()
+                .mode(NavMode::Push)
+                .sidebar(Box::new(master))
+                .content(detail)
                 .with_id("notebook-shell")
-                .with_back_accessible_name("tree-back")
-                .with_narrow_screen_state(&narrow_screen),
+                .with_pane_state(&narrow_screen),
         )
     }
 }

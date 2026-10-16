@@ -1,370 +1,77 @@
-//! Search field focus + filter, driven through the production event path.
+//! The native-input observer reads the app without touching its document.
 //!
-//! This is the regression guard for the "clicking the search bar does nothing"
-//! bug. The root cause was that the field lived inside the `NavSplit`, whose
-//! children are laid out in an isolated inner taffy tree the host's focus walk
-//! never visits — so the field was never in `focusable_order`, a click's focus
-//! could not be restored after the per-keystroke filter rebuild, and typing
-//! died after one character. The fix hoists the field into the app's top strip,
-//! in the *main* taffy tree.
-//!
-//! The harness below is a faithful, minimal re-implementation of the pieces of
-//! `ui::App` this behaviour depends on — the same `collect_focusable` walk, the
-//! same `focus_target` → `set_focus` application, and the same
-//! ordinal-preserving `rebuild_structure` that `autofocus_on_structure_change`
-//! runs. Every assertion rides the real `SettingsApp` widget tree and the real
-//! `TextInput`/`Container`/`Row`/`NavSplit` event path; nothing is mocked.
+//! The snapshot a native audit asks for must describe the live state (the
+//! selected category, the layout class, the document heads) without
+//! committing the document's pending changes: the observer is a witness, not
+//! a writer.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
+use crate::SettingsApp;
+use crate::categories::Category;
+use automerge::{AutoCommit, ChangeHash};
+use ui::headless::Framed;
+use ui::widget::Widget;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, PhysicalKey};
 
-use std::collections::HashMap;
-
-use super::SettingsApp;
-use automerge::AutoCommit;
-use taffy::{NodeId, TaffyTree};
-use ui::text_render::TextRenderer;
-use ui::widget::{ResourceOperation, Widget};
-use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
-
-const W: f32 = 1200.0;
-const H: f32 = 760.0;
+const SEARCH: &str = "settings.search";
 
 fn root() -> automerge::ObjId {
     automerge::ROOT
 }
 
-/// A printable-character `KeyboardInput`, built the same way `TextInput`'s own
-/// tests do (`KeyEvent` has a `pub(crate)` platform field, so it can't be
-/// struct-literalled — zero it then overwrite the public fields).
-fn char_key_event(s: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+/// Settings over the production headless host, which settles the narrow
+/// breakpoint's structural pass before the first input as the live host does.
+fn hosted(config: &crate::prefs::test_env::ScratchConfig, w: f32, h: f32) -> Framed<SettingsApp> {
+    Framed::new(
+        ui::State::new(),
+        config.app(),
+        ui::headless::viewport((w, h)),
+        ui::Theme::dark(),
+    )
 }
 
-/// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
-/// cycle. Owns the app, its live taffy tree + node map, and the focus state.
-struct Harness {
-    app: SettingsApp,
-    doc: AutoCommit,
-    taffy: TaffyTree<()>,
-    node_map: HashMap<NodeId, *mut dyn Widget>,
-    /// The `SettingsApp` root node (what `App::root_node` holds).
-    app_node: NodeId,
-    focused: Option<NodeId>,
-    focus_order: Vec<NodeId>,
-    viewport: (f32, f32),
-    /// Dropped last: the app's stores live under this guard's config root.
-    _config: crate::prefs::test_env::ScratchConfig,
+fn wide(config: &crate::prefs::test_env::ScratchConfig) -> Framed<SettingsApp> {
+    hosted(config, 1200.0, 1800.0)
 }
 
-impl Harness {
-    fn new() -> Self {
-        Self::at_size(W, H)
-    }
+fn snapshot(h: &Framed<SettingsApp>) -> serde_json::Value {
+    Framed::harness(h).native_input_snapshot().unwrap()
+}
 
-    fn at_size(width: f32, height: f32) -> Self {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut h = Harness {
-            app: config.app(),
-            doc: AutoCommit::new(),
-            taffy: TaffyTree::new(),
-            node_map: HashMap::new(),
-            app_node: NodeId::new(0),
-            focused: None,
-            focus_order: Vec::new(),
-            viewport: (width, height),
-            _config: config,
-        };
-        h.layout();
-        // AppShell first learns the real width in apply_layout and requests
-        // another structural pass when it crosses the narrow breakpoint.
-        // The live host drains that request before accepting settled input.
-        for _ in 0..4 {
-            if !h.app.take_structure_dirty() {
-                return h;
-            }
-            h.rebuild();
-        }
-        panic!("native Settings harness did not settle initial structure");
-    }
+fn heads(h: &mut Framed<SettingsApp>) -> Vec<ChangeHash> {
+    Framed::harness_mut(h).state_mut().doc.get_heads()
+}
 
-    /// Run the host's per-frame cycle: `sync` (seed) → `build_layout` →
-    /// `compute_layout(measure)` → `apply_layout` → `sync` (settle) → refresh
-    /// the focusable order. Mirrors `shots::render_to_path` + `App::init_layout`.
-    fn layout(&mut self) {
-        let theme = ui::Theme::dark();
-        self.app.sync(&mut self.doc, &root());
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let app_node = self.app.build_layout(&mut taffy, &theme, &mut node_map);
-        let outer = taffy
-            .new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(self.viewport.0),
-                        height: taffy::Dimension::length(self.viewport.1),
-                    },
-                    ..Default::default()
-                },
-                &[app_node],
-            )
-            .unwrap();
-        self.app.sync(&mut self.doc, &root());
-        let measure_map = node_map.clone();
-        let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                outer,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(self.viewport.0),
-                    height: taffy::AvailableSpace::Definite(self.viewport.1),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        self.app.apply_layout(&taffy, app_node, Point::ORIGIN);
-        // Settling sync — the just-built leaf controls (search field, rows)
-        // read back their bound CRDT values (this is what the shots harness
-        // and the live app do after a structural rebuild).
-        self.app.sync(&mut self.doc, &root());
+/// Recompose after a change made directly on the app.
+fn rebuild(h: &mut Framed<SettingsApp>) {
+    Framed::harness_mut(h).relayout();
+}
 
-        self.taffy = taffy;
-        self.node_map = node_map;
-        self.app_node = app_node;
-        self.refresh_focus_order();
-    }
+fn select(h: &mut Framed<SettingsApp>, category: Category) {
+    h.select(category);
+    rebuild(h);
+}
 
-    /// Replicate `App::update_focusable_order`'s `collect_focusable`: a
-    /// pre-order walk zipping `widget.children()` with `taffy.children`,
-    /// collecting the nodes of focusable widgets. Because it walks the MAIN
-    /// taffy tree, a widget inside `NavSplit`'s isolated inner tree is
-    /// unreachable here — which is exactly why the search field must be a
-    /// top-level child to be focusable.
-    fn refresh_focus_order(&mut self) {
-        fn walk(node: NodeId, w: &dyn Widget, taffy: &TaffyTree<()>, out: &mut Vec<NodeId>) {
-            if w.is_focusable() && w.is_enabled() {
-                out.push(node);
-            }
-            if let Ok(child_nodes) = taffy.children(node) {
-                for (cw, &cn) in w.children().iter().zip(child_nodes.iter()) {
-                    walk(cn, *cw, taffy, out);
-                }
-            }
-        }
-        let mut order = Vec::new();
-        walk(self.app_node, &self.app, &self.taffy, &mut order);
-        self.focus_order = order;
+/// One Backspace press handed to the root against the last frame's layout;
+/// the next [`rebuild`] runs the frame that follows it.
+fn press_backspace(h: &mut Framed<SettingsApp>) {
+    let mut ev = ui::synthetic_input::char_key("");
+    if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
+        event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
+        event.text = None;
     }
+    Framed::harness_mut(h).dispatch_to_root(&ev);
+}
 
-    /// Apply focus exactly like `App::set_focused_node`: `set_focus(false)` on
-    /// the old node, `set_focus(true)` on the new one, via the node map.
-    fn set_focused(&mut self, new: Option<NodeId>) {
-        if self.focused == new {
-            return;
-        }
-        if let Some(old) = self.focused
-            && let Some(&w) = self.node_map.get(&old)
-        {
-            unsafe { (*w).set_focus(false) };
-        }
-        self.focused = new;
-        if let Some(id) = new
-            && let Some(&w) = self.node_map.get(&id)
-        {
-            unsafe { (*w).set_focus(true) };
-        }
-    }
-
-    /// Drive a full left click (cursor → press → release) at `p` through the
-    /// production event path, then apply any requested focus target — exactly
-    /// what `App`'s window-event handler does at the end of dispatch.
-    fn click(&mut self, p: Point) {
-        let mods = Modifiers::default();
-        let cursor = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
-        let mut focus_target = None;
-        for ev in [&cursor, &press, &release] {
-            let mut handled = false;
-            self.app.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut self.doc,
-                    path: &root(),
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.app_node,
-                    taffy: &self.taffy,
-                },
-            );
-            // Match the live host's action-bound control dispatch boundary,
-            // also exercised by tests/control_interaction.rs. Back is a View
-            // action; emitting its intent alone does not activate it.
-            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
-                let control = intent
-                    .address
-                    .resource
-                    .strip_prefix("tilo.control:")
-                    .unwrap();
-                let payload = serde_json::to_vec(control).unwrap();
-                let started = self
-                    .app
-                    .start_operation(
-                        &ResourceOperation::local(
-                            tilo_actions::InvocationId::new(),
-                            tilo_actions::OperationKind::View,
-                            "tilo.ui.control.invoke",
-                            &payload,
-                        ),
-                        &mut self.doc,
-                        &root(),
-                    )
-                    .unwrap();
-                assert!(started.is_some(), "Settings handled its control action");
-            }
-        }
-        if let Some(id) = focus_target {
-            self.set_focused(Some(id));
-        }
-    }
-
-    /// Type one character through the production path, then run the frame's
-    /// sync + (if the tree changed) the ordinal-preserving rebuild — the same
-    /// thing `App` does with `autofocus_on_structure_change` set.
-    fn type_char(&mut self, c: &str) {
-        let mods = Modifiers::default();
-        let ev = char_key_event(c);
-        let mut handled = false;
-        let mut focus_target = None;
-        self.app.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut self.doc,
-                path: &root(),
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: self.app_node,
-                taffy: &self.taffy,
-            },
-        );
-        if let Some(id) = focus_target {
-            self.set_focused(Some(id));
-        }
-        // Frame: sync consumes the field's SEARCH_KEY write; a changed query
-        // flags a structure rebuild, which we run preserving focus by ordinal.
-        self.app.sync(&mut self.doc, &root());
-        if Widget::take_structure_dirty(&mut self.app) {
-            self.rebuild();
-        }
-    }
-
-    /// The `App::rebuild_structure` behaviour under
-    /// `autofocus_on_structure_change`: capture the focused ordinal + its
-    /// ephemeral caret state, rebuild, then restore focus to the same ordinal
-    /// and paste the caret back.
-    fn rebuild(&mut self) {
-        let prev_idx = self
-            .focused
-            .and_then(|id| self.focus_order.iter().position(|&x| x == id));
-        let prev_state = self
-            .focused
-            .and_then(|id| self.node_map.get(&id).copied())
-            .and_then(|w| unsafe { ui::undo::get_state(&(*w)) });
-        // The old node ids are about to be invalidated (fresh taffy tree).
-        self.focused = None;
-        self.layout();
-        if let Some(idx) = prev_idx
-            && let Some(&id) = self.focus_order.get(idx)
-        {
-            self.set_focused(Some(id));
-            if let Some(s) = &prev_state
-                && let Some(&w) = self.node_map.get(&id)
-            {
-                unsafe { ui::undo::set_state(&mut (*w), s) };
-            }
-        }
-    }
-
-    /// The first `TextInput` in a pre-order walk — the top-strip search field
-    /// (the strip is the app's first child, so it precedes any pane input).
-    fn search_field(&self) -> Option<&dyn Widget> {
-        fn walk<'a>(w: &'a dyn Widget, out: &mut Option<&'a dyn Widget>) {
-            if out.is_some() {
-                return;
-            }
-            if w.name() == "TextInput" {
-                *out = Some(w);
-                return;
-            }
-            for c in w.children() {
-                walk(c, out);
-            }
-        }
-        let mut out = None;
-        walk(&self.app, &mut out);
-        out
-    }
-
-    fn search_field_rect(&self) -> vello::kurbo::Rect {
-        self.search_field()
-            .expect("a search TextInput exists")
-            .get_rect()
-    }
-
-    fn sidebar_row_count(&self) -> usize {
-        fn walk(w: &dyn Widget, n: &mut usize) {
-            if w.name() == "SidebarRow" {
-                *n = n.saturating_add(1);
-            }
-            for c in w.children() {
-                walk(c, n);
-            }
-        }
-        let mut n = 0;
-        walk(&self.app, &mut n);
-        n
-    }
+fn sidebar_row_count(root: &dyn Widget) -> usize {
+    let own = root
+        .as_any()
+        .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+        .map_or(0, |list| list.visible_item_ids().len());
+    root.children()
+        .into_iter()
+        .map(sidebar_row_count)
+        .fold(own, usize::saturating_add)
 }
 
 /// The native observer tracks search rebuilds/backspace and never commits pending changes.
@@ -372,61 +79,45 @@ impl Harness {
 fn native_observer_tracks_search_without_committing_pending_changes() {
     // Case `native_observer_tracks_search_rebuild_and_backspace`.
     {
-        let mut h = Harness::new();
-        let p = h.search_field_rect().center();
-        h.click(p);
-        let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut h = wide(&config);
+        Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+        let before = snapshot(&h);
         assert_eq!(before["ready"], true);
-        assert_eq!(before["rendered_result_count"], h.sidebar_row_count());
-        assert_eq!(before["search_focused"], true);
-        let original_heads = h.doc.get_heads();
-        h.type_char("z");
-        let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        assert_eq!(before["rendered_result_count"], sidebar_row_count(&*h));
+        assert_eq!(
+            before["search_focused"],
+            true,
+            "observer={before:#}; focused={:?}",
+            Framed::harness(&h).focused()
+        );
+        let original_heads = heads(&mut h);
+        Framed::harness_mut(&mut h).type_text("z");
+        let typed = snapshot(&h);
         assert_eq!(typed["local_search_text"], "z");
         assert_eq!(typed["synchronized_search_query"], "z");
         assert_eq!(typed["search_widget_text"], "z");
         assert_eq!(typed["search_caret_byte"], 1);
         assert_eq!(typed["search_focused"], true);
-        assert_eq!(typed["rendered_result_count"], h.sidebar_row_count());
+        assert_eq!(typed["rendered_result_count"], sidebar_row_count(&*h));
         assert_ne!(
             typed["rendered_category_ids"],
             before["rendered_category_ids"]
         );
         // Native key construction, delivered through the same root widget route.
-        let mut ev = char_key_event("");
-        if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
-            event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
-            event.text = None;
-        }
-        let mut handled = false;
-        h.app.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut h.doc,
-                path: &root(),
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: h.app_node,
-                taffy: &h.taffy,
-            },
-        );
-        let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        press_backspace(&mut h);
+        let immediate = snapshot(&h);
         assert_eq!(immediate["local_search_text"], "");
         assert_eq!(immediate["synchronized_search_query"], "z");
-        h.app.sync(&mut h.doc, &root());
-        if h.app.take_structure_dirty() {
-            h.rebuild();
-        }
-        let after = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        rebuild(&mut h);
+        let after = snapshot(&h);
         assert_eq!(after["search_caret_byte"], 0);
         assert_eq!(after["search_focused"], true);
         assert_eq!(
             after["rendered_category_ids"],
             before["rendered_category_ids"]
         );
-        assert_eq!(h.doc.get_heads(), original_heads);
+        assert_eq!(heads(&mut h), original_heads);
         assert_eq!(
             after["effective_document_heads"],
             before["effective_document_heads"]
@@ -466,110 +157,354 @@ fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
 
 #[test]
 fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
-    let mut h = Harness::new();
-    let network = named_widget_identity(&h.app, "NetworkPane").unwrap();
-    h.click(h.search_field_rect().center());
-    h.type_char("z");
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), Some(network));
-    h.app.select(super::Category::About);
-    h.rebuild();
-    assert_eq!(h.app.selected(), super::Category::About);
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), None);
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = wide(&config);
+    let network = named_widget_identity(&*h, "NetworkPane").unwrap();
+    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+    Framed::harness_mut(&mut h).type_text("z");
+    assert_eq!(named_widget_identity(&*h, "NetworkPane"), Some(network));
+    select(&mut h, Category::About);
+    assert_eq!(h.selected(), super::Category::About);
+    assert_eq!(named_widget_identity(&*h, "NetworkPane"), None);
 }
 
 #[test]
 fn narrow_search_retains_focus_through_filter_and_backspace() {
-    let mut h = Harness::at_size(440.0, 820.0);
-    assert!(h.app.is_narrow());
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = hosted(&config, 440.0, 820.0);
+    assert!(h.is_narrow());
     // Reach the list using the real narrow back control, not a screenshot override.
-    let back = h.app.back_button_rect();
+    let back = h.back_button_rect();
     assert!(back.width() > 0.0);
-    h.click(back.center());
-    h.app.sync(&mut h.doc, &root());
-    if h.app.take_structure_dirty() {
-        h.rebuild();
-    }
-    assert!(h.app.sidebar_open());
-    h.click(h.search_field_rect().center());
-    h.type_char("z");
-    let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    Framed::harness_mut(&mut h).click_at(back.center().x, back.center().y);
+    rebuild(&mut h);
+    assert!(h.sidebar_open());
+    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+    Framed::harness_mut(&mut h).type_text("z");
+    let typed = snapshot(&h);
     assert_eq!(typed["search_focused"], true);
     assert_eq!(typed["search_caret_byte"], 1);
     assert_eq!(typed["local_search_text"], "z");
     assert_eq!(typed["sidebar_open"], true);
     assert_eq!(typed["narrow"], true);
-    let mut ev = char_key_event("");
-    if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
-        event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
-        event.text = None;
-    }
-    h.app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: &mut h.doc,
-            path: &root(),
-            handled: &mut false,
-            focus_target: &mut None,
-            node_id: h.app_node,
-            taffy: &h.taffy,
-        },
-    );
-    h.app.sync(&mut h.doc, &root());
-    if h.app.take_structure_dirty() {
-        h.rebuild();
-    }
-    let restored = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    press_backspace(&mut h);
+    rebuild(&mut h);
+    let restored = snapshot(&h);
     assert_eq!(restored["search_focused"], true);
     assert_eq!(restored["search_caret_byte"], 0);
     assert_eq!(restored["local_search_text"], "");
-    assert_eq!(
-        restored["rendered_result_count"],
-        crate::categories::Category::ALL.len()
-    );
-    assert_eq!(restored["sidebar_open"], true);
 }
 
-fn find_test_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
+#[test]
+fn native_observer_reports_the_selected_category_and_layout_class() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let app = config.app().with_category(Category::Appearance);
+    let app = ui::headless::Framed::new(
+        ui::State::new(),
+        app,
+        ui::headless::viewport((1200.0, 760.0)),
+        ui::Theme::dark(),
+    );
+    let doc = AutoCommit::new();
+    let snapshot = app.native_input_snapshot(&doc, &root()).unwrap();
+    assert_eq!(snapshot["ready"], true);
+    assert_eq!(snapshot["selected_category"], "appearance");
+    assert_eq!(snapshot["narrow"], false);
+    assert_eq!(snapshot["sidebar_open"], true);
+    assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
+}
+
+fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return Some(map.is_pressed(key));
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| find_test_widget(child, id))
+        .find_map(|child| keyboard_map_pressed(child, key))
+}
+
+fn dispatch_preview_key(h: &mut Framed<SettingsApp>, state: ElementState) {
+    let logical = winit::keyboard::Key::Character("z".into());
+    dispatch_preview_event(
+        h,
+        &ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                state,
+            },
+            logical.clone(),
+            Some("z".into()),
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            Some("z".into()),
+            logical,
+        )),
+    );
+}
+
+fn dispatch_preview_event(h: &mut Framed<SettingsApp>, event: &WindowEvent) {
+    Framed::harness_mut(h).dispatch_to_root(event);
 }
 
 #[test]
-fn query_rebuild_keeps_active_content_local_text_and_caret_state() {
-    let mut h = Harness::new();
-    let local = ui::LocalState::new("content draft".to_owned());
-    // A real local TextInput isolates the content retention contract from
-    // backend-specific network controls. The production shell and search
-    // event/rebuild path remain unchanged.
-    h.app.shell.as_mut().unwrap().set_content(Box::new(
-        ui::widget::TextInput::from_state(&local).with_id("content-retention-probe"),
-    ));
-    h.rebuild();
-    let bounds = find_test_widget(&h.app, "content-retention-probe")
-        .unwrap()
-        .get_rect();
-    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
-    h.click(bounds.center());
-    h.type_char("q");
-    assert!(local.with(|text| text.contains('q')));
-    h.click(h.search_field_rect().center());
-    let content = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    let identity = std::ptr::from_ref(content).cast::<()>() as usize;
-    let state = ui::undo::get_state(content).unwrap();
-    let text = local.with(Clone::clone);
-    h.type_char("z");
-    let retained = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    assert_eq!(std::ptr::from_ref(retained).cast::<()>() as usize, identity);
-    assert_eq!(ui::undo::get_state(retained), Some(state));
-    assert_eq!(local.with(Clone::clone), text);
-    h.app.select(super::Category::About);
-    h.rebuild();
-    assert!(find_test_widget(&h.app, "content-retention-probe").is_none());
+fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = wide(&config);
+    select(&mut h, Category::Keyboard);
+    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+    let compiled = crate::keyboard_preview::compilation_count();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let original_heads = heads(&mut h);
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
+    assert_eq!(h.search_state.with(Clone::clone), "z");
+    assert_eq!(
+        heads(&mut h),
+        original_heads,
+        "pressed positions stay ephemeral"
+    );
+    // Search invalidates the retained content. The same held physical position
+    // survives that ordinary recomposition while editing remains focused.
+    rebuild(&mut h);
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
+    assert_eq!(
+        crate::keyboard_preview::compilation_count(),
+        compiled,
+        "search recomposition must retain the bounded compiled preview"
+    );
+    let snapshot = snapshot(&h);
+    assert_eq!(snapshot["search_focused"], true);
+    dispatch_preview_key(&mut h, ElementState::Released);
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    assert_eq!(h.search_state.with(Clone::clone), "z");
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(false));
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(true));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    select(&mut h, Category::About);
+    assert_eq!(keyboard_map_pressed(&*h, key), None);
+    select(&mut h, Category::Keyboard);
+    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+}
+
+fn keyboard_map_symbols(
+    widget: &dyn Widget,
+    key: PhysicalKey,
+) -> Option<Vec<winit::keyboard::KeyboardLayoutSymbol>> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.active_symbols(key);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyboard_map_symbols(child, key))
+}
+
+fn keyboard_map_value(widget: &dyn Widget) -> Option<String> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.accessibility()?.value;
+    }
+    widget.children().into_iter().find_map(keyboard_map_value)
+}
+
+#[test]
+fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_capture() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = wide(&config);
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let snapshot = |text: &str| {
+        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+            depressed: 1,
+            latched: 0,
+            locked: 0,
+            group: 1,
+            keys: vec![winit::keyboard::KeyboardLayoutKey {
+                physical: key,
+                symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                    name: text.into(),
+                    text: text.into(),
+                }],
+            }],
+        })
+    };
+    let original = snapshot("z");
+    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(original)));
+    crate::panes::mouse_keyboard::show_live_map(h.input());
+    select(&mut h, Category::Keyboard);
+    assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "z");
+    let value = keyboard_map_value(&*h).unwrap();
+    assert!(value.contains("AD06: z"));
+    assert!(
+        !value.contains("AD06: y"),
+        "live accessibility must not claim the preferred US symbol"
+    );
+    select(&mut h, Category::About);
+    let active = snapshot("Z");
+    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(active)));
+    h.observe_physical_input(ui::widget::PhysicalInput::Key {
+        key,
+        state: ElementState::Pressed,
+    });
+    select(&mut h, Category::Keyboard);
+    assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "Z");
+    assert!(keyboard_map_value(&*h).unwrap().contains("AD06: Z"));
+    assert_eq!(
+        keyboard_map_pressed(&*h, key),
+        Some(false),
+        "off-page presses never enter the map"
+    );
+    let original_heads = heads(&mut h);
+    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    assert_eq!(
+        keyboard_map_symbols(&*h, key),
+        None,
+        "actual blur revokes native configuration"
+    );
+    let value = keyboard_map_value(&*h).unwrap();
+    assert!(!value.contains("AD06: y"));
+    assert!(!value.contains("AD06: Z"));
+    assert_eq!(
+        heads(&mut h),
+        original_heads,
+        "configuration and press feedback stay out of CRDT state"
+    );
+}
+
+/// On a narrow page the keyboard map stays the page's prominent element and
+/// still reads the seat's real symbols live through its own accessible value.
+/// The redesigned page drops the separate key selector and details dump (this
+/// test used to look for `input.map.inspect-key` and
+/// `input.keyboard-map.details`); inspection is the map plus its action.
+#[test]
+fn narrow_keyboard_map_stays_prominent_and_live_readable() {
+    fn find_rect(widget: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+        Some(ui::widget::find_test_id(widget, id)?.get_rect())
+    }
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = hosted(&config, 600.0, 1800.0);
+    crate::panes::mouse_keyboard::show_live_map(h.input());
+    select(&mut h, Category::Keyboard);
+    let map = find_rect(&*h, "input.keyboard_map").unwrap();
+    assert!(map.width() > 300.0, "the visual map remains prominent");
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    for text in ["λ", "Λ"] {
+        h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 1,
+                latched: 0,
+                locked: 0,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: key,
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: text.into(),
+                        text: text.into(),
+                    }],
+                }],
+            }),
+        )));
+        rebuild(&mut h);
+        let value = keyboard_map_value(&*h).unwrap();
+        assert!(
+            value.contains(&format!("AD01: {text}")),
+            "native symbols update the map's accessible value: {value}"
+        );
+        assert!(
+            !value.contains("AD01: q"),
+            "no preview fallback in live mode"
+        );
+    }
+    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    rebuild(&mut h);
+    assert!(!keyboard_map_value(&*h).unwrap().contains("AD01: Λ"));
+}
+
+#[test]
+fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let mut h = wide(&config);
+    crate::panes::mouse_keyboard::show_live_map(h.input());
+    select(&mut h, Category::Keyboard);
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    h.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+            depressed: 1,
+            latched: 2,
+            locked: 4,
+            group: 1,
+            keys: vec![winit::keyboard::KeyboardLayoutKey {
+                physical: key,
+                symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                    name: "Greek_LAMBDA".into(),
+                    text: "Λ".into(),
+                }],
+            }],
+        }),
+    )));
+    let original_heads = heads(&mut h);
+    let actual = h.keyboard_inspection().unwrap();
+    assert_eq!(actual["available"], true);
+    assert_eq!(actual["mode"], "live");
+    assert!(
+        actual["source"].is_null(),
+        "preferred/preview source is not live native evidence"
+    );
+    assert_eq!(actual["native_group"], 1);
+    assert_eq!(actual["native_modifiers"], serde_json::json!([1, 2, 4]));
+    assert_eq!(actual["selected_symbols"], serde_json::json!(["Λ"]));
+    h.observe_physical_input(ui::widget::PhysicalInput::Key {
+        key,
+        state: ElementState::Pressed,
+    });
+    assert_eq!(
+        h.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!(["AD01"])
+    );
+    h.observe_physical_input(ui::widget::PhysicalInput::Key {
+        key,
+        state: ElementState::Released,
+    });
+    assert_eq!(
+        h.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!([])
+    );
+    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    let blurred = h.keyboard_inspection().unwrap();
+    assert_eq!(blurred["available"], false);
+    assert_eq!(blurred["native_layout_available"], false);
+    assert_eq!(blurred["selected_symbols"], serde_json::json!([]));
+    h.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+            depressed: 0,
+            latched: 0,
+            locked: 0,
+            group: 0,
+            keys: vec![],
+        }),
+    )));
+    let missing = h.keyboard_inspection().unwrap();
+    assert_eq!(
+        missing["available"], false,
+        "missing selected native position is not usable evidence"
+    );
+    assert_eq!(missing["selected_symbols"], serde_json::json!([]));
+    assert_eq!(
+        heads(&mut h),
+        original_heads,
+        "reading and physical feedback never edit the document"
+    );
 }

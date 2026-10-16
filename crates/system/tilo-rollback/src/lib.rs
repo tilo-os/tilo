@@ -64,19 +64,6 @@
 //! 5. The counter can only be incremented with a signed, single-use approval bound to one
 //!    target value ([`approval`]); an unreachable authority freezes the floor, never the disk.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod approval;
 pub mod certify;
 pub mod confirm;

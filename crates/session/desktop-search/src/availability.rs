@@ -12,6 +12,9 @@ pub struct CatalogApp {
     pub name: &'static str,
     pub category: &'static str,
     pub platforms: &'static [&'static str],
+    /// The other words people know it by, every language's together
+    /// (`[package.keywords]`): "youtube" for a video app.
+    pub keywords: &'static [&'static str],
 }
 
 #[path = "catalog.rs"]
@@ -21,6 +24,21 @@ mod catalog;
 #[must_use]
 pub fn catalog() -> &'static [CatalogApp] {
     catalog::APPS
+}
+
+/// The keywords the registry knows for the app `package_id` — empty for an
+/// app it does not list.
+#[must_use]
+pub fn keywords_for(package_id: &str) -> &'static [&'static str] {
+    // A local build publishes the same apps under `dev.tilo.`.
+    let canonical = package_id.strip_prefix("dev.tilo.");
+    catalog()
+        .iter()
+        .find(|app| {
+            app.id == package_id
+                || canonical.is_some_and(|name| app.id.strip_prefix("so.tilo.") == Some(name))
+        })
+        .map_or(&[], |app| app.keywords)
 }
 
 /// Why an app declaring `platforms` is not offered: "Tilo OS only",
@@ -50,12 +68,15 @@ pub fn unavailable_reason(platforms: &[&str]) -> String {
 }
 
 /// The catalog's apps that run on none of `host` (the platforms this
-/// desktop provides), as search entries carrying their reason.
+/// desktop provides), as search entries carrying their reason. Those in
+/// `hosted`, the apps a node runs for this desktop, are left out: the
+/// desktop offers them as the node's.
 #[must_use]
-pub fn unavailable_on(host: &[&str]) -> Vec<AppEntry> {
+pub fn unavailable_on(host: &[&str], hosted: &[&str]) -> Vec<AppEntry> {
     catalog()
         .iter()
         .filter(|app| !app.platforms.iter().any(|platform| host.contains(platform)))
+        .filter(|app| !hosted.contains(&app.id))
         .map(|app| AppEntry {
             id: app.id.into(),
             title: app.name.into(),
@@ -87,7 +108,7 @@ mod tests {
 
     #[test]
     fn each_desktop_lists_what_it_cannot_run() {
-        let web = unavailable_on(&["web"]);
+        let web = unavailable_on(&["web"], &[]);
         let desktop_only = catalog()
             .iter()
             .find(|app| app.platforms == ["linux", "macos"])
@@ -112,8 +133,26 @@ mod tests {
                 .iter()
                 .any(|app| app.id == entry.id && !app.platforms.contains(&"web"))
         }));
-        let mac = unavailable_on(&["macos"]);
+        let mac = unavailable_on(&["macos"], &[]);
         assert_eq!(reason(&mac, desktop_only.id), None);
         assert_eq!(reason(&mac, os_only.id).as_deref(), Some("Tilo OS only"));
+    }
+
+    #[test]
+    fn apps_a_node_runs_are_not_listed_as_unavailable() {
+        let terminal = catalog()
+            .iter()
+            .find(|app| app.id == "so.tilo.terminal")
+            .expect("the registry has the terminal");
+        assert!(!terminal.platforms.contains(&"web"));
+        let listed = |entries: &[AppEntry]| entries.iter().any(|entry| entry.id == terminal.id);
+        assert!(listed(&unavailable_on(&["web"], &[])));
+        let beside_node = unavailable_on(&["web"], &[terminal.id]);
+        assert!(!listed(&beside_node), "the node opens it");
+        assert_eq!(
+            beside_node.len(),
+            unavailable_on(&["web"], &[]).len().saturating_sub(1),
+            "every other app keeps its reason"
+        );
     }
 }

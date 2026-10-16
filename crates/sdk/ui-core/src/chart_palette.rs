@@ -30,17 +30,12 @@ impl ChartPalette {
     /// selected by light, dark, and high-contrast themes.
     pub fn from_theme(theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
+        let series = &colors.presence;
         Self::new(
-            colors.accent.stops[5],
-            [
-                colors.semantic.success,
-                colors.semantic.warning,
-                colors.semantic.info,
-                colors.semantic.danger,
-                colors.accent.stops[7],
-            ],
+            series.series(0),
+            (1..crate::tokens::colors::PRESENCE_LEN).map(|index| series.series(index)),
         )
-        .with_sequential(colors.accent.stops[1], colors.accent.stops[8])
+        .with_sequential(colors.neutral.stops[2], series.series(0))
         .with_diverging(
             colors.semantic.danger,
             colors.neutral.stops[4],
@@ -79,10 +74,6 @@ impl ChartPalette {
             .unwrap_or(self.diverging.0)
     }
 
-    pub fn categorical_colors(&self, count: usize) -> Vec<Color> {
-        (0..count).map(|index| self.categorical(index)).collect()
-    }
-
     /// Sample the sequential ramp. Values outside `0..=1` are clamped.
     pub fn sequential(&self, value: f64) -> Color {
         let value = num::f32_of_f64(value.clamp(0.0, 1.0));
@@ -104,6 +95,28 @@ impl ChartPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_six_categories_are_distinct_hues() {
+        use crate::color::Oklch;
+        for theme in [Theme::dark(), Theme::light()] {
+            let palette = ChartPalette::from_theme(&theme);
+            let hues: Vec<f32> = (0..6)
+                .map(|i| Oklch::from_color(palette.categorical(i)).h)
+                .collect();
+            for (i, a) in hues.iter().enumerate() {
+                for b in hues.iter().skip(i + 1) {
+                    let d = (a - b).rem_euclid(360.0);
+                    let d = d.min(360.0 - d);
+                    assert!(
+                        d >= 55.0,
+                        "{}: hues {a} and {b} are only {d}° apart",
+                        theme.name
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn chart_palettes_wrap_categories_and_clamp_ramps() {

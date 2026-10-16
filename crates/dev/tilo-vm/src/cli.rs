@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -105,7 +108,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -117,12 +120,22 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    #[command(
+        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+    )]
+    SwapArtifact(ArtifactSwap),
+    /// Import a prebuilt local component without building, waking or swapping a slot.
+    #[command(
+        after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --slot <slot> --from layer:<hash>\nafterwards."
+    )]
+    ImportLayer(LocalLayerImport),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
-        /// A component from os/components.toml (python3 os/scripts/install-components.py --list), or `app:<dir>` for an app under apps/.
+        /// A component from os/components.toml, `userspace` for its matched session cohort (remote worktree build, one refresh), or `app:<dir>` for an app under apps/.
         component: String,
         /// The slot to swap into (default: the one named after your branch;
         /// `vm` for VM-wide components).
@@ -132,8 +145,10 @@ pub enum Command {
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
         from: String,
-        /// Where `--from worktree` builds: `vm` (default; syncs the worktree
-        /// into the VM) or `host` (Linux hosts only).
+        /// Where `--from worktree` builds: `vm` (syncs the worktree into the
+        /// VM), `host` (Linux hosts only) or `remote` (a builder of the
+        /// machine's architecture; the default for a device whose
+        /// architecture has one in vms.toml's `[remote_builders]`).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
         /// Cargo profile for `--from worktree` builds (default: the manifest's,
@@ -152,6 +167,9 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
+        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        #[arg(long)]
+        frame_cpu_trace: bool,
     },
     /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
@@ -228,6 +246,45 @@ pub enum Command {
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Build one component in this worktree and write its layer to stdout
+    /// as framed lines (what `swap --builder remote` runs on the builder).
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
+    )]
+    LayerPack {
+        /// A component from os/components.toml.
+        #[arg(long)]
+        component: String,
+        /// The cargo profile to build it with.
+        #[arg(long)]
+        profile: String,
+        /// Extra cargo features, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
+    AppPack {
+        /// App id to package from the attested source inventory.
+        #[arg(long)]
+        app: String,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: PathBuf,
+    },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
         after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
@@ -246,6 +303,52 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// The expected identities come from the authenticated upstream job, not the downloaded receipt.
+#[derive(Debug, Args)]
+pub struct ArtifactSwap {
+    /// Session component to activate; apps+runtime requires the complete same-run cohort.
+    pub component: String,
+    /// The slot to update (default: your slot).
+    #[arg(long)]
+    pub slot: Option<String>,
+    /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
+    #[arg(long)]
+    pub receipt: PathBuf,
+    /// Exact producing source commit, independently pinned by the upstream job.
+    #[arg(long)]
+    pub source: String,
+    /// Immutable producing builder image reference, independently pinned upstream.
+    #[arg(long)]
+    pub builder_image: String,
+    /// Producing Forgejo workflow API run ID, not its web run number.
+    #[arg(long)]
+    pub run_id: u64,
+    /// Producing workflow attempt, independently pinned upstream.
+    #[arg(long)]
+    pub run_attempt: u32,
+    /// SHA256 of the exact raw manifest bytes, supplied by the authenticated upstream job.
+    #[arg(long)]
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Args)]
+pub struct LocalLayerImport {
+    /// Component declared in the supplied manifest.
+    pub component: String,
+    /// Uncompressed tar produced by the component installer.
+    #[arg(long)]
+    pub archive: PathBuf,
+    /// SHA-256 from the qualified producer, checked before contacting the VM.
+    #[arg(long)]
+    pub archive_sha256: String,
+    /// Genuine local build provenance in the normal tilo-vm protocol format.
+    #[arg(long)]
+    pub provenance: PathBuf,
+    /// The component manifest that laid out this archive.
+    #[arg(long)]
+    pub manifest: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -306,12 +409,30 @@ pub struct InstallScenarioArgs {
     /// Account username for a retained install. Requires --credentials-stdin.
     #[arg(long, requires = "credentials_stdin")]
     pub username: Option<String>,
+    /// Installed hostname (retained and checked when resuming).
+    #[arg(long, default_value = "scenario-tilo")]
+    pub hostname: String,
+    /// Installer keyboard display name, e.g. "German (QWERTZ)". Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub keyboard_layout: Option<String>,
+    /// Installed IANA timezone, e.g. Europe/Berlin. Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Installed locale from the installer's catalog, e.g. de_DE.UTF-8. Omitted preserves its choice.
+    #[arg(long)]
+    pub locale: Option<String>,
     /// Read distinct `account_password` and `disk_passphrase` from one JSON object on stdin. Requires --username; unavailable for dry runs.
     #[arg(long, requires = "username", conflicts_with = "dry_run")]
     pub credentials_stdin: bool,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
+    /// Installed root filesystem; omitted leaves the installer's default unchanged.
+    #[arg(long, value_parser = ["btrfs", "ext4", "xfs"])]
+    pub filesystem: Option<String>,
+    /// Resume verification of a completed retained Windows raw-target install in --out. Does not reinstall.
+    #[arg(long, requires_all = ["out", "target_disk", "keep"], conflicts_with = "dry_run")]
+    pub resume: bool,
     /// How the always-on disk encryption unlocks: passphrase (no TPM) or tpm-pin (software TPM; the installer offers it only for a verified boot chain).
     #[arg(long, value_enum, default_value = "passphrase")]
     pub encrypt: crate::scenario::Unlock,
@@ -340,6 +461,8 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         command,
         None | Some(
             Command::Status { .. }
+                | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -383,6 +506,14 @@ pub fn parse_age(text: &str) -> Result<u64, String> {
     Ok(value.saturating_mul(scale))
 }
 
+/// `vm awake --for`: a duration like `parse_age`'s, but never zero.
+fn parse_awake_duration(text: &str) -> Result<u64, String> {
+    match parse_age(text)? {
+        0 => Err("to let it suspend now: --off".into()),
+        seconds => Ok(seconds),
+    }
+}
+
 /// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
 ///
 /// # Errors
@@ -407,6 +538,10 @@ pub enum Builder {
     Vm,
     /// Build on this host with its cargo (Linux only).
     Host,
+    /// Build on a remote builder of the machine's architecture
+    /// (`[remote_builders]` in vms.toml); the layer streams through this
+    /// host, never onto its disk.
+    Remote,
 }
 
 #[derive(Debug, Subcommand)]
@@ -423,8 +558,12 @@ pub enum InputCommand {
     /// Type text on a US keyboard layout.
     #[command(after_help = "Examples:\n  tilo-vm input type 'hello world'")]
     Type {
-        /// The text to type.
-        text: String,
+        /// The text to type. Use --stdin for sensitive text.
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        text: Option<String>,
+        /// Read exact text from standard input, without recording it in argv.
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
     },
     /// Move the pointer to desktop pixel X, Y.
     #[command(
@@ -463,6 +602,78 @@ pub enum InputCommand {
     /// Game controller: buttons, d-pad, sticks.
     #[command(subcommand)]
     Gamepad(GamepadCommand),
+    /// Press combo keys down and keep them down (a held modifier) until `release`.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input hold shift\n  tilo-vm input release shift\n\nGoes to the plugged keyboard profile, else the default keyboard. A key left down\nstays down in the guest until released."
+    )]
+    Hold {
+        /// Combos like shift, ctrl+alt.
+        combo: String,
+    },
+    /// Release what `hold` pressed.
+    #[command(after_help = "Examples:\n  tilo-vm input release shift")]
+    Release {
+        /// The combo given to `hold`.
+        combo: String,
+    },
+    /// Plug and unplug devices that copy real hardware (bus, ids, name, capabilities).
+    #[command(subcommand)]
+    Device(DeviceCommand),
+    /// The plugged touchpad: tap, swipe (move, scroll, gestures), click.
+    #[command(subcommand)]
+    Touchpad(TouchpadCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    /// Plug in a device profile.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input device plug lenovo-83ed-keyboard\n  tilo-vm input device plug lenovo-83ed-touchpad\n\nProfiles are captured from real hardware under os/hardware/profiles/*/input/:\nthe kernel registers a device with that bus, vendor, product, name and capabilities,\nso udev and libinput treat it as that model. A plugged keyboard profile takes over\n`input key` and `input type` from the default keyboard."
+    )]
+    Plug {
+        /// lenovo-83ed-keyboard, lenovo-83ed-touchpad or lenovo-83ed-mouse.
+        profile: String,
+    },
+    /// Unplug a device profile.
+    #[command(after_help = "Examples:\n  tilo-vm input device unplug lenovo-83ed-keyboard")]
+    Unplug {
+        /// The profile given to `plug`.
+        profile: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TouchpadCommand {
+    /// Fingers tap the touchpad's centre (tap-to-click).
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touchpad tap\n  tilo-vm input touchpad tap --fingers 2"
+    )]
+    Tap {
+        /// 1 to 3 fingers.
+        #[arg(long, default_value_t = 1)]
+        fingers: u8,
+    },
+    /// Fingers move DX, DY millimetres: one moves the pointer, two scroll, three swipe.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture"
+    )]
+    Swipe {
+        /// Millimetres right.
+        #[arg(allow_negative_numbers = true)]
+        dx: i16,
+        /// Millimetres down.
+        #[arg(allow_negative_numbers = true)]
+        dy: i16,
+        /// 1 to 3 fingers.
+        #[arg(long, default_value_t = 1)]
+        fingers: u8,
+        /// How long the movement takes, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        duration: u32,
+    },
+    /// Press the clickpad's physical button.
+    #[command(after_help = "Examples:\n  tilo-vm input touchpad click")]
+    Click,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -600,6 +811,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -639,6 +858,62 @@ pub enum VmCommand {
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
+    /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device shell --from sha:1a2b3c4             # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+    )]
+    Add(AddArgs),
+    /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm wake yoga\n  tilo-vm vm wake          # the VM this worktree uses\n\nA device's MAC, hostname and wake setting are recorded whenever tilo-vm\nreaches it (vm add, vm status), so wake it once by hand if none is recorded.\nThe packet goes from this machine to 255.255.255.255 and the device's subnet\nbroadcast, port 9: this machine must be on the device's LAN. Whether the\ndevice wakes on it depends on its network interface; vm status shows what it\nreported (enabled, disabled, unsupported). Details: tilo-vm guide devices."
+    )]
+    Wake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+    },
+    /// Inspect or persist magic-packet wake for a saved network profile; never suspends or reconnects.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm network-wake --profile <UUID>\n  tilo-vm vm network-wake --profile <UUID> --enabled true\n\nEnabling requires active driver support. Saved and applied settings are\nreported separately; physical wake remains unverified."
+    )]
+    NetworkWake {
+        /// The registered VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// The saved `NetworkManager` connection UUID on that device.
+        #[arg(long)]
+        profile: String,
+        /// Enable magic-packet wake (requires active driver support), or disable it.
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
+    },
+    /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to tilo-vmd holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."
+    )]
+    Awake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// Hold it awake this long from now: 90m, 2h, 1d.
+        #[arg(long = "for", value_name = "DURATION", value_parser = parse_awake_duration, conflicts_with = "off")]
+        hold: Option<u64>,
+        /// Release the hold now.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+    )]
+    EnrolAdmin {
+        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
+        #[arg(long, conflicts_with = "cert")]
+        via: Option<String>,
+        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
+        #[arg(long)]
+        cert: Option<std::path::PathBuf>,
+        /// This machine's name in the owner's device list (default: its hostname).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
@@ -726,6 +1001,51 @@ pub enum VmCommand {
     },
 }
 
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
+    /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
+    Invoke {
+        /// The provider returned by vm actions list.
+        provider: String,
+        /// The declared action ID returned by vm actions list.
+        id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
+        #[arg(long, required = true)]
+        args_stdin: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// The name to register the device under.
+    pub name: String,
+    /// `<user>@<host>[:<port>]`. Commands run as root: directly as root@, or
+    /// through `sudo -n` as any other user.
+    #[arg(long)]
+    pub ssh: String,
+    /// The SSH identity of a non-root user (default: ssh's own, from ~/.ssh
+    /// or the agent). As root@, vm add makes the device's own key instead.
+    #[arg(long)]
+    pub key: Option<PathBuf>,
+    /// Let the --ssh user run commands as root without a password
+    /// (/etc/sudoers.d/tilo-vm-<user> on the device, checked by visudo); sudo
+    /// asks for that user's password once, on this terminal.
+    #[arg(long)]
+    pub grant_sudo: bool,
+}
+
 #[derive(Debug, Args)]
 pub struct CreateArgs {
     /// The name to register the new VM under.
@@ -771,11 +1091,11 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
-    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// libvirt or QEMU: virgl 3D acceleration on the host GPU, so the desktop
     /// renders on a GPU instead of in software.
     #[arg(long)]
     pub gl: bool,
-    /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
     /// Guest CPUs (default: the adapter's).
@@ -784,7 +1104,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
@@ -989,6 +1310,37 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_swap_accepts_explicit_frame_cpu_recording() {
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;
@@ -1242,6 +1594,33 @@ mod tests {
             assert!(help.contains("dev-overrides"), "{help}");
         }
 
+        // Phase: vm_add_takes_a_name_and_an_address.
+        {
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
+                    .unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref name, ref ssh, key: None, grant_sudo: false }))) if name == "opi" && ssh == "root@10.0.0.108")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
+            assert!(writes_receipt(cli.command.as_ref()));
+            let owner = Cli::try_parse_from([
+                "tilo-vm",
+                "vm",
+                "add",
+                "yoga",
+                "--ssh",
+                "me@10.0.0.223",
+                "--key",
+                "/k/yoga",
+                "--grant-sudo",
+            ])
+            .unwrap();
+            assert!(
+                matches!(owner.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref key, grant_sudo: true, .. }))) if key.as_deref() == Some(std::path::Path::new("/k/yoga")))
+            );
+        }
+
         // Phase: swap_takes_an_optional_slot.
         {
             let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
@@ -1254,7 +1633,7 @@ mod tests {
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli =
@@ -1312,6 +1691,8 @@ mod tests {
                 "tpm-pin",
                 "--graphics",
                 "software",
+                "--filesystem",
+                "ext4",
                 "--skip-target-boot",
             ])
             .unwrap();
@@ -1325,6 +1706,7 @@ mod tests {
             assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
             assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
             assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+            assert_eq!(args.filesystem.as_deref(), Some("ext4"));
             assert!(args.skip_target_boot);
             assert_eq!(args.install_timeout, 3600);
             let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
@@ -1333,6 +1715,7 @@ mod tests {
             };
             assert_eq!(args.layout, crate::scenario::Layout::Erase);
             assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+            assert!(args.filesystem.is_none());
             assert!(!args.skip_target_boot);
             assert!(
                 Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"])

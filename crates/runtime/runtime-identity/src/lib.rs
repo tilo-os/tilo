@@ -11,23 +11,10 @@
 //! trusted host; this crate does not discover or authenticate that host.
 //! Unix also retains its inherited-descriptor and host-local lifecycle APIs.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod client;
 #[cfg(unix)]
 pub mod connected;
-pub use client::BrokerSigningIdentity;
+pub use client::{BrokerMetadata, BrokerSigningIdentity};
 mod async_client;
 pub use async_client::AsyncBrokerSigningIdentity;
 pub use runtime_portal::NotAvailable;

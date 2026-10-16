@@ -13,7 +13,7 @@ use mysql::{Conn, Opts, OptsBuilder, Value};
 use crate::engine::{MAX_QUERY_ROWS, can_retain_result_row, row_retained_bytes};
 use crate::model::{
     Cell, ColumnInfo, DatabaseSchema, ForeignKey, IndexInfo, QueryResult, RelationKind, SchemaInfo,
-    TableInfo, TypeClass,
+    TableInfo,
 };
 
 /// A live `MySQL` connection. Owns the connection for the session lifetime.
@@ -145,7 +145,6 @@ impl MySqlEngine {
                     Option<String>,
                 )| {
                     ColumnInfo {
-                        class: TypeClass::classify(&ctype),
                         primary_key: key.eq_ignore_ascii_case("PRI"),
                         not_null: nullable.eq_ignore_ascii_case("NO"),
                         decl_type: ctype,

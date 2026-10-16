@@ -39,6 +39,7 @@ pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
     };
     let store = FileStore {
         path: path.to_path_buf(),
+        history: crate::HistoryContent::for_state_file(path),
         healthy: AtomicBool::new(true),
         uncertain: RwLock::new(BTreeSet::new()),
     };
@@ -47,11 +48,18 @@ pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
 
 struct FileStore {
     path: PathBuf,
+    history: crate::HistoryContent,
     healthy: AtomicBool,
     uncertain: RwLock<BTreeSet<RoomId>>,
 }
 
 impl Store for FileStore {
+    fn put_history(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.history.put(bytes)
+    }
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
     }
@@ -74,19 +82,21 @@ impl Store for FileStore {
             return Err("joined-room store is fenced after an uncertain publication".into());
         }
         preflight_storage(next)?;
+        // A machine file: compact JSON. The cap and its preflight still count
+        // the pretty-printed form, so the compact file always fits it.
         let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
-        serde_json::to_writer_pretty(&mut bytes, next).map_err(|e| e.to_string())?;
-        match atomic_file::replace(
+        serde_json::to_writer(&mut bytes, next).map_err(|e| e.to_string())?;
+        match tilo_files::native::atomic::replace(
             &self.path,
             &bytes.into_inner(),
-            atomic_file::Privacy::OwnerOnly,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
         ) {
             Ok(()) => {
                 install();
                 Ok(())
             }
             Err(error) => {
-                if error.state() != atomic_file::PublicationState::NotPublished {
+                if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
                     self.uncertain.write().extend(next.rooms());
                     self.healthy.store(false, Ordering::Release);
                 }

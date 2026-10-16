@@ -1,0 +1,12 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "monitor.processes"
+label = "Processes"
+version = 1
+fields = [
+  { path = "sort", type = "SortKey" },
+  { path = "ascending", type = "bool" },
+  { path = "flat", type = "bool" },
+]
+

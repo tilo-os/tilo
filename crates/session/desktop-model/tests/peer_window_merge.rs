@@ -4,14 +4,6 @@
 //! room-sync path actually runs, rather than against a helper written
 //! to agree with it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
-
 use tilo_desktop_model::projection::{ReplicatedGroup, ReplicatedTab, merge_group};
 use tilo_desktop_model::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
 
@@ -38,6 +30,7 @@ fn group_with(tab: Tab) -> WindowGroup {
         active_tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -70,6 +63,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                 app_id,
                 label,
                 note,
+                ..
             } => {
                 assert_eq!(app_id, APP);
                 assert_eq!(label, "Word Processor", "the peer's own name for it");

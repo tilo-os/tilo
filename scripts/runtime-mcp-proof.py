@@ -250,7 +250,7 @@ def run_proof(args, root, profile):
         source = root / 'source.png'
         fixture = inspect(helper, 'fixture', source)
         manifest = {'apps': [
-            {'id': 'dev.tilo.photos', 'executable': str(binaries['photos']), 'args': ['--open', str(source)]},
+            {'id': 'dev.tilo.photos', 'executable': str(binaries['photos']), 'args': [str(source)]},
             {'id': 'dev.tilo.word-processor', 'executable': str(helper), 'args': ['observe', str(root)]},
             {'id': 'dev.tilo.word-processor', 'executable': str(helper), 'args': ['wait-ready-exec', str(root), str(binaries['word-processor'])]},
             {'id': 'dev.tilo.calculator', 'executable': str(binaries['calculator']), 'args': []},

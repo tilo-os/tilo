@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{FileActor, FileMutationTransaction, FileRecordId};
+use fs_protocol::{FileActor, FileMutationTransaction, FileRecordId};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -34,6 +34,7 @@ use crate::record_transaction::{
     RecordTransactionJournal, RecordTransactionJournalEntry, RecordTransactionJournalError,
     RecordTransactionParticipantBatch, RecordTransactionPhase,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Records one repository holds. The log itself has no practical limit
 /// (positions are `u64`); what bounds a device is the in-memory index,
@@ -111,6 +112,10 @@ struct StoredRecord {
     positions: Vec<u64>,
     /// Envelopes not yet in the log.
     pending: usize,
+    /// The repository's [`RepositoryState::write_generation`] when this
+    /// record last had envelopes made durable; 0 for records replayed from
+    /// the log at open.
+    written: u64,
 }
 
 impl StoredRecord {
@@ -121,6 +126,7 @@ impl StoredRecord {
             envelopes: Vec::new(),
             positions: Vec::new(),
             pending: 0,
+            written: 0,
         }
     }
 
@@ -294,6 +300,19 @@ pub struct RepositoryState {
     /// Versions one record may hold: [`MAX_RECORD_VERSIONS`], lowered only
     /// by tests so they can cross the bound cheaply.
     max_versions: std::sync::atomic::AtomicUsize,
+    /// Moves on with every durable write, while the records lock is held;
+    /// each written record keeps the value in `StoredRecord::written`, so
+    /// [`RecordRepository::written_since`] finds what changed since a
+    /// reader last looked without snapshotting every record.
+    write_generation: std::sync::atomic::AtomicU64,
+    /// Announces each move of `write_generation`, so an exact-share host can
+    /// hold a recipient's change await open instead of being polled
+    /// ([`RecordRepository::subscribe_writes`]).
+    writes: tokio::sync::watch::Sender<u64>,
+    /// Concurrent-head checks made by
+    /// [`crate::record_publisher::RecordPublisher::publish_concurrent_head_conflict`].
+    #[cfg(test)]
+    concurrent_head_checks: std::sync::atomic::AtomicU64,
 }
 
 type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
@@ -417,7 +436,7 @@ impl RepositoryLease<'_> {
             });
             let new_sibling = matches!(
                 participant.role,
-                collab_types::FileMutationParticipantRole::KeepBothSibling
+                fs_protocol::FileMutationParticipantRole::KeepBothSibling
             );
             if new_sibling {
                 if current.is_some() && !exact_suffix {
@@ -427,7 +446,7 @@ impl RepositoryLease<'_> {
                 }
             } else if !matches!(
                 transaction.manifest.operation,
-                collab_types::FileMutationOperation::RestoreContent { .. }
+                fs_protocol::FileMutationOperation::RestoreContent { .. }
             ) || journal_missing
             {
                 let snapshot = projected_snapshot(records, key, Some(id))?;
@@ -495,7 +514,7 @@ impl RepositoryLease<'_> {
         // structural/version precondition above has succeeded.
         let restore = matches!(
             entry.transaction.manifest.operation,
-            collab_types::FileMutationOperation::RestoreContent { .. }
+            fs_protocol::FileMutationOperation::RestoreContent { .. }
         );
         if restore {
             // Fence before the first persistence attempt, including ambiguous
@@ -590,6 +609,7 @@ impl RecordRepository {
         let count = ops.len();
         let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
         drop(ops);
+        let generation = self.next_write_generation();
         let mut next = first;
         let mut written = Vec::with_capacity(candidates.len());
         for (key, mut record) in candidates {
@@ -598,6 +618,7 @@ impl RecordRepository {
                 next = next.saturating_add(1);
             }
             record.pending = 0;
+            record.written = generation;
             records.insert(key, record);
             written.push(key);
         }
@@ -638,6 +659,7 @@ impl RecordRepository {
             }
             self.log.append(&ops, changeset.map(AsRef::as_ref))?
         };
+        let generation = self.next_write_generation();
         let mut next = first;
         for key in keys {
             if let Some(record) = records.get_mut(key) {
@@ -646,6 +668,7 @@ impl RecordRepository {
                     next = next.saturating_add(1);
                 }
                 record.pending = 0;
+                record.written = generation;
             }
         }
         if let Some(changeset) = changeset {
@@ -655,6 +678,19 @@ impl RecordRepository {
                 .insert(Arc::clone(changeset), first);
         }
         Ok(())
+    }
+
+    /// The generation a durable write about to publish its records takes.
+    /// Called with the records lock held.
+    fn next_write_generation(&self) -> u64 {
+        let generation = self
+            .write_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_add(1);
+        // A woken watcher reads the records through the lock this writer
+        // holds, so it sees the write once the writer publishes it.
+        self.writes.send_replace(generation);
+        generation
     }
 
     /// Records a write outside the scope made durable are no longer the
@@ -839,7 +875,7 @@ impl RecordRepository {
             entry.phase == RecordTransactionPhase::Prepared
                 && matches!(
                     entry.transaction.manifest.operation,
-                    collab_types::FileMutationOperation::RestoreContent { .. }
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
                 )
         }) {
             for participant in &entry.transaction.manifest.participants {
@@ -889,7 +925,7 @@ impl RecordRepository {
             .ok_or(RecordRepositoryError::TransactionRecoveryIntentMissing)?;
         if !matches!(
             entry.transaction.manifest.operation,
-            collab_types::FileMutationOperation::RestoreContent { .. }
+            fs_protocol::FileMutationOperation::RestoreContent { .. }
         ) || admitted.transaction != entry.transaction
             || admitted.participant_batches != entry.participant_batches
         {
@@ -1033,6 +1069,10 @@ impl RecordRepository {
             changesets: Mutex::new(index),
             gate: tokio::sync::RwLock::new(()),
             max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
+            write_generation: std::sync::atomic::AtomicU64::new(0),
+            writes: tokio::sync::watch::Sender::new(0),
+            #[cfg(test)]
+            concurrent_head_checks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -1061,12 +1101,7 @@ impl RecordRepository {
     /// none until [`Self::restore_admission_fences`] seeds them.
     #[cfg(test)]
     pub(crate) fn clear_admission_fences(&self) {
-        for record in self
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values_mut()
-        {
+        for record in self.records.lock_recover().values_mut() {
             record.pending_restore = None;
         }
     }
@@ -1180,10 +1215,6 @@ impl RecordRepository {
     ///
     /// Returns an error for invalid batch/key/workspace data, authorization or
     /// replication rejection, capacity limits, poisoned state, or persistence.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans batch validation, durable replacement, and in-memory publication"
-    )]
     pub fn apply_batch<A: RecordAuthorizer + ?Sized>(
         &self,
         key: RecordRepositoryKey,
@@ -1609,10 +1640,6 @@ impl RecordRepository {
     ///
     /// Returns the same errors as [`Self::apply_transaction`], plus a supplied
     /// checkpoint failure.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the transaction coordinator intentionally keeps one writer lock across all participant validation and durable record replacement"
-    )]
     pub fn apply_transaction_with_checkpoint<A, F>(
         &self,
         journal: &mut RecordTransactionJournal,
@@ -1826,8 +1853,7 @@ impl RecordRepository {
     #[must_use]
     pub fn highest_sequence(&self, key: RecordRepositoryKey, actor: &FileActor) -> Option<u64> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .and_then(|record| record.replica.highest_sequence_for(actor))
     }
@@ -1846,10 +1872,7 @@ impl RecordRepository {
         key: RecordRepositoryKey,
         envelope: &RecordEnvelopeV1,
     ) -> bool {
-        let records = self
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = self.records.lock_recover();
         let Some(record) = records.get(&key) else {
             return false;
         };
@@ -1865,11 +1888,64 @@ impl RecordRepository {
         is_latest
     }
 
+    /// Wakes on every durable write to any record of this repository. A
+    /// watcher must still read the record it cares about: the generation
+    /// says that something was written, not what.
+    #[must_use]
+    pub fn subscribe_writes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.writes.subscribe()
+    }
+
+    /// The records of one workspace written durably since `since`, a
+    /// generation this returned before (`None` for every record), and the
+    /// generation they are current to. With nothing written since, it
+    /// neither takes the records lock nor visits a record.
+    pub(crate) fn written_since(
+        &self,
+        workspace_id: Uuid,
+        since: Option<u64>,
+    ) -> (u64, Vec<FileRecordId>) {
+        let current = self
+            .write_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if since == Some(current) {
+            return (current, Vec::new());
+        }
+        let records = self.records.lock_recover();
+        // Writers move the generation under this lock: read again, so
+        // every record written up to it is in the answer.
+        let current = self
+            .write_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let written = records
+            .iter()
+            .filter(|(key, record)| {
+                key.workspace_id == workspace_id && since.is_none_or(|since| record.written > since)
+            })
+            .map(|(key, _)| key.record_id)
+            .collect();
+        drop(records);
+        (current, written)
+    }
+
+    /// Counts a concurrent-head check of one record.
+    #[cfg(test)]
+    pub(crate) fn note_concurrent_head_check(&self) {
+        self.concurrent_head_checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Concurrent-head checks made against this repository.
+    #[cfg(test)]
+    pub(crate) fn concurrent_head_checks(&self) -> u64 {
+        self.concurrent_head_checks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Stable keys for one workspace's records.
     pub(crate) fn reconciliation_keys(&self, workspace_id: Uuid) -> Vec<RecordRepositoryKey> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .keys()
             .filter(|key| key.workspace_id == workspace_id)
             .copied()
@@ -1881,10 +1957,9 @@ impl RecordRepository {
     pub(crate) fn current_content_revisions(
         &self,
         workspace_id: Uuid,
-    ) -> Vec<collab_types::ContentRevisionV1> {
+    ) -> Vec<fs_protocol::ContentRevisionV1> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .filter(|(key, _)| key.workspace_id == workspace_id)
             .filter_map(|(_, record)| record.replica.current_content_revision())
@@ -1898,8 +1973,7 @@ impl RecordRepository {
         key: RecordRepositoryKey,
     ) -> Option<RecordReconciliationBatch> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .map(|record| RecordReconciliationBatch {
                 key,
@@ -2024,26 +2098,17 @@ impl RecordRepository {
 
     #[must_use]
     pub fn contains(&self, key: RecordRepositoryKey) -> bool {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&key)
+        self.records.lock_recover().contains_key(&key)
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.records.lock_recover().len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
+        self.records.lock_recover().is_empty()
     }
 }
 
@@ -2103,7 +2168,7 @@ fn projected_snapshot(
             ))?;
         let new_sibling = matches!(
             participant.role,
-            collab_types::FileMutationParticipantRole::KeepBothSibling
+            fs_protocol::FileMutationParticipantRole::KeepBothSibling
         );
         let expected_present = snapshot
             .content_revision
@@ -2145,30 +2210,30 @@ fn projected_snapshot(
         snapshot.content_revision = converged.content_revision;
         if matches!(
             participant.role,
-            collab_types::FileMutationParticipantRole::KeepBothSource
-                | collab_types::FileMutationParticipantRole::MergeSource
+            fs_protocol::FileMutationParticipantRole::KeepBothSource
+                | fs_protocol::FileMutationParticipantRole::MergeSource
         ) {
             let (conflict_id, conflict_versions, strategy) = match &transaction.manifest.operation {
-                collab_types::FileMutationOperation::KeepBothContentConflict {
+                fs_protocol::FileMutationOperation::KeepBothContentConflict {
                     conflict_id,
                     conflict_versions,
                     ..
                 } => (
                     *conflict_id,
                     conflict_versions,
-                    collab_types::ConflictStrategy::KeepBoth,
+                    fs_protocol::ConflictStrategy::KeepBoth,
                 ),
-                collab_types::FileMutationOperation::MergeContentConflict {
+                fs_protocol::FileMutationOperation::MergeContentConflict {
                     conflict_id,
                     conflict_versions,
                     ..
                 } => (
                     *conflict_id,
                     conflict_versions,
-                    collab_types::ConflictStrategy::Merge,
+                    fs_protocol::ConflictStrategy::Merge,
                 ),
-                collab_types::FileMutationOperation::ReplacementRename { .. }
-                | collab_types::FileMutationOperation::RestoreContent { .. } => {
+                fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                | fs_protocol::FileMutationOperation::RestoreContent { .. } => {
                     return Err(RecordRepositoryError::TransactionProjectionMismatch(
                         transaction.manifest.transaction_id,
                     ));
@@ -2181,15 +2246,15 @@ fn projected_snapshot(
                 .ok_or(RecordRepositoryError::TransactionPreconditionFailed(
                     participant.record_id,
                 ))?;
-            if conflict.status != collab_types::ConflictStatus::Open
+            if conflict.status != fs_protocol::ConflictStatus::Open
                 || conflict.versions != *conflict_versions
             {
                 return Err(RecordRepositoryError::TransactionPreconditionFailed(
                     participant.record_id,
                 ));
             }
-            conflict.status = collab_types::ConflictStatus::Resolved;
-            conflict.resolution = Some(collab_types::ConflictResolution {
+            conflict.status = fs_protocol::ConflictStatus::Resolved;
+            conflict.resolution = Some(fs_protocol::ConflictResolution {
                 strategy,
                 result: participant.proposed_version.id,
                 actor: transaction.manifest.actor,
@@ -2224,7 +2289,7 @@ fn projected_snapshot(
     reason = "a history version's `id` is the version id the prior revision points at"
 )]
 fn validate_structural_precondition(
-    manifest: &collab_types::FileMutationTransactionManifest,
+    manifest: &fs_protocol::FileMutationTransactionManifest,
     record_id: FileRecordId,
     snapshot: &RecordSnapshot,
 ) -> Result<(), RecordRepositoryError> {
@@ -2236,7 +2301,7 @@ fn validate_structural_precondition(
                 record_id,
             ))?;
     let valid = match &manifest.operation {
-        collab_types::FileMutationOperation::RestoreContent {
+        fs_protocol::FileMutationOperation::RestoreContent {
             request,
             prior_revision,
             selected_version,
@@ -2246,6 +2311,11 @@ fn validate_structural_precondition(
                 .participants
                 .iter()
                 .find(|value| value.record_id == record_id);
+            // Restoring a serialized document writes a new CRDT revision that
+            // reaches the selected state, so its bytes are not the selected
+            // version's. Every other restore puts the selected bytes back.
+            let derived_content = crate::content_kind::RecordContentKind::for_name(&binding.name)
+                .is_serialized_document();
             record_id == request.review.record_id
                 && snapshot.versions.iter().any(|version| {
                     version.id == prior_revision.version_id
@@ -2256,12 +2326,14 @@ fn validate_structural_precondition(
                     version.id == *selected_version
                         && proposed.is_some_and(|proposed| {
                             version.content_hash == proposed.proposed_version.content_hash
+                                || (derived_content
+                                    && proposed.proposed_version.content_hash.is_some())
                         })
                 })
                 && !binding.tombstoned
-                && binding.kind == collab_types::FileNodeKind::File
+                && binding.kind == fs_protocol::FileNodeKind::File
         }
-        collab_types::FileMutationOperation::ReplacementRename {
+        fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -2281,7 +2353,7 @@ fn validate_structural_precondition(
                 false
             }
         }
-        collab_types::FileMutationOperation::KeepBothContentConflict {
+        fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -2304,11 +2376,11 @@ fn validate_structural_precondition(
                     })
                 && snapshot.conflicts.iter().any(|conflict| {
                     conflict.id == *conflict_id
-                        && conflict.status == collab_types::ConflictStatus::Open
+                        && conflict.status == fs_protocol::ConflictStatus::Open
                         && conflict.versions == *conflict_versions
                 })
         }
-        collab_types::FileMutationOperation::MergeContentConflict {
+        fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -2326,7 +2398,7 @@ fn validate_structural_precondition(
                     .is_some_and(|revision| revision.version_id == *current_version)
                 && snapshot.conflicts.iter().any(|conflict| {
                     conflict.id == *conflict_id
-                        && conflict.status == collab_types::ConflictStatus::Open
+                        && conflict.status == fs_protocol::ConflictStatus::Open
                         && conflict.versions == *conflict_versions
                 })
         }
@@ -2447,12 +2519,13 @@ pub enum RecordRepositoryError {
 
 #[cfg(test)]
 mod tests {
-    use collab_types::{
+    use collab_types::generate_keypair;
+    use fs_protocol::{
         CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ContentHash, ContentRevisionV1,
         FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION, FileBindingV1, FileMetadataV1,
         FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
         FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FileProvenance,
-        FileVersionId, FileVersionV1, IndexStatus, generate_keypair,
+        FileVersionId, FileVersionV1, IndexStatus,
     };
     use std::collections::BTreeSet;
 
@@ -2466,20 +2539,7 @@ mod tests {
         write: bool,
     }
 
-    struct MultiRecordAuthorizer {
-        actor: FileActor,
-        records: BTreeSet<FileRecordId>,
-    }
-
-    impl RecordAuthorizer for MultiRecordAuthorizer {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            *actor == self.actor
-        }
-
-        fn allows(&self, actor: &FileActor, record: FileRecordId, _action: RecordAction) -> bool {
-            *actor == self.actor && self.records.contains(&record)
-        }
-    }
+    use crate::record_replication::test_authorizers::{AllowActor, AllowActorOn};
 
     impl RecordAuthorizer for TestAuthorizer {
         fn actor_is_certified(&self, actor: &FileActor) -> bool {
@@ -2614,7 +2674,7 @@ mod tests {
                     actor: fixture.actor,
                     observed_at_ms: 8,
                 },
-                proposed_content_revision: Some(collab_types::ContentRevisionV1 {
+                proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                     schema_version: CONTENT_REVISION_VERSION,
                     record_id,
                     version_id: version.id,
@@ -2667,7 +2727,7 @@ mod tests {
         FileRecordId,
         FileVersionV1,
         FileVersionV1,
-        collab_types::FileConflictV1,
+        fs_protocol::FileConflictV1,
     ) {
         let parent = FileRecordId::new();
         let sibling = FileRecordId::new();
@@ -2691,11 +2751,11 @@ mod tests {
             metadata_hash: ContentHash([12; 32]),
             provenance: FileProvenance::Edit,
         };
-        let conflict = collab_types::FileConflictV1 {
+        let conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id: fixture.key.record_id,
             versions: vec![current.id, selected.id],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         let participant = |record_id, role| {
@@ -2740,7 +2800,7 @@ mod tests {
                     actor: fixture.actor,
                     observed_at_ms: 3,
                 },
-                proposed_content_revision: Some(collab_types::ContentRevisionV1 {
+                proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                     schema_version: CONTENT_REVISION_VERSION,
                     record_id,
                     version_id: version.id,
@@ -2764,7 +2824,7 @@ mod tests {
         participants.sort_by_key(|value| value.record_id);
         let transaction = FileMutationTransaction::signed(
             FileMutationTransactionManifest {
-                schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
+                schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: fixture.key.workspace_id,
                 actor: fixture.actor,
@@ -2796,7 +2856,7 @@ mod tests {
         FileVersionV1,
         FileVersionV1,
         FileVersionV1,
-        collab_types::FileConflictV1,
+        fs_protocol::FileConflictV1,
     ) {
         let parent = FileRecordId::new();
         let base = FileVersionV1 {
@@ -2829,11 +2889,11 @@ mod tests {
             metadata_hash: ContentHash([12; 32]),
             provenance: FileProvenance::Edit,
         };
-        let conflict = collab_types::FileConflictV1 {
+        let conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id: fixture.key.record_id,
             versions: vec![current.id, other.id],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         let result = FileVersionV1 {
@@ -2860,7 +2920,7 @@ mod tests {
                 actor: fixture.actor,
                 observed_at_ms: 4,
             },
-            proposed_content_revision: Some(collab_types::ContentRevisionV1 {
+            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: CONTENT_REVISION_VERSION,
                 record_id: fixture.key.record_id,
                 version_id: result.id,
@@ -2874,7 +2934,7 @@ mod tests {
         participant.projection_hash = participant.computed_projection_hash().unwrap();
         let transaction = FileMutationTransaction::signed(
             FileMutationTransactionManifest {
-                schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
+                schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: fixture.key.workspace_id,
                 actor: fixture.actor,
@@ -2911,7 +2971,7 @@ mod tests {
                 let fixture = Fixture::new();
                 let repository = RecordRepository::open(&fixture.root).unwrap();
                 let (transaction, parent, base, current, other, conflict) =
-                    merge_transaction(&fixture, ConflictMergeCodecV1::QdocAutomergeV1);
+                    merge_transaction(&fixture, ConflictMergeCodecV1::TiloDocAutomergeV1);
                 let proposed = transaction.manifest.participants[0].clone();
                 let binding = FileBindingV1 {
                     schema_version: FILE_BINDING_VERSION,
@@ -2923,7 +2983,7 @@ mod tests {
                     actor: fixture.actor,
                     observed_at_ms: 1,
                 };
-                let current_revision = collab_types::ContentRevisionV1 {
+                let current_revision = fs_protocol::ContentRevisionV1 {
                     schema_version: CONTENT_REVISION_VERSION,
                     record_id: fixture.key.record_id,
                     version_id: current.id,
@@ -2973,7 +3033,7 @@ mod tests {
                     provenance: FileProvenance::Edit,
                     ..proposed.proposed_version
                 };
-                let later_revision = collab_types::ContentRevisionV1 {
+                let later_revision = fs_protocol::ContentRevisionV1 {
                     version_id: later.id,
                     ..proposed.proposed_content_revision.unwrap()
                 };
@@ -3180,7 +3240,7 @@ mod tests {
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
-                ConflictMergeCodecV1::QdocAutomergeV1,
+                ConflictMergeCodecV1::TiloDocAutomergeV1,
             ] {
                 let fixture = Fixture::new();
                 let (transaction, parent, base, current, other, conflict) =
@@ -3324,7 +3384,7 @@ mod tests {
                         .as_ref()
                         .unwrap()
                         .strategy,
-                    collab_types::ConflictStrategy::Merge
+                    fs_protocol::ConflictStrategy::Merge
                 );
                 drop(repository);
                 let repository = RecordRepository::open(&fixture.root).unwrap();
@@ -3352,7 +3412,7 @@ mod tests {
                 let (transaction, parent, sibling, current, selected, conflict) =
                     keep_both_transaction(&fixture);
                 let repository = RecordRepository::open(&fixture.root).unwrap();
-                let auth = MultiRecordAuthorizer {
+                let auth = AllowActorOn {
                     actor: fixture.actor,
                     records: [fixture.key.record_id, sibling].into_iter().collect(),
                 };
@@ -3398,7 +3458,7 @@ mod tests {
                                 fixture.actor,
                                 4,
                                 RecordOperationV1::SetContentRevision(
-                                    collab_types::ContentRevisionV1 {
+                                    fs_protocol::ContentRevisionV1 {
                                         schema_version: CONTENT_REVISION_VERSION,
                                         record_id: fixture.key.record_id,
                                         version_id: current.id,
@@ -3527,11 +3587,11 @@ mod tests {
             let records = [fixture.key.record_id, replaced]
                 .into_iter()
                 .collect::<BTreeSet<_>>();
-            let auth = MultiRecordAuthorizer {
+            let auth = AllowActorOn {
                 actor: fixture.actor,
                 records,
             };
-            let collab_types::FileMutationOperation::ReplacementRename {
+            let fs_protocol::FileMutationOperation::ReplacementRename {
                 source_parent,
                 source_name,
                 destination_parent,
@@ -3597,7 +3657,7 @@ mod tests {
                                 fixture.actor,
                                 3,
                                 RecordOperationV1::SetContentRevision(
-                                    collab_types::ContentRevisionV1 {
+                                    fs_protocol::ContentRevisionV1 {
                                         schema_version: CONTENT_REVISION_VERSION,
                                         record_id: participant.record_id,
                                         version_id: baseline.id,
@@ -3745,10 +3805,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn invalid_or_unauthorized_operations_fail_closed_without_publishing() {
         // Phase `read_only_authorizer_cannot_create_durable_state`.
         {
@@ -3870,23 +3926,11 @@ mod tests {
         ]
     }
 
-    struct AnyRecord(FileActor);
-
-    impl RecordAuthorizer for AnyRecord {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            *actor == self.0
-        }
-
-        fn allows(&self, actor: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-            *actor == self.0
-        }
-    }
-
     #[test]
     fn an_uncommitted_changeset_is_never_served_and_is_gone_after_a_crash() {
         let fixture = Fixture::new();
         let batches = two_record_batches(&fixture);
-        let auth = AnyRecord(fixture.actor);
+        let auth = AllowActor(fixture.actor);
         let repo = RecordRepository::open(&fixture.root).unwrap();
         repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
@@ -3924,7 +3968,7 @@ mod tests {
     fn a_committed_changeset_is_durable_whole_and_served_as_one_unit() {
         let fixture = Fixture::new();
         let batches = two_record_batches(&fixture);
-        let auth = AnyRecord(fixture.actor);
+        let auth = AllowActor(fixture.actor);
         let repo = RecordRepository::open(&fixture.root).unwrap();
         repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
@@ -3982,7 +4026,7 @@ mod tests {
     fn a_received_changeset_applies_whole_or_not_at_all() {
         let author = Fixture::new();
         let batches = two_record_batches(&author);
-        let auth = AnyRecord(author.actor);
+        let auth = AllowActor(author.actor);
         let repo = RecordRepository::open(&author.root).unwrap();
         repo.begin_changeset(author.key.workspace_id, author.actor)
             .unwrap();
@@ -4057,7 +4101,7 @@ mod tests {
     fn a_validly_signed_changeset_of_another_workspace_is_refused() {
         let author = Fixture::new();
         let batches = two_record_batches(&author);
-        let auth = AnyRecord(author.actor);
+        let auth = AllowActor(author.actor);
         let repo = RecordRepository::open(&author.root).unwrap();
         repo.begin_changeset(author.key.workspace_id, author.actor)
             .unwrap();

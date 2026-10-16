@@ -17,8 +17,25 @@ on:
       - "crates/packaging/tilo-app-package/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/threshold-identity/**"
-      - "crates/system/atomic-file/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/collab/action-policy/**"
+      - "crates/collab/actions/**"
+      - "crates/collab/automation/**"
+      - "crates/doc/tilo-automerge/**"
+      - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-files/**"
+      - "crates/platform/tilo-net/**"
+      - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
+      - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/system/advisory-lock/**"
+      - "crates/system/content/**"
+      - "crates/workspace-hack/**"
+      - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/netwatch/**"
+      - "vendor/wayland-backend/**"
       - "vendor/genawaiter-proc-macro/**"
       - ".forgejo/workflows/release-registry-server.yml"
   pull_request:
@@ -32,8 +49,25 @@ on:
       - "crates/packaging/tilo-app-package/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/threshold-identity/**"
-      - "crates/system/atomic-file/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/collab/action-policy/**"
+      - "crates/collab/actions/**"
+      - "crates/collab/automation/**"
+      - "crates/doc/tilo-automerge/**"
+      - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-files/**"
+      - "crates/platform/tilo-net/**"
+      - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
+      - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/system/advisory-lock/**"
+      - "crates/system/content/**"
+      - "crates/workspace-hack/**"
+      - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/netwatch/**"
+      - "vendor/wayland-backend/**"
       - "vendor/genawaiter-proc-macro/**"
       - ".forgejo/workflows/release-registry-server.yml"
 
@@ -160,7 +194,7 @@ jobs:
 
       - name: Retain the immutable digest receipt
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: registry-server-image-receipt
           path: registry-server-image-receipt/registry-server-image.json

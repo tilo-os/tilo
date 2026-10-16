@@ -6,19 +6,20 @@
 //! one source of truth — selecting a city in the overview is immediately
 //! reflected in the detail because both read the same `Core`.
 //!
-//! The shell owns the responsive geometry, the push/side-by-side transition,
-//! the Back affordance and the divider; these panes just paint their content
-//! into whatever rect the shell hands them, which is how the same code works
-//! side-by-side (wide) and full-screen-push (narrow).
+//! The shell owns the header row, the responsive geometry, the
+//! push/side-by-side transition and the Back button; these panes just paint
+//! their content into whatever rect the shell hands them, which is how the
+//! same code works side-by-side (wide) and full-screen-push (narrow).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, Action};
@@ -59,46 +60,13 @@ impl DetailPane {
     }
 }
 
-// `Widget::build_layout`/`apply_layout` (the callers below) return
-// `NodeId`/`()`, not a `Result` — the trait is shared by every widget in
-// `ui`, so its signature isn't ours to change here. `TaffyTree::new_leaf`
-// and `::layout` both wrap an infallible operation in this taffy version
-// (`new_leaf` always inserts; `layout` always finds a node this module
-// just registered) — the `Result` is vestigial, not a real failure mode.
-#[allow(
-    clippy::unwrap_used,
-    reason = "TaffyTree::new_leaf never fails in this taffy version, and the Widget trait's build_layout signature isn't ours to change to Result"
-)]
+/// A leaf node that fills what its parent gives it, registered for `me`.
 fn leaf(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    me: *mut dyn Widget,
+    me: &mut (dyn Widget + 'static),
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        })
-        .unwrap();
-    node_map.insert(node, me);
-    node
-}
-
-#[allow(
-    clippy::unwrap_used,
-    reason = "node is an id this module just registered with the same taffy tree, so TaffyTree::layout always finds it, and the Widget trait's apply_layout signature isn't ours to change to Result"
-)]
-fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).unwrap();
-    Rect::new(
-        origin.x + f64::from(l.location.x),
-        origin.y + f64::from(l.location.y),
-        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-    )
+    taffy.fill_leaf(node_map, me)
 }
 
 impl Widget for OverviewPane {
@@ -108,12 +76,10 @@ impl Widget for OverviewPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -128,6 +94,29 @@ impl Widget for OverviewPane {
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
     }
 
+    /// The add-place suggestions and the per-place menu float in the
+    /// window's top layer, over the forecast too.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.core.borrow_mut().draw_overview_overlay(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.core.borrow().overview_modal_capture()
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if *ctx.handled {
             return;
@@ -139,7 +128,7 @@ impl Widget for OverviewPane {
                 event,
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 focus_target: ctx.focus_target,
                 node_id: ctx.node_id,
@@ -158,19 +147,15 @@ impl Widget for OverviewPane {
         Some("weather-overview")
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -211,12 +196,10 @@ impl Widget for DetailPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -252,10 +235,6 @@ impl Widget for DetailPane {
         Some("weather-detail")
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn tooltip(&self) -> Option<&str> {
         self.core.borrow().detail_tooltip()
     }
@@ -264,24 +243,20 @@ impl Widget for DetailPane {
         Some(self.core.borrow().detail_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    /// The forecast's one accessible control: the out-of-date notice's
+    /// Retry button.
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, Action::Activate) {
+        let retry = ui::a11y::hash_key(&crate::core::RETRY_KEY);
+        if !matches!(action, Action::Activate) || key_path.last() != Some(&retry) {
             return false;
         }
-        if key_path.last().copied() != Some(ui::a11y::hash_key(&"weather.refresh-forecast")) {
-            return false;
-        }
-        let mut core = self.core.borrow_mut();
-        if core.is_fetching() {
-            return true;
-        }
-        core.refresh_selected_forecast();
+        self.core.borrow_mut().retry();
         true
     }
 }

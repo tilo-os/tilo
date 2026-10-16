@@ -39,8 +39,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng as _;
 use smithay::reexports::calloop::{
     self, Interest, LoopHandle, Mode, PostAction, RegistrationToken, generic::Generic,
 };
@@ -48,6 +46,7 @@ use smithay::reexports::calloop::{
 use super::backend::drm::input_config::KeyboardSettings;
 use super::xwayland_composer::ComposerClients;
 use crate::shell::host_apps::X11Session;
+use tilo_lock::MutexRecover as _;
 
 const DISPLAY_ATTEMPTS: usize = 64;
 /// Restarting a compatibility bridge forever turns one crashing helper into a
@@ -97,9 +96,7 @@ struct Registry {
 }
 
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
-    REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    REGISTRY.lock_recover()
 }
 
 /// The X11 connection for a host launch into `workspace`, creating that
@@ -137,7 +134,7 @@ struct Paths {
 
 impl Paths {
     fn session() -> Result<Self, String> {
-        let runtime_root = xdg_paths::xdg::runtime_dir()
+        let runtime_root = tilo_paths::xdg::runtime_dir()
             .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
         Ok(Self {
             sockets: PathBuf::from("/tmp/.X11-unix"),
@@ -172,10 +169,12 @@ pub(crate) struct WorkspaceDisplay {
     cookie: [u8; 16],
     bridge: Option<Bridge>,
     rapid_exits: u8,
-    /// When the running bridge was first observed with no connected client.
+    /// When the running bridge entered its current idle phase.
     idle_since: Option<Instant>,
+    /// The timeout for that phase: no clients or previously mapped clients.
+    idle_limit: Option<Duration>,
     idle_checked: Option<Instant>,
-    /// Satellite has mapped at least one toplevel in this run.
+    /// Satellite has mapped a toplevel since clients were last observed absent.
     saw_toplevel: bool,
     /// The composer process group already asked to serve the running
     /// server, so each server and composer pair is asked once.
@@ -324,8 +323,7 @@ impl WorkspaceDisplay {
         fs::set_permissions(&paths.runtime, fs::Permissions::from_mode(0o700))
             .map_err(|error| format!("protecting {}: {error}", paths.runtime.display()))?;
 
-        let mut random = [0_u8; 2];
-        UnwrapErr(SysRng).fill_bytes(&mut random);
+        let random = crate::random::bytes::<2>();
         let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
         for offset in 0..DISPLAY_ATTEMPTS {
             let number = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
@@ -373,6 +371,7 @@ impl WorkspaceDisplay {
                 bridge: None,
                 rapid_exits: 0,
                 idle_since: None,
+                idle_limit: None,
                 idle_checked: None,
                 saw_toplevel: false,
                 composer_asked: None,
@@ -490,6 +489,7 @@ impl WorkspaceDisplay {
                     resources,
                 });
                 self.idle_since = None;
+                self.idle_limit = None;
                 false
             }
             Err(error) => {
@@ -513,20 +513,29 @@ impl WorkspaceDisplay {
         if mapped {
             self.saw_toplevel = true;
         }
-        match idle_deadline(connected, mapped, self.saw_toplevel) {
-            Some(limit) => {
-                let idle_since = *self.idle_since.get_or_insert(now);
-                if now.saturating_duration_since(idle_since) >= limit {
-                    tracing::info!(display = self.number, "stopping idle Xwayland bridge");
-                    self.stop_bridge();
-                }
+        if connected == Some(0) {
+            // The next client is a new app, not the previous app's leftovers.
+            self.saw_toplevel = false;
+        }
+        if let Some(limit) = idle_deadline(connected, mapped, self.saw_toplevel) {
+            if self.idle_limit != Some(limit) {
+                self.idle_limit = Some(limit);
+                self.idle_since = Some(now);
             }
-            None => self.idle_since = None,
+            let idle_since = *self.idle_since.get_or_insert(now);
+            if now.saturating_duration_since(idle_since) >= limit {
+                tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                self.stop_bridge();
+            }
+        } else {
+            self.idle_since = None;
+            self.idle_limit = None;
         }
     }
 
     fn stop_bridge(&mut self) {
         self.idle_since = None;
+        self.idle_limit = None;
         self.idle_checked = None;
         self.saw_toplevel = false;
         self.composer_asked = None;
@@ -720,14 +729,17 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         }
     }
 
+    pub(crate) fn reload_keyboard_settings(&self) {
+        self.apply_keyboard_settings(&KeyboardSettings::load());
+    }
+
     #[expect(
         clippy::unused_self,
         reason = "only a running supervisor's displays have X servers to update"
     )]
-    pub(crate) fn reload_keyboard_settings(&self) {
-        let keyboard = KeyboardSettings::load();
+    pub(crate) fn apply_keyboard_settings(&self, keyboard: &KeyboardSettings) {
         if let Some(displays) = registry().displays.as_mut() {
-            displays.reload_keyboard_settings(&keyboard);
+            displays.reload_keyboard_settings(keyboard);
         }
     }
 
@@ -742,13 +754,22 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         let Some(displays) = registry.displays.as_mut() else {
             return;
         };
+        let live = live_workspaces(chrome);
+        // D-Bus-activated X11 apps inherit the session environment. Bind
+        // the active workspace's socket (satellite still starts on first
+        // connect) so DISPLAY exists before anyone clicks a host app.
+        if let Some(active) = active_workspace_room(chrome)
+            && live.contains(&active)
+            && let Ok((session, _)) = displays.session_for(&active)
+        {
+            crate::compositor::session_env::export_x11(&session.display, &session.authority);
+        }
         if displays.workspaces.is_empty()
             && displays.unavailable.is_empty()
             && self.watched.is_empty()
         {
             return;
         }
-        let live = live_workspaces(chrome);
         let wayland_socket = self.wayland_socket.clone();
         let satellite = displays.satellite.clone();
         let mut spawn = |display: &WorkspaceDisplay| match satellite.as_ref() {
@@ -872,6 +893,15 @@ fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<Strin
         .collect()
 }
 
+fn active_workspace_room(chrome: &crate::shell::chrome_state::Chrome) -> Option<String> {
+    chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+}
+
 fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {
     let mut notification = tilo_desktop::notifications::Notification::new(
         crate::shell::i18n::t("xwayland-unavailable-title"),
@@ -912,6 +942,7 @@ fn spawn_satellite(
         // keymap. Keep both sides on the same validated settings.
         .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
         .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
+        .env("XKB_DEFAULT_MODEL", &keyboard.model)
         .env(
             "XKB_DEFAULT_OPTIONS",
             keyboard.options.as_deref().unwrap_or(""),
@@ -1011,7 +1042,12 @@ fn setxkbmap_args(keyboard: &KeyboardSettings) -> Vec<OsString> {
         .min(keyboard.layouts.split(',').count().saturating_sub(1));
     let layout = keyboard.layouts.split(',').nth(active).unwrap_or("us");
     let variant = keyboard.variants.split(',').nth(active).unwrap_or("");
-    let mut args = vec![OsString::from("-layout"), OsString::from(layout)];
+    let mut args = vec![
+        OsString::from("-model"),
+        OsString::from(&keyboard.model),
+        OsString::from("-layout"),
+        OsString::from(layout),
+    ];
     if !variant.is_empty() {
         args.extend([OsString::from("-variant"), OsString::from(variant)]);
     }
@@ -1094,9 +1130,20 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
+/// Write a fresh authority file for `display` and return its cookie.
+///
+/// This runs under the display registry lock that the compositor loop takes
+/// every tick, often on the loop thread itself, so it must not wait for the
+/// disk. It deliberately does not fsync: the file is valid only while this
+/// session's X server lives, and it sits in the login's runtime directory
+/// (`$XDG_RUNTIME_DIR`, a tmpfs). Readers see it through the page cache as
+/// soon as the write returns, and after a crash it is regenerated with a new
+/// cookie, so durability buys nothing while an fsync under I/O or memory
+/// pressure has frozen the desktop for seconds. Privacy does not depend on
+/// it either: the file is created exclusively with mode 0600 inside a 0700
+/// directory, and no client learns the path before `bind` returns.
 fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
-    let mut cookie = [0_u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut cookie);
+    let cookie = crate::random::bytes::<16>();
     let mut contents = Vec::with_capacity(64);
     push_u16(&mut contents, u16::MAX); // FamilyWild
     push_field(&mut contents, &[]);
@@ -1110,7 +1157,6 @@ fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
         .open(path)
         .map_err(|error| format!("creating Xauthority: {error}"))?;
     file.write_all(&contents)
-        .and_then(|()| file.sync_all())
         .map_err(|error| format!("writing Xauthority: {error}"))?;
     Ok(cookie)
 }
@@ -1198,6 +1244,11 @@ fn publish_font_dpi(stream: UnixStream, cookie: [u8; 16]) -> Result<u32, String>
         "Xft.dpi",
         &dpi.to_string(),
     );
+    let merged = with_resource(
+        &merged,
+        "Xcursor.size",
+        &cursor_size_for_dpi(dpi).to_string(),
+    );
     conn.change_property8(
         PropMode::REPLACE,
         root,
@@ -1259,6 +1310,10 @@ fn xsettings_integer(data: &[u8], name: &str) -> Option<i32> {
         offset = offset.checked_add(value_length)?;
     }
     None
+}
+
+fn cursor_size_for_dpi(dpi: u32) -> u32 {
+    dpi.saturating_mul(24).saturating_div(96).max(24)
 }
 
 /// `resources` with `key` set to `value`, every other line kept.
@@ -1503,6 +1558,108 @@ mod tests {
             "a server that has not mapped yet is still starting"
         );
         assert_eq!(idle_deadline(None, false, true), None);
+    }
+
+    #[test]
+    fn a_new_client_after_an_idle_spell_is_not_reaped_as_windowless() {
+        for gap in [3, 30, 59] {
+            let mut fixture = fixture();
+            let (session, _) = fixture.displays.session_for("room-a").unwrap();
+            let _client = connect(&session, &fixture.displays);
+            let start = Instant::now();
+            fixture.displays.poll(start, &mut |_| sleeper());
+            let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+            let pid = display.bridge.as_ref().unwrap().child.id();
+            let mapped = HashSet::from([pid]);
+
+            display.reap_if_idle(start, Some(1), &mapped);
+            display.reap_if_idle(start + Duration::from_secs(1), Some(0), &HashSet::new());
+            let connected_at = start + Duration::from_secs(gap);
+            display.reap_if_idle(connected_at, Some(1), &HashSet::new());
+            assert!(
+                display.bridge.is_some(),
+                "a new client must survive connection after {gap}s"
+            );
+            display.reap_if_idle(
+                connected_at + Duration::from_secs(5),
+                Some(1),
+                &HashSet::new(),
+            );
+            assert!(
+                display.bridge.is_some(),
+                "a new client may take more than two seconds to map"
+            );
+            display.reap_if_idle(connected_at + Duration::from_secs(6), Some(1), &mapped);
+            assert!(
+                display.bridge.is_some(),
+                "the same bridge serves the new window"
+            );
+        }
+    }
+
+    #[test]
+    fn windowless_clock_starts_when_the_window_goes() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+        let mapped = HashSet::from([pid]);
+
+        display.reap_if_idle(start, Some(1), &mapped);
+        display.reap_if_idle(start + Duration::from_secs(50), Some(1), &mapped);
+        let closed_at = start + Duration::from_secs(51);
+        display.reap_if_idle(closed_at, Some(1), &HashSet::new());
+        display.reap_if_idle(
+            closed_at + Duration::from_millis(1999),
+            Some(2),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "Wine helpers do not reset the windowless clock"
+        );
+        display.reap_if_idle(closed_at + Duration::from_secs(2), Some(2), &HashSet::new());
+        assert!(
+            display.bridge.is_none(),
+            "leftover clients lose the bridge after two seconds"
+        );
+    }
+
+    #[test]
+    fn the_empty_bridge_clock_starts_when_the_last_client_leaves() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+
+        display.reap_if_idle(start, Some(1), &HashSet::from([pid]));
+        display.reap_if_idle(start + Duration::from_secs(1), Some(1), &HashSet::new());
+        let disconnected_at = start + Duration::from_millis(2500);
+        display.reap_if_idle(disconnected_at, Some(0), &HashSet::new());
+        display.reap_if_idle(
+            disconnected_at + Duration::from_millis(59999),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "the empty phase gets its own full minute"
+        );
+        display.reap_if_idle(
+            disconnected_at + Duration::from_secs(60),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_none(),
+            "an empty bridge still expires after one minute"
+        );
     }
 
     #[test]
@@ -1755,6 +1912,8 @@ mod tests {
 
     #[test]
     fn publishing_dpi_replaces_only_that_resource() {
+        assert_eq!(cursor_size_for_dpi(96), 24);
+        assert_eq!(cursor_size_for_dpi(192), 48);
         assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
         assert_eq!(
             with_resource(
@@ -1918,6 +2077,8 @@ mod tests {
             assert_eq!(
                 setxkbmap_args(&settings),
                 [
+                    "-model",
+                    "pc105",
                     "-layout",
                     "de",
                     "-variant",
@@ -1933,7 +2094,7 @@ mod tests {
             let plain = KeyboardSettings::default();
             assert_eq!(
                 setxkbmap_args(&plain),
-                ["-layout", "us", "-option", ""].map(OsString::from)
+                ["-model", "pc105", "-layout", "us", "-option", ""].map(OsString::from)
             );
         }
     }
@@ -1974,6 +2135,45 @@ mod tests {
         }
     }
 
+    /// The compositor loop binds a workspace's X display through
+    /// `session_for`, which writes the display's authority file, and its
+    /// supervisor gives the composing input method every cookie. Nothing on
+    /// those paths may wait for the disk: under I/O or memory pressure an
+    /// fsync there froze input and presentation for seconds.
+    #[test]
+    fn binding_a_display_never_waits_for_the_disk() {
+        // The shared guard proves its filter is in force before the body runs.
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let mut fixture = fixture();
+            let (session, fresh) = fixture
+                .displays
+                .session_for("room-a")
+                .expect("binding a display must not sync to disk");
+            assert!(fresh);
+            let display = &fixture.displays.workspaces["room-a"];
+            assert_eq!(session.authority, display.authority);
+            let metadata = fs::metadata(&session.authority).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let runtime = fs::metadata(&fixture.displays.paths.runtime).unwrap();
+            assert_eq!(runtime.permissions().mode() & 0o777, 0o700);
+            let bytes = fs::read(&session.authority).unwrap();
+            assert!(
+                bytes.ends_with(&display.cookie),
+                "the file carries the cookie"
+            );
+
+            let composer = fixture.displays.paths.runtime.join("composer-Xauthority");
+            super::super::xwayland_composer::write_composer_authority(
+                &composer,
+                std::slice::from_ref(&display.authority),
+            )
+            .expect("installing the composer's authority must not sync to disk");
+            let metadata = fs::metadata(&composer).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::read(&composer).unwrap(), bytes);
+        });
+    }
+
     #[test]
     fn keyboard_update_waits_for_a_running_server_and_coalesces_to_the_latest() {
         let mut fixture = fixture();
@@ -1983,6 +2183,7 @@ mod tests {
         fs::write(&slow_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
         fs::set_permissions(&slow_setxkbmap, fs::Permissions::from_mode(0o700)).unwrap();
         let german = KeyboardSettings {
+            model: "pc105".into(),
             source_ids: vec!["de:nodeadkeys".into()],
             layouts: "de".into(),
             variants: "nodeadkeys".into(),

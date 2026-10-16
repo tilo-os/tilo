@@ -9,6 +9,7 @@ homepage.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
@@ -22,7 +23,16 @@ sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
 test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 
+[[test]]
+name = "gdrive-rystic"
+path = "tests/rystic.rs"
+required-features = ["rystic-tests"]
+
 [features]
+# Explicitly opted-in tests against a separately started, licensed local twin.
+rystic-tests = []
+# Strict vendor contracts expose missing simulator sync/upload endpoints.
+rystic-contract-tests = ["rystic-tests"]
 # `cloud_source_gdrive::fake::FakeDrive`, an in-memory Drive API v3 server on
 # the shared test responder, for this crate's conformance run and the storage
 # daemon's end-to-end tests. Test support only.

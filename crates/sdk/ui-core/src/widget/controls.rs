@@ -16,6 +16,17 @@ use super::{
     semantic_action_bindings,
 };
 
+/// How the host answered a control's invocation: started (done at once with
+/// its output, or accepted to finish later), or refused.
+pub type ControlResult = Result<ResourceOperationStart, tilo_actions::DoorError>;
+
+/// A control intent and the effect invocation it continues, when an
+/// effect's handler or completion queued it.
+pub type AttributedControlInvocation = (
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+);
+
 /// A widget that owns action-bound controls.
 pub trait ActionControls: Widget {
     /// Bind retained producers before their first callback. Private holders
@@ -37,6 +48,14 @@ pub trait ActionControls: Widget {
             .find_map(take_control_invocation)
     }
 
+    /// [`Self::take_control_invocation`], with the effect invocation the
+    /// intent continues when an effect's handler or completion queued it:
+    /// the host applies it for that invocation's invoker.
+    fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation> {
+        self.take_control_invocation()
+            .map(|invocation| (invocation, None))
+    }
+
     /// Report the admission result of one queued local control invocation.
     /// `Accepted` means queued, not completed; confirmation remains an error
     /// while the host offers its normal confirmation UI. This notification
@@ -44,7 +63,7 @@ pub trait ActionControls: Widget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        result: &ControlResult,
     ) {
         result_to_children(self, address, result);
     }
@@ -54,6 +73,16 @@ pub trait ActionControls: Widget {
     /// to its descendants' inventory.
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         default_bindings(self)
+    }
+
+    /// Action-emitter bindings in the same order and exposure as the full
+    /// inventory. Custom private inventories keep their authoritative default;
+    /// wrappers can avoid allocating semantic-only accessibility snapshots.
+    fn action_control_bindings(&self) -> Vec<ControlBindingMetadata> {
+        self.control_action_bindings()
+            .into_iter()
+            .filter(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+            .collect()
     }
 
     /// Whether this exposed subtree contains controls consuming action
@@ -86,6 +115,64 @@ pub trait ActionControls: Widget {
     }
 }
 
+/// The custody, drain and availability [`ActionControls`] methods of a
+/// widget whose only producer is its optional `self.action` emitter. Pass
+/// `custody` to leave availability to a widget that refreshes it itself.
+macro_rules! optional_emitter_controls {
+    () => {
+        crate::widget::controls::optional_emitter_controls!(custody);
+        fn refresh_control_action_availability(
+            &mut self,
+            allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+        ) {
+            if let Some(action) = &mut self.action {
+                action.refresh_availability(allowed);
+            }
+        }
+    };
+    (custody) => {
+        fn install_control_custody(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            if let Some(action) = &mut self.action {
+                let _ = action.install_custody(domain, attachment);
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.action
+                .as_mut()
+                .and_then(crate::widget::ActionEmitter::take)
+        }
+    };
+}
+pub(crate) use optional_emitter_controls;
+
+/// A value control's binding: its action, else the collaborative document
+/// key it writes, else its legacy change callback, else its semantic action.
+pub(crate) fn value_control_bindings<I>(
+    control_id: &str,
+    action: Option<&super::ActionEmitter<I>>,
+    document_key: Option<&str>,
+    has_callback: bool,
+) -> Vec<ControlBindingMetadata> {
+    if let Some(action) = action {
+        return vec![action.metadata(control_id)];
+    }
+    let kind = if let Some(key) = document_key {
+        ControlBindingKind::CollaborativeDocument(key.to_owned())
+    } else if has_callback {
+        ControlBindingKind::LegacyCallback
+    } else {
+        ControlBindingKind::SemanticAction(control_id.to_owned())
+    };
+    vec![ControlBindingMetadata {
+        control_id: control_id.to_owned(),
+        kind,
+    }]
+}
+
 fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
     let mut bindings = semantic_action_bindings(widget.accessibility());
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));
@@ -95,7 +182,7 @@ fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetada
 fn result_to_children(
     widget: &mut (impl Widget + ?Sized),
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     for child in widget.children_mut() {
         if !child.has_separate_document_owner() {
@@ -130,17 +217,81 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
         .find_map(take_control_invocation)
 }
 
+/// [`take_control_invocation`], with the effect invocation the intent
+/// continues ([`ActionControls::take_attributed_control_invocation`]).
+pub fn take_attributed_control_invocation(
+    widget: &mut dyn Widget,
+) -> Option<AttributedControlInvocation> {
+    if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
+        return controls.take_attributed_control_invocation();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(take_attributed_control_invocation)
+}
+
+thread_local! {
+    static RESULT_FOR: std::cell::Cell<Option<tilo_actions::InvocationId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The operation the result being reported continues, while a host reports
+/// one: the invocation of the effect that submitted the edit, which waits
+/// for it to land. `None` for a submission nobody waits on.
+#[must_use]
+pub fn result_on_behalf_of() -> Option<tilo_actions::InvocationId> {
+    RESULT_FOR.with(std::cell::Cell::get)
+}
+
+/// [`on_control_invocation_result`] for a submission that continues the
+/// operation `on_behalf_of`, which [`result_on_behalf_of`] names meanwhile.
+pub fn on_control_invocation_result_for(
+    widget: &mut dyn Widget,
+    address: &tilo_actions::ActionAddress,
+    result: &ControlResult,
+    on_behalf_of: Option<tilo_actions::InvocationId>,
+) {
+    struct Restore(Option<tilo_actions::InvocationId>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RESULT_FOR.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(RESULT_FOR.with(|cell| cell.replace(on_behalf_of)));
+    on_control_invocation_result(widget, address, result);
+}
+
 /// Report a control invocation's admission result through `widget`'s subtree.
 pub fn on_control_invocation_result(
     widget: &mut dyn Widget,
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
         controls.on_control_invocation_result(address, result);
         return;
     }
     result_to_children(widget, address, result);
+}
+
+/// The action-emitter portion of the current exposed inventory. Ordinary
+/// widgets contribute only semantic bindings, so visit their children without
+/// materializing accessibility. Capability overrides retain private custody.
+pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
+    if let Some(controls) = capability::<dyn ActionControls>(widget) {
+        return controls.action_control_bindings();
+    }
+    children_action_control_bindings(widget)
+}
+
+/// The action-emitter bindings of `widget`'s exposed children. A wrapper's own
+/// bindings are semantic and never consume action availability, so this is a
+/// wrapper's whole action inventory without materializing accessibility.
+pub fn children_action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
+    let mut bindings = Vec::new();
+    widget.for_each_child(&mut |child| bindings.extend(action_control_bindings(child)));
+    bindings
 }
 
 /// The control inventory of `widget`'s subtree.
@@ -156,9 +307,20 @@ pub fn has_action_control_bindings(widget: &dyn Widget) -> bool {
     if let Some(controls) = capability::<dyn ActionControls>(widget) {
         return controls.has_action_control_bindings();
     }
-    control_action_bindings(widget)
-        .iter()
-        .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+    children_have_action_control_bindings(widget)
+}
+
+/// Whether any of `widget`'s exposed children contain controls consuming
+/// action availability; the counterpart of
+/// [`children_action_control_bindings`].
+pub fn children_have_action_control_bindings(widget: &dyn Widget) -> bool {
+    let mut found = false;
+    widget.for_each_child(&mut |child| {
+        if !found {
+            found = has_action_control_bindings(child);
+        }
+    });
+    found
 }
 
 /// Push the permission-filtered action surface into every control under `widget`.
@@ -189,3 +351,7 @@ pub fn has_pending_control_invocation(widget: &dyn Widget) -> bool {
         .into_iter()
         .any(has_pending_control_invocation)
 }
+
+#[cfg(test)]
+#[path = "controls/presence_tests.rs"]
+mod presence_tests;

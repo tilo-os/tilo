@@ -2,7 +2,6 @@ use super::*;
 use crate::widget::{
     Actions, Button, Field, Form, FormSection, LabelPlacement, LayoutInfo, TextInput,
 };
-use automerge::ReadDoc;
 
 fn form_layout(app: &mut App, width: u32) {
     app.layout.layout_dirty = true;
@@ -30,11 +29,9 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
                     TextInput::local().with_id("email"),
                 )),
         )
-        .with_actions(Actions::new(Button::new(
-            "save",
-            "Save changes",
-            Some("saved"),
-        )));
+        .with_actions(Actions::new(
+            Button::new("save", "Save changes").on_click(crate::testing::record_click("saved")),
+        ));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(form));
     app.init_layout();
     form_layout(&mut app, 900);
@@ -78,11 +75,5 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
     let save = app.focusable_order[2];
     let bounds = app.inspect_node(save, |widget| widget.get_rect()).unwrap();
     assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
-    assert!(
-        app.state
-            .doc
-            .get(automerge::ROOT, "saved")
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(crate::testing::clicks("saved"), 1);
 }

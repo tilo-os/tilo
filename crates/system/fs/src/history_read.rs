@@ -1,6 +1,6 @@
 //! Read-only immutable history transport, independent of restore eligibility.
 use super::{Access, EBUSY, EINVAL, EIO, ENOENT, Hash, QuickFS};
-use collab_types::files::{
+use fs_protocol::files::{
     FileHistoryPageV1, FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
     FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value,
     MAX_HISTORY_PAGE_VERSIONS, MAX_HISTORY_READ_BYTES,
@@ -22,7 +22,7 @@ impl QuickFS {
         (
             Scope,
             crate::history::RecordHistorySnapshot,
-            Option<collab_types::ContentRevisionV1>,
+            Option<fs_protocol::ContentRevisionV1>,
         ),
         Error,
     > {
@@ -177,7 +177,7 @@ impl QuickFS {
         &self,
         ino: u64,
         frontier: [u8; 32],
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, Error> {
         let (scope, _, _) = self.history_read_snapshot(ino)?;
         if scope.frontier != frontier {
@@ -195,25 +195,23 @@ impl QuickFS {
         &self,
         ino: u64,
         scope: Scope,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, Error> {
         self.read_file_history_preview_using(ino, scope, version_id, |hash| {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
-            let limit = u64::try_from(collab_types::MAX_HISTORY_PREVIEW_BYTES)
+            // Bounded: a preview reads at most one byte past its limit.
+            let limit = u64::try_from(fs_protocol::MAX_HISTORY_PREVIEW_BYTES)
                 .unwrap_or(u64::MAX)
                 .saturating_add(1);
-            tokio::task::block_in_place(|| {
-                runtime.block_on(async move { hydrator.read(Hash::from(hash), 0, limit).await })
-            })
-            .map_err(|_| Error::Unavailable)
+            self.hydrator
+                .block_on(self.hydrator.read(Hash::from(hash), 0, limit))
+                .map_err(|_| Error::Unavailable)
         })
     }
     pub(super) fn read_file_history_preview_using(
         &self,
         ino: u64,
         scope: Scope,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
         load: impl FnOnce([u8; 32]) -> Result<Vec<u8>, Error>,
     ) -> Result<Vec<u8>, Error> {
         let Value::Version {
@@ -246,16 +244,14 @@ impl QuickFS {
         if !snapshot.versions.iter().any(|v| v == &version) {
             return Err(Error::MissingVersion);
         }
-        if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
+        if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
             return Err(Error::TooLarge);
         }
         // FileVersion content_hash identifies the chunk manifest, not raw
         // bytes. The bytes must be exactly the chunks the manifest names.
-        let hydrator = self.hydrator.clone();
-        let runtime = hydrator.runtime_handle.clone();
-        let manifest = tokio::task::block_in_place(|| {
-            runtime.block_on(async move { hydrator.local_manifest_index(Hash::from(hash.0)).await })
-        });
+        let manifest = self
+            .hydrator
+            .block_on(self.hydrator.local_manifest_index(Hash::from(hash.0)));
         if !manifest.is_some_and(|manifest| manifest.verify(&bytes)) {
             return Err(Error::Unavailable);
         }

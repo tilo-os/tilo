@@ -1,9 +1,9 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, HashMap, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId,
-    RecordOpenError, RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus,
-    RecordSet, RecordStore, Reserved, Transactable, validate_identity,
+    AutoCommit, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId, RecordOpenError,
+    RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
+    Reserved, Transactable, validate_identity,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
@@ -32,7 +32,7 @@ impl RecordOwners {
             // Record sets over a portable cache never open this store.
             store: Rc::new(durable_store::MemoryStore::new()),
             portable: Some(cache),
-            owners: HashMap::new(),
+            owners: Rc::default(),
             profile_lifetime: None,
         }
     }
@@ -89,6 +89,24 @@ impl RecordSet {
         );
         Ok(RecordOpenOutcome::Loaded)
     }
+    pub(super) fn offer_portable_record(&mut self, id: &RecordId) -> Result<(), String> {
+        let cache = self
+            .portable
+            .as_ref()
+            .ok_or("portable persistence unavailable")?;
+        let slot = self
+            .open
+            .get_mut(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot
+            .doc
+            .as_mut()
+            .ok_or_else(|| format!("{id}: record is busy"))?;
+        slot.action_state.commit_for_save(doc);
+        let actor = doc.get_actor().to_bytes().to_vec();
+        cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
+    }
+
     pub(super) fn flush_portable(&mut self, only: Option<&RecordId>) -> Result<(), String> {
         let cache = self
             .portable
@@ -163,6 +181,7 @@ impl RecordReservation {
     pub(super) fn initialize_portable(
         &self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
         let (actor, workspace) = {
             let set = self.store.0.borrow();
@@ -187,12 +206,16 @@ impl RecordReservation {
         )
         .map_err(error)?;
         super::genesis(&mut doc, &self.checkout, &workspace, initialize)?;
+        seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         if doc.get_actor() != &actor {
             return Err(RecordOpenError::IdentityMismatch);
         }
         app_state::validate_document_schema(&doc, Path::new(self.checkout.id.as_str()))?;
         validate_identity(&doc, &self.checkout, &workspace)?;
-        doc.commit();
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+        );
         let history = crate::state::UndoLog::new(&mut doc);
         let mut set = self.store.0.borrow_mut();
         if set

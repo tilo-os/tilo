@@ -42,7 +42,9 @@ const FORMAT: VaultFormat = VaultFormat {
     dpapi_entropy: b"Tilo account handoff key v1",
 };
 
-/// A credential for one account's requests.
+/// A credential for one account's requests, stored as it serializes.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HandoffCredential {
     /// The server's own Basic credential (`WebDAV`, a Nextcloud app password).
     Basic {
@@ -131,79 +133,6 @@ impl HandoffCredential {
     }
 }
 
-/// The on-disk shape. Kept private so only [`HandoffCredential`]'s three
-/// variants can ever be written.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Stored {
-    Basic {
-        username: String,
-        password: String,
-    },
-    Bearer {
-        token: String,
-        expires_unix: Option<u64>,
-    },
-    Session {
-        headers: Vec<(String, String)>,
-        expires_unix: Option<u64>,
-    },
-}
-
-impl Stored {
-    fn from_credential(credential: &HandoffCredential) -> Self {
-        match credential {
-            HandoffCredential::Basic { username, password } => Self::Basic {
-                username: username.clone(),
-                password: password.to_string(),
-            },
-            HandoffCredential::Bearer {
-                token,
-                expires_unix,
-            } => Self::Bearer {
-                token: token.to_string(),
-                expires_unix: *expires_unix,
-            },
-            HandoffCredential::Session {
-                headers,
-                expires_unix,
-            } => Self::Session {
-                headers: headers
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.to_string()))
-                    .collect(),
-                expires_unix: *expires_unix,
-            },
-        }
-    }
-
-    fn into_credential(self) -> HandoffCredential {
-        match self {
-            Self::Basic { username, password } => HandoffCredential::Basic {
-                username,
-                password: Zeroizing::new(password),
-            },
-            Self::Bearer {
-                token,
-                expires_unix,
-            } => HandoffCredential::Bearer {
-                token: Zeroizing::new(token),
-                expires_unix,
-            },
-            Self::Session {
-                headers,
-                expires_unix,
-            } => HandoffCredential::Session {
-                headers: headers
-                    .into_iter()
-                    .map(|(name, value)| (name, Zeroizing::new(value)))
-                    .collect(),
-                expires_unix,
-            },
-        }
-    }
-}
-
 /// The per-account handoff files.
 #[derive(Clone, Debug)]
 pub struct HandoffStore {
@@ -258,13 +187,13 @@ impl HandoffStore {
             .load_or_create_key(&self.dir, self.custody)
             .ok_or_else(|| "no handoff key is available".to_string())?;
         let plaintext = Zeroizing::new(
-            serde_json::to_vec(&Stored::from_credential(credential))
+            serde_json::to_vec(credential)
                 .map_err(|error| format!("could not serialize the handoff credential: {error}"))?,
         );
         let sealed = FORMAT
             .seal(&key, &plaintext)
             .ok_or_else(|| "handoff encryption failed".to_string())?;
-        atomic_file::write_creating_parent_with_mode(&self.file(id), &sealed, 0o600)
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.file(id), &sealed, 0o600)
             .map_err(|error| format!("could not write the handoff credential: {error}"))
     }
 
@@ -284,9 +213,9 @@ impl HandoffStore {
         let plaintext = FORMAT
             .open(&key, &sealed)
             .ok_or_else(|| "handoff integrity check failed".to_string())?;
-        let stored: Stored = serde_json::from_slice(&plaintext)
-            .map_err(|_| "the handoff credential is invalid".to_string())?;
-        Ok(Some(stored.into_credential()))
+        serde_json::from_slice(&plaintext)
+            .map(Some)
+            .map_err(|_| "the handoff credential is invalid".to_string())
     }
 
     /// Remove the account's handoff credential (sign-out, removal, a

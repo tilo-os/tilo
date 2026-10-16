@@ -10,7 +10,8 @@
 //! `typst-assets` (plus the shared Windows emoji face). In the browser the
 //! same fonts arrive as host data after the editor opens, keeping 9 MiB out
 //! of the page's first download. There is no package resolution, no
-//! filesystem, no clock.
+//! filesystem, and the only clock is the toolkit's (`ui::clock`), so a capture
+//! shows the same date on every run.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -145,12 +146,14 @@ mod fonts {
         }
     }
 
-    #[cfg(feature = "thin")]
+    /// Parsed inside the engine library, so this executable never retains
+    /// the font table.
+    #[cfg(feature = "runtime-engine")]
     fn embedded() -> Vec<Font> {
-        runtime_dylib::typst_fonts()
+        tilo_typst_engine::typst_fonts()
     }
 
-    #[cfg(not(feature = "thin"))]
+    #[cfg(not(feature = "runtime-engine"))]
     fn embedded() -> Vec<Font> {
         tilo_typst_fonts::embedded()
             .into_iter()
@@ -300,9 +303,34 @@ impl World for TypstWorld {
     fn font(&self, index: usize) -> Option<Font> {
         self.parts.fonts.get(index).cloned()
     }
-    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
-        None
+    fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
+        match offset {
+            // No offset asks for the date on the person's own clock.
+            None => {
+                let local = ui::clock::local_now().format("%Y-%m-%d").to_string();
+                let mut parts = local.split('-').filter_map(|part| part.parse::<i32>().ok());
+                let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+                Datetime::from_ymd(year, u8::try_from(month).ok()?, u8::try_from(day).ok()?)
+            }
+            // An offset asks for the UTC date shifted by it.
+            Some(offset) => {
+                let seconds = i64::try_from(ui::time::try_unix_now()?).ok()?;
+                let shifted = seconds.checked_add(offset.seconds() as i64)?;
+                let (year, month, day) = civil_from_days(shifted.div_euclid(86_400));
+                Datetime::from_ymd(year, month, day)
+            }
+        }
     }
+}
+
+/// The proleptic Gregorian `(year, month, day)` of `days` since 1970-01-01.
+fn civil_from_days(days: i64) -> (i32, u8, u8) {
+    let (year, month, day) = ui::date::civil_from_days(days);
+    (
+        i32::try_from(year).unwrap_or(1970),
+        u8::try_from(month).unwrap_or(1),
+        u8::try_from(day).unwrap_or(1),
+    )
 }
 
 /// Compile `src` and rasterise every page at `pixel_per_pt`. Never panics on
@@ -554,6 +582,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_documents_compile_cleanly_and_the_showcase_is_compact_and_crisp() {
+        let parts = WorldParts::new();
+        for (index, sample) in crate::samples::SAMPLES.iter().enumerate() {
+            let out = compile_source(&parts, sample.source, 2.0);
+            assert!(out.ok, "{}: {:?}", sample.name, out.diagnostics);
+            assert!(
+                out.diagnostics.is_empty(),
+                "{}: {:?}",
+                sample.name,
+                out.diagnostics
+            );
+            if index == crate::samples::DEFAULT_INDEX {
+                assert_eq!(out.pages.len(), 1, "the note is a single complete page");
+                let page = &out.pages[0];
+                assert!(
+                    page.height_pt / page.width_pt < 0.88,
+                    "fits the showcase viewport"
+                );
+                assert!((f64::from(page.width) - 2.0 * page.width_pt).abs() <= 1.0);
+                assert!((f64::from(page.height) - 2.0 * page.height_pt).abs() <= 1.0);
+            }
+        }
+    }
+
+    #[test]
     fn compile_extracts_text_glyphs_and_pdf_bytes() {
         // Case `windows_compilation_uses_real_emoji_glyphs`.
         #[cfg(target_os = "windows")]
@@ -629,6 +682,28 @@ mod tests {
                 bytes.len() > 400,
                 "a real single-page PDF is more than a stub"
             );
+        }
+    }
+
+    #[test]
+    fn the_document_can_read_today_from_the_toolkit_clock() {
+        // Case `datetime_today_compiles`:
+        // A document asking for today's date (the bundled letter does) compiles
+        // cleanly instead of failing on a world without a clock.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "Dated #datetime.today().display()\n", 1.0);
+            assert_eq!(out.error_count(), 0, "{:?}", out.diagnostics);
+            assert!(!out.pages.is_empty());
+        }
+        // Case `civil_date_from_days`:
+        // The shifted UTC date of an explicit offset is the proleptic
+        // Gregorian date of the day count.
+        {
+            assert_eq!(civil_from_days(0), (1970, 1, 1));
+            assert_eq!(civil_from_days(-1), (1969, 12, 31));
+            assert_eq!(civil_from_days(11_016), (2000, 2, 29), "a leap day");
+            assert_eq!(civil_from_days(20_634), (2026, 6, 30));
         }
     }
 

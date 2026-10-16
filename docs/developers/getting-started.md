@@ -17,8 +17,10 @@ the SDK moves on.
 
 ## Install
 
-You need Rust, installed with [rustup](https://rustup.rs). Then install
-`tilo-app`:
+You need Rust, installed with [rustup](https://rustup.rs), and Python 3.11
+or newer as `python3` (or named by `$PYTHON`): building the SDK stages its
+pinned fonts with a Python script. macOS's own `/usr/bin/python3` is older;
+`brew install python` provides one. Then install `tilo-app`:
 
 ```bash
 cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
@@ -27,6 +29,11 @@ cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
 Run `tilo-app --help` to see every command. Each one accepts `--json` and then
 writes exactly one JSON document to stdout, so scripts and agents can drive the
 tool as well as people can.
+
+For one task at a time, run `tilo-app guide`: `start`, `actions`, `collaborate`,
+`permissions`, `network`, `verify` and `publish` are short workflows embedded in the CLI, available offline and
+outside an app directory. `tilo-app guide actions --json` returns only that
+guide, without searching or reading the full manual.
 
 ## Create an app
 
@@ -49,10 +56,15 @@ To learn one idea at a time, start from an example instead: a complete,
 tested program such as `counter`, `shared-checklist`, `data-table` or
 `localized`. `tilo-app examples` lists them, and
 `tilo-app new my-list --from-example shared-checklist` copies one and renames
-it to your app. [Templates and examples](../examples.md) describes each.
+it to your app. To inspect its collaboration and undo tests without a checkout,
+run `tilo-app examples shared-checklist --file tests/app.rs --json`.
+[Templates and examples](../examples.md) describes each.
 
 The new directory is a complete Cargo project with its own git repository:
 
+- `AGENTS.md` is a compact guide for coding agents: where to start, how to
+  add a resource action, and which commands verify the result. It travels
+  with the app, including apps created from an example.
 - `src/` holds the app: a `#[derive(Model)]` resource, its `#[action]`
   methods, and a view whose controls invoke those actions.
 - `tilo-app.toml` is the package manifest: id, title, entrypoints and the
@@ -146,6 +158,9 @@ request, packages each platform, and publishes when you push a tag named
 `v*`. Add one secret, `TILO_PUBLISHER_KEY`, holding your publisher key; builds
 without it, such as pull requests from forks, are never published.
 [From CI](../publishing.md#from-ci) lists what each forge's workflow builds.
+On GitHub the generated entry workflow calls `tilo-build.yml`, which other
+repositories can [reuse](../publishing.md#reuse-a-github-build-workflow)
+through GitHub's built-in workflow imports.
 
 ## Publish it
 
@@ -166,6 +181,9 @@ Nothing is public until the registry's owner approves it.
 
 - [Templates and examples](../examples.md): what each template starts you
   with and what each example teaches.
+- [A resource workflow](../sdk-resource-journey.md): a small checklist showing
+  validation, identity, permission revocation, confirmation, undo and persistence
+  through shared UI controls and the agent action surface.
 - [Build an app](../app-development.md): templates, screens, localization,
   text, large collections, testing and every `tilo-app` command.
 - [Interface guidelines](../../crates/sdk/ui-core/HIG.md): layout, navigation

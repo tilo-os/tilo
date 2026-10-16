@@ -27,8 +27,9 @@
 //! refused for a while rather than asked again, so a revert cannot turn
 //! into a loop of prompts.
 
+use settings_store::ConditionalUpdate;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
@@ -59,10 +60,12 @@ use super::output_heads::{
     assess_change, leaves_a_display_on, plan_arrangement,
 };
 use super::state::State;
+use tilo_lock::MutexRecover as _;
 
 const MANAGER_VERSION: u32 = 4;
 const MODE_VERSION: u32 = 3;
 const POWER_MANAGER_VERSION: u32 = 1;
+const MAX_PENDING_DISPLAY_REQUESTS: usize = 32;
 
 /// How long after the person reverted a tool's layout the same layout from
 /// the same tool is refused instead of asked about again.
@@ -124,11 +127,24 @@ struct BoundManager {
 }
 
 /// A configuration whose plan was staged and is waiting on the backend.
+struct PendingStaging {
+    configuration: ZwlrOutputConfigurationV1,
+    result: mpsc::Receiver<std::io::Result<DisplayTransaction>>,
+    tool: Option<DisplayTool>,
+    risk: ChangeRisk,
+}
+
 struct PendingApply {
     configuration: ZwlrOutputConfigurationV1,
     transaction: u64,
     tool: Option<DisplayTool>,
     risk: ChangeRisk,
+}
+
+struct PendingKeep {
+    result: crate::shell::display_persistence::PendingAnswer,
+    confirmation: DisplayConfirmation,
+    asked: AskedChange,
 }
 
 /// A tool's change the person was asked to keep.
@@ -176,9 +192,14 @@ pub struct OutputManagementState {
     serial: u32,
     managers: Vec<BoundManager>,
     applies: Vec<PendingApply>,
+    staging: Vec<PendingStaging>,
+    keeps: Vec<PendingKeep>,
+    wake: Option<crate::session_runtime::Wake>,
     powers: Vec<(ZwlrOutputPowerV1, OutputId)>,
     /// Outputs a client has switched off. Absent means on.
     powered_off: BTreeSet<OutputId>,
+    /// Session idle blanking overrides individual output intent.
+    session_blanked: bool,
     power_requests: Vec<(OutputId, bool)>,
     confirmation: Option<DisplayConfirmation>,
     asked: Option<AskedChange>,
@@ -197,14 +218,23 @@ impl OutputManagementState {
             serial: 1,
             managers: Vec::new(),
             applies: Vec::new(),
+            staging: Vec::new(),
+            keeps: Vec::new(),
+            wake: None,
             powers: Vec::new(),
             powered_off: BTreeSet::new(),
+            session_blanked: false,
             power_requests: Vec::new(),
             confirmation: None,
             asked: None,
             reverted: None,
             notices: Vec::new(),
         }
+    }
+
+    /// Reuse the session loop's existing mailbox wake for storage results.
+    pub fn set_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.wake = Some(wake);
     }
 
     pub fn manager_global(&self) -> GlobalId {
@@ -235,6 +265,8 @@ impl OutputManagementState {
         self.serial = self.serial.wrapping_add(1).max(1);
         let live: Vec<OutputId> = self.heads.iter().filter_map(|h| h.output).collect();
         self.powered_off.retain(|output| live.contains(output));
+        self.power_requests
+            .retain(|(output, _)| live.contains(output));
         self.powers.retain(|(power, output)| {
             let alive = live.contains(output);
             if !alive {
@@ -267,6 +299,67 @@ impl OutputManagementState {
         std::mem::take(&mut self.notices)
     }
 
+    /// Drain durable storage results before reading the backend's transaction.
+    /// A completion can arrive after the file-change edge; pump it every loop.
+    pub fn poll_staging(&mut self) -> bool {
+        let mut completed = self.poll_keeps();
+        self.staging.retain(|pending| match pending.result.try_recv() {
+            Ok(Ok(transaction)) => {
+                self.applies.push(PendingApply {
+                    configuration: pending.configuration.clone(),
+                    transaction: transaction.id,
+                    tool: pending.tool.clone(),
+                    risk: pending.risk,
+                });
+                completed = true;
+                false
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "output management: could not stage display configuration");
+                pending.configuration.failed();
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                pending.configuration.failed();
+                false
+            }
+        });
+        completed
+    }
+
+    fn poll_keeps(&mut self) -> bool {
+        let mut completed = false;
+        let confirmation = &mut self.confirmation;
+        let asked = &mut self.asked;
+        self.keeps.retain(|pending| match pending.result.poll() {
+            Ok(None) => true,
+            Ok(Some(())) => { completed = true; false }
+            Err(error) => {
+                tracing::warn!(%error, "output management: automatic Keep failed; asking the person");
+                if DisplayTransaction::load().is_some_and(|transaction| {
+                    transaction.id == pending.confirmation.transaction
+                        && transaction.state == DisplayTransactionState::AwaitingConfirmation
+                }) {
+                    *confirmation = Some(pending.confirmation.clone());
+                    *asked = Some(AskedChange {
+                        transaction: pending.asked.transaction,
+                        tool: pending.asked.tool.clone(),
+                        set: pending.asked.set.clone(),
+                        plan: pending.asked.plan.clone(),
+                    });
+                }
+                completed = true;
+                false
+            }
+        });
+        completed
+    }
+
+    pub fn has_pending_apply(&self) -> bool {
+        !self.applies.is_empty()
+    }
+
     /// Report the outcome of staged configurations from the current
     /// transaction. Called after the backend reconciled a settings change.
     ///
@@ -278,6 +371,7 @@ impl OutputManagementState {
         let heads = &self.heads;
         let confirmation = &mut self.confirmation;
         let asked = &mut self.asked;
+        let keeps = &mut self.keeps;
         self.applies.retain(|apply| {
             let state = current
                 .filter(|transaction| transaction.id == apply.transaction)
@@ -287,7 +381,7 @@ impl OutputManagementState {
                 Some(DisplayTransactionState::AwaitingConfirmation) => {
                     apply.configuration.succeeded();
                     if let Some(transaction) = current {
-                        *confirmation = keep_or_ask(transaction, apply, heads);
+                        *confirmation = keep_or_ask(transaction, apply, heads, keeps);
                         if confirmation.is_some() {
                             *asked = Some(AskedChange {
                                 transaction: transaction.id,
@@ -434,42 +528,131 @@ impl OutputManagementState {
         tool: Option<DisplayTool>,
         risk: ChangeRisk,
     ) {
-        match DisplayTransaction::request(self.display_set(), plan) {
-            Ok(transaction) => {
-                tracing::info!(
-                    transaction = transaction.id,
-                    tool = tool.as_ref().map(DisplayTool::name),
-                    ?risk,
-                    "output management: staged an external display configuration"
-                );
-                self.applies.push(PendingApply {
-                    configuration,
-                    transaction: transaction.id,
-                    tool,
-                    risk,
-                });
+        if self.staging.len().saturating_add(self.applies.len()) >= MAX_PENDING_DISPLAY_REQUESTS {
+            configuration.failed();
+            return;
+        }
+        let admitted = DisplayTransaction::prepare_request(self.display_set(), plan);
+        let Ok(transaction) = admitted else {
+            configuration.failed();
+            return;
+        };
+        let source = settings_store::installed_source();
+        let (sender, result) = mpsc::channel();
+        let wake = self.wake.clone();
+        let submitted = crate::shell::durable_writer::global().submit_ordered(move || {
+            let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                persist_admitted(transaction, source.as_deref())
+            }))
+            .unwrap_or_else(|_| Err(std::io::Error::other("display request storage panicked")));
+            let _ = sender.send(saved);
+            if let Some(wake) = wake {
+                wake();
             }
+        });
+        match submitted {
+            Ok(()) => self.staging.push(PendingStaging {
+                configuration,
+                result,
+                tool,
+                risk,
+            }),
             Err(error) => {
-                tracing::warn!(%error, "output management: could not stage display configuration");
+                tracing::warn!(%error, "output management: state writer refused display request");
                 configuration.failed();
             }
         }
     }
 
+    /// Reflect the DPMS transition sent to the backend and presenter. Idle
+    /// blanking does not replace a tool's per-output off intent.
+    pub fn set_session_blanked(&mut self, blanked: bool) {
+        if self.session_blanked == blanked {
+            return;
+        }
+        self.session_blanked = blanked;
+        for (power, output) in &self.powers {
+            power.mode(power_mode(self.output_power_on(*output)));
+        }
+    }
+
+    fn output_power_on(&self, output: OutputId) -> bool {
+        !self.session_blanked && !self.powered_off.contains(&output)
+    }
+
     fn set_power(&mut self, output: OutputId, on: bool) {
-        let was_on = !self.powered_off.contains(&output);
         if on {
             self.powered_off.remove(&output);
         } else {
             self.powered_off.insert(output);
         }
-        if was_on != on {
-            self.power_requests.push((output, on));
-        }
+        // Reassert explicit intent even when it matches the cached state:
+        // idle blanking and a connector reset can have switched scanout off.
+        self.power_requests.push((output, on));
         for (power, _) in self.powers.iter().filter(|(_, o)| *o == output) {
-            power.mode(power_mode(on));
+            power.mode(power_mode(self.output_power_on(output)));
         }
     }
+}
+
+/// A session record can be durable even when rewriting its compatibility copy
+/// fails. Only an exact published snapshot proves that boundary; a storage
+/// error with no matching record remains a failure. No backend receipt is sent.
+fn persist_admitted(
+    transaction: DisplayTransaction,
+    source: Option<&dyn settings_store::SettingsSource>,
+) -> std::io::Result<DisplayTransaction> {
+    let value = serde_json::to_value(&transaction).map_err(std::io::Error::other)?;
+    let values = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("invalid display request"))?;
+    let stored = match source {
+        Some(source) => source.update_section_report(
+            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
+            values,
+        ),
+        None => settings_store::update_section(
+            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
+            values,
+        )
+        .map(|()| ConditionalUpdate::Stored),
+    }?;
+    match stored {
+        ConditionalUpdate::Stored => {}
+        ConditionalUpdate::Superseded => {
+            return Err(std::io::Error::other(
+                "display request was superseded during storage",
+            ));
+        }
+        ConditionalUpdate::StoredWithCopyRepair(error) => {
+            // The operation itself proves durable acceptance. A later
+            // replacement must still fail this original request; this read
+            // never turns a generic storage error into a receipt.
+            let current = source
+                .and_then(|source| source.load().get("display_transaction").cloned())
+                .and_then(|value| serde_json::from_value::<DisplayTransaction>(value).ok());
+            if current
+                .as_ref()
+                .is_none_or(|current| !same_admission(&transaction, current))
+            {
+                return Err(std::io::Error::other(
+                    "display request was replaced after durable storage",
+                ));
+            }
+            tracing::warn!(%error, transaction = transaction.id, "output management: durable request accepted; settings copy repair remains pending");
+        }
+    }
+    Ok(transaction)
+}
+
+/// Mutable backend state may advance while the storage result is queued.
+/// Match every immutable admission field, never just the clock-derived ID.
+fn same_admission(admitted: &DisplayTransaction, durable: &DisplayTransaction) -> bool {
+    admitted.id == durable.id
+        && admitted.set == durable.set
+        && admitted.previous == durable.previous
+        && admitted.candidate == durable.candidate
 }
 
 /// Keep an applied change, or hand it to the person when it is risky.
@@ -480,6 +663,7 @@ fn keep_or_ask(
     transaction: &DisplayTransaction,
     apply: &PendingApply,
     heads: &[OutputHead],
+    keeps: &mut Vec<PendingKeep>,
 ) -> Option<DisplayConfirmation> {
     let tool = apply.tool.as_ref();
     let risk = if leaves_a_display_on(&transaction.candidate, heads) {
@@ -493,19 +677,28 @@ fn keep_or_ask(
         ChangeRisk::NoDisplay => false,
     };
     if keep {
-        let mut transaction = transaction.clone();
-        match transaction.request_confirmation() {
-            Ok(()) => {
-                tracing::info!(
-                    transaction = transaction.id,
-                    tool = tool.map(DisplayTool::name),
-                    ?risk,
-                    "output management: kept a tool's display change"
-                );
+        match crate::shell::display_persistence::answer_for(
+            crate::shell::display_persistence::Answer::Keep,
+            Some(transaction.id),
+        ) {
+            Ok(result) => {
+                keeps.push(PendingKeep {
+                    result,
+                    confirmation: DisplayConfirmation {
+                        transaction: transaction.id,
+                        tool: tool.cloned(),
+                    },
+                    asked: AskedChange {
+                        transaction: transaction.id,
+                        tool: tool.cloned(),
+                        set: transaction.set.key.clone(),
+                        plan: transaction.candidate.clone(),
+                    },
+                });
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, "output management: could not keep a tool's change");
+                tracing::warn!(%error, "output management: could not queue automatic Keep");
             }
         }
     }
@@ -678,10 +871,6 @@ fn power_mode(on: bool) -> zwlr_output_power_v1::Mode {
     }
 }
 
-fn lock(pending: &Mutex<PendingConfiguration>) -> std::sync::MutexGuard<'_, PendingConfiguration> {
-    pending.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 impl GlobalDispatch<ZwlrOutputManagerV1, ()> for State {
     fn bind(
         state: &mut Self,
@@ -784,7 +973,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         let already_used = |configuration: &ZwlrOutputConfigurationV1| {
             configuration.post_error(
                 Error::AlreadyUsed,
@@ -895,6 +1084,10 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
             .output_management
             .applies
             .retain(|apply| apply.configuration != *configuration);
+        state
+            .output_management
+            .staging
+            .retain(|pending| pending.configuration != *configuration);
     }
 }
 
@@ -903,10 +1096,6 @@ fn log_refusal(error: &ArrangementError) {
 }
 
 impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per protocol request, each a short validate-then-record step"
-    )]
     fn request(
         _state: &mut Self,
         _client: &Client,
@@ -917,7 +1106,7 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_head_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         if pending.used {
             return;
         }
@@ -1059,7 +1248,7 @@ impl Dispatch<ZwlrOutputPowerManagerV1, ()> for State {
             let power = data_init.init(id, PowerData { output: live });
             match live {
                 Some(output) => {
-                    power.mode(power_mode(!management.powered_off.contains(&output)));
+                    power.mode(power_mode(management.output_power_on(output)));
                     management.powers.push((power, output));
                 }
                 None => power.failed(),
@@ -1115,5 +1304,46 @@ impl State {
     pub fn set_output_heads(&mut self, heads: Vec<OutputHead>) {
         self.output_management
             .set_heads(&self.display_handle, heads);
+    }
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    #[test]
+    fn output_staging_durable_identity_allows_backend_advancement_but_not_replacement() {
+        let admitted = DisplayTransaction {
+            id: 71,
+            ..DisplayTransaction::default()
+        };
+        let mut durable = admitted.clone();
+        for state in [
+            DisplayTransactionState::AwaitingConfirmation,
+            DisplayTransactionState::Confirmed,
+            DisplayTransactionState::Rejected,
+        ] {
+            durable.state = state;
+            durable.message = Some("backend outcome".into());
+            durable.deadline_unix_ms = Some(123);
+            assert!(same_admission(&admitted, &durable));
+        }
+        durable.id += 1;
+        assert!(!same_admission(&admitted, &durable));
+        durable.id = admitted.id;
+        durable.set.key = "different displays".into();
+        assert!(!same_admission(&admitted, &durable));
+        durable.set = admitted.set.clone();
+        durable.previous.outputs.insert(
+            "changed previous".into(),
+            settings_store::hardware::OutputConfig::default(),
+        );
+        assert!(!same_admission(&admitted, &durable));
+        durable.previous = admitted.previous.clone();
+        durable.candidate.outputs.insert(
+            "changed candidate".into(),
+            settings_store::hardware::OutputConfig::default(),
+        );
+        assert!(!same_admission(&admitted, &durable));
     }
 }

@@ -22,7 +22,10 @@ aarch64 = "aarch64"
 
 [capabilities]
 required = ["network.http"]
-optional = ["network.fetch-proxy"]
+optional = ["network.fetch-proxy", "secrets"]
+
+[resources]
+kinds = ["api-tester.workspace"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

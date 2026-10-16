@@ -21,42 +21,52 @@ pub(crate) struct Evidence {
     digest: [u8; 32],
 }
 impl Evidence {
-    /// The caller must freshly authorize this source before accepting its input.
-    pub(crate) fn authenticated(envelope: &Envelope, peer: &AuthenticatedPeer) -> Option<Self> {
-        let Envelope::Delta { workspace_id, .. } = envelope else {
+    /// The caller must freshly authorize this source before accepting its
+    /// input. `payloads` reads the checkpoint body.
+    pub(crate) fn authenticated(
+        payloads: &dyn crate::payloads::ShellPayloads,
+        envelope: &Envelope,
+        peer: &AuthenticatedPeer,
+    ) -> Option<Self> {
+        let Envelope::Delta {
+            workspace_id,
+            delta,
+            ..
+        } = envelope
+        else {
+            return None;
+        };
+        // Metadata only rejects ordinary deltas. Checkpoints still require
+        // complete wrapper validation and authenticated group matching below.
+        let Some((_, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
+        else {
             return None;
         };
         let bytes = crate::transport::encode(envelope).ok()?;
-        let evidence = Self::decode(&bytes, *workspace_id)?;
+        let evidence = Self::decode(payloads, &bytes, *workspace_id)?;
         (evidence.author == peer.device_public_key && evidence.user == peer.user_public_key)
             .then_some(evidence)
     }
-    fn decode(bytes: &[u8], workspace: u64) -> Option<Self> {
+    fn decode(
+        payloads: &dyn crate::payloads::ShellPayloads,
+        bytes: &[u8],
+        workspace: u64,
+    ) -> Option<Self> {
         let (author, crate::coedit::CoeditPayload::Checkpoint { channel, body }) =
             super::retained::payload(bytes, workspace)?
         else {
             return None;
         };
-        let (msg, trailing) =
-            postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
-        if !trailing.is_empty() {
-            return None;
-        }
-        let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } = &msg
+        let crate::payloads::CheckpointKind::Continuity { user } =
+            payloads.checkpoint(&channel, &body)?.kind
         else {
             return None;
         };
-        if tilo_peer_state::transport::retention(&msg, false)
-            != Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
-        {
-            return None;
-        }
         Some(Self {
             workspace,
             author,
-            user: *user_public_key,
+            user,
             channel,
             digest: *blake3::hash(bytes).as_bytes(),
         })
@@ -90,7 +100,8 @@ impl Receipt {
         self.sequence != 0
             && self.evidence.workspace == store.workspace_id
             && self.evidence.digest == *blake3::hash(bytes).as_bytes()
-            && Evidence::decode(bytes, store.workspace_id).as_ref() == Some(&self.evidence)
+            && Evidence::decode(&**store.payloads(), bytes, store.workspace_id).as_ref()
+                == Some(&self.evidence)
     }
 }
 
@@ -204,7 +215,7 @@ fn association(
         return Ok(None);
     };
     super::bounded::increment(&mut stats.preparation_reads)?;
-    account_validation(stats, bytes.len());
+    account_validation(&**store.payloads(), stats, bytes.len());
     if !association.receipt.validates(store, &bytes) {
         return Ok(None);
     }
@@ -213,10 +224,14 @@ fn association(
 // Exact validation owns at most the framed input plus two decoded byte-vector
 // copies at a time. Each growable decode vector has capacity below twice its
 // logical length. Reserve that overlap conservatively, including enum storage.
-pub(super) fn account_validation(stats: &mut super::bounded::WorkStats, len: usize) {
+pub(super) fn account_validation(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    stats: &mut super::bounded::WorkStats,
+    len: usize,
+) {
     let overhead = std::mem::size_of::<Envelope>()
         .saturating_add(std::mem::size_of::<crate::coedit::CoeditPayload>())
-        .saturating_add(std::mem::size_of::<tilo_peer_state::NeighbourMsg>());
+        .saturating_add(payloads.decoded_overhead());
     stats.peak_frame_bytes = stats
         .peak_frame_bytes
         .max(len.saturating_mul(5).saturating_add(overhead));
@@ -263,12 +278,11 @@ pub(super) fn write(
         .create_new(true)
         .open(marker(raw))?;
     output.write_all(&encoded)?;
-    output.sync_all()?;
-    File::open(
+    crate::store::fsync(&output)?;
+    crate::store::fsync(&File::open(
         raw.parent()
             .ok_or_else(|| invalid("continuity copy has no parent"))?,
-    )?
-    .sync_all()?;
+    )?)?;
     #[cfg(test)]
     super::test_barrier::check(store.root(), "continuity-marker-durable")?;
     Ok(())
@@ -313,7 +327,7 @@ fn copy_inner(
     let bytes = super::replay::frame_bytes(destination)?
         .ok_or_else(|| invalid("invalid continuity copy frame"))?;
     super::bounded::increment(&mut stats.preparation_reads)?;
-    account_validation(stats, bytes.len());
+    account_validation(&**store.payloads(), stats, bytes.len());
     write(store, destination, &bytes, &association.receipt)?;
     if destination
         .extension()
@@ -326,7 +340,7 @@ fn copy_inner(
             .write(true)
             .open(capture)?;
         file.write_all(&encoded)?;
-        file.sync_all()?;
+        crate::store::fsync(&file)?;
     }
     Ok(Some(association.receipt))
 }
@@ -376,12 +390,12 @@ pub(super) fn cleanup_pending(
     let parent = source
         .parent()
         .ok_or_else(|| invalid("pending copy has no parent"))?;
-    File::open(parent)?.sync_all()?;
+    crate::store::fsync(&File::open(parent)?)?;
     #[cfg(test)]
     super::test_barrier::check(store.root(), "continuity-pending-raw-removed")?;
     if captured_matches()? {
         fs::remove_file(marker(source))?;
-        File::open(parent)?.sync_all()?;
+        crate::store::fsync(&File::open(parent)?)?;
     }
     Ok(true)
 }
@@ -391,8 +405,17 @@ mod tests {
     use super::*;
     use crate::store::{
         bounded::{Step, WorkLimit},
-        replay::{ReplayBudget, ReplayId, ReplayLimits},
+        replay::{ReplayBudget, ReplayId, ReplayLimits, WORK_DIR, held_work_name},
     };
+
+    /// A final cut's held queue that holds nothing: the device's own queue
+    /// alone is cut.
+    fn no_held(store: &WorkspaceStore) -> std::path::PathBuf {
+        store.root().join(WORK_DIR).join(held_work_name([3; 16]))
+    }
+
+    #[global_allocator]
+    static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;
 
     struct Fixture {
         tmp: tempfile::TempDir,
@@ -435,12 +458,12 @@ mod tests {
             Self { tmp, store, peer }
         }
         fn frame(&self, snapshot: Vec<u8>, time: u64) -> ([u8; 32], Envelope, Vec<u8>, Receipt) {
-            let message = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+            let message = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key: self.peer.user_public_key,
                 publisher: 7,
                 snapshot,
             };
-            let (channel, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
             let envelope = Envelope::Delta {
                 workspace_id: 7,
                 author_device_public_key: self.peer.device_public_key,
@@ -453,9 +476,10 @@ mod tests {
                 .encode()
                 .unwrap(),
             };
-            let receipt = Evidence::authenticated(&envelope, &self.peer)
-                .unwrap()
-                .accept(time);
+            let receipt =
+                Evidence::authenticated(&crate::payloads::NeighbourPayloads, &envelope, &self.peer)
+                    .unwrap()
+                    .accept(time);
             let bytes = crate::transport::encode(&envelope).unwrap();
             (channel, envelope, bytes, receipt)
         }
@@ -482,7 +506,7 @@ mod tests {
     fn capture(store: &WorkspaceStore, pending_only: bool) -> super::super::replay::ReplaySnapshot {
         let id = ReplayId(rand::random());
         let mut build = if pending_only {
-            store.start_pending_replay_capture(id, [9; 32])
+            store.start_pending_replay_capture(id, [9; 32], &no_held(store))
         } else {
             store.start_replay_capture(id, [9; 32])
         }
@@ -527,10 +551,153 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_ordinary_delta_does_not_copy_its_body() {
+        const SIZE: usize = 4 * 1024 * 1024;
+        let fixture = Fixture::new();
+        let delta = crate::coedit::CoeditPayload::RetainedDelta {
+            channel: [9; 32],
+            body: vec![0x5a; SIZE],
+        }
+        .encode()
+        .unwrap();
+        let envelope = Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: fixture.peer.device_public_key,
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta,
+        };
+        // The previous path is a control: the allocator must observe the
+        // encoded frame, owned envelope delta and owned co-edit body.
+        let previous = tilo_automerge::heap::allocated_by(|| {
+            let raw = crate::transport::encode(&envelope).unwrap();
+            assert!(Evidence::decode(&crate::payloads::NeighbourPayloads, &raw, 7).is_none());
+        });
+        let current = tilo_automerge::heap::allocated_by(|| {
+            assert!(
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &envelope,
+                    &fixture.peer
+                )
+                .is_none()
+            );
+        });
+        eprintln!(
+            "ordinary {SIZE}-byte body: previous {previous}, authenticated {current} allocated bytes"
+        );
+        assert!(previous >= 3 * SIZE, "control did not count payload copies");
+        assert!(current < 4096, "ordinary delta allocated {current} bytes");
+    }
+
+    #[test]
+    fn authenticated_evidence_rejects_ordinary_and_malformed_deltas() {
+        let fixture = Fixture::new();
+        let (channel, original, _, _) = fixture.frame(vec![1], 1);
+        let Envelope::Delta { delta, .. } = &original else {
+            unreachable!()
+        };
+        let crate::coedit::CoeditPayload::Checkpoint { body, .. } =
+            crate::coedit::CoeditPayload::decode(delta).unwrap()
+        else {
+            unreachable!()
+        };
+        let mut cases = vec![Vec::new(), vec![2], vec![0xff; 40]];
+        for body in [Vec::new(), vec![0xff], body] {
+            for payload in [
+                crate::coedit::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: body.clone(),
+                },
+                crate::coedit::CoeditPayload::Checkpoint { channel, body },
+            ] {
+                // The well-formed continuity checkpoint remains eligible.
+                let encoded = payload.encode().unwrap();
+                if matches!(payload, crate::coedit::CoeditPayload::RetainedDelta { .. })
+                    || encoded != *delta
+                {
+                    let mut suffixed = encoded.clone();
+                    suffixed.push(0);
+                    cases.extend([encoded, suffixed]);
+                }
+            }
+        }
+        for encoded in cases {
+            let mut changed = original.clone();
+            let Envelope::Delta { delta, .. } = &mut changed else {
+                unreachable!()
+            };
+            *delta = encoded;
+            assert!(
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &changed,
+                    &fixture.peer
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn authenticated_checkpoint_keeps_strict_validation() {
+        let fixture = Fixture::new();
+        let (_, original, raw, receipt) = fixture.frame(vec![1; 128], 1);
+        assert_eq!(
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &fixture.peer
+            ),
+            Some(receipt.evidence)
+        );
+        let Envelope::Delta { delta, .. } = &original else {
+            unreachable!()
+        };
+        for end in 0..delta.len() {
+            let mut truncated = original.clone();
+            let Envelope::Delta { delta: changed, .. } = &mut truncated else {
+                unreachable!()
+            };
+            *changed = delta[..end].to_vec();
+            assert!(
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &truncated,
+                    &fixture.peer
+                )
+                .is_none(),
+                "truncated co-edit payload at {end} gained evidence"
+            );
+        }
+        for end in 0..raw.len() {
+            assert!(
+                Evidence::decode(&crate::payloads::NeighbourPayloads, &raw[..end], 7).is_none()
+            );
+        }
+        assert!(Evidence::decode(&crate::payloads::NeighbourPayloads, &raw, 8).is_none());
+        assert!(
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &Fixture::new().peer
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn receipt_evidence_requires_complete_wrappers_and_authenticated_group() {
         let fixture = Fixture::new();
         let (_, original, raw, _) = fixture.frame(vec![1], 1);
-        assert!(Evidence::authenticated(&original, &fixture.peer).is_some());
+        assert!(
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &fixture.peer
+            )
+            .is_some()
+        );
         for case in ["outer-suffix", "body-suffix", "channel", "root", "author"] {
             let mut changed = original.clone();
             let Envelope::Delta {
@@ -550,9 +717,9 @@ mod tests {
                 "body-suffix" => body.push(0),
                 "channel" => channel[0] ^= 1,
                 "root" => {
-                    let mut message: tilo_peer_state::NeighbourMsg =
+                    let mut message: neighbour_wire::NeighbourMsg =
                         postcard::from_bytes(body).unwrap();
-                    let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    let neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
                         user_public_key,
                         ..
                     } = &mut message
@@ -560,9 +727,7 @@ mod tests {
                         unreachable!()
                     };
                     user_public_key[0] ^= 1;
-                    *channel = tilo_peer_state::transport::retention(&message, false)
-                        .unwrap()
-                        .0;
+                    *channel = neighbour_wire::retention(&message, false).unwrap().0;
                     *body = postcard::to_stdvec(&message).unwrap();
                 }
                 "author" => author_device_public_key[0] ^= 1,
@@ -573,7 +738,12 @@ mod tests {
                 delta.push(0);
             }
             assert!(
-                Evidence::authenticated(&changed, &fixture.peer).is_none(),
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &changed,
+                    &fixture.peer
+                )
+                .is_none(),
                 "{case} gained evidence"
             );
         }
@@ -582,7 +752,7 @@ mod tests {
         let len = u32::try_from(suffixed.len() - 4).unwrap();
         suffixed[..4].copy_from_slice(&len.to_le_bytes());
         assert!(
-            Evidence::decode(&suffixed, 7).is_none(),
+            Evidence::decode(&crate::payloads::NeighbourPayloads, &suffixed, 7).is_none(),
             "transport suffix gained evidence"
         );
     }
@@ -717,8 +887,8 @@ mod tests {
         }
         let reopened = WorkspaceStore::open(fixture.tmp.path(), 7, false).unwrap();
         assert_eq!(replay(&reopened, false), vec![old_envelope.clone()]);
-        let failed = atomic_file::test_support::with_failure(
-            atomic_file::test_support::Checkpoint::BeforePublish,
+        let failed = tilo_files::native::atomic::test_support::with_failure(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             || stage.promote(),
         );
         assert!(failed.is_err());
@@ -873,7 +1043,11 @@ mod tests {
         }
         let mut build = fixture
             .store
-            .start_pending_replay_capture(ReplayId(rand::random()), [9; 32])
+            .start_pending_replay_capture(
+                ReplayId(rand::random()),
+                [9; 32],
+                &no_held(&fixture.store),
+            )
             .unwrap();
         let mut snapshot = loop {
             let step = fixture

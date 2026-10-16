@@ -646,7 +646,11 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
         if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
             self.report.skipped.push((
                 relative.to_path_buf(),
-                "symbolic link or unsupported file type".to_string(),
+                if metadata.is_symlink() {
+                    "A link, which is not copied".to_string()
+                } else {
+                    "A special file, which is not copied".to_string()
+                },
             ));
             return Ok(());
         }
@@ -1463,9 +1467,8 @@ mod tests {
     fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
-        // SAFETY: geteuid has no preconditions. This opt-in test only changes
         // ownership of a newly created empty directory in its own fixture.
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(tilo_process::effective_uid(), 0);
         let (temp, source, _) = fixture();
         let parent = temp.path().canonicalize().unwrap().join("sticky");
         fs::create_dir(&parent).unwrap();

@@ -5,19 +5,6 @@
         reason = "unit tests may drive real threads and wait on the real clock; the rule guards the library"
     )
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        clippy::float_cmp,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 //! Host services: what a Tilo UI process borrows from whatever hosts it.
 //!
 //! The toolkit reads the clock, runs background work, reaches the clipboard,
@@ -38,6 +25,11 @@
 //! under the same path (`ui::portal`, `ui::host`, `ui::time`, …), and
 //! `tilo-app` turns every service on by default.
 
+/// Network hints shared with the app-facing SDK. Host transport integration only.
+#[doc(hidden)]
+pub use tilo_net::status as network_status;
+
+pub mod action_authority;
 pub mod background;
 pub mod capture;
 pub mod clipboard;

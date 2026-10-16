@@ -2,10 +2,6 @@
 //! skips or botches the preface is closed and never reaches `MoQ` or the host
 //! authority.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::unchecked_time_subtraction,
     reason = "in a test these are the assertion; fixture arithmetic is small and bounded"

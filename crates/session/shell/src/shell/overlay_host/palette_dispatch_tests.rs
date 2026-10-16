@@ -273,10 +273,6 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() {
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
@@ -539,6 +535,8 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             let state = chrome.borrow();
             crate::shell::search::providers::ActionsProvider::new()
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "use identity",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -549,20 +547,21 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .find(|result| result.id == "identity.select")
                 .expect("identity action")
         };
-        let before = chrome.borrow().tree().desktop.workspaces[0]
-            .capabilities
-            .clone();
+        let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
         host.pending_palette_action = Some(action);
         host.palette
             .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
-        host.activate_selected_result(&mut document, &automerge::ROOT);
+        host.activate_selected_result(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+        );
 
         assert!(
             host.pending_palette_action.is_some(),
             "refused palette action remains editable"
         );
         assert_eq!(
-            chrome.borrow().tree().desktop.workspaces[0].capabilities,
+            chrome.borrow().tree().desktop.workspaces[0].sandbox,
             before,
             "false confirmation cannot create an Admin grant"
         );
@@ -591,6 +590,8 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             let state = chrome.borrow();
             crate::shell::search::providers::ActionsProvider::new()
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "invite collaborator",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -607,7 +608,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
         )
         .expect("prompt has no arguments");
         let ticket = match action.on_begin_invoke.expect("prompt owns a lifecycle")(
-            &mut document,
+            &mut ui::widget::Edits::lend(&mut document),
             &automerge::ROOT,
             &chrome,
             &args,
@@ -756,10 +757,6 @@ fn configured_shortcuts_match_exactly_capture_safely_and_are_claimed_before_clie
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn session_power_actions_respect_inhibitors_and_report_failure() {
     fn logout_and_switch_user_respect_their_portal_inhibitors() {
         let (mut host, chrome) = host_with_chrome();
@@ -919,20 +916,16 @@ fn an_app_that_showed_its_window_and_then_failed_is_not_reported_as_unopened() {
 #[test]
 fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
     /// A launcher parent may exit after daemonising but before its GUI child
-    /// maps a toplevel. The opening acknowledgement retires immediately while
-    /// the placement promise remains available for the bounded handoff grace.
-    fn clean_launch_exit_retires_its_pending_open_notice() {
-        let (mut host, chrome) = host_with_launch_polling();
+    /// maps a toplevel. The pending launch settles immediately while the
+    /// placement promise remains available for the bounded handoff grace.
+    fn clean_launch_exit_settles_its_pending_launch() {
+        let (mut host, _chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
         );
-        let notice = chrome.borrow_mut().push_notification_full(
-            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
-        );
-        crate::shell::catalogue::note_pending_notice(package_id, notice);
+        crate::shell::catalogue::note_pending_launch(package_id);
         crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
             package_id: package_id.to_string(),
             display_name: "Fixture".to_string(),
@@ -941,18 +934,10 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             kind: crate::shell::launcher::LaunchEventKind::Exited,
         });
 
-        assert!(host.drain_launch_events());
+        host.drain_launch_events();
         assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .all(|n| n.id != notice),
-            "the terminal launch event must dismiss its opening notice"
-        );
-        assert!(
-            crate::shell::catalogue::pending_notice(package_id).is_none(),
-            "the pending id must be consumed along with the card"
+            !crate::shell::catalogue::pending_launch(package_id),
+            "the terminal launch event must settle the pending launch"
         );
         assert_eq!(
             crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
@@ -1018,7 +1003,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
         );
     }
 
-    clean_launch_exit_retires_its_pending_open_notice();
+    clean_launch_exit_settles_its_pending_launch();
     launchpad_refusal_reporting_does_not_duplicate_callback_notice();
     escape_dismisses_the_latest_launch_error_without_touching_layout();
 }
@@ -1130,15 +1115,15 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Reopen closed tab:Super+Shift+T",
+            "Reopen closed tab:Ctrl+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
-            "Global search:Super+K",
+            "Search everywhere:Super+Space",
             "Emoji:Super+.",
             "Overview:Super+Tab",
-            "Lock:Super+L",
+            "Lock screen:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
             "Display layout:Super+P",
@@ -1162,8 +1147,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             )
             .unwrap();
         let rows = shortcut_reference_rows(&shortcuts);
-        assert!(rows.contains(&("Global search".into(), "Alt+G".into())));
-        assert!(!rows.contains(&("Global search".into(), "Super+K".into())));
+        assert!(rows.contains(&("Search everywhere".into(), "Alt+G".into())));
+        assert!(!rows.contains(&("Search everywhere".into(), "Super+Space".into())));
     }
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
@@ -1175,28 +1160,19 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
         assert_eq!(shortcut_reference_columns(912.0), 3);
-        assert_eq!(shortcut_reference_step(true), 31.0);
-        assert_eq!(shortcut_reference_step(false), 34.0);
-        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
-        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
+        assert_eq!(shortcut_reference_columns(520.0), 2);
+        assert!(
+            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
+            "a group must hold its six rows"
+        );
     }
 
-    fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
+    fn shortcut_reference_keeps_the_complete_action_set() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 426.0;
-        let navigation_height = 154.0;
-        let essentials_y = navigation_height + 12.0;
-        let reference_top = essentials_y + 18.0;
-        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
-
         assert_eq!(
             rows.len(),
             18,
             "the guide must retain every documented desktop action without repeating itself"
-        );
-        assert!(
-            final_pill_bottom <= body_height,
-            "the final shortcut pill must remain inside an 800×600 guide body"
         );
         for essential in [
             "Screenshot",
@@ -1208,27 +1184,25 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         }
     }
 
-    fn compact_shortcut_recovery_actions_fit_their_cells() {
+    fn shortcut_reference_keycaps_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.xs;
-        // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses three semantic columns with quiet key pills.
-        let columns = shortcut_reference_columns(688.0);
-        assert_eq!(columns, 3);
-        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
+        // The narrowest three-column body is 640 wide.
+        let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
-            let (width, _) = renderer.measure(&chord, chord_size, None);
-            assert!(
-                f64::from(width) + 16.0 <= available_text_width,
-                "{chord:?} must not clip inside the compact guide's key pill"
-            );
+            let mut width = 0.0;
+            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
+                if index > 0 {
+                    width += 20.0;
+                }
+                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
+            }
+            assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
         }
     }
 
     fn shortcut_reference_columns_stay_semantically_grouped() {
-        assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 3);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(rows.len(), 18);
         assert!(rows.chunks(6).all(|group| group.len() == 6));
@@ -1254,8 +1228,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_never_promises_a_rebound_default();
     shortcut_reference_does_not_repeat_the_open_guide_action();
     shortcut_reference_groups_keep_a_consistent_responsive_rhythm();
-    compact_shortcut_reference_keeps_the_complete_action_set_visible();
-    compact_shortcut_recovery_actions_fit_their_cells();
+    shortcut_reference_keeps_the_complete_action_set();
+    shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
 }
@@ -1288,8 +1262,8 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
     ui::keycaps::set_active(ui::Keycaps::US);
     let english = guide_description(&host);
 
-    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
-    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
+    assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Strg+Umschalt+T".into())));
     assert!(german.contains("Screenshot: Druck"), "{german}");
     assert!(german.contains("Strg+Umschalt+G"), "{german}");
     // The layout, not the stored chord, changed: switching back restores it.
@@ -1352,11 +1326,7 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
         host.shortcut_binding_rects
             .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
         host.last_cursor = Some(Point::new(40.0, 35.0));
-        let click = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let click = ui::synthetic_input::mouse_press();
         let mut handled = false;
         assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
         assert!(handled);
@@ -1490,6 +1460,54 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
 }
 
 #[test]
+fn dictation_model_setup_uses_semantic_normal_launcher_and_never_grants_capture() {
+    use crate::compositor::dictation_status::{DictationStatus, RuntimeError};
+    let (mut host, _) = host_with_chrome();
+    let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = std::rc::Rc::clone(&launches);
+    host.app_launcher = std::rc::Rc::new(move |_, package_id, _| {
+        recorded.borrow_mut().push(package_id.to_string());
+    });
+    host.layers
+        .dictation
+        .status(DictationStatus::Unavailable(RuntimeError::Worker(
+            agent_provider_config::speech::SpeechError::ModelUnavailable,
+        )));
+    let node = host
+        .layers
+        .dictation
+        .accessibility(host.layer_geometry(&[]))
+        .unwrap();
+    let target = node
+        .children
+        .first()
+        .unwrap()
+        .action_target
+        .as_ref()
+        .unwrap();
+    let mut doc = automerge::AutoCommit::new();
+    assert!(host.perform_semantic_action(
+        target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(launches.borrow().as_slice(), &["so.tilo.settings"]);
+    assert_eq!(
+        host.layers.dictation.take_request(),
+        Some(dictation_layer::Request::Cancel(None))
+    );
+    assert!(!host.layers.dictation.is_open());
+    assert!(!host.perform_semantic_action(
+        target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(launches.borrow().len(), 1);
+}
+
+#[test]
 fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     fn with_peer_sync_enabled_is_idempotent() {
         let host = ShellOverlayHost::new(Box::new(Container::new()))
@@ -1570,35 +1588,100 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     the_composer_refuses_to_mint_for_nobody();
 }
 
+/// The invite composer, the policy and the issuer give one answer: a member
+/// holding a delegated `Invite` grant in a room another person governs is not
+/// offered a composer the issuer would refuse, and the issuer refuses with the
+/// policy's reason; without the grant both refuse for lack of permission.
+#[test]
+fn delegated_inviter_follows_the_capability_policy() {
+    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
+    use crate::shell::state::{PeerOrigin, RoomAuthority};
+
+    let mut tree = WorkspaceTree::default();
+    let local = tree.append_empty_workspace("Joined room");
+    tree.desktop.active = local;
+    let room = tree.room_of(local).expect("room");
+    tree.room_authority.insert(
+        room,
+        RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
+    );
+    tree.desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .expect("workspace")
+        .set_owner("remote-owner");
+    let handle = tree.shared();
+    let chrome = ChromeState::new_with_handle(handle.clone());
+    chrome.borrow_mut().peer_sync_enabled = true;
+    let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
+    let carol = crate::shell::state::local_user_id_for_room(&room);
+    let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
+    let issue = || {
+        net.issue_invite_named_with_role(
+            local,
+            3600,
+            "Dave",
+            crate::network::invite::InviteRole::Editor,
+        )
+    };
+
+    let refused = InviteRoute::Refused(InviteRefusal::NotPermitted);
+    assert_eq!(route(), refused, "without a grant Carol may not invite");
+    assert!(!host.may_invite_here(), "so she is offered no composer");
+    assert_eq!(
+        issue().expect_err("and the issuer refuses her"),
+        refused.refusal().expect("a refusal has a reason"),
+    );
+
+    crate::shell::invite_policy::tests::grant_invite(
+        handle
+            .write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("workspace"),
+        &carol,
+    );
+
+    assert_eq!(
+        route(),
+        InviteRoute::ViaGovernor,
+        "the grant lets Carol invite, but only the governing device signs invitations"
+    );
+    assert!(
+        !host.may_invite_here(),
+        "the composer is not offered where the issuer cannot issue"
+    );
+    assert_eq!(
+        issue().expect_err("the issuer sends Carol to the owner"),
+        InviteRoute::ViaGovernor
+            .refusal()
+            .expect("a refusal has a reason"),
+    );
+}
+
 // Proves both halves of the invite-token crossing (mint → clipboard
 // → paste) against the process clipboard.
 
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn key_event(key: Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key,
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
 
 #[test]
 #[serial_test::serial(clipboard)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn invite_tokens_travel_through_the_clipboard_exactly() {
     fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
         let (mut h, _) = host_with_chrome();
@@ -1646,7 +1729,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::IssueInviteFor { name, .. } => {
                 Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
             }
-            PeerSyncRequest::IssueInvite => {
+            PeerSyncRequest::IssueInvitation(_) => {
                 Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
             }
             PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
@@ -1662,6 +1745,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
                 Err("not pending".into())
             }
+            PeerSyncRequest::PrepareInvitation => Ok(PeerSyncResponse::Message(String::new())),
         }));
         chrome
             .borrow_mut()
@@ -1871,37 +1955,24 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         );
     }
 
-    /// The loading notice must outlive the fork (nothing on screen yet) but
-    /// retire the moment the window's own place says which app is coming —
-    /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
-    fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
+    /// A pending launch must outlive the fork (nothing on screen yet) but
+    /// settle the moment the window's own place says which app is coming,
+    /// so the app can be opened again.
+    fn a_pending_launch_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "nothing has appeared yet, so nothing is settled"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the user is still waiting; the acknowledgement must still be up"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
         // Adoption isn't the end of the wait — for the first moments the
-        // tab holds nothing visible, and a blink-fast app must not be
-        // preceded by an indicator flashing on and off.
+        // tab holds nothing visible.
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
         {
@@ -1915,40 +1986,25 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
-            "a tab with nothing painted in it yet is not somewhere the wait \
-             can be handed to; retiring on it hands the user back an empty \
-             desktop"
+            !h.settle_launches_of_opened_windows(),
+            "a tab with nothing painted in it yet has not opened the app"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "still waiting — nothing stands in the window's place"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
-        // Past the delay the window's place names the app; the notice
-        // stands down rather than repeating it.
+        // Past the delay the window's place names the app.
         store.backdate_first_seen(
             SURFACE,
             crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
-            "the window's own place is naming the app; a second indication \
-             in the corner is noise"
+            h.settle_launches_of_opened_windows(),
+            "the window's own place is naming the app; the launch is settled"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the wait has moved to where the window will be, and only one \
-             thing may be saying it"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -1957,14 +2013,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -1979,7 +2028,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "precondition: nothing stands in the window's place yet"
         );
 
@@ -1992,18 +2041,13 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             "precondition: it presented"
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
+            h.settle_launches_of_opened_windows(),
             "the window is on screen, which is the end of the wait however \
              fast it came"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "once the app is on screen the indication has done its job"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -2021,9 +2065,262 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     }
 
     each_face_of_the_card_offers_its_own_gesture_as_a_button();
-    the_loading_indication_stands_until_the_window_place_speaks_for_itself();
+    a_pending_launch_stands_until_the_window_place_speaks_for_itself();
     a_window_that_paints_before_the_card_is_due_settles_the_open_too();
     escape_still_dismisses_the_card();
+}
+
+/// The invitation actions run on the frame pump through the same peer-sync
+/// bridge as the invite card, and answer their caller rather than the card.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its shared bridge visible"
+)]
+fn invitation_actions_return_their_network_output_to_the_caller() {
+    use crate::shell::search::InvocationDisposition;
+    use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+    fn begin(
+        chrome: &crate::shell::chrome_state::Chrome,
+        id: &str,
+        args: &serde_json::Value,
+    ) -> crate::shell::search::PendingInvocation {
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::actions::ActionsProvider::new(),
+        ));
+        let mut doc = AutoCommit::new();
+        let resource = ResourceRef::new("actions", id);
+        let catalog = ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let disposition = catalog
+            .select(&resource)
+            .unwrap_or_else(|| panic!("{id} is published"))
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                chrome,
+                args.as_object().unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{id} is admitted: {error:?}"));
+        let InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("{id} waits for the network instead of inventing a result");
+        };
+        ticket
+    }
+
+    fn output(receipt: crate::shell::search::ActionReceipt) -> Option<serde_json::Value> {
+        match receipt.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    let (mut h, chrome) = host_with_chrome();
+    {
+        let state = chrome.borrow();
+        state
+            .tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    }
+    chrome.borrow_mut().peer_sync_enabled = true;
+    let pending_id = [0x42; 32];
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = std::rc::Rc::clone(&seen);
+    h.set_peer_sync_bridge(std::rc::Rc::new(move |req| {
+        recorded.borrow_mut().push(req.clone());
+        match req {
+            PeerSyncRequest::IssueInvitation(_) => Ok(PeerSyncResponse::Message("tok".into())),
+            PeerSyncRequest::ListPendingInvitations => {
+                Ok(PeerSyncResponse::PendingInvitations(vec![
+                    PendingInvitationSummary {
+                        id: pending_id,
+                        name: "Bob".into(),
+                        role: crate::network::invite::InviteRole::Viewer,
+                        expiry_unix_seconds: 1_900_000_000,
+                    },
+                ]))
+            }
+            PeerSyncRequest::CancelInvitation(id) if id == pending_id => {
+                Ok(PeerSyncResponse::Message("canceled".into()))
+            }
+            _ => Err("not here".into()),
+        }
+    }));
+
+    // Phase `issue_returns_the_minted_token`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.issue",
+            &serde_json::json!({
+                "role": "viewer",
+                "expires_in_seconds": 600,
+                "invitee_name": "Bob",
+                "confirm": true,
+            }),
+        );
+        assert!(ticket().unwrap().is_none(), "nothing ran before the pump");
+        h.pump_peer_sync();
+        let receipt = ticket().unwrap().expect("the pump completed the request");
+        assert_eq!(output(receipt), Some(serde_json::json!({"invite": "tok"})));
+        assert!(
+            seen.borrow()
+                .contains(&PeerSyncRequest::IssueInvitation(InvitationTerms {
+                    role: crate::network::invite::InviteRole::Viewer,
+                    expires_in_seconds: 600,
+                    invitee_name: Some("Bob".into()),
+                    recipient_user_public_key: None,
+                }))
+        );
+        assert!(
+            h.peer_sync_snapshot().invite_token.is_none(),
+            "a token minted for a caller is not put on this screen"
+        );
+    }
+
+    // Phase `list_returns_the_pending_invitations`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.list",
+            &serde_json::json!({"confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert_eq!(
+            output(ticket().unwrap().unwrap()),
+            Some(serde_json::json!({"invitations": [{
+                "invite_id": hex::encode(pending_id),
+                "name": "Bob",
+                "role": "viewer",
+                "expires_at": 1_900_000_000_u64,
+            }]}))
+        );
+    }
+
+    // Phase `cancel_of_an_unknown_invitation_is_refused`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.cancel",
+            &serde_json::json!({"invite_id": "07".repeat(32), "confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert!(matches!(
+            ticket(),
+            Err(crate::shell::search::action_api::ActionError::Refused(error))
+                if error == "invitation is no longer pending"
+        ));
+        assert!(
+            !seen
+                .borrow()
+                .contains(&PeerSyncRequest::CancelInvitation([7; 32])),
+            "an id this workspace does not hold never reaches the network"
+        );
+    }
+
+    // Phase `cancel_of_a_pending_invitation_succeeds`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.cancel",
+            &serde_json::json!({"invite_id": hex::encode(pending_id), "confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert_eq!(
+            output(ticket().unwrap().unwrap()),
+            Some(serde_json::json!({"canceled": true}))
+        );
+    }
+}
+
+/// Every footer button of the invitation sheet is as wide as its face needs,
+/// so a label such as "Cancel" is never elided to "Ca...", and the row stays
+/// inside the sheet, in English and in German copy.
+#[test]
+fn peer_sync_sheet_buttons_fit_their_labels() {
+    let (mut h, _) = host_with_chrome();
+    h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let snapshots = [
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_token: Some("tilo-invite-token".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+    ];
+    // Resolve one string first so the catalogue is loaded on this thread.
+    let _ = crate::shell::i18n::t("peer-sync-cancel");
+    for locale in ["en-US", "de-DE"] {
+        ui::i18n::I18nManager::set_locale(locale);
+        for snapshot in snapshots.clone() {
+            h.set_peer_sync_snapshot_for_tests(snapshot);
+            let mut scene = Scene::new();
+            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            let rects = h.peer_sync_prompt_rects_for_tests();
+            assert_eq!(labels.len(), rects.len());
+            let footer: Vec<_> = labels
+                .iter()
+                .zip(&rects)
+                .filter(|(_, (id, _))| {
+                    matches!(
+                        *id,
+                        "create"
+                            | "review"
+                            | "back"
+                            | "join"
+                            | "cancel"
+                            | "copy"
+                            | "paste"
+                            | "paste-identity"
+                            | "copy-identity"
+                    )
+                })
+                .collect();
+            assert!(!footer.is_empty(), "{locale}: the sheet drew no footer");
+            for (label, (id, rect)) in footer {
+                let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+                    .control_size(ui::widget::ControlSize::Large);
+                if matches!(*id, "create" | "join" | "copy") {
+                    face = face.role(ui::widget::ButtonRole::Primary);
+                }
+                let need = face.intrinsic_width(&mut tr, &theme);
+                assert!(
+                    rect.width() + 0.5 >= need,
+                    "{locale}: {label:?} is {}px wide but its face needs {need}px",
+                    rect.width()
+                );
+                assert!(
+                    rect.x0 >= sheet.x0 && rect.x1 <= sheet.x1,
+                    "{locale}: {label:?} at {rect:?} leaves the sheet {sheet:?}"
+                );
+            }
+        }
+    }
+    ui::i18n::I18nManager::set_locale("en-US");
 }
 
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {

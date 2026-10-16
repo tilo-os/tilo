@@ -1,10 +1,11 @@
 //! Calls in the rooms this relay governs.
 //!
 //! A call is room governance: [`RoomMediaV1`] in the room document, which the
-//! governor authors and every member verifies. The relay's own user starts,
-//! ends and moderates calls; any member device joins an active one and gets a
-//! grant for the relay's `moq-lite` voice carrier (see
-//! [`tilo_relay_protocol::voice`]).
+//! governor authors and every member verifies. The relay's own user, and any
+//! member the room's governance grants its `call` action (no role preset
+//! below the owner's does), starts, ends and moderates calls; any member
+//! device joins an active one and gets a grant for the relay's `moq-lite`
+//! voice carrier (see [`tilo_relay_protocol::voice`]).
 //!
 //! What a participation may do is the room's current policy for its device:
 //! the call is active, the device is a member, and neither the call's
@@ -15,7 +16,7 @@
 //! decision.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
@@ -26,14 +27,18 @@ use tilo_moq::relay::{
 use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
-    self as protocol, CallOperation, CallState, Directions, MAX_PARTICIPANTS, PARTICIPATION_TTL,
-    VoiceGrant, VoiceParticipant,
+    self as protocol, CallOperation, CallState, CallSummary, Directions, MAX_PARTICIPANTS,
+    PARTICIPATION_TTL, VoiceGrant, VoiceParticipant,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
 use web_time::SystemTime;
 
+use tilo_action_policy::roles::governance;
+
+use super::authority::RoomOp;
 use super::{GovernedRoom, Rooms};
+use tilo_lock::MutexRecover as _;
 
 /// How long a grant's token admits new carrier sessions.
 const GRANT_TTL: Duration = Duration::from_secs(60);
@@ -93,8 +98,8 @@ impl State {
         participation.token = rand::random();
         let now = Instant::now();
         participation.token_expires = now.checked_add(GRANT_TTL).unwrap_or(now);
-        participation.token_expires_ns =
-            super::now_ns().saturating_add(u64::try_from(GRANT_TTL.as_nanos()).unwrap_or(u64::MAX));
+        participation.token_expires_ns = tilo_clock::unix_now_ns()
+            .saturating_add(u64::try_from(GRANT_TTL.as_nanos()).unwrap_or(u64::MAX));
         self.tokens.insert(participation.token, id);
     }
 }
@@ -108,7 +113,7 @@ pub(super) struct Calls {
 
 impl Calls {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn grant(&self, state: &State, id: &[u8; 32]) -> Option<VoiceGrant> {
@@ -304,7 +309,7 @@ impl Policy {
     fn read(peer: &StatePeer) -> Result<Self, String> {
         Ok(Self {
             calls: peer.validated_media_policy()?,
-            access: peer.governed_access(SystemTime::now())?,
+            access: peer.governance().governed_access(SystemTime::now())?,
         })
     }
 }
@@ -390,7 +395,9 @@ fn transition(
             channel_id,
             allowed,
         } => {
-            let binding = candidate.resolve_media_binding(app_id, record_id, channel_id)?;
+            let binding = candidate
+                .media()
+                .resolve_media_binding(app_id, record_id, channel_id)?;
             start(&mut policy, binding, *allowed)?
         }
         CallOperation::End { call, epoch }
@@ -402,7 +409,9 @@ fn transition(
         }
     };
     if current.as_ref() != Some(&policy) {
-        candidate.author_media_policy(&policy, governor, now)?;
+        candidate
+            .media_mut()
+            .author_media_policy(&policy, governor, now)?;
     }
     Ok(id)
 }
@@ -469,7 +478,7 @@ fn moderate(
             if entry.phase != CallPhaseV1::Ended {
                 return Err("the call is active".into());
             }
-            let binding = candidate.resolve_media_binding(
+            let binding = candidate.media().resolve_media_binding(
                 &entry.binding.app_id,
                 &entry.binding.record_id,
                 &entry.binding.channel_id,
@@ -611,23 +620,40 @@ impl Rooms {
         self.inner.calls.carrier.get().is_some()
     }
 
-    /// Start, end or moderate a call of `room` for `caller`.
+    /// Start, end or moderate a call of `room` for `caller`: a device of
+    /// the relay's user, or of a member the room lets run its calls.
     pub(crate) async fn voice_call(
         &self,
         room: &str,
         caller: &AuthenticatedPeer,
         operation: &CallOperation,
     ) -> Result<CallState, String> {
-        self.authorize(&caller.cert, super::now_ns(), "call")
-            .map_err(|error| error.to_string())?;
-        let host = &self.inner.host;
+        self.voice_call_as(room, &caller.cert, operation).await
+    }
+
+    /// [`Self::voice_call`] for the device `caller` certifies, however it
+    /// reached the relay: the envelope and the room's `call` action share
+    /// it, and with it the one authorization.
+    pub(super) async fn voice_call_as(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+        operation: &CallOperation,
+    ) -> Result<CallState, String> {
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
+        self.authorize(
+            caller,
+            Some(&room),
+            RoomOp::Govern(governance::CALL),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| error.to_string())?;
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
-        super::prepare_governance(&mut candidate, &host.key, now)?;
-        let call = transition(&mut candidate, &host.key, operation, now)?;
-        room.commit(candidate, &host.key, now, |record, _| {
+        super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;
+        let call = transition(&mut candidate, &self.inner.host.key, operation, now)?;
+        room.commit(candidate, &self.inner.host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut room).await?;
@@ -742,6 +768,59 @@ impl Rooms {
             }
         }
         Ok(grant)
+    }
+
+    /// The calls of `room` for `peer`, a member, with who is in each.
+    pub(crate) async fn voice_calls(
+        &self,
+        room: &str,
+        peer: &AuthenticatedPeer,
+    ) -> Result<Vec<CallSummary>, String> {
+        let governed = self.room(room).await.map_err(|error| error.to_string())?;
+        let policy = Policy::read(governed.lock().await.peer())?;
+        if !policy
+            .access
+            .member_devices
+            .contains(&peer.device_public_key)
+            && !policy
+                .access
+                .member_user_roots
+                .contains(&peer.user_public_key)
+        {
+            return Err("not a member of the room".into());
+        }
+        let Some(calls) = policy.calls else {
+            return Ok(Vec::new());
+        };
+        let state = self.inner.calls.state();
+        Ok(calls
+            .calls
+            .iter()
+            .map(|(call, entry)| {
+                let mut participants: Vec<VoiceParticipant> = state
+                    .in_call(call)
+                    .map(|(id, participation)| VoiceParticipant {
+                        device_public_key: participation.device,
+                        user_public_key: participation.user,
+                        namespace: protocol::namespace(call, id),
+                        publishes: participation.directions.publish,
+                    })
+                    .collect();
+                participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
+                CallSummary {
+                    state: CallState {
+                        call: *call,
+                        epoch: entry.epoch,
+                        active: entry.phase == CallPhaseV1::Active,
+                        allowed: from_v1(entry.allowed),
+                    },
+                    app_id: entry.binding.app_id.clone(),
+                    record_id: entry.binding.record_id.clone(),
+                    channel_id: entry.binding.channel_id.clone(),
+                    participants,
+                }
+            })
+            .collect())
     }
 
     /// End `participation` of `peer` in `call`.

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use ui::lock::MutexRecover as _;
 use ui::webview::{SharedEngine, WebViewCommand};
 
 // Small first-run safety net authored for Tilo. Full maintained lists are
@@ -40,7 +41,7 @@ impl Default for Status {
     fn default() -> Self {
         Self {
             busy: false,
-            message: "First-run protection".into(),
+            message: "Using the built-in filter list".into(),
             updated: None,
         }
     }
@@ -50,10 +51,7 @@ fn state() -> &'static std::sync::Mutex<Status> {
     STATE.get_or_init(Default::default)
 }
 pub(crate) fn status() -> Status {
-    state()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    state().lock_recover().clone()
 }
 fn fetch_rules(
     directory: &Path,
@@ -112,10 +110,7 @@ fn fetch_rules(
             tilo_files::native::atomic::write(path, text.as_bytes())
                 .map_err(|_| "Cannot save filter cache")?;
         }
-        let updated = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .ok()
-            .map(|duration| duration.as_secs());
+        let updated = ui::time::try_unix_now();
         let _ = tilo_files::native::atomic::write(
             &directory.join("native-filter-updated.json"),
             &serde_json::to_vec(&updated).unwrap_or_default(),
@@ -124,9 +119,7 @@ fn fetch_rules(
     Ok((rules, !downloads.is_empty()))
 }
 fn begin_refresh(status: &std::sync::Mutex<Status>) -> bool {
-    let mut status = status
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut status = status.lock_recover();
     if status.busy {
         return false;
     }
@@ -149,9 +142,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
     // Restore independently of cache freshness or network success. A failed
     // startup refresh must not erase the previous successful download time.
     if let Some(directory) = crate::blocker::cache_dir() {
-        let mut status = state()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut status = state().lock_recover();
         status.updated = status
             .updated
             .or_else(|| last_successful_update(&directory));
@@ -183,9 +174,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                 .as_ref()
                 .ok_or_else(|| "Filter cache unavailable".to_string())
                 .and_then(|d| fetch_rules(d, &lists, force));
-            let mut status = state()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut status = state().lock_recover();
             status.busy = false;
             match result {
                 Ok((rules, downloaded)) => {
@@ -196,10 +185,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                         });
                     }
                     if downloaded {
-                        status.updated = ui::time::wall()
-                            .duration_since(ui::time::UNIX_EPOCH)
-                            .ok()
-                            .map(|d| d.as_secs());
+                        status.updated = ui::time::try_unix_now();
                     }
                     status.message = if downloaded {
                         "Filter lists updated"
@@ -216,9 +202,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
             wake.wake();
         });
     if worker.is_err() {
-        let mut status = state()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut status = state().lock_recover();
         status.busy = false;
         status.message = "Update failed: worker unavailable. Previous rules retained.".into();
     }
@@ -272,12 +256,25 @@ mod tests {
         std::fs::write(
             &host,
             format!(
-                "#!/bin/sh\nprintf '{encoded}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexit 9\n",
+                "#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\nprintf '{encoded}'\n\
+                 while [ ! -e '{}' ]; do sleep 0.01; done\nexit 9\n",
                 trigger.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS assesses a newly written executable on its first launch, and
+        // while the system is busy (as it is under a parallel test run) that
+        // has been measured at over thirty seconds — longer than the engine
+        // waits for a host to come up. Launch the helper once beforehand, so
+        // what is bounded below is the engine's start-up, not the assessment.
+        assert!(
+            std::process::Command::new(&host)
+                .arg("--warm")
+                .status()
+                .unwrap()
+                .success()
+        );
         let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root).unwrap()
             as SharedEngine;
 

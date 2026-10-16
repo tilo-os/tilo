@@ -1,63 +1,28 @@
-#![allow(
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::if_not_else,
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    clippy::too_many_lines,
-    reason = "PipeWire and wpctl are established product names"
-)]
 //! Audio pane — output volume + mute, microphone input level, device
 //! capabilities, diagnostics, and per-application routing.
 //!
-//! Every control here drives real state:
+//! Every control drives real state through an [`AudioEffect`]:
 //! - **Volume / Mute** forward to `os_actions` (`wpctl` on the default
 //!   sink), the same bindings the compositor's quick-settings panel uses.
 //! - **Input level** forwards to the default *source* via `wpctl`
-//!   (`@DEFAULT_AUDIO_SOURCE@`) through [`InputControl`], sampled once on
-//!   construction so the slider rests at the mic's current gain.
+//!   (`@DEFAULT_AUDIO_SOURCE@`) through [`InputControl`].
+//! - **Device selection** enumerates the real sinks/sources and runs
+//!   `wpctl set-default <id>` through [`DeviceControl`], remembering the
+//!   choice in the person's `audio` settings. With no `PipeWire` nothing is
+//!   listed, and nothing is fabricated.
+//! - **Per-application routing** enumerates the `PipeWire` node graph via
+//!   [`media::audio`] (`pw-dump`): each application stream is a row that
+//!   routes just that app to a chosen device, with its own volume and mute.
+//!   The graph is re-read on a throttle while the pane is open, so a headset
+//!   plugged in or an app that starts playing appears.
 //!
-//! Notification delivery sounds live in Notifications. Collaboration event
-//! sounds are not offered here until the shell has a real consumer; Settings
-//! never persists a switch that nothing applies.
-//!
-//! Device *selection* enumerates the real sinks/sources from `wpctl status`
-//! ([`parse_wpctl_status`]); when more than one output (or input) device
-//! exists a picker is shown, and choosing one runs `wpctl set-default <id>`
-//! through [`DeviceControl`], persisting the choice to [`AudioPrefs`]. On a
-//! host with no `PipeWire` the enumerator returns nothing, so the picker simply
-//! isn't shown (no fabricated devices) and the volume/mute/input controls
-//! still act on the current default.
-//!
-//! **Per-application routing** enumerates the `PipeWire` node graph via
-//! [`media::audio`] (`pw-dump`): each application stream that is playing (or
-//! recording) becomes a row with a picker that routes just that app to a chosen
-//! device — the music app to the headphones while the browser stays on the
-//! speakers — plus per-app volume and mute. Moving a stream writes the
-//! `WirePlumber` `target.object` metadata; per-app volume/mute go through `wpctl`
-//! on the stream's node id. The graph is re-read on a throttle so a newly
-//! plugged headset (or a freshly started app) appears without reopening
-//! Settings. Empty means empty: no application playing ⇒ no fabricated rows.
-//
-// CRDT keys the per-app section drives (keyed by PipeWire node id):
-//   `audio.stream.<id>.sink`   — chosen output/input label, or "Default"
-//   `audio.stream.<id>.volume` — f64 in `[0.0, 1.0]`, per-app gain
-//   `audio.stream.<id>.muted`  — bool, per-app mute
-//
-// CRDT keys this pane reads / writes:
-//   `audio.volume`            — f64 in `[0.0, 1.0]`, output slider
-//   `audio.muted`             — bool, mute toggle
-//   `audio.input_volume`      — f64 in `[0.0, 1.0]`, input slider
-//   `audio.output_device`     — string, chosen sink name (when >1 sink)
-//   `audio.input_device`      — string, chosen source name (when >1 source)
+//! Balance, mono output, echo cancellation and system sounds are the
+//! person's `audio` settings; the compositor session applies them.
 
-use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
-use ui::doc::{read_bool, read_f64, read_str_or_text};
 use ui::time::{Duration, Instant};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
@@ -66,20 +31,27 @@ use media::audio_runtime::{
     AudioRuntimeControl, BoundedSession, MicrophoneMeterSession, RealAudioRuntime,
     RuntimeCapabilities,
 };
+use media::event_sound::SoundTheme;
 use os_actions::Dispatcher;
-use taffy::{NodeId, TaffyTree};
+use settings_store::system_sounds::SystemSoundEvent;
 use tracing::warn;
-use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::tilo_resource::{self, Effect};
+use ui::widget::{Button, Dropdown, Row, Slider, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
-use media::event_sound::SoundTheme;
-use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
+use crate::effects::{SettingsEffect, effect};
+use crate::host::{Followed, PaneCx};
+use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Shared};
+use crate::prefs::AudioPrefs;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{
+    Item, SettingsSection, card, error_caption, error_row, note, row, rows, setting_row,
+    setting_row_described,
+};
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
@@ -87,50 +59,144 @@ use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
 /// pane; the enumeration is one `pw-dump`.
 const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 
-/// CRDT key prefix for a per-application stream's routing/volume/mute, keyed by
-/// its `PipeWire` node id. `audio.stream.<id>.sink` holds the chosen output
-/// label (or [`FOLLOW_DEFAULT`]); `.volume` the perceptual gain; `.muted` the
-/// mute.
-pub(crate) fn stream_sink_key(id: u32) -> String {
-    format!("audio.stream.{id}.sink")
-}
-pub(crate) fn stream_volume_key(id: u32) -> String {
-    format!("audio.stream.{id}.volume")
-}
-pub(crate) fn stream_muted_key(id: u32) -> String {
-    format!("audio.stream.{id}.muted")
-}
-pub(crate) fn device_profile_key(id: u32) -> String {
-    format!("audio.device.{id}.profile")
-}
-
-/// The picker entry meaning "no explicit device — follow the default". Choosing
-/// it clears the stream's `target.object` metadata.
+/// The picker entry meaning "no explicit device — follow the default".
+/// Choosing it clears the stream's `target.object` metadata.
 pub(crate) const FOLLOW_DEFAULT: &str = "Default";
 
-pub const VOLUME_KEY: &str = "audio.volume";
-pub const MUTED_KEY: &str = "audio.muted";
-pub const INPUT_VOLUME_KEY: &str = "audio.input_volume";
-/// CRDT key the output-device (sink) dropdown writes the chosen name into.
-pub const OUTPUT_DEVICE_KEY: &str = "audio.output_device";
-/// CRDT key the input-device (source) dropdown writes the chosen name into.
-pub const INPUT_DEVICE_KEY: &str = "audio.input_device";
-pub const BALANCE_KEY: &str = "audio.balance";
-pub const MONO_KEY: &str = "audio.mono";
-pub const ECHO_CANCELLATION_KEY: &str = "audio.echo_cancellation";
-pub const SYSTEM_SOUNDS_KEY: &str = "audio.system_sounds";
-pub const SYSTEM_SOUND_VOLUME_KEY: &str = "audio.system_sound_volume";
-/// CRDT key the sound-theme dropdown writes the chosen theme's name into.
-pub const SOUND_THEME_KEY: &str = "audio.sound_theme";
-
-/// CRDT key of one event's "makes a sound" toggle.
-pub fn event_sound_key(event: SystemSoundEvent) -> String {
-    format!("audio.event_sound.{}", event.key())
+/// Whether `event` makes a sound, as the sound section holds it.
+fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, bool> {
+    let events = AudioPrefs::paths().system_sounds.events;
+    match event {
+        SystemSoundEvent::Notification => events.notification,
+        SystemSoundEvent::Message => events.message,
+        SystemSoundEvent::VolumeChange => events.volume_change,
+        SystemSoundEvent::Screenshot => events.screenshot,
+        SystemSoundEvent::DeviceConnected => events.device_connected,
+        SystemSoundEvent::DeviceDisconnected => events.device_disconnected,
+        SystemSoundEvent::LowBattery => events.low_battery,
+        SystemSoundEvent::Error => events.error,
+    }
 }
-pub(crate) const ADVANCED_KEY: &str = "audio.advanced";
-pub(crate) const TEST_LEFT_KEY: &str = "audio.test.left";
-pub(crate) const TEST_RIGHT_KEY: &str = "audio.test.right";
-pub(crate) const MIC_TEST_KEY: &str = "audio.mic_test";
+
+impl ui::storage::SettingsSchema for AudioPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
+}
+
+#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
+impl AudioPrefs {}
+
+/// What Sound changes: this device's outputs, inputs and app streams, and
+/// the person's audio preferences.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AudioEffect {
+    /// Set the output volume, from 0 to 1.
+    #[effect(idempotent)]
+    SetOutputVolume { volume: f64 },
+    /// Mute or unmute the output.
+    #[effect(idempotent)]
+    SetOutputMuted { muted: bool },
+    /// Set the microphone level, from 0 to 1.
+    #[effect(idempotent)]
+    SetInputVolume { volume: f64 },
+    /// Play sound through another output device.
+    #[effect(idempotent)]
+    SelectOutput {
+        #[param("The output device's name")]
+        device: String,
+    },
+    /// Record from another input device.
+    #[effect(idempotent)]
+    SelectInput {
+        #[param("The input device's name")]
+        device: String,
+    },
+    /// Play both channels in each ear.
+    #[effect(idempotent)]
+    SetMonoOutput { on: bool },
+    /// Give calls an echo-cancelled microphone.
+    #[effect(idempotent)]
+    SetEchoCancellation { on: bool },
+    /// The sound theme system events play from.
+    #[effect(idempotent)]
+    SetSoundTheme {
+        #[param("The theme's name")]
+        theme: String,
+    },
+    /// Use another profile of an audio device (high fidelity, headset…).
+    #[effect(row, idempotent)]
+    SetDeviceProfile {
+        #[param("The device's node id")]
+        device: u32,
+        #[param("The profile's name")]
+        profile: String,
+    },
+    /// Play one app's stream through a device, or `Default` to follow the
+    /// system's.
+    #[effect(row, idempotent)]
+    RouteStream {
+        #[param("The stream's node id")]
+        stream: u32,
+        #[param("The device's name, or Default")]
+        device: String,
+    },
+    /// Set one app's volume, from 0 to 1.
+    #[effect(row, idempotent)]
+    SetStreamVolume { stream: u32, volume: f64 },
+    /// Mute or unmute one app.
+    #[effect(row, idempotent)]
+    SetStreamMuted { stream: u32, muted: bool },
+    /// Show or hide the speaker tests.
+    #[effect(view)]
+    ShowSoundTests { show: bool },
+    /// Play a test tone on the left or right speaker.
+    #[effect(label = "Test speaker")]
+    TestSpeaker {
+        #[param("left or right", choices = ["left", "right"])]
+        channel: String,
+    },
+    /// Show the microphone's level for a few seconds, or stop showing it.
+    #[effect(label = "Test microphone")]
+    ToggleMicrophoneTest,
+}
+
+/// Answer `effect` on the area's model.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AudioEffect,
+    _cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    app.audio()
+        .model()
+        .borrow_mut()
+        .apply(&effect)
+        .map(|_| Effected::done())
+}
+
+fn follow_shown() -> String {
+    t("sound-follow-default")
+}
+
+fn is_follow_default(choice: &str) -> bool {
+    choice == FOLLOW_DEFAULT || choice == follow_shown()
+}
+
+fn event_shown(event: SystemSoundEvent) -> String {
+    t(match event {
+        SystemSoundEvent::Notification => "sound-event-notification",
+        SystemSoundEvent::Message => "sound-event-message",
+        SystemSoundEvent::VolumeChange => "sound-event-volume",
+        SystemSoundEvent::Screenshot => "sound-event-screenshot",
+        SystemSoundEvent::DeviceConnected => "sound-event-connected",
+        SystemSoundEvent::DeviceDisconnected => "sound-event-disconnected",
+        SystemSoundEvent::LowBattery => "sound-event-battery",
+        SystemSoundEvent::Error => "sound-event-error",
+    })
+}
 
 struct NoopAudioRuntime;
 impl AudioRuntimeControl for NoopAudioRuntime {
@@ -188,13 +254,7 @@ fn run_wpctl(args: &[&str]) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr)
-            .chars()
-            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-            .take(512)
-            .collect::<String>()
-            .trim()
-            .to_string())
+        Err(out.stderr_diagnostic())
     }
 }
 
@@ -318,23 +378,25 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
     out
 }
 
-/// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-Tilo host with no `PipeWire` shows
-/// no device pickers rather than fabricated devices.
-fn list_audio_devices() -> AudioDevices {
-    let Ok(out) = bounded_command::run(
-        "wpctl",
-        &["status"],
-        None,
-        1024 * 1024,
-        Duration::from_secs(5),
-    ) else {
-        return AudioDevices::default();
-    };
+/// Run `wpctl args…`, answering its standard output or why it failed.
+fn wpctl(args: &[&str]) -> Result<String, String> {
+    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("wpctl: {error}"))?;
     if !out.status.success() {
-        return AudioDevices::default();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim();
+        return Err(if stderr.is_empty() {
+            format!("wpctl exited with {}", out.status)
+        } else {
+            format!("wpctl: {stderr}")
+        });
     }
-    parse_wpctl_status(&String::from_utf8_lossy(&out.stdout))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Enumerate the audio devices via `wpctl status`, or why they could not be.
+fn list_audio_devices() -> Result<AudioDevices, String> {
+    wpctl(&["status"]).map(|out| parse_wpctl_status(&out))
 }
 
 /// Side-effect interface for switching the default audio device. Production
@@ -366,22 +428,15 @@ impl DeviceControl for NoopDevice {
 }
 
 /// Read the default source gain as a `0.0..=1.0` fraction, so the input
-/// slider rests at the current source level. Best-effort; `None` on any
-/// failure (no `wpctl`, parse error) so callers fall back to a default.
-fn get_source_volume() -> Option<f32> {
-    let out = bounded_command::run(
-        "wpctl",
-        &["get-volume", "@DEFAULT_AUDIO_SOURCE@"],
-        None,
-        1024 * 1024,
-        Duration::from_secs(5),
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // `Volume: 0.42` (optionally ` [MUTED]`).
+/// slider rests at the current source level, or why it could not be read.
+fn get_source_volume() -> Result<f32, String> {
+    let stdout = wpctl(&["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
+    parse_source_volume(&stdout)
+        .ok_or_else(|| format!("wpctl answered an unreadable volume: {}", stdout.trim()))
+}
+
+/// `Volume: 0.42` (optionally ` [MUTED]`) as a `0.0..=1.0` fraction.
+fn parse_source_volume(stdout: &str) -> Option<f32> {
     let after = stdout.lines().next()?.split(':').nth(1)?.trim();
     after
         .split_whitespace()
@@ -389,79 +444,6 @@ fn get_source_volume() -> Option<f32> {
         .parse::<f32>()
         .ok()
         .map(|v| v.clamp(0.0, 1.0))
-}
-
-/// Audio pane widget.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent UI/session flag (advanced-panel toggle, dirty flag, \
-              last-value cache, test-only persistence switch) mutated at different times, not \
-              a state machine that bitflags or an enum would clarify"
-)]
-pub struct AudioPane {
-    dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-    input: Arc<dyn InputControl>,
-    device: Arc<dyn DeviceControl>,
-    devices: AudioDevices,
-    /// The `PipeWire` node graph: the per-application streams the "Applications"
-    /// / "Recording" cards route, plus the devices they can be routed to.
-    graph: AudioGraph,
-    /// Side-effect surface for editing the graph (route a stream, per-app
-    /// volume/mute). Production shells out; tests inject a recorder.
-    gctl: Arc<dyn GraphControl>,
-    /// Source of fresh graph snapshots for hotplug re-enumeration.
-    enumerator: Arc<dyn AudioEnumerator>,
-    /// How often to re-enumerate the graph (hotplug). `MAX` disables it (test /
-    /// shots constructors with a static graph).
-    hotplug_interval: Duration,
-    /// When the graph was last re-enumerated.
-    last_enum: Option<Instant>,
-    /// Streams whose CRDT keys have been seeded, so a re-seed doesn't re-fire a
-    /// route/volume/mute.
-    seeded_streams: HashSet<u32>,
-    /// Per-stream last-dispatched values, guarding re-dispatch at rest.
-    last_stream_sink: HashMap<u32, String>,
-    last_stream_vol: HashMap<u32, f32>,
-    last_stream_mute: HashMap<u32, bool>,
-    last_device_profile: HashMap<u32, String>,
-    runtime: Arc<dyn AudioRuntimeControl>,
-    runtime_caps: RuntimeCapabilities,
-    balance: f32,
-    mono_enabled: bool,
-    echo_cancellation: bool,
-    system_sounds: SystemSoundPrefs,
-    /// Installed freedesktop sound themes, for the theme picker.
-    sound_themes: Vec<SoundTheme>,
-    /// Whether this machine can play event sounds at all.
-    event_sounds_available: bool,
-    advanced: bool,
-    runtime_notice: Option<String>,
-    channel_test: Option<Box<dyn BoundedSession>>,
-    mic_session: Option<Box<dyn MicrophoneMeterSession>>,
-    mic_level: f32,
-    structure_dirty: bool,
-    initial_volume: f32,
-    initial_input: f32,
-    initial_prefs: AudioPrefs,
-    last_volume: f32,
-    last_input: f32,
-    last_muted: bool,
-    /// Name of the default sink we last set/seeded, guarding re-dispatch.
-    last_sink: Option<String>,
-    /// Name of the default source we last set/seeded, guarding re-dispatch.
-    last_source: Option<String>,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    require_operation_token: bool,
-    /// Whether device/sound changes persist to the shared prefs store. Off in
-    /// the test/shots constructors so the suite never writes a real
-    /// `settings.json`.
-    persist_prefs: bool,
-    needs_seed: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
 }
 
 /// A static [`AudioEnumerator`] that always yields the same graph — used by the
@@ -493,32 +475,223 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
     }
 }
 
-impl Default for AudioPane {
-    fn default() -> Self {
-        Self::new()
+/// What the Sound area keeps for the window: the model, read when first
+/// needed.
+pub struct AudioArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<AudioModel>>,
+    /// The device's audio, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]); `None` stands for the sample graph a
+    /// screenshot shows.
+    read: crate::device_read::DeviceRead<Option<AudioRead>>,
+}
+
+impl AudioArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// The model, over `PipeWire`, or over a sample graph for a screenshot.
+    pub fn model(&self) -> &Shared<AudioModel> {
+        self.model.get_or_init(|| {
+            let read = self.read.take().unwrap_or_else(|| self.read_now());
+            let model = match read {
+                Some(read) => AudioModel::from_read(self.cx.clone(), read),
+                None => AudioModel::sample(self.cx.clone()),
+            };
+            Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// What a read of the device would find, read on this thread: the
+    /// device's audio, or `None` for the sample graph.
+    fn read_now(&self) -> Option<AudioRead> {
+        let (device, output, input) = self.route();
+        device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+    }
+
+    /// Whether the area reaches the device, and the remembered output and
+    /// input devices a read routes to again.
+    fn route(&self) -> (bool, Option<String>, Option<String>) {
+        let prefs = self.cx.settings::<AudioPrefs>().get();
+        (
+            self.cx.reaches_devices(),
+            prefs.output_device,
+            prefs.input_device,
+        )
+    }
+
+    /// Read the device's audio off the UI thread; `false` when it has been
+    /// read or is being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let (device, output, input) = self.route();
+        self.read.start(move || {
+            device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+        })
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per app stream, output and input, offering what can be done
+    /// to it now.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
+        let mut rows = Vec::new();
+        for stream in model
+            .graph
+            .playback_streams
+            .iter()
+            .chain(&model.graph.record_streams)
+        {
+            let kind = if stream.playback {
+                "settings.audio-playback"
+            } else {
+                "settings.audio-recording"
+            };
+            rows.push(
+                LiveRow::new(format!("{kind}:{}", stream.id), kind, stream.label())
+                    .operation(offer(AudioEffect::SetStreamMuted {
+                        stream: stream.id,
+                        muted: !stream.muted.unwrap_or(false),
+                    }))
+                    .operation(offer(AudioEffect::RouteStream {
+                        stream: stream.id,
+                        device: FOLLOW_DEFAULT.into(),
+                    })),
+            );
+        }
+        for (kind, devices) in [
+            ("settings.audio-output", &model.devices.sinks),
+            ("settings.audio-input", &model.devices.sources),
+        ] {
+            for device in devices {
+                let select = if kind == "settings.audio-output" {
+                    AudioEffect::SelectOutput {
+                        device: device.name.clone(),
+                    }
+                } else {
+                    AudioEffect::SelectInput {
+                        device: device.name.clone(),
+                    }
+                };
+                rows.push(
+                    LiveRow::new(format!("{kind}:{}", device.id), kind, device.name.clone())
+                        .operation(offer(select)),
+                );
+            }
+        }
+        rows
     }
 }
 
-impl AudioPane {
-    pub fn new() -> Self {
-        let initial_state = os_actions::get_volume_state().unwrap_or(os_actions::VolumeState {
-            level: 0.5,
-            muted: false,
-        });
-        let initial = initial_state.level;
-        let initial_input = get_source_volume().unwrap_or(0.75);
-        let prefs = SystemPrefs::load().audio;
-        let mut devices = list_audio_devices();
-        // Enumerate the PipeWire graph for the per-application streams (and the
-        // devices they route to). Empty on a host with no PipeWire, so the
-        // Applications card simply shows its empty state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: what the pane shows, what the device reports, whether it changed"
+)]
+pub struct AudioModel {
+    cx: PaneCx,
+    output: Arc<dyn OutputControl>,
+    input: Arc<dyn InputControl>,
+    device: Arc<dyn DeviceControl>,
+    devices: AudioDevices,
+    /// The `PipeWire` node graph: the per-application streams the
+    /// "Applications" / "Recording" cards route, plus the devices they can
+    /// be routed to.
+    graph: AudioGraph,
+    /// Side-effect surface for editing the graph (route a stream, per-app
+    /// volume/mute). Production shells out; tests inject a recorder.
+    gctl: Arc<dyn GraphControl>,
+    /// Source of fresh graph snapshots for hotplug re-enumeration.
+    enumerator: Arc<dyn AudioEnumerator>,
+    /// How often to re-enumerate the graph. `MAX` disables it.
+    hotplug_interval: Duration,
+    last_enum: Option<Instant>,
+    runtime: Arc<dyn AudioRuntimeControl>,
+    runtime_caps: RuntimeCapabilities,
+    /// The person's audio preferences.
+    prefs: Followed<AudioPrefs>,
+    /// Installed freedesktop sound themes, for the theme picker.
+    sound_themes: Vec<SoundTheme>,
+    /// Whether this machine can play event sounds at all.
+    event_sounds_available: bool,
+    tests_shown: bool,
+    /// Why the output volume could not be read; the slider and mute switch
+    /// are then not offered at a made-up level.
+    volume_error: Option<String>,
+    /// Why the input level could not be read.
+    input_error: Option<String>,
+    /// Why the device list could not be read.
+    devices_error: Option<String>,
+    runtime_notice: Option<String>,
+    channel_test: Option<Box<dyn BoundedSession>>,
+    mic_session: Option<Box<dyn MicrophoneMeterSession>>,
+    mic_level: f32,
+    volume: f32,
+    input_volume: f32,
+    muted: bool,
+    changed: bool,
+}
+
+/// What the Sound area reads of the device: the levels, the device list and
+/// node graph, what the audio runtime can do and the installed sound
+/// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
+/// warm-up makes the read off the UI thread.
+struct AudioRead {
+    initial: os_actions::VolumeState,
+    volume_error: Option<String>,
+    input_volume: f32,
+    input_error: Option<String>,
+    devices: AudioDevices,
+    devices_error: Option<String>,
+    graph: AudioGraph,
+    runtime_caps: RuntimeCapabilities,
+    sound_themes: Vec<SoundTheme>,
+    event_sounds_available: bool,
+}
+
+impl AudioRead {
+    /// Read this device's audio. The remembered physical route (`output`,
+    /// `input`, the devices' names) is applied again when its device is
+    /// present.
+    fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
+        let (initial, volume_error) = match os_actions::get_volume_state() {
+            Ok(state) => (state, None),
+            Err(error) => (
+                os_actions::VolumeState {
+                    level: 0.0,
+                    muted: false,
+                },
+                Some(error),
+            ),
+        };
+        let (input_volume, input_error) = match get_source_volume() {
+            Ok(level) => (level, None),
+            Err(error) => (0.0, Some(error)),
+        };
+        let (mut devices, mut devices_error) = match list_audio_devices() {
+            Ok(devices) => (devices, None),
+            Err(error) => (AudioDevices::default(), Some(error)),
+        };
         let mut graph = media::audio::enumerate();
-        let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
-        let runtime_caps = runtime.capabilities();
-        // Re-apply a remembered physical route when it is present. The action
-        // is made against the current PipeWire node id; the persisted value is
-        // only a preference; it is applied only when the node is present.
-        if let Some(name) = prefs.output_device.as_deref()
+        if let Some(name) = output
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -528,7 +701,7 @@ impl AudioPane {
                 }
             }
         }
-        if let Some(name) = prefs.input_device.as_deref()
+        if let Some(name) = input
             && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -540,11 +713,42 @@ impl AudioPane {
         }
         if !graph.sinks.is_empty() || !graph.sources.is_empty() {
             devices = devices_from_graph(&graph);
+            devices_error = None;
         }
-        let last_sink = devices.default_sink().map(str::to_string);
-        let last_source = devices.default_source().map(str::to_string);
         Self {
-            dispatcher: dispatcher_or_real(None),
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps: RealAudioRuntime.capabilities(),
+            sound_themes: media::event_sound::installed_themes(),
+            event_sounds_available: media::event_sound::sound_backend()
+                != media::event_sound::SoundBackend::Unavailable,
+        }
+    }
+}
+
+impl AudioModel {
+    /// The model over what `read` found on this device.
+    fn from_read(cx: PaneCx, read: AudioRead) -> Self {
+        let AudioRead {
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps,
+            sound_themes,
+            event_sounds_available,
+        } = read;
+        let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
+        Self {
+            output: Arc::new(SystemOutput(dispatcher_or_real(None))),
             input: Arc::new(RealInput),
             device: Arc::new(RealDevice),
             devices,
@@ -553,65 +757,33 @@ impl AudioPane {
             enumerator: Arc::new(RealEnumerator),
             hotplug_interval: HOTPLUG_INTERVAL,
             last_enum: Some(ui::time::now()),
-            seeded_streams: HashSet::new(),
-            last_stream_sink: HashMap::new(),
-            last_stream_vol: HashMap::new(),
-            last_stream_mute: HashMap::new(),
-            last_device_profile: HashMap::new(),
-            runtime,
             runtime_caps,
-            balance: prefs.balance.clamp(0.0, 1.0),
-            mono_enabled: prefs.mono_output,
-            echo_cancellation: prefs.echo_cancellation,
-            system_sounds: prefs.system_sounds.clone(),
-            sound_themes: media::event_sound::installed_themes(),
-            event_sounds_available: media::event_sound::sound_backend()
-                != media::event_sound::SoundBackend::Unavailable,
-            advanced: false,
+            runtime,
+            prefs: cx.follow::<AudioPrefs>(),
+            sound_themes,
+            event_sounds_available,
+            tests_shown: false,
+            volume_error,
+            input_error,
+            devices_error,
             runtime_notice: None,
             channel_test: None,
             mic_session: None,
             mic_level: 0.0,
-            structure_dirty: false,
-            initial_volume: initial,
-            initial_input,
-            initial_prefs: prefs,
-            last_volume: initial,
-            last_input: initial_input,
-            last_muted: initial_state.muted,
-            last_sink,
-            last_source,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            persist_prefs: true,
-            needs_seed: true,
-            composed: None,
-            rect: Rect::ZERO,
+            volume: initial.level,
+            input_volume,
+            muted: initial.muted,
+            changed: false,
+            cx,
         }
     }
 
-    pub fn with_dispatcher(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        initial_volume: f32,
-    ) -> Self {
-        Self::with_controls(dispatcher, Arc::new(RealInput), initial_volume, 0.75)
-    }
-
-    /// Full test constructor: inject both the sink dispatcher and the
-    /// microphone `InputControl`, plus deterministic initial gains so the
-    /// change-guard tests don't depend on the host's audio devices.
-    pub fn with_controls(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        input: Arc<dyn InputControl>,
-        initial_volume: f32,
-        initial_input: f32,
-    ) -> Self {
+    /// A model over `cx`'s settings with no devices and controls that do
+    /// nothing; tests give it what they drive.
+    fn detached(cx: PaneCx) -> Self {
         Self {
-            dispatcher,
-            input,
+            output: Arc::new(NoopOutput),
+            input: Arc::new(NoopInput),
             device: Arc::new(NoopDevice),
             devices: AudioDevices::default(),
             graph: AudioGraph::default(),
@@ -619,311 +791,370 @@ impl AudioPane {
             enumerator: Arc::new(StaticEnumerator(AudioGraph::default())),
             hotplug_interval: Duration::MAX,
             last_enum: Some(ui::time::now()),
-            seeded_streams: HashSet::new(),
-            last_stream_sink: HashMap::new(),
-            last_stream_vol: HashMap::new(),
-            last_stream_mute: HashMap::new(),
-            last_device_profile: HashMap::new(),
             runtime: Arc::new(NoopAudioRuntime),
             runtime_caps: RuntimeCapabilities::default(),
-            balance: 0.5,
-            mono_enabled: false,
-            echo_cancellation: AudioPrefs::default().echo_cancellation,
-            system_sounds: SystemSoundPrefs::default(),
+            prefs: cx.follow::<AudioPrefs>(),
             sound_themes: Vec::new(),
             event_sounds_available: false,
-            advanced: false,
+            tests_shown: false,
+            volume_error: None,
+            input_error: None,
+            devices_error: None,
             runtime_notice: None,
             channel_test: None,
             mic_session: None,
             mic_level: 0.0,
-            structure_dirty: false,
-            initial_volume,
-            initial_input,
-            initial_prefs: AudioPrefs::default(),
-            last_volume: initial_volume,
-            last_input: initial_input,
-            last_muted: false,
-            last_sink: None,
-            last_source: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            persist_prefs: false,
-            needs_seed: true,
-            composed: None,
-            rect: Rect::ZERO,
+            volume: 0.5,
+            input_volume: 0.75,
+            muted: false,
+            changed: false,
+            cx,
         }
     }
 
-    /// Test / `--shots` builder: inject an enumerated device set and the
-    /// [`DeviceControl`] recorder so the sink/source picker path is exercised
-    /// without shelling out to `wpctl`.
-    #[must_use]
-    pub fn with_devices(mut self, devices: AudioDevices, device: Arc<dyn DeviceControl>) -> Self {
-        self.last_sink = devices.default_sink().map(str::to_string);
-        self.last_source = devices.default_source().map(str::to_string);
-        self.devices = devices;
-        self.device = device;
-        self
+    /// What a screenshot and the crate's tests show: speakers and
+    /// headphones, a microphone, and three apps playing or recording.
+    fn sample(cx: PaneCx) -> Self {
+        use media::audio::AudioDevice as GDevice;
+        let sink = |id, serial, name: &str, def| GDevice {
+            id,
+            serial,
+            name: name.to_string(),
+            description: name.to_string(),
+            is_default: def,
+            volume: Some(0.7),
+            muted: Some(false),
+            channels: 2,
+            codec: None,
+        };
+        let stream = |id, serial, app: &str, media: &str, target, playback, volume| AudioStream {
+            id,
+            serial,
+            app: app.to_string(),
+            media_name: Some(media.to_string()),
+            playback,
+            target_id: Some(target),
+            volume: Some(volume),
+            muted: Some(false),
+        };
+        let graph = AudioGraph {
+            sinks: vec![
+                sink(51, 51, "Speakers", true),
+                sink(91, 269, "Headphones", false),
+            ],
+            sources: vec![sink(52, 52, "Built-in Microphone", true)],
+            playback_streams: vec![
+                // Routed away from the default onto the Headphones.
+                stream(84, 300, "Music", "Nightcall", 91, true, 0.85),
+                // Following the default (Speakers).
+                stream(90, 320, "Browser", "Conference call", 51, true, 0.60),
+            ],
+            record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75)],
+            hardware: vec![],
+        };
+        let mut model = Self::detached(cx);
+        model.volume = 0.65;
+        model.input_volume = 0.7;
+        model.with_graph(graph, Arc::new(NoopGraphControl))
     }
 
-    /// Test / `--shots` builder: inject a `PipeWire` [`AudioGraph`] and the
-    /// [`GraphControl`] recorder so the per-application routing path is
-    /// exercised without touching `pw-dump` / `pw-metadata`. A static
-    /// enumerator returns the same graph, so any hotplug re-enumeration is a
-    /// no-op unless [`Self::with_hotplug`] scripts one.
+    /// The model over `graph`, editing it through `gctl`; the device
+    /// pickers list the graph's devices.
     #[must_use]
-    pub fn with_graph(mut self, graph: AudioGraph, gctl: Arc<dyn GraphControl>) -> Self {
+    fn with_graph(mut self, graph: AudioGraph, gctl: Arc<dyn GraphControl>) -> Self {
         self.enumerator = Arc::new(StaticEnumerator(graph.clone()));
+        if !graph.sinks.is_empty() || !graph.sources.is_empty() {
+            self.devices = devices_from_graph(&graph);
+        }
         self.graph = graph;
         self.gctl = gctl;
         self
     }
 
-    /// Test builder: a machine that can play event sounds from `themes`.
-    #[cfg(test)]
-    #[must_use]
-    fn with_sound_themes(mut self, themes: Vec<SoundTheme>) -> Self {
-        self.sound_themes = themes;
-        self.event_sounds_available = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_runtime(mut self, runtime: Arc<dyn AudioRuntimeControl>) -> Self {
-        self.runtime_caps = runtime.capabilities();
-        self.runtime = runtime;
-        self
-    }
-
-    /// Test builder: drive the hotplug path from a scripted enumerator with the
-    /// throttle disabled, so every `sync` re-enumerates and a device/stream
-    /// added to a later snapshot is picked up.
-    #[must_use]
-    pub fn with_hotplug(mut self, enumerator: Arc<dyn AudioEnumerator>) -> Self {
-        self.enumerator = enumerator;
-        self.hotplug_interval = Duration::ZERO;
-        self.last_enum = None;
-        self
-    }
-
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-
-    fn execute_local_command(
-        &mut self,
-        local: &mut AutoCommit,
-        operation: crate::actions::AudioOperation,
-    ) {
-        let root = automerge::ROOT;
-        use crate::actions::AudioOperation as Op;
-        match &operation {
-            Op::SetOutputVolume { value } => {
-                let _ = local.put(&root, VOLUME_KEY, *value);
-            }
-            Op::SetOutputMuted { muted } => {
-                let _ = local.put(&root, MUTED_KEY, *muted);
-            }
-            Op::SetInputVolume { value } => {
-                let _ = local.put(&root, INPUT_VOLUME_KEY, *value);
-            }
-            Op::SetBalance { value } => {
-                let _ = local.put(&root, BALANCE_KEY, *value);
-            }
-            Op::SetMono { enabled } => {
-                let _ = local.put(&root, MONO_KEY, *enabled);
-            }
-            Op::SetEchoCancellation { enabled } => {
-                let _ = local.put(&root, ECHO_CANCELLATION_KEY, *enabled);
-            }
-            Op::SetSystemSounds { enabled } => {
-                let _ = local.put(&root, SYSTEM_SOUNDS_KEY, *enabled);
-            }
-            Op::SetSystemSoundVolume { value } => {
-                let _ = local.put(&root, SYSTEM_SOUND_VOLUME_KEY, *value);
-            }
-            Op::SetSoundTheme { theme } => {
-                if let Some(installed) = self.sound_themes.iter().find(|t| &t.id == theme) {
-                    let _ = local.put(&root, SOUND_THEME_KEY, installed.name.as_str());
-                }
-            }
-            Op::SetEventSound { event, enabled } => {
-                if let Some(event) = SystemSoundEvent::from_key(event) {
-                    let _ = local.put(&root, event_sound_key(event), *enabled);
-                }
-            }
-            Op::SetDeviceProfile {
-                device_id,
-                profile_index,
-            } => {
-                if let Some(profile) = self
-                    .graph
-                    .hardware
-                    .iter()
-                    .find(|d| d.id == *device_id)
-                    .and_then(|d| d.profiles.iter().find(|p| p.index == *profile_index))
-                {
-                    let _ = local.put(
-                        &root,
-                        device_profile_key(*device_id),
-                        profile.description.as_str(),
-                    );
-                }
-            }
-            Op::RouteStream {
-                stream_id,
-                playback,
-                device_id,
-            } => {
-                let devices = if *playback {
-                    &self.graph.sinks
-                } else {
-                    &self.graph.sources
-                };
-                let label = device_id
-                    .and_then(|id| {
-                        devices
-                            .iter()
-                            .find(|d| d.id == id)
-                            .map(|d| d.description.clone())
-                    })
-                    .unwrap_or_else(|| FOLLOW_DEFAULT.into());
-                let _ = local.put(&root, stream_sink_key(*stream_id), label);
-            }
-            Op::SetStreamVolume { stream_id, value } => {
-                let _ = local.put(&root, stream_volume_key(*stream_id), *value);
-            }
-            Op::SetStreamMuted { stream_id, muted } => {
-                let _ = local.put(&root, stream_muted_key(*stream_id), *muted);
-            }
-            Op::ToggleDiagnostics => {
-                let _ = local.put(&root, ADVANCED_KEY, !self.advanced);
-            }
-            Op::TestChannel { left } => {
-                let _ = local.put(
-                    &root,
-                    if *left { TEST_LEFT_KEY } else { TEST_RIGHT_KEY },
-                    true,
-                );
-            }
-            Op::ToggleMicrophoneMeter => {
-                let _ = local.put(&root, MIC_TEST_KEY, true);
-            }
-            Op::SelectOutput { device_id } => {
-                if let Some(d) = self.graph.sink_by_id(*device_id) {
-                    let _ = local.put(&root, OUTPUT_DEVICE_KEY, d.description.as_str());
-                }
-            }
-            Op::SelectInput { device_id } => {
-                if let Some(d) = self.graph.sources.iter().find(|d| d.id == *device_id) {
-                    let _ = local.put(&root, INPUT_DEVICE_KEY, d.description.as_str());
-                }
-            }
-            Op::RoutePlayback {
-                stream_id,
-                device_id,
-            } => {
-                if let Some(d) = self.graph.sink_by_id(*device_id) {
-                    let _ = local.put(&root, stream_sink_key(*stream_id), d.description.as_str());
-                }
-            }
-            Op::RouteRecording {
-                stream_id,
-                device_id,
-            } => {
-                if let Some(d) = self.graph.sources.iter().find(|d| d.id == *device_id) {
-                    let _ = local.put(&root, stream_sink_key(*stream_id), d.description.as_str());
-                }
-            }
-        }
-        self.apply_volume_controls(local, &root);
-        self.apply_balance_and_mono(local, &root);
-        self.apply_echo_cancellation(local, &root);
-        self.apply_system_sounds(local, &root);
-        self.apply_diagnostics_requests(local, &root);
-        self.apply_device_selection(local, &root);
-        self.apply_streams_and_profiles(local, &root);
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "callers construct the exact typed request whose token is completed"
-    )]
-    fn finish_local_operation(
-        &self,
-        operation: crate::actions::AudioOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::AUDIO_OPERATION_TYPE,
-            &operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        ) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-
-    fn has_pending_operation(&self) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token }
-                if token.starts_with(crate::actions::AUDIO_OPERATION_TYPE)
-        )
-    }
-
-    fn operation_is_running(&self, operation: &crate::actions::AudioOperation) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::AUDIO_OPERATION_TYPE,
-            operation,
-        );
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        )
-    }
-
-    /// The enumerated audio devices (tests read this to assert rendering).
     pub fn devices(&self) -> &AudioDevices {
         &self.devices
     }
 
-    /// The enumerated `PipeWire` graph (tests read this to assert hotplug
-    /// re-enumeration landed).
     pub fn graph(&self) -> &AudioGraph {
         &self.graph
+    }
+
+    /// Carry out `effect`; what it reported.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per effect, each a short device or preference change"
+    )]
+    fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
+        self.changed = true;
+        let percent = |value: f64| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
+        match effect {
+            AudioEffect::SetOutputVolume { volume } => {
+                let volume = volume.clamp(0.0, 1.0) as f32;
+                self.output
+                    .set_volume(volume * 100.0)
+                    .map_err(|error| self.failed("sound-notice-out-vol-err", error))?;
+                self.volume = volume;
+                Ok(t_args(
+                    "sound-notice-out-vol",
+                    &[("percent", percent(f64::from(volume)).into())],
+                ))
+            }
+            AudioEffect::SetOutputMuted { muted } => {
+                self.output
+                    .set_mute(*muted)
+                    .map_err(|error| self.failed("sound-notice-mute-err", error))?;
+                self.muted = *muted;
+                Ok(t(if *muted {
+                    "sound-notice-muted"
+                } else {
+                    "sound-notice-unmuted"
+                }))
+            }
+            AudioEffect::SetInputVolume { volume } => {
+                let volume = volume.clamp(0.0, 1.0) as f32;
+                self.input
+                    .set_input_volume(volume * 100.0)
+                    .map_err(|error| self.failed("sound-notice-in-vol-err", error))?;
+                self.input_volume = volume;
+                Ok(t_args(
+                    "sound-notice-in-vol",
+                    &[("percent", percent(f64::from(volume)).into())],
+                ))
+            }
+            AudioEffect::SelectOutput { device } => {
+                let id = self
+                    .devices
+                    .sink_id(device)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                self.device
+                    .set_default(id)
+                    .map_err(|error| self.failed("sound-notice-device-err", error))?;
+                for sink in &mut self.devices.sinks {
+                    sink.default = sink.id == id;
+                }
+                let name = device.clone();
+                self.save(|prefs| prefs.output_device = Some(name))?;
+                Ok(t("sound-notice-out-device"))
+            }
+            AudioEffect::SelectInput { device } => {
+                let id = self
+                    .devices
+                    .source_id(device)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                self.device
+                    .set_default(id)
+                    .map_err(|error| self.failed("sound-notice-in-device-err", error))?;
+                for source in &mut self.devices.sources {
+                    source.default = source.id == id;
+                }
+                let name = device.clone();
+                self.save(|prefs| prefs.input_device = Some(name))?;
+                Ok(t("sound-notice-in-device"))
+            }
+            AudioEffect::SetMonoOutput { on } => {
+                let on = *on;
+                self.save(|prefs| prefs.mono_output = on)?;
+                self.runtime_notice = Some(t(if on {
+                    "sound-notice-mono-active"
+                } else {
+                    "sound-notice-mono-restored"
+                }));
+                Ok(t(if on {
+                    "sound-notice-mono-on"
+                } else {
+                    "sound-notice-mono-off"
+                }))
+            }
+            AudioEffect::SetEchoCancellation { on } => {
+                let on = *on;
+                self.save(|prefs| prefs.echo_cancellation = on)?;
+                Ok(t(if on {
+                    "sound-notice-echo-on"
+                } else {
+                    "sound-notice-echo-off"
+                }))
+            }
+            AudioEffect::SetSoundTheme { theme } => {
+                let id = self
+                    .sound_themes
+                    .iter()
+                    .find(|known| &known.name == theme || &known.id == theme)
+                    .map(|known| known.id.clone())
+                    .ok_or_else(|| t("sound-notice-theme-missing"))?;
+                self.save_sounds(|sounds| sounds.theme = Some(id))
+            }
+            AudioEffect::SetDeviceProfile { device, profile } => {
+                let index = self
+                    .graph
+                    .hardware
+                    .iter()
+                    .find(|hardware| hardware.id == *device)
+                    .and_then(|hardware| {
+                        hardware
+                            .profiles
+                            .iter()
+                            .find(|known| known.available && &known.description == profile)
+                    })
+                    .map(|known| known.index)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                self.gctl
+                    .set_device_profile(*device, index)
+                    .map_err(|error| self.failed("sound-notice-profile-err", error))?;
+                Ok(t("sound-notice-profile"))
+            }
+            AudioEffect::RouteStream { stream, device } => {
+                let known = self.stream(*stream)?;
+                let result = if is_follow_default(device) {
+                    self.gctl.unroute_stream(known.id)
+                } else {
+                    let devices = if known.playback {
+                        &self.graph.sinks
+                    } else {
+                        &self.graph.sources
+                    };
+                    devices
+                        .iter()
+                        .find(|candidate| &candidate.description == device)
+                        .ok_or_else(|| "audio route is no longer available".to_string())
+                        .and_then(|target| self.gctl.route_stream(known.id, target.serial))
+                };
+                result.map_err(|error| {
+                    warn!(target: "tilo::settings", op = "route_stream", stream, error = %error, "audio stream route failed");
+                    t_args("sound-notice-stream-route-err", &[("error", error.into())])
+                })?;
+                Ok(t("sound-notice-stream-route"))
+            }
+            AudioEffect::SetStreamVolume { stream, volume } => {
+                let known = self.stream(*stream)?;
+                self.gctl
+                    .set_node_volume(known.id, volume.clamp(0.0, 1.0) as f32)
+                    .map_err(|error| {
+                        t_args("sound-notice-stream-vol-err", &[("error", error.into())])
+                    })?;
+                Ok(t("sound-notice-stream-vol"))
+            }
+            AudioEffect::SetStreamMuted { stream, muted } => {
+                let known = self.stream(*stream)?;
+                self.gctl.set_node_mute(known.id, *muted).map_err(|error| {
+                    t_args("sound-notice-stream-mute-err", &[("error", error.into())])
+                })?;
+                Ok(t("sound-notice-stream-mute"))
+            }
+            AudioEffect::ShowSoundTests { show } => {
+                self.tests_shown = *show;
+                if !show {
+                    self.channel_test = None;
+                }
+                Ok(t(if *show {
+                    "sound-notice-diag-on"
+                } else {
+                    "sound-notice-diag-off"
+                }))
+            }
+            AudioEffect::TestSpeaker { channel } => {
+                let left = match channel.as_str() {
+                    "left" => true,
+                    "right" => false,
+                    _ => return Err("the channel is left or right".into()),
+                };
+                self.channel_test = None;
+                let label = t(if left {
+                    "sound-test-left"
+                } else {
+                    "sound-test-right"
+                });
+                let session = self
+                    .graph
+                    .default_sink()
+                    .filter(|sink| sink.channels == 2)
+                    .ok_or_else(|| t("sound-notice-test-need"))
+                    .and_then(|sink| self.runtime.start_channel_test(&sink.name, left))
+                    .map_err(|error| {
+                        let notice = t_args(
+                            "sound-notice-test-err",
+                            &[("channel", label.as_str().into()), ("error", error.into())],
+                        );
+                        self.runtime_notice = Some(notice.clone());
+                        notice
+                    })?;
+                self.channel_test = Some(session);
+                self.runtime_notice = Some(t_args(
+                    "sound-notice-playing",
+                    &[("channel", label.as_str().into())],
+                ));
+                Ok(t_args(
+                    "sound-notice-test-started",
+                    &[("channel", label.into())],
+                ))
+            }
+            AudioEffect::ToggleMicrophoneTest => {
+                if self.mic_session.take().is_some() {
+                    self.runtime_notice = Some(t("sound-notice-mic-stopped"));
+                    return Ok(t("sound-notice-mic-stopped"));
+                }
+                let session = self
+                    .graph
+                    .default_source()
+                    .ok_or_else(|| t("sound-notice-mic-none"))
+                    .and_then(|source| {
+                        self.runtime
+                            .start_microphone_meter(&source.name, Duration::from_secs(8))
+                    })
+                    .map_err(|error| {
+                        let notice = t_args("sound-notice-mic-err", &[("error", error.into())]);
+                        self.runtime_notice = Some(notice.clone());
+                        notice
+                    })?;
+                self.mic_session = Some(session);
+                self.mic_level = 0.0;
+                self.runtime_notice = Some(t("sound-notice-mic-started"));
+                Ok(t("sound-notice-mic-started"))
+            }
+        }
+    }
+
+    /// The stream `id`, if the graph still has it.
+    fn stream(&self, id: u32) -> Result<AudioStream, String> {
+        self.graph
+            .playback_streams
+            .iter()
+            .chain(&self.graph.record_streams)
+            .find(|stream| stream.id == id)
+            .cloned()
+            .ok_or_else(|| t("sound-notice-stream-gone"))
+    }
+
+    /// `key`'s message for a device call that failed with `error`, shown
+    /// on the pane too.
+    fn failed(&mut self, key: &str, error: String) -> String {
+        warn!(target: "tilo::settings", op = key, error = %error, "audio change failed");
+        let notice = t_args(key, &[("error", error.into())]);
+        self.runtime_notice = Some(notice.clone());
+        notice
+    }
+
+    /// Change the person's audio settings.
+    fn save(&mut self, change: impl FnOnce(&mut AudioPrefs)) -> Result<(), String> {
+        self.prefs.settings().update(change).map_err(|error| {
+            t_args(
+                "sound-notice-pref-err",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+        self.prefs.refresh();
+        Ok(())
+    }
+
+    /// Change the person's system sounds.
+    fn save_sounds(
+        &mut self,
+        change: impl FnOnce(&mut settings_store::system_sounds::SystemSoundPrefs),
+    ) -> Result<String, String> {
+        self.save(|prefs| {
+            change(&mut prefs.system_sounds);
+            prefs.system_sounds = prefs.system_sounds.clone().sanitized();
+        })?;
+        Ok(t("sound-notice-sounds-ok"))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -936,18 +1167,18 @@ impl AudioPane {
         //     mute. This is the per-application routing surface — the music app
         //     to the headphones while the browser stays on the speakers.
         let apps = self.streams_card(
-            "Applications",
+            &t("sound-apps"),
             &self.graph.playback_streams,
             &self.devices.sinks,
-            "No applications are playing audio.",
+            &t("sound-apps-empty"),
         );
         // --- Recording card: the capture streams (which app is using the mic),
         //     routed to a chosen source, with per-app level + mute.
         let recording = self.streams_card(
-            "Recording",
+            &t("sound-recording"),
             &self.graph.record_streams,
             &self.devices.sources,
-            "No applications are recording.",
+            &t("sound-recording-empty"),
         );
 
         let mut cards = vec![output, input];
@@ -957,155 +1188,148 @@ impl AudioPane {
         cards.extend([
             apps,
             recording,
-            Self::speakers_card(),
+            self.speakers_card(),
             self.build_system_sounds_card(),
         ]);
         crate::widgets::cards(cards)
     }
 
     /// The way into Speakers: several of your devices as one set.
-    fn speakers_card() -> crate::widgets::El {
-        let open = ui::widget::Button::new("sound.speakers", "Set up speakers…", None);
-        let open = match tilo_actions::ActionBinding::unit_for(
-            &crate::actions::pane_navigation_resource(crate::categories::Category::Speakers),
-            crate::actions::OPEN_PANE_ACTION,
-        ) {
-            Ok(binding) => open.on_action(binding),
-            Err(_) => open.with_enabled(false),
-        };
+    fn speakers_card(&self) -> SettingsSection {
+        let open_label = t("sound-speakers-open");
+        let open = self.cx.bind_invocation(
+            Button::new("sound.speakers", &open_label),
+            crate::effects::NavigationEffect::OpenPane {
+                pane: crate::categories::Category::Speakers.slug().to_owned(),
+            },
+        );
         crate::widgets::card(
-            "Speakers across your devices",
-            crate::widgets::setting_row_described(
-                "Stereo pair or room speakers",
-                "Play through speakers on several of your devices at once",
+            &t("sound-speakers-title"),
+            rows(vec![setting_row_described(
+                &t("sound-speakers-row"),
+                &t("sound-speakers-desc"),
                 Box::new(open),
-            ),
+            )]),
         )
     }
 
     /// The "Output" card: an optional device picker (only when more than one
     /// sink exists), then volume + mute on the default sink, plus balance /
     /// mono / speaker-test controls the runtime reports support for.
-    fn build_output_card(&self) -> crate::widgets::El {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the output card's device, level, balance, mono and test rows"
+    )]
+    fn build_output_card(&self) -> SettingsSection {
         let mut output_rows = Vec::new();
+        if let Some(error) = &self.devices_error {
+            output_rows.push(row(error_caption(&t_args(
+                "sound-devices-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
         if self.devices.sinks.len() >= 2 {
             let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
-            let mut dd = Dropdown::new(opts, OUTPUT_DEVICE_KEY).with_id("audio.output_device");
-            let devices = self
-                .devices
-                .sinks
-                .iter()
-                .map(|device| (device.name.clone(), device.id))
-                .collect();
-            if let Some(binding) = crate::actions::audio_device_binding("output-device", devices) {
-                dd = dd.on_action(binding);
-            } else {
-                dd = dd.with_enabled(false);
-            }
-            if let Some(name) = self.devices.default_sink() {
-                dd = dd.with_placeholder(name);
-            }
-            output_rows.push(setting_row("Output device", Box::new(dd)));
+            let current = self.devices.default_sink().unwrap_or_default().to_owned();
+            let dd = Dropdown::from_state(opts, &LocalState::new(current.clone()))
+                .with_id("audio.output_device")
+                .with_placeholder(&current);
+            output_rows.push(setting_row(
+                &t("sound-output-device"),
+                Box::new(self.cx.bind(dd, effect(AudioEffect::SELECT_OUTPUT))),
+            ));
         }
-        output_rows.push(setting_row(
-            "Volume",
-            Box::new(
-                Slider::new("settings.audio.volume", VOLUME_KEY)
-                    .with_id("audio.volume")
-                    .on_action(
-                        crate::actions::audio_number_binding("volume")
-                            .expect("output volume is part of the static resource contract"),
+        if let Some(error) = &self.volume_error {
+            output_rows.push(error_row(
+                &t("sound-volume"),
+                &t_args("sound-volume-error", &[("error", error.as_str().into())]),
+            ));
+        } else {
+            output_rows.push(
+                self.cx
+                    .row(t("sound-volume"))
+                    .id("audio.volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.volume)),
+                        effect(AudioEffect::SET_OUTPUT_VOLUME),
                     ),
-            ),
-        ));
-        output_rows.push(setting_row(
-            "Mute",
-            Box::new(
-                Toggle::new("settings.audio.mute", MUTED_KEY)
-                    .with_id("audio.mute")
-                    .on_action(
-                        crate::actions::audio_bool_binding("muted")
-                            .expect("output mute is part of the static resource contract"),
-                    ),
-            ),
-        ));
+            );
+            output_rows.push(self.cx.row(t("sound-mute")).id("audio.mute").toggle_effect(
+                &LocalState::new(self.muted),
+                effect(AudioEffect::SET_OUTPUT_MUTED),
+            ));
+        }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
             output_rows.push(setting_row(
-                "Balance",
+                &t("sound-balance"),
                 Box::new(
-                    Slider::new("settings.audio.balance", BALANCE_KEY)
-                        .with_id("audio.balance")
-                        .on_action(
-                            crate::actions::audio_number_binding("balance")
-                                .expect("output balance is part of the static resource contract"),
-                        ),
+                    self.cx.bind_field_with(
+                        Slider::from_state(&LocalState::new(f64::from(
+                            self.prefs.get().balance.clamp(0.0, 1.0),
+                        )))
+                        .with_id("audio.balance"),
+                        AudioPrefs::paths().balance,
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "a balance between 0 and 1 is stored as f32"
+                        )]
+                        |balance: f64| Ok(balance as f32),
+                    ),
                 ),
             ));
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
-            output_rows.push(setting_row(
-                "Mono audio",
-                Box::new(
-                    Toggle::new("settings.audio.mono", MONO_KEY)
-                        .with_id("audio.mono")
-                        .on_action(
-                            crate::actions::audio_bool_binding("mono")
-                                .expect("mono output is part of the static resource contract"),
-                        ),
-                ),
+            output_rows.push(self.cx.row(t("sound-mono")).id("audio.mono").toggle_effect(
+                &LocalState::new(self.prefs.get().mono_output),
+                effect(AudioEffect::SET_MONO_OUTPUT),
             ));
-            output_rows.push(caption("Combines left and right across this desktop session. The session restores the physical output when you turn it off."));
+            output_rows.push(note(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
-            output_rows.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "settings.audio.advanced",
-                            if self.advanced {
-                                "Hide speaker test"
-                            } else {
-                                "Test speakers…"
-                            },
-                            None,
-                        )
-                        .on_action(
-                            crate::actions::audio_unit_binding("diagnostics")
-                                .expect("audio diagnostics action is published"),
-                        ),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
-            if self.advanced {
-                output_rows.push(Box::new(
+            output_rows.push(row(Box::new(Row::new().push(Box::new(
+                self.cx.bind_invocation(
+                    Button::new(
+                        "settings.audio.advanced",
+                        &if self.tests_shown {
+                            t("sound-test-hide")
+                        } else {
+                            t("sound-test-show")
+                        },
+                    ),
+                    AudioEffect::ShowSoundTests {
+                        show: !self.tests_shown,
+                    },
+                ),
+            )))));
+            if self.tests_shown {
+                output_rows.push(row(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Button::new("settings.audio.test.left", "Left", None).on_action(
-                                crate::actions::audio_unit_binding("test-left")
-                                    .expect("left speaker test action is published"),
-                            ),
-                        ))
-                        .push(Box::new(
-                            Button::new("settings.audio.test.right", "Right", None).on_action(
-                                crate::actions::audio_unit_binding("test-right")
-                                    .expect("right speaker test action is published"),
-                            ),
-                        ))
-                        .push(Box::new(Spacer::new())),
-                ));
-                output_rows.push(caption("Plays a short, quiet tone only on the selected channel. Tests stop automatically."));
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("settings.audio.test.left", &t("sound-test-left")),
+                            AudioEffect::TestSpeaker {
+                                channel: "left".into(),
+                            },
+                        )))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("settings.audio.test.right", &t("sound-test-right")),
+                            AudioEffect::TestSpeaker {
+                                channel: "right".into(),
+                            },
+                        ))),
+                )));
+                output_rows.push(note(&t("sound-test-caption")));
             }
         }
         if let Some(notice) = &self.runtime_notice {
-            output_rows.push(caption(notice));
+            output_rows.push(note(notice));
         }
-        card("Output", rows(output_rows))
+        card(&t("sound-output"), rows(output_rows))
     }
 
     /// The "Input" card: an optional source picker, then the mic level and
     /// (when the runtime supports it) a bounded microphone meter test.
-    fn build_input_card(&self) -> crate::widgets::El {
+    fn build_input_card(&self) -> SettingsSection {
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
             let opts: Vec<String> = self
@@ -1114,127 +1338,116 @@ impl AudioPane {
                 .iter()
                 .map(|d| d.name.clone())
                 .collect();
-            let mut dd = Dropdown::new(opts, INPUT_DEVICE_KEY).with_id("audio.input_device");
-            let devices = self
-                .devices
-                .sources
-                .iter()
-                .map(|device| (device.name.clone(), device.id))
-                .collect();
-            if let Some(binding) = crate::actions::audio_device_binding("input-device", devices) {
-                dd = dd.on_action(binding);
-            } else {
-                dd = dd.with_enabled(false);
-            }
-            if let Some(name) = self.devices.default_source() {
-                dd = dd.with_placeholder(name);
-            }
-            input_rows.push(setting_row("Input device", Box::new(dd)));
+            let current = self.devices.default_source().unwrap_or_default().to_owned();
+            let dd = Dropdown::from_state(opts, &LocalState::new(current.clone()))
+                .with_id("audio.input_device")
+                .with_placeholder(&current);
+            input_rows.push(setting_row(
+                &t("sound-input-device"),
+                Box::new(self.cx.bind(dd, effect(AudioEffect::SELECT_INPUT))),
+            ));
         }
-        input_rows.push(setting_row(
-            "Input level",
-            Box::new(
-                Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
-                    .with_id("audio.input_volume")
-                    .on_action(
-                        crate::actions::audio_number_binding("input-volume")
-                            .expect("input volume is part of the static resource contract"),
+        if let Some(error) = &self.input_error {
+            input_rows.push(error_row(
+                &t("sound-input-level"),
+                &t_args("sound-input-error", &[("error", error.as_str().into())]),
+            ));
+        } else {
+            input_rows.push(
+                self.cx
+                    .row(t("sound-input-level"))
+                    .id("audio.input_volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.input_volume)),
+                        effect(AudioEffect::SET_INPUT_VOLUME),
                     ),
-            ),
-        ));
+            );
+        }
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
             let activity = if running {
-                format!(
-                    "Input activity: {}%",
-                    (self.mic_level * 100.0).round() as u32
+                t_args(
+                    "sound-input-activity",
+                    &[(
+                        "percent",
+                        i64::from((self.mic_level * 100.0).round() as u32).into(),
+                    )],
                 )
             } else {
-                "Microphone test records no audio".to_string()
+                t("sound-mic-idle")
             };
-            input_rows.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&activity).with_size(12.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Button::new(
-                            "settings.audio.mic_test",
-                            if running {
-                                "Stop test"
-                            } else {
-                                "Test microphone"
-                            },
-                            None,
-                        )
-                        .on_action(
-                            crate::actions::audio_unit_binding("microphone-meter")
-                                .expect("microphone meter action is published"),
-                        ),
-                    )),
+            input_rows.push(setting_row(
+                &activity,
+                Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        "settings.audio.mic_test",
+                        &if running {
+                            t("sound-mic-stop")
+                        } else {
+                            t("sound-mic-test")
+                        },
+                    ),
+                    AudioEffect::ToggleMicrophoneTest,
+                )),
             ));
-            input_rows.push(caption("The test reads an eight-second level meter in memory. It never stores audio or routes the microphone to speakers."));
+            input_rows.push(note(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
-            input_rows.push(setting_row(
-                "Reduce echo in calls",
-                Box::new(
-                    Toggle::new("settings.audio.echo_cancellation", ECHO_CANCELLATION_KEY)
-                        .with_id("audio.echo_cancellation")
-                        .on_action(
-                            crate::actions::audio_bool_binding("echo-cancellation").expect(
-                                "echo cancellation is part of the static resource contract",
-                            ),
-                        ),
-                ),
-            ));
-            input_rows.push(caption("Calls hear your voice without the sound from your speakers. Recording apps keep the unprocessed microphone."));
+            input_rows.push(
+                self.cx
+                    .row(t("sound-echo"))
+                    .id("audio.echo_cancellation")
+                    .toggle_effect(
+                        &LocalState::new(self.prefs.get().echo_cancellation),
+                        effect(AudioEffect::SET_ECHO_CANCELLATION),
+                    ),
+            );
+            input_rows.push(note(&t("sound-echo-caption")));
         }
-        card("Input", rows(input_rows))
+        card(&t("sound-input"), rows(input_rows))
     }
 
     /// The "Device capabilities" card: per-hardware profile pickers (only for
     /// devices reporting more than one selectable profile) plus each sink's
     /// reported codec. `None` when there is nothing to show — no empty card.
-    fn build_hardware_card(&self) -> Option<crate::widgets::El> {
+    fn build_hardware_card(&self) -> Option<SettingsSection> {
         let mut hardware_rows = Vec::new();
         for hw in &self.graph.hardware {
             let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
             if selectable.len() < 2 {
                 continue;
             }
-            let options = selectable.iter().map(|p| p.description.clone()).collect();
-            let profile_binding = crate::actions::audio_profile_binding(
-                hw.id,
-                selectable
-                    .iter()
-                    .map(|profile| (profile.description.clone(), profile.index))
-                    .collect(),
-            )
-            .expect("visible audio profiles form a bounded resource action");
+            let options: Vec<String> = selectable.iter().map(|p| p.description.clone()).collect();
+            let device = hw.id;
             let active = hw
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-                .map_or("Choose a profile", |p| p.description.as_str());
-            hardware_rows.push(choice_row_described(
-                &hw.description,
-                "PipeWire device profile",
-                Box::new(
-                    Dropdown::new(options, &device_profile_key(hw.id))
-                        .with_id(&format!("audio.profile.{}", hw.id))
-                        .on_action(profile_binding)
-                        .with_placeholder(active),
-                ),
-            ));
+                .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
+            hardware_rows.push(
+                self.cx
+                    .row(&hw.description)
+                    .described(t("sound-profile"))
+                    .id(format!("audio.profile.{}", hw.id))
+                    .choice_effect(
+                        options,
+                        &LocalState::new(active.clone()),
+                        effect(AudioEffect::SET_DEVICE_PROFILE)
+                            .map(move |profile: String| (device, profile)),
+                    ),
+            );
         }
         for sink in &self.graph.sinks {
             if let Some(codec) = &sink.codec {
                 hardware_rows.push(crate::widgets::value_row(
-                    &format!("{} codec", sink.description),
+                    &t_args(
+                        "sound-codec",
+                        &[("device", sink.description.as_str().into())],
+                    ),
                     codec,
                 ));
             }
         }
-        (!hardware_rows.is_empty()).then(|| card("Device capabilities", rows(hardware_rows)))
+        (!hardware_rows.is_empty()).then(|| card(&t("sound-hardware"), rows(hardware_rows)))
     }
 
     /// Build one streams card (Applications or Recording). Each stream becomes
@@ -1248,67 +1461,45 @@ impl AudioPane {
         streams: &[AudioStream],
         devices: &[AudioDevice],
         empty_note: &str,
-    ) -> crate::widgets::El {
+    ) -> SettingsSection {
         if streams.is_empty() {
-            return card(title, rows(vec![caption(empty_note)]));
+            return card(title, rows(vec![note(empty_note)]));
         }
         // Picker options: every device label, plus a leading "follow default".
-        let mut options = vec![FOLLOW_DEFAULT.to_string()];
+        let mut options = vec![follow_shown()];
         options.extend(devices.iter().map(|d| d.name.clone()));
 
-        let mut blocks: Vec<crate::widgets::El> = Vec::new();
+        let mut items: Vec<Item> = Vec::new();
         for s in streams {
-            let sink_key = stream_sink_key(s.id);
-            let vol_key = stream_volume_key(s.id);
-            let mute_key = stream_muted_key(s.id);
+            let id = s.id;
             let current = self.stream_target_label(s);
-            let route_devices = devices
-                .iter()
-                .map(|device| (device.name.clone(), device.id))
-                .collect();
-            let dd = Dropdown::new(options.clone(), &sink_key)
-                .with_id(&format!("{sink_key}.dd"))
-                .on_action(
-                    crate::actions::audio_stream_route_binding(
-                        s.id,
-                        s.playback,
-                        &s.label(),
-                        route_devices,
-                    )
-                    .expect("visible stream routes form a bounded resource action"),
-                )
-                .with_placeholder(&current);
+            let dd = self.cx.bind(
+                Dropdown::from_state(options.clone(), &LocalState::new(current.clone()))
+                    .with_id(&format!("audio.stream.{id}.sink.dd"))
+                    .with_placeholder(&current),
+                effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
+            );
             let route_row =
-                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = setting_row(
-                "Volume",
-                Box::new(
-                    Slider::new("settings.audio.volume", &vol_key)
-                        .with_id(&format!("{vol_key}.sl"))
-                        .on_action(
-                            crate::actions::audio_stream_number_binding(
-                                s.id,
-                                s.playback,
-                                &s.label(),
-                            )
-                            .expect("stream volume is part of its resource contract"),
-                        ),
-                ),
-            );
-            let mute_row = setting_row(
-                "Mute",
-                Box::new(
-                    Toggle::new("settings.audio.mute", &mute_key)
-                        .with_id(&format!("{mute_key}.tg"))
-                        .on_action(
-                            crate::actions::audio_stream_bool_binding(s.id, s.playback, &s.label())
-                                .expect("stream mute is part of its resource contract"),
-                        ),
-                ),
-            );
-            blocks.push(rows(vec![route_row, vol_row, mute_row]));
+                setting_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
+            let vol_row = self
+                .cx
+                .row(t("sound-volume"))
+                .id(format!("audio.stream.{id}.volume.sl"))
+                .slider_effect(
+                    &LocalState::new(f64::from(s.volume.unwrap_or(1.0))),
+                    effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
+                );
+            let mute_row = self
+                .cx
+                .row(t("sound-mute"))
+                .id(format!("audio.stream.{id}.muted.tg"))
+                .toggle_effect(
+                    &LocalState::new(s.muted.unwrap_or(false)),
+                    effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
+                );
+            items.extend([route_row, vol_row, mute_row]);
         }
-        card(title, rows(blocks))
+        card(title, rows(items))
     }
 
     /// The picker label for a stream's *current* route: the device it is linked
@@ -1324,170 +1515,83 @@ impl AudioPane {
             .target_id
             .and_then(|tid| devices.iter().find(|d| d.id == tid))
         {
-            Some(d) if d.is_default => FOLLOW_DEFAULT.to_string(),
+            Some(d) if d.is_default => follow_shown(),
             Some(d) => d.description.clone(),
-            None => FOLLOW_DEFAULT.to_string(),
+            None => follow_shown(),
         }
     }
 
-    /// Seed a stream's CRDT keys (route label / volume / mute) once, resting
-    /// each guard on the seeded value so the seed itself dispatches nothing.
-    fn seed_stream(&mut self, state: &mut AutoCommit, root: &ObjId, s: &AudioStream) {
-        if self.seeded_streams.contains(&s.id) {
-            return;
+    /// The "System sounds" card: the master switch, then volume, theme and
+    /// one switch per event while it is on.
+    fn build_system_sounds_card(&self) -> SettingsSection {
+        let sounds = &self.prefs.get().system_sounds;
+        if !self.event_sounds_available {
+            let reason = match super::installed_programs_unreadable() {
+                Some(error) => row(error_caption(&t_args(
+                    "settings-programs-error",
+                    &[("error", error.into())],
+                ))),
+                None => note(&t("sound-system-missing")),
+            };
+            return card(&t("sound-system"), rows(vec![reason]));
         }
-        let label = self.stream_target_label(s);
-        let vol = s.volume.unwrap_or(1.0);
-        let muted = s.muted.unwrap_or(false);
-        let _ = state.put(root, stream_sink_key(s.id).as_str(), label.clone());
-        let _ = state.put(
-            root,
-            stream_volume_key(s.id).as_str(),
-            automerge::ScalarValue::F64(f64::from(vol)),
+        let mut sound_rows = vec![
+            self.cx
+                .row(t("sound-system"))
+                .id("audio.system_sounds")
+                .toggle(
+                    &LocalState::new(sounds.enabled),
+                    crate::prefs::AudioPrefs::paths().system_sounds.enabled,
+                ),
+        ];
+        if !sounds.enabled {
+            return card(&t("sound-system"), rows(sound_rows));
+        }
+        sound_rows.push(
+            self.cx
+                .row(t("sound-volume"))
+                .id("audio.system_sound_volume")
+                .slider(
+                    &LocalState::new(sounds.volume),
+                    AudioPrefs::paths().system_sounds.volume,
+                ),
         );
-        let _ = state.put(
-            root,
-            stream_muted_key(s.id).as_str(),
-            automerge::ScalarValue::Boolean(muted),
-        );
-        self.last_stream_sink.insert(s.id, label);
-        self.last_stream_vol.insert(s.id, vol);
-        self.last_stream_mute.insert(s.id, muted);
-        self.seeded_streams.insert(s.id);
-    }
-
-    /// Apply a stream's routing/volume/mute from the CRDT, guarded so a value at
-    /// rest doesn't re-fire. Routes through the injected [`GraphControl`].
-    fn dispatch_stream(&mut self, state: &mut AutoCommit, root: &ObjId, s: &AudioStream) {
-        // Route: match the chosen label to a device serial (or follow default).
-        if let Some(choice) = read_str_or_text(state, root, stream_sink_key(s.id).as_str())
-            && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
-        {
-            let target_id = if choice == FOLLOW_DEFAULT {
-                None
-            } else {
-                let devices = if s.playback {
-                    &self.graph.sinks
-                } else {
-                    &self.graph.sources
-                };
-                devices
-                    .iter()
-                    .find(|device| device.description == choice)
-                    .map(|device| device.id)
-            };
-            let operation = crate::actions::AudioOperation::RouteStream {
-                stream_id: s.id,
-                playback: s.playback,
-                device_id: target_id,
-            };
-            if !self.operation_is_running(&operation) {
-                if let Some(previous) = self.last_stream_sink.get(&s.id) {
-                    let _ = state.put(root, stream_sink_key(s.id), previous.as_str());
-                }
-                return;
-            }
-            let result = match target_id {
-                None => self.gctl.unroute_stream(s.id),
-                Some(device_id) => {
-                    let devices = if s.playback {
-                        &self.graph.sinks
-                    } else {
-                        &self.graph.sources
-                    };
-                    devices
-                        .iter()
-                        .find(|device| device.id == device_id)
-                        .ok_or_else(|| "audio route is no longer available".to_string())
-                        .and_then(|device| self.gctl.route_stream(s.id, device.serial))
-                }
-            };
-            match result {
-                Ok(()) => {
-                    self.last_stream_sink.insert(s.id, choice);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio stream route changed.".into()),
-                    );
-                }
-                Err(error) => {
-                    if let Some(previous) = self.last_stream_sink.get(&s.id) {
-                        let _ = state.put(root, stream_sink_key(s.id), previous.as_str());
-                    }
-                    warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Audio stream route could not be changed: {error}")),
-                    );
-                }
-            }
+        if self.sound_themes.len() >= 2 {
+            let names: Vec<String> = self
+                .sound_themes
+                .iter()
+                .map(|theme| theme.name.clone())
+                .collect();
+            let current = self
+                .sound_themes
+                .iter()
+                .find(|theme| theme.id == sounds.theme_name())
+                .map(|theme| theme.name.clone())
+                .unwrap_or_default();
+            sound_rows.push(
+                self.cx
+                    .row(t("sound-theme"))
+                    .id("audio.sound_theme")
+                    .choice_effect(
+                        names,
+                        &LocalState::new(current),
+                        effect(AudioEffect::SET_SOUND_THEME),
+                    ),
+            );
         }
-        // Per-app volume.
-        if let Some(v) = read_f64(state, root, stream_volume_key(s.id).as_str()) {
-            let v = v as f32;
-            if (v - self.last_stream_vol.get(&s.id).copied().unwrap_or(v)).abs() > 0.001 {
-                let operation = crate::actions::AudioOperation::SetStreamVolume {
-                    stream_id: s.id,
-                    value: f64::from(v),
-                };
-                if !self.operation_is_running(&operation) {
-                    if let Some(previous) = self.last_stream_vol.get(&s.id) {
-                        let _ = state.put(root, stream_volume_key(s.id), f64::from(*previous));
-                    }
-                    return;
-                }
-                match self.gctl.set_node_volume(s.id, v.clamp(0.0, 1.0)) {
-                    Ok(()) => {
-                        self.last_stream_vol.insert(s.id, v);
-                        self.finish_local_operation(
-                            operation,
-                            Ok("Audio stream volume changed.".into()),
-                        );
-                    }
-                    Err(e) => {
-                        if let Some(previous) = self.last_stream_vol.get(&s.id) {
-                            let _ = state.put(root, stream_volume_key(s.id), f64::from(*previous));
-                        }
-                        self.finish_local_operation(
-                            operation,
-                            Err(format!("Audio stream volume could not be changed: {e}")),
-                        );
-                        warn!(target: "tilo::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
-                    }
-                }
-            }
+        for event in SystemSoundEvent::ALL {
+            sound_rows.push(
+                self.cx
+                    .row(event_shown(event))
+                    .id(format!("audio.event_sound.{}", event.key()))
+                    .toggle(
+                        &LocalState::new(sounds.events.get(event)),
+                        event_sound(event),
+                    ),
+            );
         }
-        // Per-app mute.
-        if let Some(b) = read_bool(state, root, stream_muted_key(s.id).as_str())
-            && self.last_stream_mute.get(&s.id).copied() != Some(b)
-        {
-            let operation = crate::actions::AudioOperation::SetStreamMuted {
-                stream_id: s.id,
-                muted: b,
-            };
-            if !self.operation_is_running(&operation) {
-                if let Some(previous) = self.last_stream_mute.get(&s.id) {
-                    let _ = state.put(root, stream_muted_key(s.id), *previous);
-                }
-                return;
-            }
-            match self.gctl.set_node_mute(s.id, b) {
-                Ok(()) => {
-                    self.last_stream_mute.insert(s.id, b);
-                    self.finish_local_operation(operation, Ok("Audio stream mute changed.".into()));
-                }
-                Err(e) => {
-                    if let Some(previous) = self.last_stream_mute.get(&s.id) {
-                        let _ = state.put(root, stream_muted_key(s.id), *previous);
-                    }
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Audio stream mute could not be changed: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
-                }
-            }
-        }
+        sound_rows.push(note(&t("sound-system-caption")));
+        card(&t("sound-system"), rows(sound_rows))
     }
 
     /// Re-enumerate the graph on the hotplug throttle. When the topology
@@ -1510,17 +1614,6 @@ impl AudioPane {
         if fresh.topology_signature() == self.graph.topology_signature() {
             return false;
         }
-        // Forget streams that vanished so their guards don't leak.
-        let present: HashSet<u32> = fresh
-            .playback_streams
-            .iter()
-            .chain(fresh.record_streams.iter())
-            .map(|s| s.id)
-            .collect();
-        self.seeded_streams.retain(|id| present.contains(id));
-        self.last_stream_sink.retain(|id, _| present.contains(id));
-        self.last_stream_vol.retain(|id, _| present.contains(id));
-        self.last_stream_mute.retain(|id, _| present.contains(id));
         // Pane-owned diagnostics are bound to the old node name. Persistent
         // mono is owned by the compositor session and handles hot-plug there.
         self.channel_test = None;
@@ -1529,20 +1622,7 @@ impl AudioPane {
         // headset is selectable, keeping the current default marker.
         self.devices = devices_from_graph(&fresh);
         self.graph = fresh;
-        self.composed = None;
         true
-    }
-
-    /// Load the current prefs from disk, apply `f` to the audio section, and
-    /// persist — reading fresh each time so a change here never clobbers a
-    /// different pane's section.
-    fn persist_audio(f: impl FnOnce(&mut AudioPrefs)) -> Result<(), String> {
-        let mut p = SystemPrefs::load();
-        f(&mut p.audio);
-        p.save().map(|_| ()).map_err(|e| {
-            warn!(target: "tilo::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
-            format!("Audio preference could not be saved: {e}")
-        })
     }
 
     /// Advance the bounded speaker/mic diagnostics and re-enumerate the
@@ -1554,871 +1634,96 @@ impl AudioPane {
             .is_some_and(|session| !session.running())
         {
             self.channel_test = None;
-            self.runtime_notice = Some("Speaker test finished.".into());
-            self.structure_dirty = true;
+            self.runtime_notice = Some(t("sound-notice-test-done"));
+            self.changed = true;
         }
         if let Some(session) = &mut self.mic_session {
             let level = session.level();
             if (level - self.mic_level).abs() >= 0.02 {
                 self.mic_level = level;
-                self.structure_dirty = true;
+                self.changed = true;
             }
             if !session.running() {
                 self.mic_session = None;
-                self.runtime_notice = Some("Microphone test finished; no audio was saved.".into());
-                self.structure_dirty = true;
+                self.runtime_notice = Some(t("sound-notice-mic-done"));
+                self.changed = true;
             }
         }
         // Re-read the PipeWire graph on the hotplug throttle so a device
         // plugged in or an app that just started playing appears live.
-        self.poll_hotplug();
-    }
-
-    /// One-time seed of every CRDT key this pane owns, from the initial
-    /// backend/prefs snapshot taken at construction.
-    fn seed_state(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.needs_seed {
-            return;
-        }
-        let _ = state.put(
-            root,
-            VOLUME_KEY,
-            automerge::ScalarValue::F64(f64::from(self.initial_volume)),
-        );
-        let _ = state.put(
-            root,
-            MUTED_KEY,
-            automerge::ScalarValue::Boolean(self.last_muted),
-        );
-        let _ = state.put(
-            root,
-            BALANCE_KEY,
-            automerge::ScalarValue::F64(f64::from(self.initial_prefs.balance.clamp(0.0, 1.0))),
-        );
-        let _ = state.put(root, MONO_KEY, self.initial_prefs.mono_output);
-        let _ = state.put(
-            root,
-            ECHO_CANCELLATION_KEY,
-            self.initial_prefs.echo_cancellation,
-        );
-        self.seed_system_sounds(state, root);
-        for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
-            let _ = state.put(root, key, false);
-        }
-        let _ = state.put(
-            root,
-            INPUT_VOLUME_KEY,
-            automerge::ScalarValue::F64(f64::from(self.initial_input)),
-        );
-        // Seed the device pickers with the current defaults so they rest
-        // on the active device.
-        if let Some(name) = self.devices.default_sink() {
-            let _ = state.put(root, OUTPUT_DEVICE_KEY, name);
-        }
-        if let Some(name) = self.devices.default_source() {
-            let _ = state.put(root, INPUT_DEVICE_KEY, name);
-        }
-        for hw in &self.graph.hardware {
-            if let Some(active) = hw
-                .active_profile
-                .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-            {
-                let _ = state.put(root, device_profile_key(hw.id), active.description.clone());
-                self.last_device_profile
-                    .insert(hw.id, active.description.clone());
-            }
-        }
-        self.needs_seed = false;
-    }
-
-    /// Apply the output volume, input (mic) volume and mute toggles from the
-    /// CRDT to the dispatcher/`InputControl`, each guarded so a value at rest
-    /// doesn't re-fire.
-    fn apply_volume_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(new) = read_f64(state, root, VOLUME_KEY) {
-            let new = new as f32;
-            if (new - self.last_volume).abs() > 0.001 {
-                let operation = crate::actions::AudioOperation::SetOutputVolume {
-                    value: f64::from(new),
-                };
-                if !self.operation_is_running(&operation) {
-                    let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
-                } else {
-                    match self.dispatcher.set_volume(new.clamp(0.0, 1.0) * 100.0) {
-                        Ok(()) => {
-                            self.last_volume = new;
-                            self.finish_local_operation(
-                                operation,
-                                Ok(format!("Output volume set to {}%.", (new * 100.0).round())),
-                            );
-                        }
-                        Err(e) => {
-                            let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
-                            self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
-                            self.structure_dirty = true;
-                            self.finish_local_operation(
-                                operation,
-                                Err(format!("Output volume could not be changed: {e}")),
-                            );
-                            warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(new) = read_f64(state, root, INPUT_VOLUME_KEY) {
-            let new = new as f32;
-            if (new - self.last_input).abs() > 0.001 {
-                let operation = crate::actions::AudioOperation::SetInputVolume {
-                    value: f64::from(new),
-                };
-                if !self.operation_is_running(&operation) {
-                    let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
-                } else {
-                    match self.input.set_input_volume(new.clamp(0.0, 1.0) * 100.0) {
-                        Ok(()) => {
-                            self.last_input = new;
-                            self.finish_local_operation(
-                                operation,
-                                Ok(format!("Input level set to {}%.", (new * 100.0).round())),
-                            );
-                        }
-                        Err(e) => {
-                            let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
-                            self.runtime_notice =
-                                Some(format!("Input level could not be changed: {e}"));
-                            self.structure_dirty = true;
-                            self.finish_local_operation(
-                                operation,
-                                Err(format!("Input level could not be changed: {e}")),
-                            );
-                            warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(b) = read_bool(state, root, MUTED_KEY)
-            && b != self.last_muted
-        {
-            let operation = crate::actions::AudioOperation::SetOutputMuted { muted: b };
-            if !self.operation_is_running(&operation) {
-                let _ = state.put(root, MUTED_KEY, self.last_muted);
-            } else {
-                match self.dispatcher.set_mute(b) {
-                    Ok(()) => {
-                        self.last_muted = b;
-                        self.finish_local_operation(
-                            operation,
-                            Ok(if b {
-                                "Output muted.".into()
-                            } else {
-                                "Output unmuted.".into()
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        let _ = state.put(root, MUTED_KEY, self.last_muted);
-                        self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
-                        self.structure_dirty = true;
-                        self.finish_local_operation(
-                            operation,
-                            Err(format!("Output mute could not be changed: {e}")),
-                        );
-                        warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
-                    }
-                }
-            }
-        }
-    }
-
-    /// Apply the balance slider and mono toggle from the CRDT, persisting the
-    /// preference (never touching the compositor's live session transform).
-    fn apply_balance_and_mono(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
-            && (value - self.balance).abs() > 0.001
-        {
-            let requested = value.clamp(0.0, 1.0);
-            let operation = crate::actions::AudioOperation::SetBalance {
-                value: f64::from(requested),
-            };
-            if !self.operation_is_running(&operation) {
-                let _ = state.put(root, BALANCE_KEY, f64::from(self.balance));
-            } else {
-                let result = if self.persist_prefs {
-                    Self::persist_audio(|prefs| prefs.balance = requested)
-                } else {
-                    Ok(())
-                };
-                match result {
-                    Ok(()) => {
-                        self.balance = requested;
-                        self.finish_local_operation(
-                            operation,
-                            Ok(format!(
-                                "Output balance set to {}%.",
-                                (requested * 100.0).round()
-                            )),
-                        );
-                    }
-                    Err(error) => {
-                        let _ = state.put(root, BALANCE_KEY, f64::from(self.balance));
-                        self.finish_local_operation(operation, Err(error));
-                    }
-                }
-            }
-        }
-        if let Some(enabled) = read_bool(state, root, MONO_KEY)
-            && enabled != self.mono_enabled
-        {
-            let operation = crate::actions::AudioOperation::SetMono { enabled };
-            if !self.operation_is_running(&operation) {
-                let _ = state.put(root, MONO_KEY, self.mono_enabled);
-                return;
-            }
-            let result = if self.persist_prefs {
-                Self::persist_audio(|prefs| prefs.mono_output = enabled)
-            } else {
-                Ok(())
-            };
-            if let Err(error) = result {
-                let _ = state.put(root, MONO_KEY, self.mono_enabled);
-                self.finish_local_operation(operation, Err(error));
-                return;
-            }
-            self.mono_enabled = enabled;
-            self.finish_local_operation(
-                operation,
-                Ok(if enabled {
-                    "Mono output enabled."
-                } else {
-                    "Mono output disabled."
-                }
-                .into()),
-            );
-            self.runtime_notice = Some(if enabled {
-                "Mono output is active for this desktop session.".into()
-            } else {
-                "Mono output is off; the physical output is restored.".into()
-            });
-            self.structure_dirty = true;
-        }
-    }
-
-    /// The CRDT mirror of [`Self::system_sounds`], written once at seed time.
-    fn seed_system_sounds(&self, state: &mut AutoCommit, root: &ObjId) {
-        let prefs = &self.system_sounds;
-        let _ = state.put(root, SYSTEM_SOUNDS_KEY, prefs.enabled);
-        let _ = state.put(
-            root,
-            SYSTEM_SOUND_VOLUME_KEY,
-            automerge::ScalarValue::F64(prefs.volume),
-        );
-        if let Some(theme) = self
-            .sound_themes
-            .iter()
-            .find(|theme| theme.id == prefs.theme_name())
-        {
-            let _ = state.put(root, SOUND_THEME_KEY, theme.name.as_str());
-        }
-        for event in SystemSoundEvent::ALL {
-            let _ = state.put(root, event_sound_key(event), prefs.events.get(event));
-        }
-    }
-
-    /// The "System sounds" card: the master switch, then volume, theme and
-    /// one switch per event while it is on.
-    fn build_system_sounds_card(&self) -> crate::widgets::El {
-        if !self.event_sounds_available {
-            return card(
-                "System sounds",
-                rows(vec![caption(
-                    "This device cannot play system sounds. They need the PipeWire sound tools.",
-                )]),
-            );
-        }
-        let mut sound_rows = vec![setting_row(
-            "System sounds",
-            Box::new(
-                Toggle::new("settings.audio.system_sounds", SYSTEM_SOUNDS_KEY)
-                    .with_id("audio.system_sounds")
-                    .on_action(
-                        crate::actions::audio_bool_binding("system-sounds")
-                            .expect("system sounds are part of the static resource contract"),
-                    ),
-            ),
-        )];
-        if !self.system_sounds.enabled {
-            return card("System sounds", rows(sound_rows));
-        }
-        sound_rows.push(setting_row(
-            "Volume",
-            Box::new(
-                Slider::new(
-                    "settings.audio.system_sound_volume",
-                    SYSTEM_SOUND_VOLUME_KEY,
-                )
-                .with_id("audio.system_sound_volume")
-                .on_action(
-                    crate::actions::audio_number_binding("system-sound-volume")
-                        .expect("system sound volume is part of the static resource contract"),
-                ),
-            ),
-        ));
-        let themes: Vec<(String, String)> = self
-            .sound_themes
-            .iter()
-            .map(|theme| (theme.name.clone(), theme.id.clone()))
-            .collect();
-        if themes.len() >= 2
-            && let Some(binding) = crate::actions::audio_sound_theme_binding(themes.clone())
-        {
-            let names = themes.into_iter().map(|(name, _)| name).collect();
-            sound_rows.push(setting_row(
-                "Sound theme",
-                Box::new(
-                    Dropdown::new(names, SOUND_THEME_KEY)
-                        .with_id("audio.sound_theme")
-                        .on_action(binding),
-                ),
-            ));
-        }
-        for event in SystemSoundEvent::ALL {
-            let action = crate::actions::event_sound_action_id(event);
-            sound_rows.push(setting_row(
-                event.label(),
-                Box::new(
-                    Toggle::new(
-                        &format!("settings.audio.event_sound.{}", event.key()),
-                        &event_sound_key(event),
-                    )
-                    .with_id(&format!("audio.event_sound.{}", event.key()))
-                    .on_action(
-                        crate::actions::audio_bool_binding(&action)
-                            .expect("every system sound event is part of the resource contract"),
-                    ),
-                ),
-            ));
-        }
-        sound_rows.push(caption("Notification sounds also follow each app's choice in Notifications. Do Not Disturb and focus time hold back interruptions; volume feedback, the screenshot shutter and low battery still play."));
-        card("System sounds", rows(sound_rows))
-    }
-
-    /// Persist "System sounds" changes. The compositor reads the saved
-    /// preference whenever an event would make a sound.
-    fn apply_system_sounds(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        use crate::actions::AudioOperation as Op;
-        let mut next = self.system_sounds.clone();
-        let mut operations = Vec::new();
-        if let Some(enabled) =
-            read_bool(state, root, SYSTEM_SOUNDS_KEY).filter(|enabled| *enabled != next.enabled)
-        {
-            next.enabled = enabled;
-            operations.push((
-                Op::SetSystemSounds { enabled },
-                SYSTEM_SOUNDS_KEY.to_string(),
-            ));
-        }
-        if let Some(value) = read_f64(state, root, SYSTEM_SOUND_VOLUME_KEY)
-            .map(|value| value.clamp(0.0, 1.0))
-            .filter(|value| (value - next.volume).abs() > 0.001)
-        {
-            next.volume = value;
-            operations.push((
-                Op::SetSystemSoundVolume { value },
-                SYSTEM_SOUND_VOLUME_KEY.to_string(),
-            ));
-        }
-        if let Some(theme) = read_str_or_text(state, root, SOUND_THEME_KEY)
-            .and_then(|name| self.sound_themes.iter().find(|theme| theme.name == name))
-            .filter(|theme| theme.id != next.theme_name())
-        {
-            next.theme = Some(theme.id.clone());
-            operations.push((
-                Op::SetSoundTheme {
-                    theme: theme.id.clone(),
-                },
-                SOUND_THEME_KEY.to_string(),
-            ));
-        }
-        for event in SystemSoundEvent::ALL {
-            let key = event_sound_key(event);
-            if let Some(enabled) = read_bool(state, root, key.as_str())
-                .filter(|enabled| *enabled != next.events.get(event))
-            {
-                next.events.set(event, enabled);
-                operations.push((
-                    Op::SetEventSound {
-                        event: event.key().to_string(),
-                        enabled,
-                    },
-                    key,
-                ));
-            }
-        }
-        if operations.is_empty() {
-            return;
-        }
-        let next = next.sanitized();
-        let allowed = operations
-            .iter()
-            .all(|(operation, _)| self.operation_is_running(operation));
-        let result = if !allowed {
-            Err(None)
-        } else if self.persist_prefs {
-            let saved = next.clone();
-            Self::persist_audio(move |prefs| prefs.system_sounds = saved).map_err(Some)
-        } else {
-            Ok(())
-        };
-        match result {
-            Ok(()) => {
-                let enabled_changed = next.enabled != self.system_sounds.enabled;
-                self.system_sounds = next;
-                for (operation, _) in operations {
-                    self.finish_local_operation(operation, Ok("System sounds updated.".into()));
-                }
-                if enabled_changed {
-                    self.structure_dirty = true;
-                }
-            }
-            Err(error) => {
-                // Put the controls back to what is actually saved.
-                self.seed_system_sounds(state, root);
-                if let Some(error) = error {
-                    for (operation, _) in operations {
-                        self.finish_local_operation(operation, Err(error.clone()));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Persist the "Reduce echo in calls" toggle. The compositor session
-    /// starts or stops the echo-cancelled microphone from the saved value.
-    fn apply_echo_cancellation(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(enabled) = read_bool(state, root, ECHO_CANCELLATION_KEY)
-            .filter(|enabled| *enabled != self.echo_cancellation)
-        else {
-            return;
-        };
-        let operation = crate::actions::AudioOperation::SetEchoCancellation { enabled };
-        if !self.operation_is_running(&operation) {
-            let _ = state.put(root, ECHO_CANCELLATION_KEY, self.echo_cancellation);
-            return;
-        }
-        let result = if self.persist_prefs {
-            Self::persist_audio(|prefs| prefs.echo_cancellation = enabled)
-        } else {
-            Ok(())
-        };
-        if let Err(error) = result {
-            let _ = state.put(root, ECHO_CANCELLATION_KEY, self.echo_cancellation);
-            self.finish_local_operation(operation, Err(error));
-            return;
-        }
-        self.echo_cancellation = enabled;
-        self.finish_local_operation(
-            operation,
-            Ok(if enabled {
-                "Calls use the echo-cancelled microphone."
-            } else {
-                "Calls use the microphone directly."
-            }
-            .into()),
-        );
-    }
-
-    /// Handle the advanced-panel toggle and the one-shot speaker/microphone
-    /// test buttons.
-    fn apply_diagnostics_requests(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, ADVANCED_KEY) == Some(true) {
-            let _ = state.put(root, ADVANCED_KEY, false);
-            let operation = crate::actions::AudioOperation::ToggleDiagnostics;
-            if !self.operation_is_running(&operation) {
-                return;
-            }
-            self.advanced = !self.advanced;
-            if !self.advanced {
-                self.channel_test = None;
-            }
-            self.structure_dirty = true;
-            self.finish_local_operation(
-                operation,
-                Ok(if self.advanced {
-                    "Speaker diagnostics shown."
-                } else {
-                    "Speaker diagnostics hidden."
-                }
-                .into()),
-            );
-        }
-        for (key, left, label) in [
-            (TEST_LEFT_KEY, true, "left"),
-            (TEST_RIGHT_KEY, false, "right"),
-        ] {
-            if read_bool(state, root, key) != Some(true) {
-                continue;
-            }
-            let _ = state.put(root, key, false);
-            let operation = crate::actions::AudioOperation::TestChannel { left };
-            if !self.operation_is_running(&operation) {
-                continue;
-            }
-            self.channel_test = None;
-            let result = self
-                .graph
-                .default_sink()
-                .filter(|sink| sink.channels == 2)
-                .ok_or_else(|| "Speaker test requires a stereo PipeWire sink".to_string())
-                .and_then(|sink| self.runtime.start_channel_test(&sink.name, left));
-            match result {
-                Ok(session) => {
-                    self.channel_test = Some(session);
-                    self.runtime_notice = Some(format!("Playing a short {label}-channel tone…"));
-                    self.finish_local_operation(
-                        operation,
-                        Ok(format!("{label} speaker test started.")),
-                    );
-                }
-                Err(error) => {
-                    self.runtime_notice =
-                        Some(format!("Could not test the {label} speaker: {error}"));
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Could not test the {label} speaker: {error}")),
-                    );
-                }
-            }
-            self.structure_dirty = true;
-        }
-        if read_bool(state, root, MIC_TEST_KEY) == Some(true) {
-            let _ = state.put(root, MIC_TEST_KEY, false);
-            let operation = crate::actions::AudioOperation::ToggleMicrophoneMeter;
-            if !self.operation_is_running(&operation) {
-                return;
-            }
-            if self.mic_session.is_some() {
-                self.mic_session = None;
-                self.runtime_notice = Some("Microphone test stopped; no audio was saved.".into());
-                self.finish_local_operation(
-                    operation,
-                    Ok("Microphone test stopped; no audio was saved.".into()),
-                );
-            } else {
-                let result = self
-                    .graph
-                    .default_source()
-                    .ok_or_else(|| "No PipeWire microphone is available".to_string())
-                    .and_then(|source| {
-                        self.runtime
-                            .start_microphone_meter(&source.name, Duration::from_secs(8))
-                    });
-                match result {
-                    Ok(session) => {
-                        self.mic_session = Some(session);
-                        self.mic_level = 0.0;
-                        self.runtime_notice =
-                            Some("Microphone level test started for eight seconds.".into());
-                        self.finish_local_operation(
-                            operation,
-                            Ok("Microphone level test started for eight seconds.".into()),
-                        );
-                    }
-                    Err(error) => {
-                        self.runtime_notice =
-                            Some(format!("Could not test the microphone: {error}"));
-                        self.finish_local_operation(
-                            operation,
-                            Err(format!("Could not test the microphone: {error}")),
-                        );
-                    }
-                }
-            }
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Apply an output/input device picker selection, dispatching
-    /// `wpctl set-default` and persisting the preference.
-    fn apply_device_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Output-device (sink) selection → wpctl set-default, guarded so a
-        // selection at rest doesn't re-fire.
-        if let Some(name) = read_str_or_text(state, root, OUTPUT_DEVICE_KEY)
-            && self.last_sink.as_deref() != Some(name.as_str())
-            && let Some(id) = self.devices.sink_id(&name)
-        {
-            let operation = crate::actions::AudioOperation::SelectOutput { device_id: id };
-            if !self.operation_is_running(&operation) {
-                if let Some(previous) = self.last_sink.as_deref() {
-                    let _ = state.put(root, OUTPUT_DEVICE_KEY, previous);
-                }
-                return;
-            }
-            match self.device.set_default(id) {
-                Ok(()) => {
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        let _ = Self::persist_audio(|a| a.output_device = Some(nm));
-                    }
-                    self.last_sink = Some(name);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio output device changed.".into()),
-                    );
-                }
-                Err(e) => {
-                    if let Some(previous) = self.last_sink.as_deref() {
-                        let _ = state.put(root, OUTPUT_DEVICE_KEY, previous);
-                    }
-                    self.runtime_notice = Some(format!("Output device could not be changed: {e}"));
-                    self.structure_dirty = true;
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Output device could not be changed: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
-                }
-            }
-        }
-        // Input-device (source) selection → wpctl set-default.
-        if let Some(name) = read_str_or_text(state, root, INPUT_DEVICE_KEY)
-            && self.last_source.as_deref() != Some(name.as_str())
-            && let Some(id) = self.devices.source_id(&name)
-        {
-            let operation = crate::actions::AudioOperation::SelectInput { device_id: id };
-            if !self.operation_is_running(&operation) {
-                if let Some(previous) = self.last_source.as_deref() {
-                    let _ = state.put(root, INPUT_DEVICE_KEY, previous);
-                }
-                return;
-            }
-            match self.device.set_default(id) {
-                Ok(()) => {
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        let _ = Self::persist_audio(|a| a.input_device = Some(nm));
-                    }
-                    self.last_source = Some(name);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio input device changed.".into()),
-                    );
-                }
-                Err(e) => {
-                    if let Some(previous) = self.last_source.as_deref() {
-                        let _ = state.put(root, INPUT_DEVICE_KEY, previous);
-                    }
-                    self.runtime_notice = Some(format!("Input device could not be changed: {e}"));
-                    self.structure_dirty = true;
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Input device could not be changed: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
-                }
-            }
-        }
-    }
-
-    /// Seed and dispatch each per-application stream's route/volume/mute,
-    /// then apply any hardware device-profile picker change.
-    fn apply_streams_and_profiles(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Per-application streams: seed each stream's route/volume/mute keys
-        // once, then apply any change through the graph control. Cloned out of
-        // the graph so the seed/dispatch helpers can borrow `self` mutably.
-        let streams: Vec<AudioStream> = self
-            .graph
-            .playback_streams
-            .iter()
-            .chain(self.graph.record_streams.iter())
-            .cloned()
-            .collect();
-        for s in &streams {
-            self.seed_stream(state, root, s);
-        }
-        for s in &streams {
-            self.dispatch_stream(state, root, s);
-        }
-        for hw in &self.graph.hardware {
-            let Some(choice) = read_str_or_text(state, root, device_profile_key(hw.id)) else {
-                continue;
-            };
-            if self.last_device_profile.get(&hw.id) == Some(&choice) {
-                continue;
-            }
-            let Some(profile) = hw
-                .profiles
-                .iter()
-                .find(|p| p.available && p.description == choice)
-            else {
-                continue;
-            };
-            let operation = crate::actions::AudioOperation::SetDeviceProfile {
-                device_id: hw.id,
-                profile_index: profile.index,
-            };
-            if !self.operation_is_running(&operation) {
-                if let Some(previous) = self.last_device_profile.get(&hw.id) {
-                    let _ = state.put(root, device_profile_key(hw.id), previous.as_str());
-                }
-                continue;
-            }
-            match self.gctl.set_device_profile(hw.id, profile.index) {
-                Ok(()) => {
-                    self.last_device_profile.insert(hw.id, choice);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio device profile changed.".into()),
-                    );
-                }
-                Err(e) => {
-                    if let Some(previous) = self.last_device_profile.get(&hw.id) {
-                        let _ = state.put(root, device_profile_key(hw.id), previous.as_str());
-                    }
-                    self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
-                    self.structure_dirty = true;
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Audio device profile could not be changed: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
-                }
-            }
+        if self.poll_hotplug() {
+            self.changed = true;
         }
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AudioPane::new())
-}
+impl PaneModel for AudioModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
+    }
 
-impl Widget for AudioPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
+    fn poll(&mut self) -> bool {
+        if self.prefs.refresh() {
+            self.changed = true;
+        }
         self.tick_sessions_and_hotplug();
-        self.seed_state(&mut state, &root);
-        if let Some(crate::actions::LocalPaneCommand::Audio(operation)) = self.command_state.get() {
-            self.command_state.set(None);
-            self.execute_local_command(&mut state, operation);
-        }
-        if self.has_pending_operation() {
-            self.apply_volume_controls(&mut state, &root);
-            self.apply_balance_and_mono(&mut state, &root);
-            self.apply_echo_cancellation(&mut state, &root);
-            self.apply_system_sounds(&mut state, &root);
-            self.apply_diagnostics_requests(&mut state, &root);
-            self.apply_device_selection(&mut state, &root);
-            self.apply_streams_and_profiles(&mut state, &root);
-        }
-        if let Some(c) = &mut self.composed {
-            c.sync(&mut state, &root);
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
         "AudioPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn busy(&self) -> bool {
+        self.mic_session.is_some() || self.channel_test.is_some()
     }
 
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
+    fn next_wake(&self) -> Option<Instant> {
+        (self.hotplug_interval != Duration::MAX)
+            .then(|| self.last_enum.unwrap_or_else(ui::time::now) + self.hotplug_interval)
+    }
+}
+
+/// An input that changes nothing.
+struct NoopInput;
+
+impl InputControl for NoopInput {
+    fn set_input_volume(&self, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The default output's volume and mute.
+pub trait OutputControl: Send + Sync {
+    /// # Errors
+    /// The mixer's message when the volume could not be set.
+    fn set_volume(&self, pct: f32) -> Result<(), String>;
+    /// # Errors
+    /// The mixer's message when the output could not be muted or unmuted.
+    fn set_mute(&self, muted: bool) -> Result<(), String>;
+}
+
+/// The default output, through the system's dispatcher.
+struct SystemOutput(Arc<dyn Dispatcher + Send + Sync>);
+
+impl OutputControl for SystemOutput {
+    fn set_volume(&self, pct: f32) -> Result<(), String> {
+        self.0.set_volume(pct)
+    }
+    fn set_mute(&self, muted: bool) -> Result<(), String> {
+        self.0.set_mute(muted)
+    }
+}
+
+/// An output that changes nothing.
+struct NoopOutput;
+
+impl OutputControl for NoopOutput {
+    fn set_volume(&self, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_mute(&self, _: bool) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -2426,6 +1731,7 @@ impl Widget for AudioPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+    use media::audio::NoopGraphControl;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2434,6 +1740,29 @@ mod tests {
     #[derive(Default)]
     struct RecordingInput {
         calls: Mutex<Vec<f32>>,
+    }
+
+    /// Levels that could not be read are reported, not drawn as sliders at
+    /// a made-up position.
+    #[test]
+    fn unreadable_levels_are_shown_as_errors() {
+        let profile = tempfile::tempdir().unwrap().keep();
+        let mut model = AudioModel::detached(PaneCx::in_file(profile.join("settings.json")));
+        model.volume_error = Some("wpctl: Could not connect to PipeWire".into());
+        model.input_error = Some("wpctl: Could not connect to PipeWire".into());
+        model.devices_error = Some("wpctl: Could not connect to PipeWire".into());
+        let text = crate::widgets::announced_text(model.compose().as_ref());
+        for expected in [
+            "Can't read the output volume: wpctl: Could not connect to PipeWire",
+            "Can't read the input level: wpctl: Could not connect to PipeWire",
+            "Can't list audio devices: wpctl: Could not connect to PipeWire",
+        ] {
+            assert!(
+                text.iter().any(|line| line == expected),
+                "{expected}: {text:#?}"
+            );
+        }
+        assert_eq!(parse_source_volume("Volume: 0.42 [MUTED]"), Some(0.42));
     }
 
     struct FakeSession {
@@ -2529,93 +1858,6 @@ mod tests {
         }
     }
 
-    /// Volume, mute and input sliders dispatch; replicated latches are inert.
-    #[test]
-    fn audio_device_controls_dispatch_only_local_intent() {
-        // Case `volume_slider_invokes_set_volume_on_drag`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, VOLUME_KEY, automerge::ScalarValue::F64(0.30));
-            pane.sync(&mut doc, &root);
-            let calls = rec.calls();
-            assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
-            assert!(calls[0].starts_with("set_volume("));
-            assert!(calls[0].contains("30."), "expected 30 in {:?}", calls[0]);
-        }
-
-        // Case `mute_toggle_sets_the_requested_state`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, MUTED_KEY, automerge::ScalarValue::Boolean(true));
-            pane.sync(&mut doc, &root);
-            let calls = rec.calls();
-            assert_eq!(calls, vec!["set_mute(true)"]);
-        }
-
-        // Case `replicated_audio_latches_are_inert_without_a_local_token`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let commands = ui::LocalState::new(None);
-            let mut pane =
-                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                    .with_command_state(&commands)
-                    .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-            let _ = doc.put(&root, VOLUME_KEY, 0.9);
-            let _ = doc.put(&root, MUTED_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert!(rec.calls().is_empty());
-            assert!(!pane.last_muted);
-        }
-
-        // Case `input_slider_invokes_input_control_on_drag`.
-        // The input-level slider forwards the new gain to the microphone
-        // `InputControl` exactly once per change, and not while it rests.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let input = Arc::new(RecordingInput::default());
-            let mut pane = AudioPane::with_controls(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                input.clone(),
-                0.5,
-                0.75,
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert!(
-                input.calls.lock().unwrap().is_empty(),
-                "seed must not dispatch"
-            );
-            // User drags the input slider to 40%.
-            let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root); // idempotent while at rest
-            let calls = input.calls.lock().unwrap().clone();
-            assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
-            assert!(
-                (calls[0] - 40.0).abs() < 0.5,
-                "expected ~40%, got {}",
-                calls[0]
-            );
-        }
-    }
-
     /// Records the device ids a `set_default` call switches to, so the picker
     /// test can assert the right node id reached the backend.
     #[derive(Default)]
@@ -2655,147 +1897,124 @@ Video
 "
     }
 
-    /// wpctl parsing, default sink/source switching, profiles and the persisted default.
+    fn model() -> AudioModel {
+        let profile = tempfile::tempdir().unwrap().keep();
+        AudioModel::detached(PaneCx::in_file(profile.join("settings.json")))
+    }
+
+    fn recording(rec: &Arc<RecordingDispatcher>) -> AudioModel {
+        let mut model = model();
+        model.output = Arc::new(SystemOutput(
+            Arc::clone(rec) as Arc<dyn Dispatcher + Send + Sync>
+        ));
+        model
+    }
+
+    /// Volume, mute and the input level reach their backends once each.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn audio_devices_parse_and_default_selection_switches_once() {
-        // Case `parse_wpctl_status_extracts_sinks_sources_and_default`.
-        {
-            let d = parse_wpctl_status(sample_status());
-            assert_eq!(d.sinks.len(), 2, "sinks: {:?}", d.sinks);
-            assert_eq!(d.sources.len(), 2, "sources: {:?}", d.sources);
-            assert_eq!(d.sinks[0].id, 51);
-            assert_eq!(d.sinks[0].name, "Built-in Audio Analog Stereo");
-            assert!(d.sinks[0].default, "the * marks the default sink");
-            assert_eq!(d.sinks[1].name, "HDMI / DisplayPort");
-            assert!(!d.sinks[1].default);
-            assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
-            // The camera in the Video section must not leak into audio devices.
-            assert!(!d.sources.iter().any(|s| s.name.contains("Camera")));
-            assert_eq!(d.sources[1].id, 54);
-            assert_eq!(d.sources[1].name, "USB Microphone");
-        }
+    fn volume_mute_and_input_reach_their_backends() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let input = Arc::new(RecordingInput::default());
+        let mut model = recording(&rec);
+        model.input = input.clone();
+        model
+            .apply(&AudioEffect::SetOutputVolume { volume: 0.30 })
+            .unwrap();
+        model
+            .apply(&AudioEffect::SetOutputMuted { muted: true })
+            .unwrap();
+        model
+            .apply(&AudioEffect::SetInputVolume { volume: 0.40 })
+            .unwrap();
+        let calls = rec.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].starts_with("set_volume(") && calls[0].contains("30."));
+        assert_eq!(calls[1], "set_mute(true)");
+        let inputs = input.calls.lock().unwrap().clone();
+        assert_eq!(inputs.len(), 1);
+        assert!((inputs[0] - 40.0).abs() < 0.5, "{inputs:?}");
+        assert!(model.muted);
+    }
 
-        // Case `parse_wpctl_status_empty_when_no_audio`.
-        {
-            assert_eq!(parse_wpctl_status(""), AudioDevices::default());
-        }
+    /// wpctl parsing, default sink/source switching, profiles and the
+    /// remembered default.
+    #[test]
+    fn audio_devices_parse_and_default_selection_switches() {
+        let d = parse_wpctl_status(sample_status());
+        assert_eq!(d.sinks.len(), 2, "sinks: {:?}", d.sinks);
+        assert_eq!(d.sources.len(), 2, "sources: {:?}", d.sources);
+        assert_eq!(d.sinks[0].id, 51);
+        assert_eq!(d.sinks[0].name, "Built-in Audio Analog Stereo");
+        assert!(d.sinks[0].default, "the * marks the default sink");
+        assert_eq!(d.sinks[1].name, "HDMI / DisplayPort");
+        assert!(!d.sinks[1].default);
+        assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
+        assert!(!d.sources.iter().any(|s| s.name.contains("Camera")));
+        assert_eq!(d.sources[1].id, 54);
+        assert_eq!(parse_wpctl_status(""), AudioDevices::default());
 
-        // Case `selecting_output_device_switches_default_once`.
-        // Choosing a different output device runs `set-default` with that sink's
-        // node id exactly once, and not again while it rests.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let dev = Arc::new(RecordingDevice::default());
-            let devices = parse_wpctl_status(sample_status());
-            let mut pane = AudioPane::with_controls(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                Arc::new(RealInput),
-                0.5,
-                0.75,
-            )
-            .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
-            assert_eq!(pane.devices().sinks.len(), 2, "picker has both sinks");
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert!(dev.calls.lock().unwrap().is_empty(), "seed must not switch");
-            // Pick the HDMI sink (node 52).
-            let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root); // idempotent at rest
-            assert_eq!(dev.calls.lock().unwrap().as_slice(), [52]);
-        }
+        let dev = Arc::new(RecordingDevice::default());
+        let mut model = model();
+        model.devices = d;
+        model.device = dev.clone();
+        model
+            .apply(&AudioEffect::SelectOutput {
+                device: "HDMI / DisplayPort".into(),
+            })
+            .unwrap();
+        model
+            .apply(&AudioEffect::SelectInput {
+                device: "USB Microphone".into(),
+            })
+            .unwrap();
+        assert_eq!(dev.calls.lock().unwrap().as_slice(), [52, 54]);
+        assert_eq!(
+            model
+                .cx
+                .settings::<AudioPrefs>()
+                .get()
+                .output_device
+                .as_deref(),
+            Some("HDMI / DisplayPort"),
+            "the chosen output is remembered"
+        );
+        assert!(
+            model
+                .apply(&AudioEffect::SelectOutput {
+                    device: "Not here".into()
+                })
+                .is_err()
+        );
 
-        // Case `selecting_input_device_switches_source_default`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let dev = Arc::new(RecordingDevice::default());
-            let devices = parse_wpctl_status(sample_status());
-            let mut pane = AudioPane::with_controls(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                Arc::new(RealInput),
-                0.5,
-                0.75,
-            )
-            .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, INPUT_DEVICE_KEY, "USB Microphone");
-            pane.sync(&mut doc, &root);
-            assert_eq!(dev.calls.lock().unwrap().as_slice(), [54]);
-        }
-
-        // Case `selecting_reported_profile_dispatches_real_pipewire_index`.
-        {
-            let rec = Arc::new(RecordingGraph::default());
-            let mut graph = graph_two_sinks_one_stream();
-            graph.hardware.push(AudioHardwareDevice {
-                id: 7,
-                description: "Headset".into(),
-                active_profile: Some(1),
-                profiles: vec![
-                    DeviceProfile {
-                        index: 1,
-                        name: "a2dp".into(),
-                        description: "High Fidelity".into(),
-                        available: true,
-                    },
-                    DeviceProfile {
-                        index: 2,
-                        name: "hfp".into(),
-                        description: "Headset microphone".into(),
-                        available: true,
-                    },
-                ],
-            });
-            let disp = Arc::new(RecordingDispatcher::default());
-            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-                .with_graph(graph, rec.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, device_profile_key(7), "Headset microphone");
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root);
-            assert_eq!(rec.calls(), vec!["profile(7,2)"]);
-        }
-
-        // Case `choosing_a_default_sink_persists_the_preference`.
-        {
-            // Redirect the config dir so this never touches the real settings.json.
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let dev = Arc::new(RecordingDevice::default());
-            let devices = parse_wpctl_status(sample_status());
-            let mut pane = AudioPane::with_controls(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                Arc::new(RealInput),
-                0.5,
-                0.75,
-            )
-            .with_devices(devices, dev as Arc<dyn DeviceControl>);
-            // Enable the real persist path for this test (the test constructors
-            // disable it so the suite never writes real prefs).
-            pane.persist_prefs = true;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Choose the HDMI output as the default sink.
-            let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
-            pane.sync(&mut doc, &root);
-            // The choice survives to the shared prefs store.
-            let saved = SystemPrefs::load().audio.output_device;
-            assert_eq!(
-                saved.as_deref(),
-                Some("HDMI / DisplayPort"),
-                "default sink preference persisted"
-            );
-        }
+        let rec = Arc::new(RecordingGraph::default());
+        let mut graph = graph_two_sinks_one_stream();
+        graph.hardware.push(AudioHardwareDevice {
+            id: 7,
+            description: "Headset".into(),
+            active_profile: Some(1),
+            profiles: vec![
+                DeviceProfile {
+                    index: 1,
+                    name: "a2dp".into(),
+                    description: "High Fidelity".into(),
+                    available: true,
+                },
+                DeviceProfile {
+                    index: 2,
+                    name: "hfp".into(),
+                    description: "Headset microphone".into(),
+                    available: true,
+                },
+            ],
+        });
+        let mut model = self::model().with_graph(graph, rec.clone());
+        model
+            .apply(&AudioEffect::SetDeviceProfile {
+                device: 7,
+                profile: "Headset microphone".into(),
+            })
+            .unwrap();
+        assert_eq!(rec.calls(), vec!["profile(7,2)"]);
     }
 
     // --- Per-application routing -------------------------------------------
@@ -2894,23 +2113,13 @@ Video
         }
     }
 
-    fn routing_pane(gctl: Arc<dyn GraphControl>) -> AudioPane {
-        let disp = Arc::new(RecordingDispatcher::default());
-        AudioPane::with_controls(
-            disp as Arc<dyn Dispatcher + Send + Sync>,
-            Arc::new(RealInput),
-            0.5,
-            0.75,
-        )
-        .with_graph(graph_two_sinks_one_stream(), gctl)
+    fn routing_model(gctl: Arc<dyn GraphControl>) -> AudioModel {
+        model().with_graph(graph_two_sinks_one_stream(), gctl)
     }
 
-    /// Bounded diagnostics, hotplugged sinks, and balance/mono persistence without owning the transform.
+    /// Bounded diagnostics, hotplugged sinks, and balance/mono settings
+    /// without owning the transform.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn audio_diagnostics_hotplug_and_transforms_stay_bounded() {
         // Case `diagnostics_are_bounded_while_persistent_transforms_have_no_pane_owner`.
         {
@@ -2931,24 +2140,32 @@ Video
                 channels: 1,
                 codec: None,
             });
-            let disp = Arc::new(RecordingDispatcher::default());
-            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-                .with_graph(graph, Arc::new(NoopGraphControl))
-                .with_runtime(runtime.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, BALANCE_KEY, 0.75);
-            let _ = doc.put(&root, MONO_KEY, true);
-            let _ = doc.put(&root, TEST_LEFT_KEY, true);
-            let _ = doc.put(&root, MIC_TEST_KEY, true);
-            pane.sync(&mut doc, &root);
+            let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
+            model.runtime_caps = runtime.capabilities();
+            model.runtime = runtime.clone();
+            model
+                .cx
+                .settings::<AudioPrefs>()
+                .update(|prefs| prefs.balance = 0.75)
+                .unwrap();
+            model
+                .apply(&AudioEffect::SetMonoOutput { on: true })
+                .unwrap();
+            model
+                .apply(&AudioEffect::TestSpeaker {
+                    channel: "left".into(),
+                })
+                .unwrap();
+            model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
             assert_eq!(
                 runtime.calls.lock().unwrap().as_slice(),
                 ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
             );
             assert_eq!(drops.load(Ordering::SeqCst), 0);
-            drop(pane);
+            let prefs = model.cx.settings::<AudioPrefs>().get();
+            assert!((prefs.balance - 0.75).abs() < 0.001);
+            assert!(prefs.mono_output);
+            drop(model);
             assert_eq!(
                 drops.load(Ordering::SeqCst),
                 2,
@@ -2958,8 +2175,6 @@ Video
 
         // Case `hotplug_adds_a_newly_plugged_sink`.
         {
-            // Start with only the Speakers sink; the graph the enumerator returns
-            // has gained a Headphones sink (a headset was plugged in).
             let mut before = graph_two_sinks_one_stream();
             before.sinks.retain(|d| d.description == "Speakers");
             before.playback_streams.clear();
@@ -2968,149 +2183,69 @@ Video
                 g.playback_streams.clear();
                 g
             };
-            let rec = Arc::new(RecordingGraph::default());
-            let disp = Arc::new(RecordingDispatcher::default());
-            let mut pane = AudioPane::with_controls(
-                disp as Arc<dyn Dispatcher + Send + Sync>,
-                Arc::new(RealInput),
-                0.5,
-                0.75,
-            )
-            .with_graph(before, rec)
-            .with_hotplug(Arc::new(Scripted {
+            let mut model = model().with_graph(before, Arc::new(RecordingGraph::default()));
+            model.enumerator = Arc::new(Scripted {
                 seq: vec![after],
                 idx: Mutex::new(0),
-            }));
-            assert_eq!(pane.graph().sinks.len(), 1, "starts with one sink");
-
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root); // re-enumerates → adopts the plugged-in sink
-
-            assert_eq!(
-                pane.graph().sinks.len(),
-                2,
-                "the headset appeared in the graph"
-            );
-            assert!(
-                pane.graph()
-                    .sinks
-                    .iter()
-                    .any(|d| d.description == "Headphones")
-            );
-            // …and it is selectable in the output-device picker (device view).
-            assert_eq!(
-                pane.devices().sinks.len(),
-                2,
-                "the picker gained the headset"
-            );
-            assert!(pane.devices().sinks.iter().any(|d| d.name == "Headphones"));
-        }
-
-        // Case `balance_and_mono_persist_without_settings_owning_the_transform`.
-        {
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let runtime = Arc::new(RecordingRuntime {
-                calls: Mutex::new(Vec::new()),
-                drops: Arc::new(AtomicUsize::new(0)),
             });
-            let disp = Arc::new(RecordingDispatcher::default());
-            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-                .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
-                .with_runtime(runtime.clone());
-            pane.persist_prefs = true;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, BALANCE_KEY, 0.8);
-            let _ = doc.put(&root, MONO_KEY, true);
-            pane.sync(&mut doc, &root);
-
-            let saved = SystemPrefs::load().audio;
-            assert!((saved.balance - 0.8).abs() < 0.001);
-            assert!(saved.mono_output);
-            assert!(
-                runtime.calls.lock().unwrap().is_empty(),
-                "the compositor session, not Settings, actuates persistent transforms"
-            );
+            model.hotplug_interval = Duration::ZERO;
+            model.last_enum = None;
+            assert_eq!(model.graph().sinks.len(), 1, "starts with one sink");
+            assert!(model.poll(), "the plugged-in sink is adopted");
+            assert_eq!(model.graph().sinks.len(), 2);
+            assert!(model.devices().sinks.iter().any(|d| d.name == "Headphones"));
         }
     }
 
-    /// Stream seeding rests; routing, unrouting, per-app volume and mute dispatch once.
+    /// Routing, unrouting, per-app volume and mute each reach the graph;
+    /// a stream that is gone is refused.
     #[test]
-    fn per_app_streams_route_and_mix_once_each() {
-        // Case `stream_seed_rests_without_dispatch`.
-        {
-            let rec = Arc::new(RecordingGraph::default());
-            let mut pane = routing_pane(rec.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root);
-            assert!(
-                rec.calls().is_empty(),
-                "seeding a stream must dispatch nothing: {:?}",
-                rec.calls()
-            );
-            // The stream on the default sink seeds its picker to "Default".
-            assert_eq!(
-                read_str_or_text(&doc, &root, stream_sink_key(84)).as_deref(),
-                Some(FOLLOW_DEFAULT)
-            );
+    fn per_app_streams_route_and_mix() {
+        let rec = Arc::new(RecordingGraph::default());
+        let mut model = routing_model(rec.clone());
+        assert_eq!(
+            model.stream_target_label(&model.graph.playback_streams[0].clone()),
+            follow_shown(),
+            "a stream on the default sink follows it"
+        );
+        for effect in [
+            AudioEffect::RouteStream {
+                stream: 84,
+                device: "Headphones".into(),
+            },
+            AudioEffect::RouteStream {
+                stream: 84,
+                device: FOLLOW_DEFAULT.into(),
+            },
+            AudioEffect::SetStreamVolume {
+                stream: 84,
+                volume: 0.30,
+            },
+            AudioEffect::SetStreamMuted {
+                stream: 84,
+                muted: true,
+            },
+        ] {
+            model.apply(&effect).unwrap();
         }
-
-        // Case `routing_one_app_to_a_sink_moves_only_that_stream_once`.
-        {
-            let rec = Arc::new(RecordingGraph::default());
-            let mut pane = routing_pane(rec.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Route just the music app to the Headphones sink.
-            let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root); // idempotent at rest
-            // Headphones' object.serial is 269 — the routing handle, not its node id.
-            assert_eq!(rec.calls(), vec!["route(84,269)"]);
-        }
-
-        // Case `routing_an_app_back_to_default_unroutes_it`.
-        {
-            let rec = Arc::new(RecordingGraph::default());
-            let mut pane = routing_pane(rec.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Move it off default…
-            let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
-            pane.sync(&mut doc, &root);
-            // …then back to Default clears the explicit target.
-            let _ = doc.put(&root, stream_sink_key(84).as_str(), FOLLOW_DEFAULT);
-            pane.sync(&mut doc, &root);
-            assert_eq!(rec.calls(), vec!["route(84,269)", "unroute(84)"]);
-        }
-
-        // Case `per_app_volume_and_mute_dispatch_once_each`.
-        {
-            let rec = Arc::new(RecordingGraph::default());
-            let mut pane = routing_pane(rec.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(
-                &root,
-                stream_volume_key(84).as_str(),
-                automerge::ScalarValue::F64(0.30),
-            );
-            let _ = doc.put(
-                &root,
-                stream_muted_key(84).as_str(),
-                automerge::ScalarValue::Boolean(true),
-            );
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root); // idempotent at rest
-            assert_eq!(rec.calls(), vec!["volume(84,0.30)", "mute(84,true)"]);
-        }
+        // Headphones' object.serial is 269 — the routing handle, not its node id.
+        assert_eq!(
+            rec.calls(),
+            vec![
+                "route(84,269)",
+                "unroute(84)",
+                "volume(84,0.30)",
+                "mute(84,true)"
+            ]
+        );
+        assert!(
+            model
+                .apply(&AudioEffect::SetStreamMuted {
+                    stream: 999,
+                    muted: true
+                })
+                .is_err()
+        );
     }
 
     /// A scripted enumerator: each `enumerate()` yields the next graph in the
@@ -3132,75 +2267,44 @@ Video
     }
 
     #[test]
-    fn reduce_echo_in_calls_round_trips_through_the_shared_store() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
+    fn echo_cancellation_and_system_sounds_are_the_persons_settings() {
+        let mut model = model();
         assert!(
-            SystemPrefs::load().audio.echo_cancellation,
+            model.cx.settings::<AudioPrefs>().get().echo_cancellation,
             "calls are echo-cancelled until the person turns it off"
         );
-        let runtime = Arc::new(RecordingRuntime {
-            calls: Mutex::new(Vec::new()),
-            drops: Arc::new(AtomicUsize::new(0)),
-        });
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
-            .with_runtime(runtime.clone());
-        pane.persist_prefs = true;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, ECHO_CANCELLATION_KEY), Some(true));
+        model
+            .apply(&AudioEffect::SetEchoCancellation { on: false })
+            .unwrap();
+        assert!(!model.cx.settings::<AudioPrefs>().get().echo_cancellation);
 
-        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, false);
-        pane.sync(&mut doc, &root);
-        assert!(!SystemPrefs::load().audio.echo_cancellation);
-
-        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(SystemPrefs::load().audio.echo_cancellation);
-        assert!(
-            runtime.calls.lock().unwrap().is_empty(),
-            "the compositor session, not Settings, owns the echo-cancelled microphone"
-        );
-    }
-
-    #[test]
-    fn system_sound_choices_round_trip_through_the_shared_store() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-            .with_sound_themes(vec![
-                SoundTheme {
-                    id: "freedesktop".into(),
-                    name: "Default".into(),
-                },
-                SoundTheme {
-                    id: "ocean".into(),
-                    name: "Ocean".into(),
-                },
-            ]);
-        pane.persist_prefs = true;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, SYSTEM_SOUNDS_KEY), Some(true));
-        assert_eq!(
-            read_str_or_text(&doc, &root, SOUND_THEME_KEY).as_deref(),
-            Some("Default")
-        );
-        let low_battery = event_sound_key(SystemSoundEvent::LowBattery);
-        assert_eq!(read_bool(&doc, &root, low_battery.as_str()), Some(true));
-
-        let _ = doc.put(&root, SYSTEM_SOUND_VOLUME_KEY, 0.3);
-        let _ = doc.put(&root, SOUND_THEME_KEY, "Ocean");
-        let _ = doc.put(
-            &root,
-            event_sound_key(SystemSoundEvent::VolumeChange),
-            false,
-        );
-        pane.sync(&mut doc, &root);
-        let saved = SystemPrefs::load().audio.system_sounds;
+        model.sound_themes = vec![
+            SoundTheme {
+                id: "freedesktop".into(),
+                name: "Default".into(),
+            },
+            SoundTheme {
+                id: "ocean".into(),
+                name: "Ocean".into(),
+            },
+        ];
+        model.event_sounds_available = true;
+        model
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.volume = 0.3)
+            .unwrap();
+        model
+            .apply(&AudioEffect::SetSoundTheme {
+                theme: "Ocean".into(),
+            })
+            .unwrap();
+        model
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.events.volume_change = false)
+            .unwrap();
+        let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!((saved.volume - 0.3).abs() < 0.001);
         assert_eq!(saved.theme.as_deref(), Some("ocean"));
         assert!(!saved.events.volume_change);
@@ -3209,19 +2313,29 @@ Video
             "untouched events keep their choice"
         );
 
-        let _ = doc.put(&root, SOUND_THEME_KEY, "Default");
-        let _ = doc.put(&root, SYSTEM_SOUNDS_KEY, false);
-        pane.sync(&mut doc, &root);
-        let saved = SystemPrefs::load().audio.system_sounds;
+        model
+            .apply(&AudioEffect::SetSoundTheme {
+                theme: "Default".into(),
+            })
+            .unwrap();
+        model
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.enabled = false)
+            .unwrap();
+        let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!(!saved.enabled);
         assert_eq!(
             saved.theme, None,
             "the default theme is stored as no choice"
         );
-        assert!(!saved.events.volume_change);
-
-        let _ = doc.put(&root, SOUND_THEME_KEY, "Not installed");
-        pane.sync(&mut doc, &root);
-        assert_eq!(SystemPrefs::load().audio.system_sounds, saved);
+        assert!(
+            model
+                .apply(&AudioEffect::SetSoundTheme {
+                    theme: "Not installed".into()
+                })
+                .is_err()
+        );
+        assert_eq!(model.cx.settings::<AudioPrefs>().get().system_sounds, saved);
     }
 }

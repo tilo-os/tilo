@@ -1,7 +1,15 @@
 """Stage public installer plumbing without rebuilding the native installer."""
 import hashlib,shutil
 from pathlib import Path
-OVERRIDES=('usr/libexec/tilo-install','usr/libexec/tilo-verified-boot-install-preflight')
+# Text helpers only: the compiled installer helpers (tilo-install-handoff-copy,
+# tilo-install-dev-ssh, tilo-vm-bootc-copy-cache, tilo-installer-offline-target,
+# tilo-staging-handoff, tilo-vm-install-proof) come with the base image, from
+# os/components.toml.
+OVERRIDES=('usr/libexec/tilo-install','usr/libexec/tilo-verified-boot-install-preflight',
+           'usr/libexec/tilo-installer-dev-target-uki.py',
+           'usr/libexec/tilo-installer-code-protocol.py',
+           'usr/libexec/tilo-installer-code-refresh.py',
+           'usr/lib/systemd/system/tilo-installer-code-refresh.service')
 def stage(source,helpers,context):
  source=Path(source)/'os';helpers=Path(helpers)/'os';context=Path(context)
  if context.exists():raise ValueError('fresh installer context required')

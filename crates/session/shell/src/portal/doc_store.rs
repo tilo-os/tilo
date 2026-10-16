@@ -42,9 +42,6 @@ use crate::shell::state::FsMode;
 /// Where the store appears inside a sandbox.
 pub const SANDBOX_DOC_DIR: &str = "/run/tilo/documents";
 
-/// Env var naming [`SANDBOX_DOC_DIR`] inside the sandbox.
-pub const DOC_DIR_ENV: &str = "TILO_DOC_DIR";
-
 /// The projected workspace tree — not part of the store, named here because the picker's default scope reaches it.
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 

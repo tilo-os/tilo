@@ -1,13 +1,14 @@
 //! Pure data model for the chat workspace.
 //!
 //! These types are the in-memory projection of the Automerge document
-//! (see [`crate::doc`]). The convergent state — channels, messages,
+//! (see [`crate::record`]). The convergent state — channels, messages,
 //! reactions, edit history, threads, attachments — lives in the CRDT;
 //! this module is just the strongly-typed view the renderer consumes,
 //! plus the pure helper logic (message grouping, reply counts, reaction
 //! toggling) that has no business reaching into Automerge.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
 
 /// String identifier (UUID or stable seed key). Used as Automerge map
 /// keys so it must round-trip as a plain string.
@@ -21,8 +22,22 @@ pub const ME: &str = "u_me";
 /// within this many seconds of each other (Slack/Discord convention).
 pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A text channel holds a conversation; a voice channel holds a call.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::Model,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
+    #[default]
     Text,
     Voice,
 }
@@ -46,17 +61,32 @@ impl ChannelKind {
             ChannelKind::Text => "text",
         }
     }
-    /// Channel-list glyph: `#` for text, a speaker for voice.
-    pub fn glyph(self) -> &'static str {
+    /// How a channel of this kind is named in a label: `#name` for a text
+    /// channel, "name, voice channel" for a voice channel.
+    pub fn label(self, name: &str) -> String {
         match self {
-            ChannelKind::Text => "#",
-            ChannelKind::Voice => "\u{1F50A}",
+            ChannelKind::Text => format!("#{name}"),
+            ChannelKind::Voice => format!("{name}, voice channel"),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whether someone is around.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::Model,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Presence {
+    #[default]
     Online,
     Idle,
     Dnd,
@@ -110,7 +140,9 @@ pub struct Category {
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
-    /// active channel still shows so you never lose your place).
+    /// active channel still shows so you never lose your place). Each
+    /// person's own ([`crate::preferences::ChatPreferences`]), not the
+    /// document's.
     pub collapsed: bool,
 }
 
@@ -132,6 +164,8 @@ pub struct Channel {
     /// the document (and reachable via the Ctrl+K command palette to unarchive).
     /// Convergent state — a plain scalar flag toggled by an action.
     pub archived: bool,
+    /// Bare authenticated Agent id for a system-created direct conversation.
+    pub conversation_with: Option<Id>,
 }
 
 /// One person currently connected to a voice channel, with their live
@@ -176,45 +210,6 @@ pub struct VideoCaps {
     pub software_decode: Vec<String>,
 }
 
-/// How a call's media is routed. Peer-to-peer below the mesh threshold (each
-/// peer sends directly to every other); host-relay above it (peers publish to
-/// one designated host that re-fans the streams), which keeps a growing call's
-/// upload bandwidth flat. Chosen from the live participant count, so a call
-/// transparently promotes from P2P to host-based as people join.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CallSession {
-    Peer,
-    Host,
-}
-
-impl CallSession {
-    /// Mesh P2P stays practical up to a small fan-out; beyond it the call
-    /// switches to a host relay.
-    pub const PEER_MAX: usize = 3;
-
-    pub fn select(participants: usize) -> Self {
-        if participants <= Self::PEER_MAX {
-            CallSession::Peer
-        } else {
-            CallSession::Host
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CallSession::Peer => "peer-to-peer",
-            CallSession::Host => "host relay",
-        }
-    }
-}
-
-/// The designated relay host for a host-based call: the lexicographically
-/// smallest member id, so every peer independently agrees who relays with **no
-/// extra signalling round-trip**. `None` for an empty call.
-pub fn call_host(members: &[VoiceMember]) -> Option<Id> {
-    members.iter().map(|m| m.user.clone()).min()
-}
-
 #[derive(Clone, Debug)]
 pub struct User {
     pub id: Id,
@@ -239,9 +234,8 @@ pub enum Attachment {
     },
     /// A video addressed by its content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes are read from the content store on demand (a full
-    /// frame decode needs the media engine's decoder — see [`crate::media`] —
-    /// available only in the `live-media` build), never copied into the CRDT.
+    /// bytes are read from the content store on demand, never copied into
+    /// the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
     /// wasn't probed).
     Video {
@@ -295,7 +289,7 @@ impl Reaction {
 }
 
 /// One prior version of a message body, captured when the author edits.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditRecord {
     pub ts: i64,
     pub text: String,
@@ -329,6 +323,8 @@ pub struct Message {
     /// the file the author had selected without reading `text` and without
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Host-resolved existing record provider for this reference.
+    pub source_provider: Option<String>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -340,6 +336,9 @@ pub struct Message {
     /// ordinary message, which is what keeps it honest as "an agent took this
     /// on" rather than a field every message carries an empty version of.
     pub work: Option<AgentWork>,
+    /// The name and avatar a bot showed for this message instead of its own
+    /// (a bridge posting an outside user's line). The author stays the bot.
+    pub appearance: Option<tilo_actions::Appearance>,
 }
 
 impl Message {
@@ -355,19 +354,6 @@ impl Message {
 
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
-    }
-
-    /// Whether this message refers to `user`. The question a notification, a
-    /// badge or an agent watching the room actually asks — answered from
-    /// structure, so it never depends on how the body happens to be spelled.
-    pub fn mentions_user(&self, user: &str) -> bool {
-        self.mentions.iter().any(|m| m.user == user)
-    }
-
-    /// Every participant this message refers to, in the order they appear.
-    /// Duplicates are kept: two mentions of one person are two references.
-    pub fn mentioned_ids(&self) -> impl Iterator<Item = &str> {
-        self.mentions.iter().map(|m| m.user.as_str())
     }
 }
 
@@ -529,6 +515,76 @@ impl AgentStepOutcome {
 }
 
 impl AgentWork {
+    /// What an agent reports of its work, refusing a state, route or outcome
+    /// it does not name.
+    ///
+    /// # Errors
+    /// Returns why the report is not a record of work.
+    pub fn from_update(update: &crate::record::WorkUpdate) -> Result<Self, String> {
+        let text = |value: &Option<String>| value.clone().unwrap_or_default();
+        let state = match update.state.as_str() {
+            "taken" => AgentWorkState::Taken,
+            "waiting" => AgentWorkState::Waiting {
+                app: text(&update.app),
+            },
+            "doing" => AgentWorkState::Doing {
+                did: text(&update.did),
+                about: text(&update.about),
+            },
+            "done" => AgentWorkState::Done {
+                did: text(&update.did),
+            },
+            "refused" => AgentWorkState::Refused,
+            other => return Err(format!("`{other}` is not a state of an agent's work")),
+        };
+        let reasoning = match update.route.as_deref() {
+            None => None,
+            Some("model") => Some(AgentReasoning {
+                route: AgentRoute::Model,
+                why: text(&update.why),
+            }),
+            Some("floor") => Some(AgentReasoning {
+                route: AgentRoute::Floor,
+                why: text(&update.why),
+            }),
+            Some(other) => return Err(format!("`{other}` is not a route")),
+        };
+        let mut trace = Vec::with_capacity(update.trace.len());
+        for step in &update.trace {
+            if step.id.is_empty() || step.id.len() > 128 {
+                return Err("a dispatched step carries the id minted when it was".into());
+            }
+            let outcome = match step.outcome.as_str() {
+                "asked" => AgentStepOutcome::Asked,
+                "applied" => AgentStepOutcome::Applied,
+                "no_change" => AgentStepOutcome::NoChange,
+                "refused" => AgentStepOutcome::Refused {
+                    why: text(&step.why),
+                },
+                other => return Err(format!("`{other}` is not an outcome")),
+            };
+            trace.push(AgentStep {
+                id: step.id.clone(),
+                sequence: step.sequence,
+                resource: step.resource.clone(),
+                label: step.label.clone(),
+                outcome,
+            });
+        }
+        Ok(Self {
+            state,
+            since: 0,
+            reasoning,
+            trace,
+        })
+    }
+
+    /// Its state, reasoning and trace.
+    #[must_use]
+    pub fn into_parts(self) -> (AgentWorkState, Option<AgentReasoning>, Vec<AgentStep>) {
+        (self.state, self.reasoning, self.trace)
+    }
+
     pub fn new(state: AgentWorkState, since: i64) -> Self {
         Self {
             state,
@@ -669,52 +725,23 @@ pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<Id> {
     seen
 }
 
-/// Toggle `user`'s reaction with `emoji` on a reaction set. Adds the emoji
-/// (and user) when absent, removes the user when present, and drops the
-/// emoji entirely once nobody is left reacting. Returns the resulting
-/// "is the user now reacting" flag. Pure — the CRDT writer mirrors this.
-pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -> bool {
-    if let Some(pos) = reactions.iter().position(|r| r.emoji == emoji) {
-        let Some(r) = reactions.get_mut(pos) else {
-            return false;
-        };
-        if let Some(uidx) = r.users.iter().position(|u| u == user) {
-            r.users.remove(uidx);
-            if r.users.is_empty() {
-                reactions.remove(pos);
-            }
-            false
-        } else {
-            r.users.push(user.to_string());
-            true
-        }
-    } else {
-        reactions.push(Reaction {
-            emoji: emoji.to_string(),
-            users: vec![user.to_string()],
-        });
-        true
-    }
-}
-
-/// Format an epoch-seconds timestamp as a 24-hour `HH:MM` clock.
+/// An epoch-seconds timestamp's time of day, as the person reads clocks.
 pub fn clock(ts: i64) -> String {
     let secs_in_day = ts.rem_euclid(86_400);
-    let h = secs_in_day / 3600;
-    let m = (secs_in_day % 3600) / 60;
-    format!("{h:02}:{m:02}")
+    ui::clock::hour_minute(
+        ui::num::u32_of_i64(secs_in_day / 3600),
+        ui::num::u32_of_i64(secs_in_day % 3600 / 60),
+    )
 }
 
 /// Human relative label for a message timestamp relative to `now` —
-/// "Today" / "Yesterday" / "{n}d ago". Used for the date divider.
+/// "Today" / "Yesterday" / "3 days ago", in the desktop's language. Used
+/// for the date divider.
 pub fn day_label(ts: i64, now: i64) -> String {
     let day = ts.div_euclid(86_400);
     let today = now.div_euclid(86_400);
-    match today - day {
-        d if d <= 0 => "Today".to_string(),
-        1 => "Yesterday".to_string(),
-        d => format!("{d} days ago"),
-    }
+    let ago = (today - day).max(0);
+    ui::format::near_day(-ago).unwrap_or_else(|| ui::format::relative(ago * 86_400))
 }
 
 #[cfg(test)]
@@ -735,9 +762,11 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            source_provider: None,
             attachment: None,
             pinned: false,
             work: None,
+            appearance: None,
         }
     }
 
@@ -788,21 +817,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_reaction_adds_removes_and_prunes() {
-        let mut rx: Vec<Reaction> = vec![];
-        assert!(toggle_reaction(&mut rx, "👍", "u1"));
-        assert_eq!(rx.len(), 1);
-        assert!(toggle_reaction(&mut rx, "👍", "u2"));
-        assert_eq!(rx[0].count(), 2);
-        // u1 removes — emoji survives with u2.
-        assert!(!toggle_reaction(&mut rx, "👍", "u1"));
-        assert_eq!(rx[0].count(), 1);
-        // u2 removes — emoji pruned.
-        assert!(!toggle_reaction(&mut rx, "👍", "u2"));
-        assert!(rx.is_empty());
-    }
-
-    #[test]
     fn timestamps_format_as_a_24h_clock_and_a_relative_day() {
         // Phase: clock_formats_24h.
         {
@@ -816,47 +830,6 @@ mod tests {
             assert_eq!(day_label(now, now), "Today");
             assert_eq!(day_label(now - 86_400, now), "Yesterday");
             assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
-        }
-    }
-
-    fn vm(user: &str) -> VoiceMember {
-        VoiceMember {
-            user: user.into(),
-            talking: false,
-            muted: false,
-            deafened: false,
-            audio_only: false,
-            sharing: false,
-            ticket: None,
-            video: None,
-        }
-    }
-
-    #[test]
-    fn call_topology_and_host_are_chosen_deterministically() {
-        // Phase: call_session_promotes_from_p2p_to_host_relay.
-        {
-            // Small calls mesh peer-to-peer; past the threshold they switch to a
-            // host relay so a growing call's upload bandwidth stays flat.
-            assert_eq!(CallSession::select(1), CallSession::Peer);
-            assert_eq!(
-                CallSession::select(CallSession::PEER_MAX),
-                CallSession::Peer
-            );
-            assert_eq!(
-                CallSession::select(CallSession::PEER_MAX + 1),
-                CallSession::Host
-            );
-            assert_eq!(CallSession::Peer.label(), "peer-to-peer");
-            assert_eq!(CallSession::Host.label(), "host relay");
-        }
-        // Phase: call_host_is_the_deterministic_smallest_id.
-        {
-            // Every peer independently agrees on the host (smallest id) with no
-            // extra signalling round-trip.
-            let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
-            assert_eq!(call_host(&members), Some("u_alice".to_string()));
-            assert_eq!(call_host(&[]), None);
         }
     }
 }

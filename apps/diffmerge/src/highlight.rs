@@ -9,18 +9,35 @@
 //! panel's own origin and size.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use ui::paint::PaintCtx;
-use ui::text_render::TextStyle;
+use ui::tokens::TextRole;
 use ui::widget::code_editor::{Span, SyntaxHighlighter};
 use vello::kurbo::Point;
 
-/// The grammar for a panel label such as `"rate_limiter.rs · HEAD"` or a
-/// path: its file extension, else its whole file name (`Dockerfile`), else
-/// plain text.
+/// A panel label as the file it names and the revision it shows: the label
+/// `rate_limiter.rs (working tree)` is `("rate_limiter.rs", Some("working tree"))`.
+pub fn split_label(label: &str) -> (&str, Option<&str>) {
+    let label = label.trim();
+    match label.rsplit_once(" (") {
+        Some((name, rest)) if rest.ends_with(')') => {
+            (name.trim_end(), rest.strip_suffix(')').map(str::trim))
+        }
+        _ => (label, None),
+    }
+}
+
+/// The file a panel label names: the label without its revision.
+pub fn file_name(label: &str) -> &str {
+    split_label(label).0
+}
+
+/// The grammar for a panel label such as `"rate_limiter.rs (working tree)"`
+/// or a path: its file extension, else its whole file name (`Dockerfile`),
+/// else plain text.
 pub fn grammar_for_label(label: &str) -> SyntaxHighlighter {
-    let name = label.split(" · ").next().unwrap_or(label).trim();
-    let path = Path::new(name);
+    let path = Path::new(file_name(label));
     path.extension()
         .and_then(|ext| ext.to_str())
         .and_then(SyntaxHighlighter::for_token)
@@ -37,24 +54,144 @@ pub fn document<'a>(
     grammar: &SyntaxHighlighter,
     lines: impl IntoIterator<Item = &'a str>,
 ) -> Vec<Vec<Span>> {
-    let mut state = grammar.start();
-    lines
+    shared_document(grammar, lines)
         .into_iter()
-        .map(|line| state.highlight_line(line))
+        .map(|spans| spans.to_vec())
         .collect()
 }
 
-/// Paint `text` at `origin` (the glyph top) as runs coloured by `spans`. A
-/// line with no spans (its side was never tokenized) paints as body text.
-pub fn draw_line(
-    ctx: &mut PaintCtx<'_>,
-    origin: Point,
-    text: &str,
-    spans: &[Span],
-    font_size: f32,
-) {
+/// Continuous tokenization with a bounded cache for repeated source lines.
+/// Reuse requires the exact incoming parser state as well as the line, so
+/// identical text inside a comment or multiline string never gets code colours.
+/// Shared immutable spans avoid allocating the same token runs for each copy.
+pub fn shared_document<'a>(
+    grammar: &SyntaxHighlighter,
+    lines: impl IntoIterator<Item = &'a str>,
+) -> Vec<Arc<[Span]>> {
+    let mut state = grammar.start();
+    let mut previous: Option<(
+        &str,
+        ui::widget::code_editor::SyntaxState,
+        ui::widget::code_editor::SyntaxState,
+        Arc<[Span]>,
+    )> = None;
+    lines
+        .into_iter()
+        .map(|line| {
+            if let Some((old_line, incoming, outgoing, spans)) = &previous
+                && *old_line == line
+                && *incoming == state
+            {
+                state = outgoing.clone();
+                return Arc::clone(spans);
+            }
+            let incoming = state.clone();
+            let spans: Arc<[Span]> = state.highlight_line(line).into();
+            previous = Some((line, incoming, state.clone(), Arc::clone(&spans)));
+            spans
+        })
+        .collect()
+}
+
+/// A large source's continuous syntax pass, streamed through the host's
+/// background executor. Replacing a comparison drops the receiver and stops
+/// further chunks; no stale results can colour the replacement.
+pub struct BackgroundDocument {
+    receiver: std::sync::mpsc::Receiver<SyntaxChunk>,
+    background: ui::rt::background::Background,
+    wake: ui::WakeHandle,
+}
+
+struct SyntaxChunk {
+    source: Arc<str>,
+    state: ui::widget::code_editor::SyntaxState,
+    offset: usize,
+    spans: Vec<Arc<[Span]>>,
+}
+
+impl SyntaxChunk {
+    fn parse(mut self) -> Self {
+        // One queued unit is bounded by eight complete source lines. Keeping
+        // the exact parser state makes comments/strings continuous even in a
+        // single-threaded browser's background executor.
+        self.spans.clear();
+        for line in self
+            .source
+            .get(self.offset..)
+            .unwrap_or_default()
+            .split_inclusive('\n')
+            .take(8)
+        {
+            self.offset = self.offset.saturating_add(line.len());
+            let line = line.strip_suffix('\n').unwrap_or(line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            self.spans.push(Arc::from(self.state.highlight_line(line)));
+        }
+        self
+    }
+}
+
+impl BackgroundDocument {
+    pub fn start(label: &str, text: &str, wake: ui::WakeHandle) -> Option<Self> {
+        let chunk = SyntaxChunk {
+            source: Arc::from(text),
+            state: grammar_for_label(label).start(),
+            offset: 0,
+            spans: Vec::new(),
+        };
+        let background = ui::rt::background::Background::current();
+        let receiver = Self::queue(&background, &wake, chunk)?;
+        Some(Self {
+            receiver,
+            background,
+            wake,
+        })
+    }
+
+    fn queue(
+        background: &ui::rt::background::Background,
+        wake: &ui::WakeHandle,
+        chunk: SyntaxChunk,
+    ) -> Option<std::sync::mpsc::Receiver<SyntaxChunk>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = wake.clone();
+        background
+            .spawn("diffmerge-syntax", move || {
+                if sender.send(chunk.parse()).is_ok() {
+                    wake.wake();
+                }
+            })
+            .ok()?;
+        Some(receiver)
+    }
+
+    /// Admit one completed chunk and queue the next. Nothing waits on the
+    /// UI thread; dropping the job prevents scheduling any further chunks.
+    pub fn collect(&mut self, spans: &mut Vec<Arc<[Span]>>) -> bool {
+        match self.receiver.try_recv() {
+            Ok(mut chunk) => {
+                spans.append(&mut chunk.spans);
+                if chunk.offset >= chunk.source.len() {
+                    return false;
+                }
+                let Some(receiver) = Self::queue(&self.background, &self.wake, chunk) else {
+                    return false;
+                };
+                self.receiver = receiver;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        }
+    }
+}
+
+/// Paint `text` at `origin` (the top of its line box) in the `Code` role as
+/// runs coloured by `spans`. A line with no spans (its side was never
+/// tokenized) paints as body text.
+pub fn draw_line(ctx: &mut PaintCtx<'_>, origin: Point, text: &str, spans: &[Span]) {
     let syntax = &ctx.theme.tokens.syntax;
-    let style = TextStyle::new(font_size);
+    let style = ctx.theme.text(TextRole::Code);
     if spans.is_empty() {
         if !text.is_empty() {
             ctx.text(text, &style, syntax.text, origin, None);
@@ -70,7 +207,7 @@ pub fn draw_line(
             continue;
         }
         ctx.text(run, &style, syntax.color(span.kind), at, None);
-        let (w, _) = ctx.text.measure(run, font_size, None);
+        let (w, _) = ctx.text.measure_style(run, None, &style);
         at.x += f64::from(w);
     }
 }
@@ -99,14 +236,86 @@ mod tests {
         a_side_is_one_document_so_block_comments_span_rows();
     }
 
+    #[test]
+    fn repeated_source_reuses_spans_only_in_the_same_parser_context() {
+        let grammar = grammar_for_label("file.rs");
+        let lines = [
+            "let repeated = 1;",
+            "let repeated = 1;",
+            "/*",
+            "let repeated = 1;",
+            "*/",
+            "let repeated = 1;",
+        ];
+        let actual = shared_document(&grammar, lines);
+        let mut state = grammar.start();
+        for (line, spans) in lines.into_iter().zip(&actual) {
+            assert_eq!(spans.as_ref(), state.highlight_line(line));
+        }
+        let steady = shared_document(&grammar, ["// same comment"; 20]);
+        assert!(
+            steady
+                .windows(2)
+                .skip(1)
+                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
+        );
+        assert!(!Arc::ptr_eq(&actual[1], &actual[3]));
+    }
+
+    #[test]
+    fn background_syntax_is_bounded_continuous_and_replacement_drops_old_work() {
+        let pumped = ui::rt::background::Pumped::new();
+        let background = pumped.background();
+        let _scope = background.enter();
+        let lines = std::iter::once("/*")
+            .chain(std::iter::repeat_n("let inside = 1;", 30))
+            .chain(["*/", "let outside = 2;"])
+            .collect::<Vec<_>>();
+        let source = lines.join("\n");
+        let mut job =
+            BackgroundDocument::start("example.rs", &source, ui::WakeHandle::new()).unwrap();
+        let mut actual = Vec::new();
+        assert_eq!(
+            pumped.run_pending(),
+            1,
+            "one queued chunk never drains the whole source"
+        );
+        assert!(job.collect(&mut actual));
+        assert_eq!(actual.len(), 8, "the first admitted batch is bounded");
+        while {
+            pumped.run_pending();
+            job.collect(&mut actual)
+        } {}
+        let expected = document(&grammar_for_label("example.rs"), lines.iter().copied());
+        assert_eq!(
+            actual.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            expected.iter().map(Vec::as_slice).collect::<Vec<_>>()
+        );
+        let old = BackgroundDocument::start("old.rs", &source, ui::WakeHandle::new()).unwrap();
+        drop(old);
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(
+            pumped.is_idle(),
+            "a replaced document queues no continuation"
+        );
+    }
+
     fn the_grammar_follows_the_file_a_label_names() {
-        assert_eq!(grammar_for_label("rate_limiter.rs · HEAD").name(), "Rust");
-        assert_eq!(grammar_for_label("config.toml · ours").name(), "TOML");
+        assert_eq!(
+            grammar_for_label("rate_limiter.rs (working tree)").name(),
+            "Rust"
+        );
+        assert_eq!(grammar_for_label("config.toml (ours)").name(), "TOML");
+        assert_eq!(
+            file_name("rate_limiter.rs (working tree)"),
+            "rate_limiter.rs"
+        );
+        assert_eq!(file_name("plain.txt"), "plain.txt");
         assert_eq!(
             grammar_for_label("/srv/app/Dockerfile").name(),
             "Dockerfile"
         );
-        assert_eq!(grammar_for_label("notes · draft").name(), "Plain Text");
+        assert_eq!(grammar_for_label("notes (draft)").name(), "Plain Text");
         assert_eq!(grammar_for_label("").name(), "Plain Text");
     }
 

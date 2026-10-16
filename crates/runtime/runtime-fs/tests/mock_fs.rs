@@ -16,12 +16,9 @@
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -31,10 +28,9 @@ use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use runtime_fs::raw::{EntryKind as WireKind, OpenMode, file_handle, workspace_fs};
 use runtime_fs::{FsClient, WorkspaceFsClient};
@@ -310,14 +306,7 @@ async fn round_trip_write_read_list_stat() {
             };
             let backend_client: workspace_fs::Client = capnp_rpc::new_client(backend);
 
-            let (server_read, server_write) = server_side.into_split();
-            let server_network = Box::new(twoparty::VatNetwork::new(
-                server_read.compat(),
-                server_write.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let server_rpc = RpcSystem::new(server_network, Some(backend_client.client));
+            let server_rpc = runtime_portal::serve_connected_io(server_side, backend_client.client);
             tokio::task::spawn_local(async move {
                 let _ = server_rpc.await;
             });

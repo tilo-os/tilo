@@ -3,13 +3,28 @@
 //! This module only sees bytes already present for a local write/preview. It
 //! never opens a path or asks the hydrator for remote content.
 
-use collab_types::{FilePropertiesV1, files::FILE_PROPERTIES_VERSION};
+use fs_protocol::{FilePropertiesV1, files::FILE_PROPERTIES_VERSION};
 
 pub const MAX_METADATA_SCAN_BYTES: usize = 16 * 1024 * 1024;
 
+/// Extensions [`extract`] reads facts from; keep in step with its match.
+const SCANNED_EXTENSIONS: &[&str] = &["png", "gif", "jpg", "jpeg", "wav", "pdf"];
+
+/// Whether [`extract`] can find anything in a file called `name`, so a
+/// caller can skip reading bytes for it.
+pub fn recognizes(name: &str) -> bool {
+    name.rsplit('.')
+        .next()
+        .filter(|ext| *ext != name)
+        .is_some_and(|ext| {
+            SCANNED_EXTENSIONS
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_lossless,
     clippy::indexing_slicing,
     reason = "header offsets are fixed and guarded by format-specific length checks"
 )]
@@ -30,28 +45,22 @@ pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
         container: None,
     };
     match ext.as_str() {
-        "png" => {
-            if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-                value.image_width = Some(u32::from_be_bytes(bytes[16..20].try_into().ok()?));
-                value.image_height = Some(u32::from_be_bytes(bytes[20..24].try_into().ok()?));
-                value.codec = Some("png".into());
-                value.container = Some("png".into());
+        "png" | "gif" | "jpg" | "jpeg" => {
+            let (format, width, height) = tilo_content::image_size(bytes)?;
+            // Metadata names JPEG `jpeg`, whichever spelling the file uses.
+            let name = if format.extension == "jpg" {
+                "jpeg"
+            } else {
+                format.extension
+            };
+            let named = if ext == "jpg" { "jpeg" } else { ext.as_str() };
+            if name != named {
+                return None;
             }
-        }
-        "gif" => {
-            if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
-                value.image_width = Some(u16::from_le_bytes(bytes[6..8].try_into().ok()?) as u32);
-                value.image_height = Some(u16::from_le_bytes(bytes[8..10].try_into().ok()?) as u32);
-                value.codec = Some("gif".into());
-                value.container = Some("gif".into());
-            }
-        }
-        "jpg" | "jpeg" => {
-            let (width, height) = jpeg_dimensions(bytes)?;
             value.image_width = Some(width);
             value.image_height = Some(height);
-            value.codec = Some("jpeg".into());
-            value.container = Some("jpeg".into());
+            value.codec = Some(name.into());
+            value.container = Some(name.into());
         }
         "wav" => {
             let (duration_ms, codec) = wav_properties(bytes)?;
@@ -77,41 +86,6 @@ pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
         _ => return None,
     }
     value.validate().ok().map(|()| value)
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_lossless,
-    clippy::indexing_slicing,
-    reason = "the bounded scanner validates each segment before accessing its fields"
-)]
-fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
-    }
-    let mut at = 2;
-    while at + 4 <= bytes.len() {
-        if bytes[at] != 0xff {
-            at += 1;
-            continue;
-        }
-        let marker = bytes[at + 1];
-        at += 2;
-        if matches!(marker, 0xd8 | 0xd9) {
-            continue;
-        }
-        let len = usize::from(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
-        if len < 2 || at.checked_add(len)? > bytes.len() {
-            return None;
-        }
-        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) && len >= 7 {
-            let height = u16::from_be_bytes(bytes[at + 3..at + 5].try_into().ok()?) as u32;
-            let width = u16::from_be_bytes(bytes[at + 5..at + 7].try_into().ok()?) as u32;
-            return Some((width, height));
-        }
-        at += len;
-    }
-    None
 }
 
 #[allow(

@@ -4,31 +4,96 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use ui::Widget;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-use ui::tokens::spacing::Spacing;
-use ui::widget::Scrollable;
+use ui::tokens::TextRole;
+use ui::widget::{Scrollable, TimelineDensity};
 
 use crate::input_context::InputContext;
 
-pub(super) const TIMELINE_MIN_HOUR_H: f64 = 44.0;
-/// Authored 1× width of the hour gutter, and the base size and 1× width of
-/// the "HH:00" label it carries. The gutter grows by the label's extra width
-/// at larger scales so a 2× "08:00" never runs into the first day column.
-const TIMELINE_GUTTER: f64 = 56.0;
-pub(super) const TIMELINE_HOUR_TEXT: f32 = 10.0;
-const TIMELINE_HOUR_LABEL_W: f64 = 28.0;
-/// Authored 1× heights of the day header and the all-day strip; both grow
-/// with the measured text lines they hold (see [`TimelineViewport::geometry_for`]).
-pub(super) const TIMELINE_HEAD_H: f64 = 56.0;
-pub(super) const TIMELINE_ALLDAY_H: f64 = 26.0;
-/// Authored 1× minimum height of an event block (a 15-minute event).
-const TIMELINE_MIN_BLOCK_H: f64 = 16.0;
-/// Base text sizes painted into the header, the all-day strip and blocks.
-pub(super) const TIMELINE_WEEKDAY_TEXT: f32 = 11.0;
-pub(super) const TIMELINE_DAY_TEXT: f32 = 20.0;
-pub(super) const TIMELINE_STRIP_TEXT: f32 = 10.0;
-pub(super) const TIMELINE_TITLE_TEXT: f32 = 11.0;
-pub(super) const TIMELINE_SUBTITLE_TEXT: f32 = 10.0;
+/// The shortest an hour row gets: a list row's height, so a half-hour block
+/// still holds its title.
+#[cfg(test)]
+pub(super) const TIMELINE_MIN_HOUR_H: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
+
+/// The text styles the timeline paints, by what each piece of text is.
+#[derive(Clone, Debug)]
+pub(super) struct TimelineType {
+    /// "Mon" over each day column.
+    pub weekday: TextStyle,
+    /// The day number under it.
+    pub day: TextStyle,
+    /// An all-day event's title in its strip.
+    pub strip: TextStyle,
+    /// A block's title and its time line.
+    pub title: TextStyle,
+    pub subtitle: TextStyle,
+    /// "08:00" in the hour gutter.
+    pub hour: TextStyle,
+}
+
+impl TimelineType {
+    pub fn of(theme: &Theme) -> Self {
+        Self {
+            weekday: theme.text(TextRole::Caption),
+            day: theme.text(TextRole::Title).numeric(),
+            strip: theme.text(TextRole::Caption),
+            title: theme.text(TextRole::Caption).strong(),
+            subtitle: theme.text(TextRole::Caption),
+            hour: theme.text(TextRole::Caption).numeric(),
+        }
+    }
+}
+
+/// The measured parts of the timeline's geometry for one theme: line
+/// heights, the hour gutter and the spacing it is padded with.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TimelineTokens {
+    weekday_h: f64,
+    day_h: f64,
+    strip_h: f64,
+    title_h: f64,
+    hour_w: f64,
+    s1: f64,
+    s2: f64,
+    s3: f64,
+    /// The day column width below which the grid is narrow, and the
+    /// shortest hour at each density ([`TimelineDensity`]).
+    narrow_below: f64,
+    min_hour_regular: f64,
+    min_hour_narrow: f64,
+}
+
+impl TimelineTokens {
+    pub fn of(theme: &Theme, text: &mut TextRenderer) -> Self {
+        let ty = TimelineType::of(theme);
+        let line = |text: &mut TextRenderer, style: &TextStyle| {
+            f64::from(text.measure_style("Ag", None, style).1)
+        };
+        let sp = &theme.tokens.spacing;
+        let title_h = line(text, &ty.title);
+        Self {
+            weekday_h: line(text, &ty.weekday),
+            day_h: line(text, &ty.day),
+            strip_h: line(text, &ty.strip),
+            title_h,
+            hour_w: f64::from(text.measure_style("00:00", None, &ty.hour).0),
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s3: f64::from(sp.s3),
+            narrow_below: TimelineDensity::narrow_below(theme),
+            min_hour_regular: TimelineDensity::Regular.min_hour_height(theme, title_h),
+            min_hour_narrow: TimelineDensity::Narrow.min_hour_height(theme, title_h),
+        }
+    }
+}
+
+impl Default for TimelineTokens {
+    fn default() -> Self {
+        let theme = Theme::dark();
+        ui::text_render::with_layout_renderer(theme.text_scale, |text| Self::of(&theme, text))
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimelineGeom {
@@ -42,8 +107,12 @@ pub(super) struct TimelineGeom {
     pub hour_h: f64,
     pub content_h: f64,
     pub grid_right: f64,
+    /// How much each day column shows (its width against the type).
+    pub density: TimelineDensity,
     /// Smallest painted block; a one-line title fits at the current scale.
     pub min_block_h: f64,
+    /// How far a block stands in from its column's edges.
+    pub block_inset: f64,
 }
 
 impl TimelineGeom {
@@ -56,11 +125,11 @@ pub(super) struct TimelineViewport {
     scroll: Scrollable,
     seeded: bool,
     pinned_hour: Option<f64>,
-    /// The theme's text scale and spacing, cached from the app's layout pass
-    /// so header / strip / block heights follow the type they hold and the
-    /// same token pads the painter leaves.
-    text_scale: f32,
-    spacing: Spacing,
+    /// How many day columns the last layout laid out.
+    days_len: usize,
+    /// The measured type and spacing of the theme of the app's last layout
+    /// pass, so header / strip / block heights follow the type they hold.
+    tokens: TimelineTokens,
 }
 
 impl TimelineViewport {
@@ -69,71 +138,68 @@ impl TimelineViewport {
             scroll: Scrollable::new_vertical().always_visible(),
             seeded: false,
             pinned_hour: None,
-            text_scale: 1.0,
-            spacing: Spacing::default(),
+            days_len: 7,
+            tokens: TimelineTokens::default(),
         }
     }
 
-    /// Cache the theme's text scale and spacing for the geometry solved in
-    /// `layout`, so reserve and paint read one set of tokens.
-    pub fn set_layout_tokens(&mut self, text_scale: f32, spacing: &Spacing) {
-        self.text_scale = text_scale;
-        self.spacing = *spacing;
+    /// Measure the theme's type for the geometry solved in `layout`, so
+    /// reserve and paint read one set of tokens.
+    pub fn set_layout_theme(&mut self, theme: &Theme) {
+        self.tokens = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            TimelineTokens::of(theme, text)
+        });
     }
 
-    pub fn text_scale(&self) -> f32 {
-        self.text_scale
+    pub fn tokens(&self) -> TimelineTokens {
+        self.tokens
     }
 
-    pub fn spacing(&self) -> &Spacing {
-        &self.spacing
+    /// The day columns of the last layout.
+    pub fn days_len(&self) -> usize {
+        self.days_len
     }
 
-    /// Geometry at 1× with the default spacing — the authored design, used
-    /// by tests and by callers that have no scale of their own.
+    /// Geometry of a week in the default dark theme, used by tests.
     #[cfg(test)]
     pub fn geometry(area: Rect) -> TimelineGeom {
-        Self::geometry_for(area, 1.0, &Spacing::default())
+        Self::geometry_for(area, &TimelineTokens::default(), 7)
     }
 
-    /// Geometry for `text_scale` and the theme's `spacing`: header, all-day
-    /// strip and minimum block heights are the authored 1× values, or the
-    /// measured lines plus the same token pads the painter leaves (`s2`
-    /// around the header rows, `s1` inside a block) rounded up to a whole
-    /// pixel, whichever is taller — so at 1× the design is reproduced and at
-    /// 2× scaled type never overlaps.
-    pub fn geometry_for(area: Rect, text_scale: f32, spacing: &Spacing) -> TimelineGeom {
-        let s1 = f64::from(spacing.s1);
-        let s2 = f64::from(spacing.s2);
-        let weekday_h = crate::metrics::line_h(TIMELINE_WEEKDAY_TEXT, text_scale);
-        let day_h = crate::metrics::line_h(TIMELINE_DAY_TEXT, text_scale);
-        let strip_h = crate::metrics::line_h(TIMELINE_STRIP_TEXT, text_scale);
-        let title_h = crate::metrics::line_h(TIMELINE_TITLE_TEXT, text_scale);
-        let head_h = crate::metrics::at_least_whole(TIMELINE_HEAD_H, 2.0 * s2 + weekday_h + day_h);
-        // The strip is inset `s1` inside its band; the label needs its line
-        // plus a block pad above and below inside that.
-        let allday_h = crate::metrics::at_least_whole(TIMELINE_ALLDAY_H, strip_h + 3.0 * s1);
-        // A block always holds its one-line title plus the pad the painter
-        // puts above it, so descenders are never clipped at any scale.
-        let min_block_h = crate::metrics::at_least_whole(TIMELINE_MIN_BLOCK_H, title_h + s1);
+    /// Geometry from the measured `tokens`: the header holds the weekday and
+    /// the day number with `s2` above and below, the all-day strip one
+    /// caption line in its padding, the smallest block a title line, and the
+    /// gutter an hour label with `s3` either side. `days_len` columns share
+    /// the width, which decides the [`TimelineDensity`]: a narrow grid
+    /// gives a half hour two title lines and the all-day strip two.
+    pub fn geometry_for(area: Rect, t: &TimelineTokens, days_len: usize) -> TimelineGeom {
+        let gutter = (t.hour_w + 2.0 * t.s3).ceil();
+        let column = (area.width() - gutter - t.s3) / days_len.max(1) as f64;
+        let density = if column < t.narrow_below {
+            TimelineDensity::Narrow
+        } else {
+            TimelineDensity::Regular
+        };
+        let min_hour_h = match density {
+            TimelineDensity::Regular => t.min_hour_regular,
+            TimelineDensity::Narrow => t.min_hour_narrow,
+        };
+        let head_h = (2.0 * t.s2 + t.weekday_h + t.day_h).ceil();
+        let allday_h = (t.strip_h * density.chip_lines() as f64 + 3.0 * t.s1).ceil();
+        let min_block_h = (t.title_h + t.s1).ceil();
         let body_top = area.y0 + head_h + allday_h;
-        let body_bottom = (area.y1 - s2).max(body_top + 40.0);
-        let viewport_h = (body_bottom - body_top).max(40.0);
-        let hour_h = (viewport_h / 24.0).max(TIMELINE_MIN_HOUR_H);
+        let body_bottom = (area.y1 - t.s2).max(body_top + min_hour_h);
+        let viewport_h = (body_bottom - body_top).max(min_hour_h);
+        let hour_h = (viewport_h / 24.0).max(min_hour_h);
         let content_h = hour_h * 24.0;
         // The scrollbar lane is one `s3` wide when the day overflows.
         let grid_right = if content_h > viewport_h + 0.5 {
-            area.x1 - f64::from(spacing.s3)
+            area.x1 - t.s3
         } else {
             area.x1
         };
-        let grow = if text_scale.is_finite() {
-            f64::from(text_scale.clamp(1.0, 4.0))
-        } else {
-            1.0
-        };
         TimelineGeom {
-            gutter: (TIMELINE_GUTTER + TIMELINE_HOUR_LABEL_W * (grow - 1.0)).ceil(),
+            gutter,
             head_h,
             allday_h,
             body_top,
@@ -141,7 +207,9 @@ impl TimelineViewport {
             hour_h,
             content_h,
             grid_right,
+            density,
             min_block_h,
+            block_inset: t.s1 / 2.0,
         }
     }
 
@@ -186,15 +254,16 @@ impl TimelineViewport {
         let top = geom.body_top + (start_min as f64 / 60.0) * geom.hour_h - offset;
         let bottom = geom.body_top + (end_min as f64 / 60.0) * geom.hour_h - offset;
         Rect::new(
-            x0 + 3.0,
+            x0 + geom.block_inset,
             top,
-            x0 + col_w - 3.0,
+            x0 + col_w - geom.block_inset,
             bottom.max(top + geom.min_block_h),
         )
     }
 
-    pub fn layout(&mut self, area: Rect, initial_hour: f64) {
-        let geom = Self::geometry_for(area, self.text_scale, &self.spacing);
+    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize) {
+        self.days_len = days_len.max(1);
+        let geom = Self::geometry_for(area, &self.tokens, self.days_len);
         self.scroll.set_viewport_rect(geom.body(area.x0, area.x1));
         self.scroll
             .set_content_size(area.width() as f32, geom.content_h as f32);
@@ -217,24 +286,9 @@ impl TimelineViewport {
         }
     }
 
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.pinned_hour = Some(hour);
-    }
-
     pub fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
-        self.scroll.handle_event(
-            input.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: input.scale_factor,
-                modifiers: &input.modifiers,
-                state: input.state,
-                path: input.path,
-                handled: input.handled,
-                focus_target: input.focus_target,
-                node_id: input.node_id,
-                taffy: input.taffy,
-            },
-        );
+        self.scroll
+            .handle_event(input.event, &mut input.event_ctx());
         *input.handled
     }
 
@@ -273,7 +327,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn geometry_keeps_legible_hours_maps_columns_and_grows_whole_when_scaled() {
+    fn geometry_keeps_legible_hours_maps_columns_and_grows_with_the_text() {
         // Case `geometry_keeps_legible_hours_and_maps_columns`.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
@@ -286,54 +340,21 @@ mod tests {
                 3
             );
         }
-        // Case `geometry_reproduces_the_authored_design_at_one_x_and_grows_whole`:
-        // The 1× geometry is the authored design on whole pixels; the 2× one
-        // holds the scaled lines and stays on whole pixels too.
+        // Case `scaled_text_grows_the_header_strip_blocks_and_gutter`.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-            let sp = Spacing::default();
-            let one = TimelineViewport::geometry_for(area, 1.0, &sp);
-            assert_eq!(one.head_h, TIMELINE_HEAD_H);
-            assert_eq!(one.allday_h, TIMELINE_ALLDAY_H);
-            // The smallest block always holds its title line plus the pad the
-            // painter puts above it (so descenders are never clipped), on a whole
-            // pixel, and never shrinks under the authored minimum.
-            let title_1x = crate::metrics::line_h(TIMELINE_TITLE_TEXT, 1.0);
-            assert!(one.min_block_h >= title_1x + f64::from(sp.s1));
-            assert!(one.min_block_h >= TIMELINE_MIN_BLOCK_H);
-            assert_eq!(one.min_block_h.fract(), 0.0);
-            assert_eq!(one.body_top, area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H);
-            assert_eq!(one.gutter, TIMELINE_GUTTER);
-
-            let two = TimelineViewport::geometry_for(area, 2.0, &sp);
-            // The gutter widens by the hour label's extra width, so "08:00" at 2×
-            // stays inside it instead of running into the first column.
-            let mut tr = ui::text_render::TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let (label_w, _) = tr.measure("00:00", TIMELINE_HOUR_TEXT, None);
-            assert!(
-                two.gutter >= f64::from(sp.s3) + f64::from(label_w),
-                "gutter {} must hold the measured 2× hour label ({label_w}) after its inset",
-                two.gutter
-            );
-            assert!(two.gutter > one.gutter);
+            let large = Theme::dark().with_text_scale(2.0);
+            let tokens = ui::text_render::with_layout_renderer(large.text_scale, |text| {
+                TimelineTokens::of(&large, text)
+            });
+            let one = TimelineViewport::geometry(area);
+            let two = TimelineViewport::geometry_for(area, &tokens, 7);
             for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
                 assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
             }
-            // Header: both scaled lines plus the `s2` pad above and below them;
-            // block: the scaled title plus its `s1` pad — the same tokens the
-            // painter lays the text out with.
-            assert!(
-                two.head_h
-                    >= 2.0 * f64::from(sp.s2)
-                        + crate::metrics::line_h(TIMELINE_WEEKDAY_TEXT, 2.0)
-                        + crate::metrics::line_h(TIMELINE_DAY_TEXT, 2.0)
-            );
-            assert!(
-                two.min_block_h
-                    >= crate::metrics::line_h(TIMELINE_TITLE_TEXT, 2.0) + f64::from(sp.s1)
-            );
-            assert!(two.allday_h > one.allday_h && two.head_h > one.head_h);
+            assert!(two.gutter > one.gutter);
+            assert!(two.head_h > one.head_h && two.allday_h > one.allday_h);
+            assert!(two.min_block_h > one.min_block_h);
         }
     }
 
@@ -348,7 +369,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.23);
+            viewport.layout(area, 7.23, 7);
             assert!(viewport.vertical_overflows());
             assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
             // The 07:00 rule is at the body top; the label below it is inside.
@@ -364,15 +385,16 @@ mod tests {
         {
             // 24 × 44 = 1056 of content in a 600-tall body: at most 456 / 44 =
             // 10.36 hours of scroll, so hour 9 is the last whole one that fits.
+            let probe = TimelineViewport::geometry(Rect::new(0.0, 0.0, 1000.0, 1000.0));
             let area = Rect::new(
                 0.0,
                 0.0,
                 1000.0,
-                600.0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H + 8.0,
+                600.0 + probe.head_h + probe.allday_h + 8.0,
             );
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 22.0);
+            viewport.layout(area, 22.0, 7);
             let offset = f64::from(viewport.offset_y());
             assert!(
                 (offset / geom.hour_h).fract().abs() < 1e-6,
@@ -390,7 +412,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.0);
+            viewport.layout(area, 7.0, 7);
             viewport.set_offset_y((geom.hour_h * 2.0) as f32);
             assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
             let block = viewport.block_rect(area, 7, geom, 2, 120, 180);

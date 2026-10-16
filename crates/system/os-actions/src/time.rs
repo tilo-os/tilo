@@ -16,8 +16,13 @@ pub struct TimeSyncStatus {
 /// Read timedated's authoritative state and, when systemd-timesyncd is the
 /// provider, its selected server. Missing providers remain `None`; Settings
 /// can distinguish unavailable from disabled.
-pub fn get_time_sync_status() -> TimeSyncStatus {
-    let mut status = run_capture(
+///
+/// # Errors
+///
+/// Returns an error message if `timedatectl` is not installed or timedated
+/// cannot be asked; a missing time-sync provider is not an error.
+pub fn get_time_sync_status() -> Result<TimeSyncStatus, String> {
+    let mut status = parse_time_status(&run_capture(
         "timedatectl",
         &[
             "show",
@@ -28,12 +33,11 @@ pub fn get_time_sync_status() -> TimeSyncStatus {
             "-p",
             "NTPSynchronized",
         ],
-    )
-    .map_or_else(|_| TimeSyncStatus::default(), |out| parse_time_status(&out));
+    )?);
     status.source = run_capture("timedatectl", &["timesync-status"])
         .ok()
         .and_then(|out| parse_time_source(&out));
-    status
+    Ok(status)
 }
 
 /// The IANA zones timedated accepts. This uses the system zoneinfo database,
@@ -143,26 +147,6 @@ pub fn set_ntp(enabled: bool) -> Result<(), String> {
         "timedatectl",
         &["set-ntp", if enabled { "true" } else { "false" }],
     )
-}
-
-/// Current wall-clock time, formatted 24-hour (`14:05`) or 12-hour
-/// (`02:05 PM`) per `h24`.
-///
-/// # Errors
-///
-/// Returns an error message if `date` is not installed or the command fails.
-pub fn now_clock(h24: bool) -> Result<String, String> {
-    let fmt = if h24 { "+%H:%M" } else { "+%I:%M %p" };
-    Ok(run_capture("date", &[fmt])?.trim().to_string())
-}
-
-/// Current date, e.g. `Monday, 4 July 2026`.
-///
-/// # Errors
-///
-/// Returns an error message if `date` is not installed or the command fails.
-pub fn now_date() -> Result<String, String> {
-    Ok(run_capture("date", &["+%A, %-d %B %Y"])?.trim().to_string())
 }
 
 /// Parse the `yes`/`no` value from `timedatectl show -p NTP --value`.

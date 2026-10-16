@@ -22,46 +22,15 @@
 //! - The sidecar's `launcher` override exists only for out-of-tree
 //!   testing; production installs leave it unset.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-/// The suffix appended to the shim executable's path to find its
-/// sidecar; a `const` so `install` and the shim agree.
-pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
+use cli_shim::{Sidecar, sidecar_path_for};
 
 /// System install path for the launcher; overridable by the sidecar's
 /// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
 const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
-
-/// Wire form of the sidecar TOML.
-#[derive(Debug, Deserialize)]
-struct Sidecar {
-    /// Reverse-DNS package id (`so.tilo.notes-cli`).
-    package_id: String,
-    /// Command name as declared in the manifest's `cli`.commands.
-    /// Duplicated here (argv`0` also carries it) so renaming the shim
-    /// doesn't silently rebind to a different command.
-    command: String,
-    /// Optional override for the launcher binary path; falls back to [`DEFAULT_LAUNCHER_PATH`] when unset.
-    #[serde(default)]
-    launcher: Option<PathBuf>,
-}
 
 fn main() -> ! {
     // Diverges — either execvs the launcher (never returns) or exits via the error path with a status the caller can inspect.
@@ -99,17 +68,6 @@ fn main() -> ! {
     argv.append(&mut passthrough);
 
     execv_launcher(&launcher, &argv);
-}
-
-/// Resolve the sidecar path from the shim's own executable path; public so `install` and tests agree on the layout.
-pub fn sidecar_path_for(exe: &Path) -> PathBuf {
-    let mut p = exe.to_path_buf();
-    let name = p.file_name().map_or_else(
-        || "tilo-cli-shim".to_string(),
-        |s| s.to_string_lossy().into_owned(),
-    );
-    p.set_file_name(format!("{name}{SIDECAR_SUFFIX}"));
-    p
 }
 
 fn read_sidecar(path: &Path) -> Result<Sidecar, String> {

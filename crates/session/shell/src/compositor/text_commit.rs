@@ -88,10 +88,13 @@ type CursorRectangle = (i32, i32, i32, i32);
 #[derive(Clone, Copy, Debug, Default)]
 struct FieldState {
     pending_enable: bool,
+    protocol_activation: Option<bool>,
     pending: Option<ContentType>,
     committed: ContentType,
     pending_cursor: Option<CursorRectangle>,
     cursor: Option<CursorRectangle>,
+    revision: u64,
+    pending_edit: bool,
 }
 
 /// The content type and caret every text input has committed, tracked beside
@@ -100,15 +103,82 @@ struct FieldState {
 #[derive(Debug, Default)]
 pub struct TextFields {
     fields: HashMap<ObjectId, FieldState>,
+    active_protocol: Option<ObjectId>,
 }
 
 impl TextFields {
+    pub(crate) fn protocol_focus_left(&mut self) {
+        self.active_protocol = None;
+    }
+
+    /// Whether Smithay will emit an input-method `done` for this request.
+    /// This mirrors its focused-client and single-active-text-input gates;
+    /// it carries no text and only advances the serial used to reject stale
+    /// input-method commits.
+    pub(crate) fn input_method_done(
+        &mut self,
+        resource: &ZwpTextInputV3,
+        request: &zwp_text_input_v3::Request,
+        admitted: bool,
+    ) -> Option<bool> {
+        if !admitted {
+            return None;
+        }
+        let id = resource.id();
+        let field = self.fields.entry(id.clone()).or_default();
+        match request {
+            zwp_text_input_v3::Request::Enable => {
+                field.protocol_activation = Some(true);
+                None
+            }
+            zwp_text_input_v3::Request::Disable => {
+                field.protocol_activation = Some(false);
+                None
+            }
+            zwp_text_input_v3::Request::Commit => {
+                // `pending_enable` represents true. `pending_edit` alone is
+                // not enough to distinguish Disable, so use the dedicated
+                // protocol field maintained alongside visual metadata.
+                let activation = field.protocol_activation.take();
+                match activation {
+                    Some(true)
+                        if self
+                            .active_protocol
+                            .as_ref()
+                            .is_none_or(|active| active == &id) =>
+                    {
+                        self.active_protocol = Some(id);
+                        Some(true)
+                    }
+                    Some(false)
+                        if self
+                            .active_protocol
+                            .as_ref()
+                            .is_none_or(|active| active == &id) =>
+                    {
+                        self.active_protocol = None;
+                        Some(false)
+                    }
+                    None if self.active_protocol.as_ref() == Some(&id) => Some(true),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Follow one text-input request. State is double-buffered: it applies
     /// on `commit`, and enabling resets it to the protocol's defaults.
     pub fn observe(&mut self, resource: &ZwpTextInputV3, request: &zwp_text_input_v3::Request) {
         let field = self.fields.entry(resource.id()).or_default();
         match request {
-            zwp_text_input_v3::Request::Enable => field.pending_enable = true,
+            zwp_text_input_v3::Request::Enable => {
+                field.pending_enable = true;
+                field.pending_edit = true;
+            }
+            zwp_text_input_v3::Request::Disable
+            | zwp_text_input_v3::Request::SetSurroundingText { .. }
+            | zwp_text_input_v3::Request::SetTextChangeCause { .. } => field.pending_edit = true,
             zwp_text_input_v3::Request::SetContentType { hint, purpose } => {
                 field.pending = Some(ContentType {
                     hint: match hint {
@@ -128,6 +198,16 @@ impl TextFields {
                 height,
             } => field.pending_cursor = Some((*x, *y, *width, *height)),
             zwp_text_input_v3::Request::Commit => {
+                if std::mem::take(&mut field.pending_edit)
+                    || field
+                        .pending
+                        .is_some_and(|content| content != field.committed)
+                    || field
+                        .pending_cursor
+                        .is_some_and(|cursor| Some(cursor) != field.cursor)
+                {
+                    field.revision = field.revision.saturating_add(1);
+                }
                 let pending = field.pending.take();
                 let pending_cursor = field.pending_cursor.take();
                 if std::mem::take(&mut field.pending_enable) {
@@ -146,8 +226,22 @@ impl TextFields {
         }
     }
 
-    pub fn forget(&mut self, resource: &ZwpTextInputV3) {
-        self.fields.remove(&resource.id());
+    pub(crate) fn revision(&self, resource: &ZwpTextInputV3) -> Option<u64> {
+        self.fields.get(&resource.id()).map(|field| field.revision)
+    }
+
+    pub fn forget(&mut self, resource: &ZwpTextInputV3, may_deactivate: bool) -> bool {
+        let id = resource.id();
+        self.fields.remove(&id);
+        let deactivates = may_deactivate
+            && !self
+                .fields
+                .keys()
+                .any(|remaining| remaining.same_client_as(&id));
+        if deactivates {
+            self.active_protocol = None;
+        }
+        deactivates
     }
 
     /// The caret `resource` last committed, in its surface's coordinates.
@@ -179,10 +273,28 @@ impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
         dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
+        // Consult Smithay's authoritative text-input focus. The shell's
+        // independently tracked keyboard target can legitimately differ
+        // while chrome or a floating preedit continuation owns the seat.
+        let admitted = state.input_method_resource_client.is_some()
+            && state
+                .seat
+                .text_input()
+                .focus()
+                .is_some_and(|surface| surface.id().same_client_as(&resource.id()));
+        let input_method_done = state
+            .text_fields
+            .input_method_done(resource, &request, admitted);
         state.text_fields.observe(resource, &request);
         <TextInputManagerState as Dispatch<ZwpTextInputV3, TextInputUserData, Self>>::request(
             state, client, resource, request, data, dhandle, data_init,
         );
+        if let Some(active) = input_method_done {
+            state.input_method_serial = state.input_method_serial.saturating_add(1);
+            if !active {
+                state.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
+            }
+        }
     }
 
     fn destroyed(
@@ -191,7 +303,18 @@ impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
         resource: &ZwpTextInputV3,
         data: &TextInputUserData,
     ) {
-        state.text_fields.forget(resource);
+        // This is the same public handle Smithay's own destruction path uses.
+        let destroyed_focused = state
+            .seat
+            .text_input()
+            .focus()
+            .is_none_or(|surface| surface.id().same_client_as(&resource.id()));
+        if state.text_fields.forget(
+            resource,
+            state.input_method_resource_client.is_some() && destroyed_focused,
+        ) {
+            state.input_method_serial = state.input_method_serial.saturating_add(1);
+        }
         <TextInputManagerState as Dispatch<ZwpTextInputV3, TextInputUserData, Self>>::destroyed(
             state, client, resource, data,
         );
@@ -215,6 +338,9 @@ struct Pending {
     /// Set once the lent input method has committed; the request finishes
     /// when the compositor has processed the commit.
     committed_sensitive: Option<bool>,
+    /// Whether the shell picked the text here and keeps it among its
+    /// recents; text another device typed is delivered and forgotten.
+    picked_here: bool,
 }
 
 /// The request in flight (at most one: a new pick replaces an undelivered
@@ -223,16 +349,28 @@ struct Pending {
 pub struct TextCommit {
     pending: Option<Pending>,
     delivered: Vec<DeliveredText>,
+    pub(crate) dictation: super::dictation::Dictation,
 }
 
 impl State {
     /// Commit `text` into the focused field as soon as it takes text.
     pub fn request_text_commit(&mut self, text: String, now: Instant) {
+        self.queue_text_commit(text, now, true);
+    }
+
+    /// Commit text another device's input method composed into the focused
+    /// field, without reporting it back as something picked here.
+    pub fn request_remote_text_commit(&mut self, text: String, now: Instant) {
+        self.queue_text_commit(text, now, false);
+    }
+
+    fn queue_text_commit(&mut self, text: String, now: Instant, picked_here: bool) {
         self.text_commit.pending = Some(Pending {
             text,
             deadline: now.checked_add(DELIVERY_WINDOW).unwrap_or(now),
             lent: None,
             committed_sensitive: None,
+            picked_here,
         });
         self.advance_text_commit(now);
     }
@@ -263,11 +401,13 @@ impl State {
                 .as_mut()
                 .is_none_or(|lent| !matches!(lent.pump(), Progress::Waiting | Progress::Active));
             if finished || now >= pending.deadline {
-                self.text_commit.delivered.push(DeliveredText {
-                    text: pending.text,
-                    sensitive,
-                    through: TrustedInputMethod::Compositor,
-                });
+                if pending.picked_here {
+                    self.text_commit.delivered.push(DeliveredText {
+                        text: pending.text,
+                        sensitive,
+                        through: TrustedInputMethod::Compositor,
+                    });
+                }
             } else {
                 self.text_commit.pending = Some(pending);
             }
@@ -282,11 +422,13 @@ impl State {
             // owner's session carries the commit instead.
             pending.lent = None;
             if let Some(sensitive) = self.commit_through_owner(&pending.text) {
-                self.text_commit.delivered.push(DeliveredText {
-                    text: pending.text,
-                    sensitive,
-                    through: owner,
-                });
+                if pending.picked_here {
+                    self.text_commit.delivered.push(DeliveredText {
+                        text: pending.text,
+                        sensitive,
+                        through: owner,
+                    });
+                }
                 return;
             }
             self.text_commit.pending = Some(pending);
@@ -390,7 +532,7 @@ pub fn relay(
     delivered
 }
 
-enum Progress {
+pub(super) enum Progress {
     /// Still binding, or waiting for a field to activate the input method.
     Waiting,
     /// A field activated it: commit now.
@@ -419,37 +561,42 @@ struct LentState {
 
 /// The compositor's in-process `input-method-v2` connection, alive for one
 /// commit. Dropping it closes the connection and releases the seat.
-struct LentInputMethod {
+pub(super) struct LentInputMethod {
+    /// Declared first so the server side disconnects before `conn` closes.
+    _link: LoopbackClient,
     conn: Connection,
     queue: EventQueue<LentState>,
     state: LentState,
     input_method: Option<zwp_input_method_v2::ZwpInputMethodV2>,
     committed: bool,
-    server: Client,
-    display: DisplayHandle,
+}
+
+/// The compositor's own end of an in-process Wayland client: the server-side
+/// client and the event-loop wake on the client's socket. Dropping it
+/// disconnects the client.
+pub(super) struct LoopbackClient {
+    pub(super) server: Client,
+    pub(super) display: DisplayHandle,
     loop_handle: LoopHandle<'static, State>,
     wake: Option<RegistrationToken>,
 }
 
-impl LentInputMethod {
-    fn connect(state: &mut State) -> Result<Self, String> {
+impl LoopbackClient {
+    /// Insert a client carrying `data` into the compositor's own display and
+    /// return the client side's connection. The event loop only wakes when
+    /// something arrives on it; the loop's tick reads it, so the source is
+    /// never removed from inside its own callback.
+    pub(super) fn connect(
+        state: &mut State,
+        data: std::sync::Arc<ClientState>,
+    ) -> Result<(Self, Connection), String> {
         let (server, client) = UnixStream::pair().map_err(|e| e.to_string())?;
         client.set_nonblocking(true).map_err(|e| e.to_string())?;
         let server = state
             .display_handle
-            .insert_client(
-                server,
-                ClientState::input_method_arc(TrustedInputMethod::Compositor),
-            )
+            .insert_client(server, data)
             .map_err(|e| e.to_string())?;
-        state.register_trusted_input_method_client(&server, TrustedInputMethod::Compositor);
         let conn = Connection::from_socket(client).map_err(|e| e.to_string())?;
-        let queue = conn.new_event_queue::<LentState>();
-        let _registry = conn.display().get_registry(&queue.handle(), ());
-        let _ = conn.flush();
-        // Wake the event loop when the compositor answers. Only a wake: the
-        // loop's tick reads the answer and moves the request forward, so the
-        // source is never removed from inside its own callback.
         let wake = conn
             .backend()
             .poll_fd()
@@ -464,20 +611,56 @@ impl LentInputMethod {
                     )
                     .ok()
             });
+        let link = Self {
+            server,
+            display: state.display_handle.clone(),
+            loop_handle: state.loop_handle.clone(),
+            wake,
+        };
+        Ok((link, conn))
+    }
+}
+
+impl Drop for LoopbackClient {
+    fn drop(&mut self) {
+        if let Some(wake) = self.wake.take() {
+            self.loop_handle.remove(wake);
+        }
+        let id = self.server.id();
+        if self
+            .display
+            .backend_handle()
+            .get_client_data(id.clone())
+            .is_ok()
+        {
+            self.display
+                .backend_handle()
+                .kill_client(id, DisconnectReason::ConnectionClosed);
+        }
+    }
+}
+
+impl LentInputMethod {
+    pub(super) fn connect(state: &mut State) -> Result<Self, String> {
+        let (link, conn) = LoopbackClient::connect(
+            state,
+            ClientState::input_method_arc(TrustedInputMethod::Compositor),
+        )?;
+        state.register_trusted_input_method_client(&link.server, TrustedInputMethod::Compositor);
+        let queue = conn.new_event_queue::<LentState>();
+        let _registry = conn.display().get_registry(&queue.handle(), ());
+        let _ = conn.flush();
         Ok(Self {
+            _link: link,
             conn,
             queue,
             state: LentState::default(),
             input_method: None,
             committed: false,
-            server,
-            display: state.display_handle.clone(),
-            loop_handle: state.loop_handle.clone(),
-            wake,
         })
     }
 
-    fn pump(&mut self) -> Progress {
+    pub(super) fn pump(&mut self) -> Progress {
         if self.queue.dispatch_pending(&mut self.state).is_err() {
             return Progress::Failed;
         }
@@ -524,25 +707,6 @@ impl LentInputMethod {
         let _ = self.conn.display().sync(&self.queue.handle(), ());
         self.committed = true;
         let _ = self.conn.flush();
-    }
-}
-
-impl Drop for LentInputMethod {
-    fn drop(&mut self) {
-        if let Some(wake) = self.wake.take() {
-            self.loop_handle.remove(wake);
-        }
-        let id = self.server.id();
-        if self
-            .display
-            .backend_handle()
-            .get_client_data(id.clone())
-            .is_ok()
-        {
-            self.display
-                .backend_handle()
-                .kill_client(id, DisconnectReason::ConnectionClosed);
-        }
     }
 }
 

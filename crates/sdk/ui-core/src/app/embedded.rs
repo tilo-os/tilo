@@ -1,0 +1,1258 @@
+//! An [`App`] shown in a region of a host's scene: a tab of a desktop, a
+//! pane of a device's screen. The app keeps everything a window of its own
+//! would have (its input handling, focus, palette, history, collaboration
+//! and the actions it publishes); the host only lays it out, hands it the
+//! region's input and draws it where it sits.
+
+use std::cell::{Cell, RefCell};
+
+use super::{
+    Affine, App, AppSurface, CursorIcon, HashMap, KurboRect, NodeId, Point, PresenceCtx, Scene,
+    TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
+};
+use crate::widget::{AppKind, AppWidget, IconDescriptor};
+
+/// The region an [`EmbeddedApp`] occupies, as the [`AppSurface`] its app
+/// runs on. Logical pixels, so the host's own transform scales the app.
+struct Region {
+    size: winit::dpi::PhysicalSize<u32>,
+    redraw: Cell<bool>,
+    cursor: Cell<Option<CursorIcon>>,
+}
+
+impl AppSurface for Region {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+    fn request_redraw(&self) {
+        self.redraw.set(true);
+    }
+    fn set_cursor(&self, cursor: CursorIcon) {
+        self.cursor.set(Some(cursor));
+    }
+    fn hosts_tab_chords(&self) -> bool {
+        true
+    }
+}
+
+/// How many frames an embedded app may run in one host frame to settle a
+/// sync or layout its previous frame left.
+const SETTLE_FRAMES: usize = 3;
+
+/// An app a host shows in a region of its own scene.
+pub struct EmbeddedApp {
+    app: App,
+    rect: KurboRect,
+    region: Region,
+    focused: bool,
+    /// Focus state represented by `painted`. A hidden app can lose and regain
+    /// focus without changing the frame its host last showed.
+    painted_focus: bool,
+    /// The control that had focus when focus last left the app.
+    restore_focus: Option<NodeId>,
+    /// Shift was held as focus last moved, so focus entering the app lands
+    /// on its last control.
+    entering_backwards: bool,
+    /// The app asked for another frame.
+    wants_frame: Cell<bool>,
+    /// Painted into the host's scene at the region's origin, and painted
+    /// again as it is until the app has something new to show.
+    painted: RefCell<Scene>,
+    /// The damage parts ([`crate::scene_parts`]) recorded with `painted`.
+    painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
+    /// Background work not yet serviced by a model pump or frame.
+    woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Tells this app's damage hints from every other source's.
+    source: u64,
+    /// Where the app's frames changed since `painted` was last replaced.
+    damage: super::SurfaceDamage,
+    /// How `painted` differs from what was painted before it: the
+    /// generations it went from and to, and where it changed in the app's
+    /// own coordinates, `None` when it cannot say.
+    painted_damage: PaintedDamage,
+    /// The host presents each frame over the pixels it last presented and
+    /// can move them ([`Self::set_accepts_scroll_copies`]).
+    accepts_copies: bool,
+}
+
+/// How an embedded app's painted scene differs from the one before it.
+#[derive(Default)]
+struct PaintedDamage {
+    from: u64,
+    to: u64,
+    rects: Option<Vec<KurboRect>>,
+    /// What moved instead, in the host's device pixels at `copy_scale` per
+    /// unit of the app's own coordinates: where a scroll's content took its
+    /// pixels from and how far it moved them.
+    copies: Vec<crate::scroll_copy::DeviceCopy>,
+    copy_scale: f64,
+}
+
+/// How many pixels of the target of the host drawing now
+/// ([`crate::scroll_copy::host_device_scale`]) one unit of an app placed
+/// with `placement` is; 1 when the placement scales the axes apart, rotates
+/// or skews (the host then makes no copy of it anyway).
+fn copy_scale(placement: Affine) -> f64 {
+    let [a, b, c, d, _, _] = crate::scroll_copy::on_screen(placement).as_coeffs();
+    if b == 0.0 && c == 0.0 && a > 0.0 && a.to_bits() == d.to_bits() {
+        crate::scroll_copy::host_device_scale() * a
+    } else {
+        1.0
+    }
+}
+
+/// Hands out each embedded app's [`crate::scene_parts::DamageHint::source`].
+static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl EmbeddedApp {
+    /// Show `app` in a region of a host's scene. `wake` is told when the
+    /// app's background work wants it to run again.
+    ///
+    /// # Errors
+    /// The app's wake scope is already bound to another host.
+    pub fn new(
+        mut app: App,
+        wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        app.set_tab_order_continues_in_host(true);
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        if let Some(scope) = app.wake_scope.as_mut() {
+            let flag = std::sync::Arc::clone(&woken);
+            scope
+                .bind(move |event| {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                    wake(event);
+                })
+                .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
+        }
+        Ok(Self {
+            app,
+            rect: KurboRect::ZERO,
+            region: Region {
+                size: winit::dpi::PhysicalSize::new(0, 0),
+                redraw: Cell::new(true),
+                cursor: Cell::new(None),
+            },
+            focused: false,
+            painted_focus: false,
+            restore_focus: None,
+            entering_backwards: false,
+            wants_frame: Cell::new(true),
+            painted: RefCell::new(Scene::new()),
+            painted_parts: RefCell::new(None),
+            woken,
+            source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            damage: super::SurfaceDamage::default(),
+            painted_damage: PaintedDamage::default(),
+            accepts_copies: false,
+        })
+    }
+
+    /// Whether the host keeps the pixels it presented and can move them
+    /// within its target before it repaints the damage: a scroll in the app
+    /// then hands it what moved ([`crate::scene_parts::DamageHint::copies`])
+    /// instead of damaging the viewport. The app then stands on an opaque
+    /// ground of the theme's content colour, as a window of its own stands on
+    /// its target's, so what is under its content is uniform; a theme whose
+    /// content colour is not opaque gets no copies.
+    pub fn set_accepts_scroll_copies(&mut self, accepts: bool) {
+        self.accepts_copies = accepts;
+    }
+
+    /// The ground the app stands on while it hands out copies, if it does.
+    fn copy_ground(&self) -> Option<vello::peniko::Color> {
+        let ground = self.app.theme.tokens.colors.surfaces.content;
+        (self.accepts_copies && ground.components[3] >= 1.0).then_some(ground)
+    }
+
+    /// The app shown.
+    pub fn app(&self) -> &App {
+        &self.app
+    }
+
+    /// What the last painted frame handed its host, for a test reading why a
+    /// change repainted more than it should: the generations, the damage
+    /// (or none), why the app last repainted whole, and its tooltip.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn damage_report_for_test(&self) -> String {
+        format!(
+            "{}->{} damage={:?} copies={:?} repainted={:?} tooltip={:?} tooltip_pending={}",
+            self.painted_damage.from,
+            self.painted_damage.to,
+            self.painted_damage.rects,
+            self.painted_damage.copies,
+            self.damage.repainted(),
+            self.app.input.tooltip_host.visible(),
+            self.app.input.tooltip_host.needs_frame(),
+        )
+    }
+
+    /// `event`, in the region's own logical pixels, as the host hands it
+    /// input, and a frame for it: what a benchmark or test drives the app
+    /// with without a host's layout and focus.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn input_for_test(&mut self, event: WindowEvent) {
+        self.app.surface_input(&self.region, event, false);
+        self.wants_frame.set(true);
+    }
+
+    /// The app shown, to drive it.
+    pub fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
+    /// The root widget of the app's component: what an app's own tests
+    /// reach into, as they would in the app's window.
+    pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        // Whatever the caller does to it is no change the tracking sees.
+        self.app.mark_semantic_tree_stale();
+        let root = self
+            .app
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        let widget: &mut dyn Widget = root.component.root.as_deref_mut()?;
+        Some(widget)
+    }
+
+    /// `event` from the host, in its physical pixels at `scale`, moved into
+    /// the region's logical pixels.
+    fn local_event(&self, event: &WindowEvent, scale: f64) -> WindowEvent {
+        let local = |x: f64, y: f64| {
+            winit::dpi::PhysicalPosition::new(x / scale - self.rect.x0, y / scale - self.rect.y0)
+        };
+        match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: local(position.x, position.y),
+            },
+            WindowEvent::Touch(touch) => {
+                let mut touch = *touch;
+                touch.location = local(touch.location.x, touch.location.y);
+                WindowEvent::Touch(touch)
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn app_widget(&self) -> Option<&dyn AppWidget> {
+        self.app
+            .root_widget
+            .as_any()?
+            .downcast_ref::<crate::widget::BoundAppWidget>()
+            .map(|root| root as &dyn AppWidget)
+    }
+
+    fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.app.mark_semantic_tree_stale();
+        self.app
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()
+            .map(|root| root as &mut dyn AppWidget)
+    }
+}
+
+impl Widget for EmbeddedApp {
+    crate::provides!(
+        dyn crate::component_lifecycle::ComponentLifecycle,
+        dyn crate::widget::CompleteContentProvider
+    );
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The app looks as the host does around it. A new palette must
+        // replace its retained scene even when the region's size is unchanged.
+        if self.app.accessibility.base_theme != *theme {
+            self.app.set_theme(theme.clone());
+            self.wants_frame.set(true);
+        }
+        let style = taffy::Style {
+            size: taffy::Size::from_percent(1.0, 1.0),
+            ..taffy::Style::default()
+        };
+        let Ok(node) = taffy.new_leaf(style) else {
+            return NodeId::new(0);
+        };
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        if rect.size() != self.rect.size() {
+            self.app.layout.layout_dirty = true;
+            self.wants_frame.set(true);
+        }
+        self.rect = rect;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a region's logical size is a small non-negative pixel count"
+        )]
+        {
+            self.region.size = winit::dpi::PhysicalSize::new(
+                rect.width().round().max(0.0) as u32,
+                rect.height().round().max(0.0) as u32,
+            );
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let mut painted = self.painted.borrow_mut();
+        let mut painted_parts = self.painted_parts.borrow_mut();
+        let due = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
+        // Drawn for a host that copies, the app hands out copies from now
+        // on (a capture drawing it later repaints where they land).
+        if crate::scroll_copy::host_copies() {
+            self.accepts_copies = true;
+        }
+        // Starting or stopping copies changes the ground under the app and
+        // what its damage describes: the next frame is repainted whole.
+        let ground = self.copy_ground();
+        if ground.is_some() != self.damage.is_copying() {
+            self.damage = if ground.is_some() {
+                super::SurfaceDamage::copying()
+            } else {
+                super::SurfaceDamage::default()
+            };
+            self.wants_frame.set(true);
+        }
+        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
+        if ground.is_some() {
+            // Copies are planned in the host's device pixels: at 200 % a
+            // step of half a logical pixel is a whole one and copies.
+            self.damage.set_copy_scale(copy_scale(placement));
+        }
+        if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
+            // A frame whose sync or layout leaves more to settle runs again
+            // at once, so what the host paints is the app at rest.
+            let mut again = true;
+            let from = self.painted_damage.to;
+            for _ in 0..SETTLE_FRAMES {
+                // The app's own damage parts travel with its scene, so a
+                // host that tracks parts repaints a caret, not the tile.
+                let region = KurboRect::new(
+                    0.0,
+                    0.0,
+                    f64::from(self.region.size.width),
+                    f64::from(self.region.size.height),
+                );
+                let (settling, parts) = crate::scene_parts::record(&mut painted, |painted| {
+                    painted.reset();
+                    if let Some(ground) = ground {
+                        painted.fill(
+                            vello::peniko::Fill::NonZero,
+                            Affine::IDENTITY,
+                            ground,
+                            None,
+                            &region,
+                        );
+                    }
+                    self.app
+                        .surface_frame_with_damage(&self.region, painted, &mut self.damage)
+                });
+                again = settling;
+                *painted_parts = parts;
+                if !again || !self.app.unsettled() {
+                    break;
+                }
+            }
+            // The frames just run changed only where their damage says,
+            // from what was painted before them.
+            let taken = self.damage.take_copying();
+            self.painted_damage = PaintedDamage {
+                from,
+                to: from.wrapping_add(1),
+                copies: taken
+                    .as_ref()
+                    .map(|(copies, _)| copies.clone())
+                    .unwrap_or_default(),
+                copy_scale: self.damage.copy_scale(),
+                rects: taken.map(|(_, rects)| rects),
+            };
+            // What the host's accessibility walk reads of the app.
+            let _ = self.app.refresh_semantic_tree();
+            self.wants_frame
+                .set(again || self.region.redraw.replace(false));
+            self.painted_focus = self.focused;
+        }
+        // A host comparing this frame with one that painted the generation
+        // before repaints only the app's damage; any other change to the
+        // app (it moved, it repainted whole, frames were skipped) repaints
+        // the part around it.
+        let hint = self.painted_damage.rects.as_ref().map(|rects| {
+            let mut rects: Vec<KurboRect> = rects
+                .iter()
+                .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
+                .collect();
+            // The app plans copies in the host's device pixels.
+            let mut copies = Vec::with_capacity(self.painted_damage.copies.len());
+            for copy in &self.painted_damage.copies {
+                let moved =
+                    crate::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
+                match moved.transformed(placement) {
+                    Some(moved) => copies.push(moved),
+                    None => rects.push(
+                        placement
+                            .transform_rect_bbox(moved.destination())
+                            .inflate(1.0, 1.0),
+                    ),
+                }
+            }
+            crate::scene_parts::DamageHint {
+                source: self.source,
+                from: self.painted_damage.from,
+                to: self.painted_damage.to,
+                placement,
+                rects,
+                copies,
+            }
+        });
+        let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
+        crate::scene_parts::hinted(scene, key, hint, |scene| {
+            crate::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
+        });
+    }
+
+    /// A due wake deadline is serviced here, on the host's pump, as a window
+    /// of the app's own services it after its redraw is skipped: the app's
+    /// model runs (which samples a record still being written again) and
+    /// nothing is drawn unless that showed something new. Only `draw` ran the
+    /// app before, so a deadline that came due after its last frame stayed in
+    /// the past, and a host that does not paint for a due deadline woke for it
+    /// at once on every park.
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let due = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        // A wake the app raised from another thread (a question put to its
+        // action directory, an invocation, a collaborator's edit) is serviced
+        // here too, not only by the next frame: the host may park without
+        // painting it, and an answer owed to a waiting caller would then wait
+        // for something unrelated. Consume it before pumping: a nonvisual
+        // answer needs no draw to retire, and a wake raised during the pump
+        // must remain pending. Visible changes are retained by wants_frame.
+        let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if !due && !woken {
+            return false;
+        }
+        let presentation_changed = self.app.pump_embedded_model();
+        // A durability that changed in this pass left the layout dirty
+        // (`App::sync_model`), so the next frame shows it; a structure change
+        // the pass made is rebuilt by that frame.
+        self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
+        let visible = presentation_changed
+            || self.app.unsettled()
+            || (woken && self.app.root_widget.needs_redraw())
+            || self.app.root_widget.needs_animation_frame();
+        if visible {
+            self.wants_frame.set(true);
+        }
+        visible
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.entering_backwards = ctx.modifiers.state().shift_key();
+        let local = self.local_event(event, ctx.scale_factor);
+        self.app.set_surface_modifiers(*ctx.modifiers);
+        if self.app.surface_input(&self.region, local, false) {
+            *ctx.handled = true;
+        }
+        if self.region.redraw.replace(false) {
+            self.wants_frame.set(true);
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "EmbeddedApp"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// The id of the app shown.
+    fn test_id(&self) -> Option<&str> {
+        self.app
+            .root_widget
+            .as_any()?
+            .downcast_ref::<crate::widget::BoundAppWidget>()
+            .map(|root| root.component.app_id())
+    }
+
+    fn get_rect(&self) -> KurboRect {
+        self.rect
+    }
+
+    /// The app's own named targets, where they are in the host.
+    fn test_rects(&self) -> Vec<(String, KurboRect)> {
+        fn walk(
+            widget: &dyn Widget,
+            offset: vello::kurbo::Vec2,
+            out: &mut Vec<(String, KurboRect)>,
+        ) {
+            if let Some(id) = widget.test_id() {
+                out.push((id.to_owned(), widget.get_rect() + offset));
+            }
+            out.extend(
+                widget
+                    .test_rects()
+                    .into_iter()
+                    .map(|(name, rect)| (name, rect + offset)),
+            );
+            for child in widget.children() {
+                walk(child, offset, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            self.app.root_widget.as_ref(),
+            vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0),
+            &mut out,
+        );
+        out.retain(|(_, rect)| rect.area() > 0.0);
+        out
+    }
+
+    fn cursor_shape(&self, _point: Point) -> Option<CursorIcon> {
+        self.region.cursor.get()
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if focused == self.focused {
+            return;
+        }
+        self.focused = focused;
+        if focused {
+            if !self.app.restore_focused_control(self.restore_focus.take())
+                || self.app.focused_control().is_none()
+            {
+                self.app.focus_order_edge(self.entering_backwards);
+            }
+        } else {
+            self.restore_focus = self.app.focused_control();
+            self.app.restore_focused_control(None);
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
+
+    fn ime_cursor_rect(&self) -> Option<KurboRect> {
+        self.app
+            .inspect_node(self.app.focused_node?, |widget| widget.ime_cursor_rect())
+            .ok()
+            .flatten()
+            .map(|rect| rect + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0))
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.app.ime_window_state().map(|field| field.purpose)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.app
+            .ime_window_state()
+            .is_some_and(|field| field.multiline)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.start_deferred_text()
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.commit_deferred_text(text)
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let node = self.app.focused_node?;
+        let field = self
+            .app
+            .inspect_node(node, |widget| widget.ime_edit_fingerprint(key))
+            .ok()??;
+        let document = self
+            .app
+            .bindings
+            .document_edit_stamp(node, &self.app.state.doc)
+            .ok()?;
+        Some(document.bind_fingerprint(node, field, key))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.wants_frame.get() || self.focused != self.painted_focus
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.app.root_widget.has_pending_visual_work()
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.app.root_widget.has_transient_feedback()
+    }
+
+    /// The host's presentation preferences are the app's.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.app.set_reduce_motion(reduced);
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.app.set_platform_conventions(conventions);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.app.set_interaction_environment(environment);
+    }
+
+    /// The app's own accessibility tree, as this tile's subtree: a screen
+    /// reader walks from the host straight into the app.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let tree = self.app.semantic_tree();
+        let offset = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
+        let root = tree.node(tree.root())?;
+        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
+        node.name = AppWidget::app_title(self).to_owned().into();
+        node.children = root
+            .children
+            .iter()
+            .filter_map(|child| access_subtree(tree, child, offset))
+            .collect();
+        Some(node)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let Some(id) = semantic_target(self.app.semantic_tree(), key_path) else {
+            return false;
+        };
+        let Some(name) = self
+            .app
+            .semantic_tree()
+            .node(&id)
+            .and_then(|node| {
+                node.actions.iter().find(|candidate| {
+                    matches!(&candidate.kind, crate::a11y_tree::SemanticActionKind::Verb(verb)
+                        if std::mem::discriminant(verb) == std::mem::discriminant(action))
+                })
+            })
+            .map(|candidate| candidate.name.clone())
+        else {
+            return false;
+        };
+        let argument = match action {
+            crate::a11y::Action::SetValue(value) => Some(value.as_str()),
+            _ => None,
+        };
+        let done = self
+            .app
+            .invoke_semantic_action(&id, &name, argument)
+            .unwrap_or(false);
+        self.wants_frame.set(true);
+        done
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.app.root_widget.next_wake_deadline()
+    }
+}
+
+impl crate::component_lifecycle::ComponentLifecycle for EmbeddedApp {
+    fn unsaved_documents(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<crate::close_admission::UnsavedDocument> {
+        crate::component_lifecycle::unsaved_documents(self.app.root_widget.as_ref(), doc)
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        crate::component_lifecycle::checkpoint_components(self.app.root_widget.as_mut())
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        crate::component_lifecycle::finish_admitted_close(self.app.root_widget.as_mut())
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.app.close_components();
+        self.app.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.app.take_component_close_reports()
+    }
+}
+
+impl crate::widget::CompleteContentProvider for EmbeddedApp {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+        use crate::widget::CompleteContentWidgetExt as _;
+        self.app.root_widget.complete_content_size()
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut Scene,
+        bounds: KurboRect,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) -> bool {
+        use crate::widget::CompleteContentWidgetExt as _;
+        let app = &mut self.app;
+        let local = bounds - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
+        let mut painted = Scene::new();
+        let drawn = app.root_widget.draw_complete_content(
+            &mut painted,
+            local,
+            Affine::IDENTITY,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+        scene.append(
+            &painted,
+            Some(transform * Affine::translate((self.rect.x0, self.rect.y0))),
+        );
+        drawn
+    }
+}
+
+impl AppWidget for EmbeddedApp {
+    /// The app keeps its own record; the host binds none for it.
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+    fn app_kind(&self) -> AppKind {
+        self.app_widget()
+            .map_or(AppKind::Editor, AppWidget::app_kind)
+    }
+    fn app_title(&self) -> &str {
+        self.app_widget().map_or("", AppWidget::app_title)
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        self.app_widget()
+            .map_or(IconDescriptor::Glyph(""), AppWidget::app_icon)
+    }
+    fn permission_hint(&self) -> Option<AppKind> {
+        self.app_widget()?.permission_hint()
+    }
+    fn device_shell_operation(
+        &mut self,
+        operation: &crate::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        self.app_widget_mut()
+            .ok_or("Terminal is not available")?
+            .device_shell_operation(operation)
+    }
+    fn request_device_shell(&mut self) -> bool {
+        self.app_widget_mut()
+            .is_some_and(AppWidget::request_device_shell)
+    }
+    fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+        self.app_widget_mut()?.take_host_intent()
+    }
+}
+
+/// The app's semantic node `id` and what is below it, as synthetic
+/// accessibility nodes keyed by their semantic ids, placed in the host.
+/// Nodes with no place on screen (published resources) are left out.
+fn access_subtree(
+    tree: &crate::a11y_tree::SemanticTree,
+    id: &crate::a11y_tree::SemanticId,
+    offset: vello::kurbo::Vec2,
+) -> Option<crate::a11y::AccessNode> {
+    let node = tree.node(id)?;
+    let bounds = node.bounds?;
+    let mut access = crate::a11y::AccessNode::new(node.role);
+    access.name.clone_from(&node.name);
+    access.value.clone_from(&node.value);
+    access.state = node.state;
+    access.key = Some(crate::a11y::hash_key(&id.as_str()));
+    let placed = bounds + offset;
+    access.bounds = Some(crate::a11y::AccessBounds {
+        x0: placed.x0,
+        y0: placed.y0,
+        x1: placed.x1,
+        y1: placed.y1,
+    });
+    access.children = node
+        .children
+        .iter()
+        .filter_map(|child| access_subtree(tree, child, offset))
+        .collect();
+    Some(access)
+}
+
+/// The semantic node a key path from [`access_subtree`] names.
+fn semantic_target(
+    tree: &crate::a11y_tree::SemanticTree,
+    key_path: &[u64],
+) -> Option<crate::a11y_tree::SemanticId> {
+    let mut current = tree.root().clone();
+    for key in key_path {
+        current = tree
+            .node(&current)?
+            .children
+            .iter()
+            .find(|child| crate::a11y::hash_key(&child.as_str()) == *key)?
+            .clone();
+    }
+    (!key_path.is_empty()).then_some(current)
+}
+
+#[cfg(test)]
+mod theme_repaint_tests {
+    use super::*;
+
+    pub(super) fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
+        let mut taffy = TaffyTree::new();
+        let node = tile.build_layout(&mut taffy, theme, &mut HashMap::new());
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(100.0),
+                },
+            )
+            .unwrap();
+        tile.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    pub(super) fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
+        let mut scene = Scene::new();
+        tile.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene.encoding().draw_data.clone()
+    }
+
+    /// Paint `tile` into a section tracked for damage parts, as the shell
+    /// paints its tiles, and return the section with its parts.
+    fn paint_tracked(
+        tile: &mut EmbeddedApp,
+        theme: &Theme,
+    ) -> (Box<Scene>, crate::scene_parts::SectionParts) {
+        let recording = crate::scene_parts::Recording::begin();
+        let mut scene = Box::new(Scene::new());
+        crate::scene_parts::track(&scene);
+        tile.draw(
+            &mut scene,
+            Affine::translate((40.0, 20.0)),
+            &mut TextRenderer::new(),
+            theme,
+            &PresenceCtx::empty(),
+        );
+        let parts = recording
+            .finish()
+            .of(&scene)
+            .expect("the tile's parts are well nested");
+        (scene, parts)
+    }
+
+    #[test]
+    fn a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..4 {
+            let _ = paint_tracked(&mut tile, &theme);
+        }
+        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+        let button = tile.app.root_widget.get_rect();
+        // The pointer arrives over the button and its hover is painted.
+        let at = button.center();
+        let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+        tile.app.surface_input(&tile.region, moved, false);
+        tile.wants_frame.set(true);
+        let hovered = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.needs_frame(),
+            "the button's tooltip is pending over {button:?}"
+        );
+        // It rests: the tooltip shows, and only it changes.
+        std::thread::sleep(
+            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
+        );
+        tile.wants_frame.set(true);
+        let shown = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.visible().is_some(),
+            "the tooltip shows"
+        );
+        let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
+            .expect("the tooltip is proven");
+        let chip = tile.damage_report_for_test();
+        assert!(!damage.is_empty(), "the tooltip is repainted");
+        let repainted: f64 = damage.iter().map(|rect| rect.area()).sum();
+        assert!(
+            repainted < region.area(),
+            "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
+        );
+    }
+
+    #[test]
+    fn an_embedded_frame_hands_its_widget_damage_to_the_host() {
+        let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
+        let source = std::rc::Rc::clone(&label);
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::dynamic(move || {
+                source.borrow().clone()
+            })),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        let mut previous = paint_tracked(&mut tile, &theme);
+        for _ in 0..4 {
+            previous = paint_tracked(&mut tile, &theme);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+        // A frame that changed nothing hands over no damage, and the host
+        // finds none.
+        tile.wants_frame.set(true);
+        let idle = paint_tracked(&mut tile, &theme);
+        assert_eq!(tile.painted_damage.rects, Some(Vec::new()));
+        assert_eq!(
+            crate::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
+            Ok(Vec::new())
+        );
+        // A changed label is the widget's damage, not more than the region.
+        *label.borrow_mut() = "after".to_owned();
+        tile.app.needs_sync = true;
+        tile.wants_frame.set(true);
+        let changed = paint_tracked(&mut tile, &theme);
+        let damage = crate::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
+            .expect("the change is proven");
+        assert!(!damage.is_empty(), "the new label is repainted");
+        assert!(
+            damage
+                .iter()
+                .all(|rect| region.inflate(1.0, 1.0).union(*rect) == region.inflate(1.0, 1.0)),
+            "{damage:?} stays in the app's region {region:?}"
+        );
+        assert_eq!(
+            tile.painted_damage.from + 1,
+            tile.painted_damage.to,
+            "the painted generation follows the one before"
+        );
+    }
+
+    #[test]
+    fn embedded_host_theme_change_repaints_an_idle_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Theme probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let light = Theme::light();
+        layout(&mut tile, &light);
+        let mut previous = Vec::new();
+        for _ in 0..4 {
+            previous = paint(&mut tile, &light);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        assert!(
+            !tile.needs_redraw(),
+            "the actual tile must settle before a theme change"
+        );
+        assert!(!previous.is_empty(), "the actual label must be painted");
+        layout(&mut tile, &light);
+        assert!(
+            !tile.needs_redraw(),
+            "an unchanged theme keeps the idle tile cached"
+        );
+        assert_eq!(paint(&mut tile, &light), previous);
+        for theme in [Theme::dark(), Theme::high_contrast()] {
+            layout(&mut tile, &theme);
+            assert!(
+                tile.needs_redraw(),
+                "a host theme change must repaint the retained scene"
+            );
+            let current = paint(&mut tile, &theme);
+            assert_ne!(
+                current, previous,
+                "the actual scene must contain the new theme's ink"
+            );
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Focus probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..8 {
+            paint(&mut tile, &theme);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        assert!(
+            !tile.needs_redraw(),
+            "the app must settle before focus moves"
+        );
+
+        tile.set_focus(true);
+        assert!(tile.needs_redraw(), "visible focus entering needs a frame");
+        paint(&mut tile, &theme);
+        assert!(!tile.needs_redraw());
+        let shown = tile.painted_damage.to;
+
+        tile.set_focus(false);
+        assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
+        // A workspace switch parks this app without drawing it, then gives it
+        // focus back before its next scene is composed.
+        tile.set_focus(true);
+        assert!(!tile.needs_redraw());
+        paint(&mut tile, &theme);
+        assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
+
+        tile.set_focus(false);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > shown,
+            "a lasting focus change repaints"
+        );
+        let unfocused = tile.painted_damage.to;
+        tile.wants_frame.set(true);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > unfocused,
+            "other app work still repaints"
+        );
+    }
+}
+
+/// #3986: a tile whose record was still being written at its last frame
+/// left a wake deadline that only its next `draw` moved, so a compositor that
+/// does not paint for a due deadline woke for it on every park.
+#[cfg(test)]
+mod saving_record_wake_tests {
+    use super::theme_repaint_tests::{layout, paint};
+    use super::*;
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support::{
+        ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
+    };
+    use crate::record::RecordSaveStatus;
+
+    fn bound(tile: &mut EmbeddedApp) -> &mut crate::application::AppComponent {
+        &mut tile
+            .app
+            .root_widget
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .expect("the tile shows a component")
+            .component
+    }
+
+    fn sampled(tile: &mut EmbeddedApp) -> Option<RecordSaveStatus> {
+        bound(tile).sampled_record_save().cloned()
+    }
+
+    /// The host's per-tick pump, as `TileHost` runs it for a tile that keeps
+    /// its own record.
+    fn pump(tile: &mut EmbeddedApp) -> bool {
+        let model = automerge::AutoCommit::new();
+        tile.sync(&model, &automerge::ROOT);
+        tile.update(&model, &automerge::ROOT)
+    }
+
+    /// What the frame the user last saw sampled: the app's sync, which reads
+    /// the record's durability, with the record's edit not yet written.
+    fn sample(tile: &mut EmbeddedApp) {
+        let app = &mut tile.app;
+        app.root_widget.sync(&app.state.doc, &app.state.root);
+    }
+
+    fn settle(tile: &mut EmbeddedApp, theme: &Theme) {
+        for _ in 0..8 {
+            layout(tile, theme);
+            paint(tile, theme);
+            if !tile.needs_redraw() {
+                return;
+            }
+        }
+        panic!("the tile must come to rest");
+    }
+
+    fn due(tile: &EmbeddedApp, now: crate::time::Instant) -> bool {
+        tile.next_wake_deadline()
+            .is_some_and(|deadline| deadline <= now)
+    }
+
+    #[test]
+    fn a_record_saving_at_the_last_frame_is_resampled_by_the_pump_not_a_paint() {
+        let host = ProbeHost::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &LaunchTarget::New,
+                    runner_permissions(),
+                )
+                .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let binding = component.callback_binding();
+        let id = binding.checkout.id.clone();
+        let app = App::from_component(component, runner_inputs()).unwrap();
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::dark();
+        settle(&mut tile, &theme);
+
+        // An edit the writer has not taken yet: the frame samples "Saving".
+        binding
+            .records
+            .with(&id, |doc| {
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "unsaved", 1_u64)
+                    .unwrap();
+            })
+            .unwrap();
+        sample(&mut tile);
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert!(tile.next_wake_deadline().is_some());
+
+        // Still being written when the deadline comes due: the pump samples
+        // it again and the deadline moves on. Nothing changed on screen, so
+        // no frame is asked for.
+        bound(&mut tile).age_record_save_sample();
+        assert!(due(&tile, crate::time::now()));
+        assert!(
+            !pump(&mut tile),
+            "a resample that changed nothing paints nothing"
+        );
+        assert!(!tile.needs_redraw());
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert!(
+            !due(&tile, crate::time::now()),
+            "the resample re-arms the deadline from itself"
+        );
+
+        // The writer finishes off the event loop and wakes nobody: the stale
+        // deadline is all that is left of the save.
+        binding.records.try_flush_record(&id).unwrap();
+        binding.records.await_submitted(&id).unwrap();
+        assert_eq!(
+            binding.records.save_status(&id).unwrap(),
+            RecordSaveStatus::Saved
+        );
+        bound(&mut tile).age_record_save_sample();
+        let now = crate::time::now();
+        assert!(due(&tile, now));
+
+        // The pump, with no draw, finds it saved: the deadline is gone and one
+        // frame shows the change.
+        assert!(pump(&mut tile), "the finished save is shown");
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));
+        assert_eq!(tile.next_wake_deadline(), None);
+        assert!(tile.needs_redraw());
+        settle(&mut tile, &theme);
+
+        // And the loop goes quiet: no deadline, no frame, however often the
+        // host pumps.
+        for _ in 0..100 {
+            assert!(!pump(&mut tile));
+        }
+        assert_eq!(tile.next_wake_deadline(), None);
+        assert!(!tile.needs_redraw());
+        tile.app.close_components();
+    }
+}
+
+#[cfg(test)]
+#[path = "embedded_copy_tests.rs"]
+mod copy_tests;
+
+#[cfg(test)]
+#[path = "embedded_wake_tests.rs"]
+mod wake_tests;

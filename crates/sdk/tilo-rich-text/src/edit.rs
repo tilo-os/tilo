@@ -19,11 +19,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use qdoc::snapshot::BlockView;
-use qdoc_rich_text::action::{MarkVal, RegionKind, Span};
-use qdoc_rich_text::{RichTextAction, RichTextState};
+use tilo_doc::snapshot::BlockView;
+use tilo_document::action::{RegionKind, Span};
+use tilo_document::{RichTextAction, RichTextState};
 use ui::tilo_actions::ActionError;
-use ui::tilo_resource::Doc;
 use ui::widget::marks::{self, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -31,34 +30,18 @@ use crate::convert::{self, KindSpec, chars};
 
 /// Where edits go and where their result is read back.
 pub(crate) trait Host {
+    /// The document the edits go to, as the host holds it.
+    type Doc: ?Sized;
+
     /// Apply one edit to `doc` now.
     ///
     /// # Errors
     /// Returns the host's refusal; nothing is written.
-    fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError>;
+    fn apply(&mut self, doc: &mut Self::Doc, action: &RichTextAction) -> Result<(), ActionError>;
 
     /// Read the state as of `doc`, after the edits applied so far.
-    fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
-
-    /// Whom the text this host writes is attributed to.
-    fn author(&self) -> Option<&str> {
-        None
-    }
-}
-
-/// Mark `len` characters of `block` from `start` as written by `author`.
-pub(crate) fn authorship(block: String, start: usize, len: usize, author: &str) -> RichTextAction {
-    RichTextAction::SetMark {
-        region: RegionKind::Body,
-        spans: vec![Span {
-            block,
-            start,
-            end: start.saturating_add(len),
-        }],
-        name: qdoc::schema::MARK_AUTHOR.to_owned(),
-        value: Some(MarkVal::Str(author.to_owned())),
-        also_clear: Vec::new(),
-    }
+    fn read<T>(&mut self, doc: &mut Self::Doc, read: impl FnOnce(&RichTextState) -> T)
+    -> Option<T>;
 }
 
 /// `(at, removed, inserted)` in characters: the one splice turning `before`
@@ -130,7 +113,7 @@ fn body_neighbour(state: &RichTextState, id: &str, step: isize) -> Option<String
 
 struct Commit<'a, H: Host> {
     host: &'a mut H,
-    doc: &'a mut Doc,
+    doc: &'a mut H::Doc,
     /// The document id each editor block ended up with.
     resolved: HashMap<String, String>,
     /// Editor blocks whose text is already in the document.
@@ -143,39 +126,10 @@ struct Commit<'a, H: Host> {
 }
 
 impl<H: Host> Commit<'_, H> {
-    /// Apply `action`, and attribute the text it writes to the host's
-    /// author.
+    /// Apply `action`; the document attributes the text it writes to
+    /// whoever invoked it.
     fn apply(&mut self, action: &RichTextAction) -> Result<(), ActionError> {
-        self.host.apply(self.doc, action)?;
-        let Some(author) = self.host.author().map(str::to_owned) else {
-            return Ok(());
-        };
-        let written = match action {
-            RichTextAction::SpliceText { block, at, ins, .. } => {
-                Some((block.clone(), *at, chars(ins)))
-            }
-            RichTextAction::ReplaceSelection {
-                start_block,
-                start,
-                ins,
-                ..
-            } => Some((start_block.clone(), *start, chars(ins))),
-            RichTextAction::InsertParagraph { after, text } => {
-                self.after(after).map(|block| (block, 0, chars(text)))
-            }
-            RichTextAction::AppendParagraph { text } => {
-                self.last().map(|block| (block, 0, chars(text)))
-            }
-            _ => None,
-        };
-        if let Some((block, start, len)) = written.filter(|(_, _, len)| *len > 0)
-            && let Err(error) = self
-                .host
-                .apply(self.doc, &authorship(block, start, len, &author))
-        {
-            tracing::debug!(%error, "text written without attribution");
-        }
-        Ok(())
+        self.host.apply(self.doc, action)
     }
 
     /// The paragraph right after `id` in the document now.
@@ -619,9 +573,9 @@ impl<H: Host> Commit<'_, H> {
 /// # Errors
 /// Returns the first refusal. Edits applied before it stay applied; the
 /// caller presents the document as it now is.
-pub(crate) fn commit(
-    host: &mut impl Host,
-    doc: &mut Doc,
+pub(crate) fn commit<H: Host>(
+    host: &mut H,
+    doc: &mut H::Doc,
     presented: &[BlockContent],
     edited: &[BlockContent],
 ) -> Result<Vec<(String, String)>, ActionError> {
@@ -670,8 +624,9 @@ pub(crate) fn commit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_rich_text::RichText;
+    use tilo_document::RichText;
     use ui::tilo_actions::Action;
+    use ui::tilo_resource::Doc;
     use ui::tilo_resource::{Demand, Reader, Resource};
     use ui::widget::marks::Mark;
 
@@ -683,6 +638,8 @@ mod tests {
     }
 
     impl Host for Replica {
+        type Doc = Doc;
+
         fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
             action.apply(doc)?;
             doc.commit();

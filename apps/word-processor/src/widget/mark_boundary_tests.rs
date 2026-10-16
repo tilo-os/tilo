@@ -1,8 +1,10 @@
 use super::text_runs::{BlockRuns, char_baseline, char_color, char_has, mark_style_segments};
-use qdoc::document::MarkSpan;
+use tilo_doc::document::MarkSpan;
 // Independent retained per-character reference for the mark-boundary optimization.
+use super::text_runs::{block_runs, char_font_family, char_font_size, char_highlight};
 use super::*;
-use qdoc::document::MarkValue;
+use tilo_doc::document::MarkValue;
+use ui::richtext::RichSpan;
 
 fn reference_block_runs(block: &BlockView) -> BlockRuns {
     let chars: Vec<char> = block.text.chars().collect();
@@ -38,6 +40,7 @@ fn reference_block_runs(block: &BlockView) -> BlockRuns {
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }
@@ -71,9 +74,9 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
     let len = chars.len();
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_has(i, &block.marks, qdoc::schema::MARK_INS) {
+        if char_has(i, &block.marks, tilo_doc::schema::MARK_INS) {
             Some(INSERTION_RGB)
-        } else if char_has(i, &block.marks, qdoc::schema::MARK_DEL) {
+        } else if char_has(i, &block.marks, tilo_doc::schema::MARK_DEL) {
             Some(DELETION_RGB)
         } else {
             None
@@ -111,6 +114,7 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }
@@ -244,8 +248,7 @@ fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
                     children: vec![],
                 };
                 for review in [false, true] {
-                    let (actual, actual_underlines, actual_strikes) =
-                        block_runs_markup(&block, review);
+                    let (actual, actual_underlines, actual_strikes) = block_runs(&block, review);
                     let (expected, expected_underlines, expected_strikes) =
                         reference_block_runs_markup(&block, review);
                     let fields = |r: RichSpan| {

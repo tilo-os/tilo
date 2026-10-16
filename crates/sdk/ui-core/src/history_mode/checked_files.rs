@@ -1,12 +1,12 @@
 //! Typed checked-file state. No Automerge identity or document fallback exists here.
-use collab_types::files::{
+use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as Request, FileHistoryReadErrorV1 as ReadError,
     FileHistoryReadQueryV1 as Query, FileHistoryReadScopeV1 as ReadScope,
     FileHistoryReadValueV1 as ReadValue, FileRestoreReceiptV1 as Receipt,
     FileRestoreReviewV1 as Review,
 };
-use collab_types::{FileRecordId, FileVersionId};
+use fs_protocol::{FileRecordId, FileVersionId};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Trusted owner-side transport. This handle is never included in preview input.
@@ -29,6 +29,10 @@ pub struct FileHistoryTarget {
     pub record: FileRecordId,
     pub label: String,
     pub transport: Arc<dyn FileHistoryTransport>,
+    /// Who the people and agents writing versions are, as the app knows
+    /// them: a version an agent's device signed reads as the agent's, on
+    /// behalf of its person. Presentation only; never authority.
+    pub authors: crate::history_source::AuthorDirectory,
 }
 /// A root retains its own handle; the runner validates this exact source witness.
 #[derive(Clone, Default)]
@@ -74,7 +78,7 @@ pub enum FileHistoricalContent {
 #[derive(Clone, Debug)]
 pub struct FileHistorySnapshot {
     pub scope: ReadScope,
-    pub version: collab_types::FileVersionV1,
+    pub version: fs_protocol::FileVersionV1,
     pub content: FileHistoricalContent,
 }
 pub struct FilePreviewInput {
@@ -206,7 +210,7 @@ mod tests {
             assert_eq!(source.take_open().unwrap().version, None);
             assert!(!source.wants_open());
             assert!(source.take_open().is_none());
-            let version = collab_types::FileVersionId(uuid::Uuid::new_v4());
+            let version = fs_protocol::FileVersionId(uuid::Uuid::new_v4());
             source.open(Some(version));
             assert_eq!(source.take_open().unwrap().version, Some(version));
             assert!(source.take_open().is_none());
@@ -278,7 +282,7 @@ mod tests {
                 Outcome::ReadOnly,
                 Outcome::PendingWrites,
                 Outcome::UnsupportedOwner {
-                    mapping: "qdoc".into(),
+                    mapping: "tilo-doc".into(),
                 },
                 Outcome::InvalidRequest,
             ] {

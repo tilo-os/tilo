@@ -41,7 +41,7 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
         // Where the strip starts placing groups: past the wheel slot.
         let leading = f64::from(sidebar_width_for_viewport(900.0)) + WHEEL_TO_STRIP_GAP_PX;
         // The widest a group can be, and therefore where the widest one ends.
-        let widest = f64::from(ui::widget::WIDTH_MAX_PERMILLE) / 1000.0 * span.usable;
+        let widest = f64::from(ui::widget::WIDTH_WIDE_PERMILLE) / 1000.0 * span.usable;
         let right_edge = leading + widest;
 
         assert!(
@@ -124,6 +124,17 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
         let mut h = host();
         h.tick_overview_transition(1.0, false);
         assert!(h.transition_started.is_some(), "should latch transition");
+        assert!(
+            h.needs_animation_frame(),
+            "the transition still asks for frames on the animation clock"
+        );
+        let now = std::time::Instant::now();
+        if let Some(deadline) = h.next_wake_deadline() {
+            assert!(
+                deadline.saturating_duration_since(now) > std::time::Duration::from_millis(2),
+                "a running overview transition must not wake the shell every millisecond"
+            );
+        }
         assert_eq!(h.overview_target, 1.0);
         // Past the full duration, value settles exactly at the target.
         // Backdate the latched start instead of sleeping through the
@@ -185,4 +196,287 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
     target_change_latches_transition_and_completes();
     mid_flight_re_toggle_picks_up_from_current_t();
     reduced_motion_snaps_overview_to_each_target();
+}
+
+/// A desktop of two displays side by side, with the chrome that says which
+/// one has focus: the overview opens on that display, as it does live.
+fn two_display_host() -> ShellOverlayHost {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut host =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
+    host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+    ]);
+    assert_eq!(
+        host.overlay_area(),
+        Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        "the overview opens on the focused first display"
+    );
+    host
+}
+
+/// The overview drawn into a tracked section, as the frame builder draws it,
+/// with the parts the retained-damage producer compares.
+fn overview_section(
+    host: &mut ShellOverlayHost,
+    renderer: &mut TextRenderer,
+    theme: &Theme,
+    open: bool,
+) -> (Scene, ui::scene_parts::SectionParts) {
+    // What the layout pass does before every draw: the panel's metrics for
+    // the display it is on.
+    host.resolve_overview_layout(theme);
+    let mut scene = Scene::new();
+    let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+        host.draw_overview_overlay(scene, Affine::IDENTITY, renderer, theme, open);
+    });
+    (scene, parts.expect("the overview's parts are well nested"))
+}
+
+/// The damage between two overview frames: what the producer hands the
+/// presenter. A dense frame (no proof) fails here.
+fn overview_damage(
+    previous: &(Scene, ui::scene_parts::SectionParts),
+    current: &(Scene, ui::scene_parts::SectionParts),
+) -> Vec<Rect> {
+    ui::scene_parts::damage(&previous.0, &previous.1, &current.0, &current.1)
+        .unwrap_or_else(|why| panic!("an overview frame must stay sparse, not dense: {why:?}"))
+}
+
+/// Damage that repaints the display the overview dims, and not the other.
+fn on_first_display(damage: &[Rect], sample: &str) {
+    assert!(!damage.is_empty(), "{sample}: the fade repaints something");
+    for rect in damage {
+        assert!(
+            rect.x1 <= 1920.0,
+            "{sample}: {rect:?} reaches past the first display into the other one"
+        );
+    }
+}
+
+#[test]
+fn overview_transition_damages_one_display_not_both() {
+    // Each draw samples the wall clock, so pin the fade halfway just before it.
+    fn mid_fade(host: &mut ShellOverlayHost) {
+        host.tick_overview_transition(1.0, false);
+        host.transition_started = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+                .expect("the clock is older than half a transition"),
+        );
+    }
+
+    let mut host = two_display_host();
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+    let closed = overview_section(&mut host, &mut renderer, &theme, false);
+    assert!(
+        closed.0.encoding().draw_tags.is_empty(),
+        "a settled closed overview draws nothing"
+    );
+    mid_fade(&mut host);
+    let opening = overview_section(&mut host, &mut renderer, &theme, true);
+    on_first_display(&overview_damage(&closed, &opening), "mid-open");
+    let fills = host.overview_panel_cache_fills();
+    assert_eq!(fills, 1, "the first fade frame records the panel once");
+    mid_fade(&mut host);
+    let again = overview_section(&mut host, &mut renderer, &theme, true);
+    assert_eq!(
+        host.overview_panel_cache_fills(),
+        fills,
+        "the next fade frame reuses the panel recording"
+    );
+    for rect in overview_damage(&opening, &again) {
+        assert!(rect.x1 <= 1920.0, "a later fade frame stays on one display");
+    }
+
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing the overview latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS + 1))
+            .expect("the clock is older than the transition"),
+    );
+    let finished = overview_section(&mut host, &mut renderer, &theme, false);
+    on_first_display(&overview_damage(&again, &finished), "finished close");
+    let settled = overview_section(&mut host, &mut renderer, &theme, false);
+    assert!(
+        overview_damage(&finished, &settled).is_empty(),
+        "a settled closed overview repaints nothing"
+    );
+}
+
+#[test]
+fn both_overview_directions_damage_only_the_overview_display() {
+    let mut host = two_display_host();
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+    let closed = overview_section(&mut host, &mut renderer, &theme, false);
+
+    // The open's first sample is still the millisecond the chord landed, so
+    // progress is 0: it paints nothing yet, and is no dense frame either.
+    host.tick_overview_transition(1.0, false);
+    host.overview_t = 0.0;
+    host.transition_from = 0.0;
+    host.overview_target = 1.0;
+    host.transition_started = Some(std::time::Instant::now());
+    let first = overview_section(&mut host, &mut renderer, &theme, true);
+    assert!(
+        overview_damage(&closed, &first).is_empty(),
+        "the chord's own sample changes no pixel"
+    );
+
+    // Open and settled, then halfway through the close: one display.
+    host.overview_t = 1.0;
+    host.overview_target = 1.0;
+    host.transition_from = 1.0;
+    host.transition_started = None;
+    let open = overview_section(&mut host, &mut renderer, &theme, true);
+    on_first_display(&overview_damage(&first, &open), "open");
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+            .expect("half a transition fits in the clock"),
+    );
+    let closing = overview_section(&mut host, &mut renderer, &theme, false);
+    on_first_display(&overview_damage(&open, &closing), "mid-close");
+    assert!(
+        !closing.0.encoding().draw_tags.is_empty(),
+        "a mid-close frame still draws the panel"
+    );
+}
+
+#[test]
+fn a_full_presenter_does_not_finish_the_transition() {
+    let mut host = host();
+    host.tick_overview_transition(1.0, false);
+    assert!(host.transition_started.is_some());
+    host.defer_running_transitions(std::time::Duration::from_millis(
+        OVERVIEW_TRANSITION_MS + 50,
+    ));
+    let progress = host.tick_overview_transition(1.0, false);
+    assert!(
+        progress < 1.0,
+        "time spent waiting on a full presenter is not overview progress ({progress})"
+    );
+    assert!(
+        host.transition_started.is_some(),
+        "the open stays pending until a frame is presented"
+    );
+
+    host.start_workspace_switch_frames();
+    // The run has already ended; crediting the presenter's wait brings it back.
+    host.workspace_switch = ui::Transition::open();
+    host.workspace_switch_until =
+        std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+    assert!(
+        !host.workspace_switch_holding(),
+        "a finished switch is not a frame run"
+    );
+    host.defer_running_transitions(std::time::Duration::from_millis(WORKSPACE_SWITCH_MS + 50));
+    assert!(
+        host.workspace_switch_holding(),
+        "a workspace switch stays pending while the presenter is full"
+    );
+}
+
+#[test]
+fn keyboard_overview_arrives_immediately_and_pointer_motion_can_resume() {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use winit::event::Modifiers;
+    use winit::keyboard::ModifiersState;
+
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.append_empty_workspace("Second");
+    let chrome = ChromeState::new(tree);
+    let mut h = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    h.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("default shortcut bindings are valid");
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    let super_key = Modifiers::from(ModifiersState::SUPER);
+    let tab = Key::Named(NamedKey::Tab);
+
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(handled);
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0, "the first frame is fully arrived");
+    assert!(h.transition_started.is_none());
+    assert_eq!(h.overview_selection, h.overview_here_index());
+    assert!(!h.needs_animation_frame());
+
+    // A held toggle cannot close the panel or start decorative motion.
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        true,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0);
+    assert!(h.transition_started.is_none());
+
+    // A second chord closes immediately, and the next one opens immediately.
+    for target in [0.0, 1.0] {
+        assert!(h.handle_shell_keyboard_event(
+            &tab,
+            super_key,
+            false,
+            &doc,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(h.overview_t, target);
+        assert!(h.transition_started.is_none());
+        assert!(!h.needs_animation_frame());
+    }
+
+    // Arrow + Enter activates another workspace and leaves no closing fade.
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), false, &mut handled));
+    let selected = h
+        .overview_selection
+        .expect("the next workspace is selected");
+    let destination = chrome.borrow().tree().desktop.workspaces[selected].id;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert_eq!(chrome.borrow().tree().desktop.active, destination);
+    assert!(!chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
+
+    // Pointer opening still animates. Escape cancels that flight immediately.
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert!(!chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
+
+    // Settling a keyboard event never sets a persistent reduced-motion flag.
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
+    assert_eq!(h.overview_target, 1.0);
 }

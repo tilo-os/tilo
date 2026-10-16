@@ -17,8 +17,13 @@ fi
 pkgs="$(rpm -qa --qf '%{INSTALLTIME} %{NEVRA}\n' | awk -v e="$epoch" '$1 >= e { print $2 }')"
 [ -n "$pkgs" ] || { echo "no package was installed at or after SOURCE_DATE_EPOCH=$epoch" >&2; exit 1; }
 count=$(printf '%s\n' "$pkgs" | wc -l)
+# Digesting every file is CPU-bound, so batches run on every core. Each batch
+# passes its report on a line per write, which a pipe keeps whole between the
+# concurrent writers.
 bad="$(printf '%s\n' "$pkgs" \
-  | xargs rpm -V --nomtime --nomode --nouser --nogroup --nordev --nocaps --nolinkto --nodeps --noscripts 2>/dev/null \
+  | xargs -n 16 -P "$(nproc)" sh -c '
+      rpm -V --nomtime --nomode --nouser --nogroup --nordev --nocaps --nolinkto --nodeps --noscripts "$@" 2>/dev/null \
+        | while IFS= read -r line; do printf "%s\n" "$line"; done' sh \
   | awk '$1 == "missing" { next }
          { type = (NF >= 3 ? $2 : "") }
          type == "c" || type == "g" { next }

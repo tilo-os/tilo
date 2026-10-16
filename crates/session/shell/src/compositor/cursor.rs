@@ -8,10 +8,11 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tilo_lock::MutexRecover as _;
 use ui::ColorCompat;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Color, Fill, ImageBrush};
 
 /// Cursor ink comes from the shared dark desktop theme rather than bypassing
 /// the design-token contract. The system pointer deliberately keeps the same
@@ -22,8 +23,13 @@ pub(crate) fn palette() -> (Color, Color) {
     (colors.text_primary, colors.surfaces.base)
 }
 
-/// Largest legacy KMS cursor plane supported by every backend we target.
+/// Largest legacy KMS cursor plane supported by every backend we target,
+/// and the largest logical cursor size the accessibility setting offers.
 pub const PLANE_SIZE: u32 = 64;
+/// Largest cursor, in pixels, the compositor rasterises: a large
+/// accessibility cursor on a high-density panel, on a cursor plane that
+/// takes it.
+pub const MAX_PIXEL_SIZE: u32 = 256;
 /// Side of the square grid the cursor outlines are authored on.
 const DESIGN_SIZE: u32 = 24;
 const SUPERSAMPLE: u32 = 4;
@@ -263,29 +269,32 @@ impl CursorBitmap {
     }
 
     /// Convert a client's cursor buffer (premultiplied RGBA, as `wl_shm`
-    /// ARGB8888 is) to output pixels. The buffer is `buffer_scale` times its
-    /// logical size and the hotspot is surface-local logical coordinates;
-    /// both are resampled to `output_scale` and bounded to the cursor plane,
-    /// preserving the aspect ratio. `None` for an empty or truncated buffer.
+    /// ARGB8888 is) to output pixels. The buffer holds `density` pixels per
+    /// logical pixel (its buffer scale, or the ratio its viewport sets) and
+    /// the hotspot is surface-local logical coordinates; both are resampled
+    /// to `output_scale` and bounded to the cursor plane, preserving the
+    /// aspect ratio. `None` for an empty or truncated buffer.
     pub fn from_client(
         rgba: &[u8],
         width: u32,
         height: u32,
         hotspot: (i32, i32),
-        buffer_scale: i32,
+        density: f64,
         output_scale: f64,
     ) -> Option<Self> {
         let expected = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
         if width == 0 || height == 0 || rgba.len() < expected {
             return None;
         }
-        let buffer_scale = f64::from(buffer_scale.max(1));
-        let output_scale = if output_scale.is_finite() && output_scale > 0.0 {
-            output_scale
-        } else {
-            1.0
+        let positive = |value: f64| {
+            if value.is_finite() && value > 0.0 {
+                value
+            } else {
+                1.0
+            }
         };
-        let mut factor = output_scale / buffer_scale;
+        let (density, output_scale) = (positive(density), positive(output_scale));
+        let mut factor = output_scale / density;
         let longest = f64::from(width.max(height)) * factor;
         if longest > f64::from(PLANE_SIZE) {
             factor *= f64::from(PLANE_SIZE) / longest;
@@ -312,8 +321,10 @@ impl CursorBitmap {
                 pixel.copy_from_slice(&source);
             }
         }
+        // The hotspot goes where its pixel went: a cursor shrunk to fit the
+        // plane takes its hotspot along, or the drawn tip leaves the point.
         let scale_hotspot = |value: i32, limit: u32| {
-            let scaled = (f64::from(value.max(0)) * output_scale).round();
+            let scaled = (f64::from(value.max(0)) * density * factor).round();
             clamp_to_u32(scaled).min(limit.saturating_sub(1))
         };
         Some(Self {
@@ -351,14 +362,25 @@ fn source_coordinate(out: u32, factor: f64, limit: u32) -> u32 {
 
 type Cache = Vec<((CursorShape, u32), Arc<CursorBitmap>)>;
 
-/// Rasterise once per shape/size. Size is clamped to the KMS plane contract.
+/// The cursor's side in output pixels: its logical `size` at the output's
+/// `scale`, so a pointer is as big on a 2x panel as on a 1x monitor and is
+/// drawn sharp at that density rather than enlarged or left tiny.
+pub fn pixel_size(size: u32, scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    clamp_to_u32((f64::from(size) * scale).round()).clamp(1, MAX_PIXEL_SIZE)
+}
+
+/// Rasterise once per shape/size from the vector outlines; `size` is in
+/// output pixels (see [`pixel_size`]).
 pub fn bitmap(shape: CursorShape, size: u32) -> Arc<CursorBitmap> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let size = size.clamp(24, PLANE_SIZE);
+    let size = size.clamp(16, MAX_PIXEL_SIZE);
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = cache.lock_recover();
     if let Some((_, found)) = cache.iter().find(|(key, _)| *key == (shape, size)) {
         return Arc::clone(found);
     }
@@ -374,13 +396,7 @@ pub fn draw_scene(scene: &mut Scene, cursor: &CursorBitmap, at: vello::kurbo::Po
         return;
     }
     let data: Arc<dyn AsRef<[u8]> + Send + Sync> = cursor.rgba.clone();
-    let image = ImageData {
-        data: Blob::new(data),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: cursor.width,
-        height: cursor.height,
-    };
+    let image = ui::raster::rgba8_premultiplied(Blob::new(data), cursor.width, cursor.height);
     let origin = (
         at.x - f64::from(cursor.hotspot.0),
         at.y - f64::from(cursor.hotspot.1),
@@ -730,7 +746,10 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
         .into_iter()
         .map(|part| part.map(|(x, y)| (x * scale, y * scale)))
         .collect();
-    let stroke_radius = (f64::from(SUPERSAMPLE) * 0.85).max(1.0);
+    // The outline is part of the drawing: it grows with the cursor, so a
+    // pointer at 2x is the 1x one at twice the density, not a thinner one.
+    let stroke_radius =
+        (f64::from(SUPERSAMPLE) * 0.85 * (scale / f64::from(SUPERSAMPLE)).max(1.0)).max(1.0);
     let (fill, outline_color) = palette();
     for y in 0..size {
         for x in 0..size {
@@ -856,6 +875,52 @@ fn downsample_premultiplied(src: &[u8], source_size: u32, size: u32) -> Vec<u8> 
     out
 }
 
+/// Visits every visible cursor pixel that lands inside a 32-bit `width` x
+/// `height` buffer, with the cursor drawn so its hotspot sits at `(px, py)`.
+/// `paint` gets the cursor's premultiplied RGBA and the destination pixel.
+fn for_each_covered_pixel(
+    dst: &mut [u8],
+    pitch: usize,
+    width: usize,
+    height: usize,
+    (px, py): (i32, i32),
+    cursor: &CursorBitmap,
+    mut paint: impl FnMut([u8; 4], &mut [u8; 4]),
+) {
+    let left = px.saturating_sub(i32::try_from(cursor.hotspot.0).unwrap_or(0));
+    let top = py.saturating_sub(i32::try_from(cursor.hotspot.1).unwrap_or(0));
+    let row_bytes = usize::try_from(cursor.width).map_or(usize::MAX, |w| w.saturating_mul(4));
+    for (y, row) in (0_i32..).zip(cursor.rgba.chunks_exact(row_bytes)) {
+        let Some(dy) = usize::try_from(top.saturating_add(y))
+            .ok()
+            .filter(|&dy| dy < height)
+        else {
+            continue;
+        };
+        for (x, source) in (0_i32..).zip(row.chunks_exact(4)) {
+            let Some(dx) = usize::try_from(left.saturating_add(x))
+                .ok()
+                .filter(|&dx| dx < width)
+            else {
+                continue;
+            };
+            let Ok(source) = <[u8; 4]>::try_from(source) else {
+                continue;
+            };
+            let offset = dy
+                .saturating_mul(pitch)
+                .saturating_add(dx.saturating_mul(4));
+            if let Some(Ok(pixel)) = dst
+                .get_mut(offset..offset.saturating_add(4))
+                .map(<&mut [u8; 4]>::try_from)
+                && source[3] != 0
+            {
+                paint(source, pixel);
+            }
+        }
+    }
+}
+
 /// Alpha-composite the shared premultiplied bitmap into an XRGB8888 buffer.
 pub fn composite_xrgb(
     dst: &mut [u8],
@@ -866,42 +931,14 @@ pub fn composite_xrgb(
     py: i32,
     cursor: &CursorBitmap,
 ) {
-    let hotspot_x = i32::try_from(cursor.hotspot.0).unwrap_or(0);
-    let hotspot_y = i32::try_from(cursor.hotspot.1).unwrap_or(0);
-    for y in 0..cursor.height {
-        for x in 0..cursor.width {
-            let dx = px
-                .saturating_sub(hotspot_x)
-                .saturating_add(i32::try_from(x).unwrap_or(i32::MAX));
-            let dy = py
-                .saturating_sub(hotspot_y)
-                .saturating_add(i32::try_from(y).unwrap_or(i32::MAX));
-            let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
-                continue;
-            };
-            if dx >= width || dy >= height {
-                continue;
-            }
-            let src_offset = y
-                .saturating_mul(cursor.width)
-                .saturating_add(x)
-                .saturating_mul(4);
-            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
-            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
-                continue;
-            };
-            if alpha == 0 {
-                continue;
-            }
-            let dst_offset = dy
-                .saturating_mul(pitch)
-                .saturating_add(dx.saturating_mul(4));
-            let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
-                continue;
-            };
-            let Ok([dst_blue, dst_green, dst_red, dst_x]) = <&mut [u8; 4]>::try_from(pixel) else {
-                continue;
-            };
+    for_each_covered_pixel(
+        dst,
+        pitch,
+        width,
+        height,
+        (px, py),
+        cursor,
+        |[red, green, blue, alpha], pixel| {
             let inverse = 255_u8.saturating_sub(alpha);
             let over = |source: u8, under: u8| {
                 u8::try_from(
@@ -912,12 +949,15 @@ pub fn composite_xrgb(
                 .unwrap_or(u8::MAX)
             };
             // XRGB is little-endian B,G,R,X; the source is premultiplied RGBA.
-            *dst_blue = over(blue, *dst_blue);
-            *dst_green = over(green, *dst_green);
-            *dst_red = over(red, *dst_red);
-            *dst_x = 0xff;
-        }
-    }
+            let [dst_blue, dst_green, dst_red, _] = *pixel;
+            *pixel = [
+                over(blue, dst_blue),
+                over(green, dst_green),
+                over(red, dst_red),
+                0xff,
+            ];
+        },
+    );
 }
 
 /// Composite the software cursor into an HDR `XBGR2101010` buffer holding a
@@ -930,46 +970,18 @@ pub fn composite_xbgr2101010(
     pitch: usize,
     width: usize,
     height: usize,
-    (px, py): (i32, i32),
+    at: (i32, i32),
     cursor: &CursorBitmap,
     encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
 ) {
-    let hotspot_x = i32::try_from(cursor.hotspot.0).unwrap_or(0);
-    let hotspot_y = i32::try_from(cursor.hotspot.1).unwrap_or(0);
-    for y in 0..cursor.height {
-        for x in 0..cursor.width {
-            let dx = px
-                .saturating_sub(hotspot_x)
-                .saturating_add(i32::try_from(x).unwrap_or(i32::MAX));
-            let dy = py
-                .saturating_sub(hotspot_y)
-                .saturating_add(i32::try_from(y).unwrap_or(i32::MAX));
-            let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
-                continue;
-            };
-            if dx >= width || dy >= height {
-                continue;
-            }
-            let src_offset = y
-                .saturating_mul(cursor.width)
-                .saturating_add(x)
-                .saturating_mul(4);
-            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
-            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
-                continue;
-            };
-            if alpha == 0 {
-                continue;
-            }
-            let dst_offset = dy
-                .saturating_mul(pitch)
-                .saturating_add(dx.saturating_mul(4));
-            let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(word) = <&mut [u8; 4]>::try_from(pixel) else {
-                continue;
-            };
+    for_each_covered_pixel(
+        dst,
+        pitch,
+        width,
+        height,
+        at,
+        cursor,
+        |[red, green, blue, alpha], word| {
             // The bitmap is premultiplied; the encoder wants straight colour.
             let straight = |channel: u8| {
                 u8::try_from(
@@ -995,8 +1007,8 @@ pub fn composite_xbgr2101010(
                 u16::try_from(mixed).unwrap_or(1023)
             });
             *word = crate::shell::color_pipeline::pack_xbgr2101010(blended).to_le_bytes();
-        }
-    }
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1164,10 +1176,69 @@ mod tests {
     }
 
     #[test]
+    fn drawn_cursors_are_rasterised_at_the_output_density() {
+        assert_eq!(pixel_size(24, 1.0), 24);
+        assert_eq!(pixel_size(24, 2.0), 48);
+        assert_eq!(pixel_size(24, 1.5), 36);
+        assert_eq!(pixel_size(24, 1.25), 30);
+        assert_eq!(pixel_size(48, 2.0), 96);
+        assert_eq!(pixel_size(24, f64::NAN), 24);
+        assert_eq!(pixel_size(64, 8.0), MAX_PIXEL_SIZE);
+
+        // The same vector arrow at 2x: twice the pixels, the hotspot on the
+        // same point of the drawing, and an outline that grew with it rather
+        // than a 1x hairline around a bigger fill.
+        let one = bitmap(CursorShape::Pointer, 24);
+        let two = bitmap(CursorShape::Pointer, 48);
+        assert_eq!((two.width, two.height), (48, 48));
+        for (at_two, at_one) in [
+            (two.hotspot.0, one.hotspot.0),
+            (two.hotspot.1, one.hotspot.1),
+        ] {
+            assert!(
+                at_two.abs_diff(at_one.saturating_mul(2)) <= 1,
+                "hotspot {:?} at 2x for {:?} at 1x",
+                two.hotspot,
+                one.hotspot
+            );
+        }
+        let opaque = |cursor: &CursorBitmap| {
+            cursor
+                .rgba()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 200)
+                .count()
+        };
+        let dark = |cursor: &CursorBitmap| {
+            cursor
+                .rgba()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 200 && pixel[0] < 96 && pixel[1] < 96 && pixel[2] < 96)
+                .count()
+        };
+        let ratio = |a: usize, b: usize| {
+            f64::from(u32::try_from(a).unwrap_or(u32::MAX))
+                / f64::from(u32::try_from(b).unwrap_or(u32::MAX).max(1))
+        };
+        let area_ratio = ratio(opaque(&two), opaque(&one));
+        assert!(
+            (3.4..=4.6).contains(&area_ratio),
+            "2x covers four times the pixels, got {area_ratio}"
+        );
+        let outline_ratio = ratio(dark(&two), dark(&one));
+        assert!(
+            outline_ratio > 3.0,
+            "the outline scales with the drawing, got {outline_ratio}"
+        );
+        // Fractional densities rasterise exactly, not the nearest integer.
+        assert_eq!(bitmap(CursorShape::Default, pixel_size(24, 1.25)).width, 30);
+    }
+
+    #[test]
     fn client_cursor_is_resampled_to_output_scale_with_its_hotspot() {
         // A 2x buffer for a 16-logical-pixel cursor, on a 1x output.
         let rgba: Vec<u8> = (0..32 * 32).flat_map(|_| [10, 20, 30, 255]).collect();
-        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.0).unwrap();
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2.0, 1.0).unwrap();
         assert_eq!((cursor.width, cursor.height), (16, 16));
         assert_eq!(cursor.hotspot, (4, 6));
         assert!(
@@ -1178,17 +1249,44 @@ mod tests {
         );
 
         // The same logical cursor on a 1.5x output keeps its logical size.
-        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.5).unwrap();
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2.0, 1.5).unwrap();
         assert_eq!((cursor.width, cursor.height), (24, 24));
         assert_eq!(cursor.hotspot, (6, 9));
 
         // Oversized cursors are bounded to the plane, aspect preserved.
         let wide: Vec<u8> = vec![255; 256 * 64 * 4];
-        let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1, 1.0).unwrap();
+        let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1.0, 1.0).unwrap();
         assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, 16));
         assert!(cursor.hotspot.0 < cursor.width && cursor.hotspot.1 < cursor.height);
 
-        assert!(CursorBitmap::from_client(&rgba[..10], 32, 32, (0, 0), 1, 1.0).is_none());
+        assert!(CursorBitmap::from_client(&rgba[..10], 32, 32, (0, 0), 1.0, 1.0).is_none());
+    }
+
+    /// At 2x a big client cursor is shrunk to fit the plane; its hotspot
+    /// must shrink with it, or the drawn tip is away from where clicks land.
+    #[test]
+    fn a_client_cursor_shrunk_to_the_plane_takes_its_hotspot_along() {
+        // 96 logical pixels at 1x on a 2x output: 192 pixels, shrunk to 64.
+        let mut rgba = vec![0_u8; 96 * 96 * 4];
+        let tip = (24 * 96 + 24) * 4;
+        rgba[tip..tip + 4].copy_from_slice(&[255, 255, 255, 255]);
+        let cursor = CursorBitmap::from_client(&rgba, 96, 96, (24, 24), 1.0, 2.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, PLANE_SIZE));
+        assert_eq!(
+            cursor.hotspot,
+            (16, 16),
+            "the same relative point of the image, not 2 * 24 logical"
+        );
+        let at =
+            |x: u32, y: u32| cursor.rgba()[usize::try_from((y * cursor.width + x) * 4).unwrap()];
+        assert_eq!(at(16, 16), 255, "the hotspot is on the drawn tip");
+
+        // A fractionally scaled client: a 48-pixel buffer its viewport
+        // declares 24 logical pixels big is 2x, and needs no shrinking at 2x.
+        let viewported: Vec<u8> = vec![255; 48 * 48 * 4];
+        let cursor = CursorBitmap::from_client(&viewported, 48, 48, (4, 6), 2.0, 2.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (48, 48));
+        assert_eq!(cursor.hotspot, (8, 12));
     }
 
     #[test]

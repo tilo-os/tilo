@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
+use tilo_relay_protocol::metrics::RoomEgress;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
@@ -113,6 +114,7 @@ fn json_encodings_are_pinned() {
             user_public_key: "33".repeat(32),
             device_cert: None,
             relay_workspace_ids: vec![7, u64::MAX],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         },
         concat!(
             r#"{"schema_version":3,"#,
@@ -120,7 +122,8 @@ fn json_encodings_are_pinned() {
             r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
             r#""relay_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
+            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615],"#,
+            r#""environments":{"sessions":false,"legacy_apps":false}}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
@@ -136,8 +139,49 @@ fn json_encodings_are_pinned() {
         replayed_pending: 9,
         subscriber_dropped: 10,
         subscriber_dropped_backpressure: 11,
+        bytes_sent: 12,
+        bytes_sent_live: 13,
+        sessions_open: 0,
+        rooms: BTreeMap::from([(
+            14,
+            RoomEgress {
+                bytes_sent: 15,
+                bytes_sent_live: 16,
+            },
+        )]),
     };
     let encoded = r#"{
+  "conns_accepted": 1,
+  "conns_authed": 2,
+  "auth_rejected": 3,
+  "deltas_received": 4,
+  "bytes_queued": 5,
+  "deltas_fanned_out": 6,
+  "subscribes": 7,
+  "replayed_retained": 8,
+  "replayed_pending": 9,
+  "subscriber_dropped": 10,
+  "subscriber_dropped_backpressure": 11,
+  "bytes_sent": 12,
+  "bytes_sent_live": 13,
+  "rooms": {
+    "14": {
+      "bytes_sent": 15,
+      "bytes_sent_live": 16
+    }
+  }
+}"#;
+    assert_eq!(
+        String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
+        encoded
+    );
+    assert_eq!(
+        serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
+        snapshot
+    );
+    // A snapshot a relay wrote before the egress counters still reads, with
+    // no egress.
+    let before_egress = r#"{
   "conns_accepted": 1,
   "conns_authed": 2,
   "auth_rejected": 3,
@@ -151,12 +195,13 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11
 }"#;
     assert_eq!(
-        String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
-        encoded
-    );
-    assert_eq!(
-        serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
-        snapshot
+        serde_json::from_str::<MetricsSnapshot>(before_egress).unwrap(),
+        MetricsSnapshot {
+            bytes_sent: 0,
+            bytes_sent_live: 0,
+            rooms: BTreeMap::new(),
+            ..snapshot
+        }
     );
 
     // Process lease.
@@ -302,6 +347,10 @@ fn toml_encodings_are_pinned() {
             label: "west".to_string(),
             priority: 100,
         }],
+        environments: None,
+        web_entry: None,
+        member_limits: None,
+        max_room_grants: None,
     };
     let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"

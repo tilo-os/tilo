@@ -25,22 +25,13 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
 use shell::shell::quick_settings::QsLevel;
+use shell::shell::state::StripId;
+use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
 /// One step in a scenario.
-///
-/// `ClickNamed`, `Modifiers`, `SetWsSettings` and `PushQsLevel` are
-/// currently unconstructed: `run_action` implements all four, but no
-/// scenario in `catalogue()` reaches for them yet. They are the DSL's
-/// surface, not dead branches — deleting them would take
-/// `resolve_named_rect`-based click targeting out of reach of the next
-/// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
-)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
@@ -243,6 +234,28 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// Activate an app whose window has not mapped yet: the production
+    /// launch holds its place with the opening card from this frame.
+    HoldLaunchPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// A peer's window whose app is still being fetched from the
+    /// registry here, with no real install behind it.
+    HoldInstallPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// The install [`Action::HoldInstallPlace`] stands for has fetched
+    /// `received` of `total` bytes.
+    InstallBytes {
+        app_id: &'static str,
+        received: u64,
+        total: u64,
+    },
+    /// Let real time pass, then step one frame: for states keyed to how
+    /// long something has taken, which frame steps alone do not advance.
+    WaitWall(u64),
     /// Open a second tab of a **shell-hosted** app — Notes, Editor —
     /// into the active group.
     ///
@@ -285,6 +298,17 @@ pub enum Action {
     SampleMakeSpace {
         prefix: &'static str,
         /// Milliseconds into the curve.
+        at_ms: &'static [u64],
+    },
+    /// Sample the maximize/restore sibling fade at fixed points along
+    /// `durations.fast` and capture each as `prefix-<ms>`.
+    ///
+    /// Same escape as [`Action::SampleMakeSpace`]: an offscreen frame
+    /// costs more wall time than the 130 ms curve, so stepping frames
+    /// only ever catches the endpoints.
+    SampleSiblingFade {
+        prefix: &'static str,
+        /// Milliseconds into the fade.
         at_ms: &'static [u64],
     },
     /// Sample a tab pill's reveal curve at fixed points and capture each
@@ -387,13 +411,30 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u16),
     SwitchWorkspace(usize),
-    SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Turn the reduced-transparency setting on or off: floating chrome is
+    /// then the opaque material instead of the blurred one.
+    ReduceTransparency(bool),
+    /// Create the person's "Research" workspace on the shown device, the way
+    /// the laptop has it, and look at it.
+    SeedOwnWorkspace,
+    /// Split the "Outline" tab of the shown device's own "Research"
+    /// workspace into a window of its own.
+    SplitOwnOutline,
+    /// Hold another device of the same person (a laptop with the
+    /// "Research" workspace) in memory beside the shown one.
+    SeedOtherOwnDevice,
+    /// Bring the other device's workspace list and room content to the
+    /// shown device through the real signed list and room document, then
+    /// look at the workspace that arrived.
+    ReceiveFromOtherOwnDevice,
+    /// The other device splits its "Outline" tab into a window of its own.
+    OtherOwnDeviceSplitsOutline,
 }
 
 /// A named, ordered list of actions.
@@ -584,7 +625,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::OpenPalette => {
-            // Drive the default Super+K binding through the host's keyboard branch instead
+            // Drive the default Super+Space binding through the host's keyboard branch instead
             // of `set_palette_visible(true)` directly — the hotkey path
             // calls `toggle_palette()` which also focuses the palette
             // input + clears the residual query (see ShellOverlayHost::
@@ -592,7 +633,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::SUPER);
-            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Named(winit::keyboard::NamedKey::Space));
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::CaptureRecordingActive(active) => {
@@ -650,6 +691,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
+        Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -683,6 +725,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             resource,
         } => driver.seed_foreign_app_work_for_shots(app_id, action, resource),
         Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
+        Action::SeedOwnWorkspace => driver.seed_own_workspace_for_shots(),
+        Action::SplitOwnOutline => driver.split_own_outline_for_shots(),
+        Action::SeedOtherOwnDevice => driver.seed_other_own_device_for_shots(),
+        Action::ReceiveFromOtherOwnDevice => driver.receive_from_other_own_device_for_shots(),
+        Action::OtherOwnDeviceSplitsOutline => driver.other_own_device_splits_outline_for_shots(),
         Action::AdmitInvitedCollaborator => assert!(
             driver.admit_invited_collaborator_for_shots(),
             "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
@@ -704,6 +751,51 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
+    match action {
+        Action::HoldLaunchPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                let placement = shell::shell::placement::placement_for_target(
+                    &st.tree(),
+                    st.strip_viewport(),
+                    st.open_target,
+                );
+                shell::shell::tab_binding::hold_place_for_launch(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                    placement,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::HoldInstallPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                shell::shell::peer_windows::show_install_under_way_for_shots(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::InstallBytes {
+            app_id,
+            received,
+            total,
+        } => {
+            shell::shell::peer_windows::show_install_bytes_for_shots(app_id, *received, *total);
+            driver.step_frames(1);
+            return;
+        }
+        Action::WaitWall(ms) => {
+            std::thread::sleep(std::time::Duration::from_millis(*ms));
+            driver.step_frames(1);
+            return;
+        }
+        _ => {}
+    }
     if let Action::OpenWindow { app_id, surface_id } = action {
         let app_id = *app_id;
         let surface_id = *surface_id;
@@ -833,7 +925,7 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::EnableNativeAppSearch => {
-            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
                 &std::env::temp_dir(),
             ) {
                 Ok(inputs) => {
@@ -961,47 +1053,81 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
                 // curve, then freeze it before a render's worth of wall time
                 // can retire it.
                 driver.relayout();
-                let strips: Vec<_> = {
-                    let st = driver.chrome();
-                    let tree = st.tree();
-                    tree.desktop
-                        .active_workspace()
-                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                        .unwrap_or_default()
-                };
-                for ms in *at_ms {
-                    let mut any = false;
-                    for sid in &strips {
-                        if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                            for g in &mut row.groups {
-                                any |= g
-                                    .bar_mut_for_tests()
-                                    .hold_reveal_at(std::time::Duration::from_millis(*ms));
-                            }
-                        }
-                    }
-                    if !any {
-                        eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
-                    }
-                    driver.relayout();
-                    let name: &'static str =
-                        Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                    sink.capture(driver, name);
-                }
+                sample_held(
+                    driver,
+                    sink,
+                    prefix,
+                    at_ms,
+                    "tab reveal in flight",
+                    |row, at| {
+                        row.groups.iter_mut().fold(false, |any, g| {
+                            g.bar_mut_for_tests().hold_reveal_at(at) | any
+                        })
+                    },
+                );
             }
         }
         _ => {}
     }
 }
 
-/// `Action::SampleMakeSpace` and `Action::SetWindowWidths` — split out of
-/// [`apply`] to keep that dispatcher short.
+/// Capture `{prefix}-{ms}ms` at each of `at_ms`, with every strip's row
+/// animation frozen there by `hold`, which reports whether it found one in
+/// flight. Returns the strips it held, so the caller can release them.
+fn sample_held<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    sink: &mut S,
+    prefix: &str,
+    at_ms: &[u64],
+    what: &str,
+    mut hold: impl FnMut(&mut GroupRow, std::time::Duration) -> bool,
+) -> Vec<StripId> {
+    let strips: Vec<_> = {
+        let st = driver.chrome();
+        let tree = st.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    };
+    for ms in at_ms {
+        let at = std::time::Duration::from_millis(*ms);
+        let mut any = false;
+        for sid in &strips {
+            if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                any |= hold(row, at);
+            }
+        }
+        if !any {
+            eprintln!("scenario: no {what} to sample at {ms} ms");
+        }
+        driver.relayout();
+        let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+        sink.capture(driver, name);
+    }
+    strips
+}
+
+/// `Action::SampleMakeSpace`, `Action::SampleSiblingFade` and
+/// `Action::SetWindowWidths` — split out of [`apply`] to keep that
+/// dispatcher short.
 fn apply_make_space_sample_and_widths<S: SnapshotSink>(
     driver: &mut ShellDriver,
     action: &Action,
     sink: &mut S,
 ) {
     match action {
+        Action::SampleSiblingFade { prefix, at_ms } => {
+            driver.relayout();
+            let strips = sample_held(driver, sink, prefix, at_ms, "sibling fade", |row, at| {
+                row.hold_sibling_fade_at(at)
+            });
+            for sid in &strips {
+                if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                    row.clear_sibling_fade_hold();
+                }
+            }
+        }
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
             // which is the pass that measures how far each pushed group
@@ -1009,28 +1135,14 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             // a render's worth of wall time can retire it.
             driver.step_frames(1);
             driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in *at_ms {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_shift_at(std::time::Duration::from_millis(*ms));
-                    }
-                }
-                if !any {
-                    eprintln!("scenario: no make-space slide in flight to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            sample_held(
+                driver,
+                sink,
+                prefix,
+                at_ms,
+                "make-space slide in flight",
+                GroupRow::hold_shift_at,
+            );
         }
         Action::SetWindowWidths(permille) => {
             let permille = *permille;
@@ -1102,6 +1214,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 picker.click_cancel();
             }
             driver.host_mut().pump_file_picker();
+            seed_file_picker_fixture(driver);
             let queue = FilePickerQueue::new();
             driver.host_mut().set_portal_queues(
                 PromptQueueHandle::new(PromptResolver::Channel),
@@ -1150,6 +1263,43 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
     }
 }
 
+/// Fill the picker's fixture folder like a person's home — the usual
+/// folders and a few documents with sizes and dates — so the capture shows
+/// the sidebar and every column. The fixture is a throwaway directory the
+/// capture owns; nothing here exists outside `--shots`.
+fn seed_file_picker_fixture(driver: &mut ShellDriver) {
+    let mut home = None;
+    driver.with_chrome(|st: &mut ChromeState| {
+        home = st
+            .hosted_inputs()
+            .picker_scope
+            .as_ref()
+            .map(|scope| scope.initial_dir.clone());
+    });
+    let Some(home) = home else {
+        return;
+    };
+    for folder in ["Documents", "Downloads", "Pictures", "Music", "Projects"] {
+        let _ = std::fs::create_dir_all(home.join(folder));
+    }
+    for (name, kilobytes) in [
+        ("Quarterly report.odt", 84_u64),
+        ("Meeting notes.md", 3),
+        ("Budget 2027.ods", 212),
+        ("Holiday photo.png", 2_480),
+        ("Invoice March.pdf", 156),
+        ("Reading list.txt", 1),
+    ] {
+        let path = home.join(name);
+        if !path.exists() {
+            let _ = std::fs::write(
+                &path,
+                vec![b'x'; usize::try_from(kilobytes.saturating_mul(1000)).unwrap_or(0)],
+            );
+        }
+    }
+}
+
 /// `Action::SeedWifiPrompt` and `Action::SelectGroup` — split out of
 /// [`apply`] to keep that dispatcher short.
 fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
@@ -1165,32 +1315,33 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                         ssid: "Cafe WiFi".into(),
                         signal: 3,
                         secure: true,
+                        security: os_actions::WifiSecurity::Wpa2,
                         connected: false,
                     },
                     WifiNetwork {
                         ssid: "Airport Free".into(),
                         signal: 2,
                         secure: false,
+                        security: os_actions::WifiSecurity::Open,
                         connected: false,
                     },
                 ];
                 let mut p = WifiPasswordPrompt::new("Cafe WiFi");
-                match preset {
-                    "typed" => {
-                        p.password = "hunter2pass".into();
-                        p.selection = ui::text_selection::Selection::collapsed(p.password.len());
-                    }
-                    "rejected" => {
-                        p.password = "wrongpass".into();
-                        p.selection.anchor = 0;
-                        p.selection.cursor = p.password.len();
-                        p.error = Some("Couldn't join. Check the password.".into());
-                    }
-                    _ => {}
+                if preset == "rejected" {
+                    p.error = Some("Couldn't join. Check the password.".into());
                 }
                 st.quick_settings.wifi_password = Some(p);
                 st.bump();
             });
+            match preset {
+                "typed" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("hunter2pass", false),
+                "rejected" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("wrongpass", true),
+                _ => {}
+            }
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;
@@ -1229,9 +1380,8 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
-/// `Action::LoneWindow`, `Action::SwitchWorkspace`, `Action::SetWsSettings`
-/// and `Action::PushQsLevel` — split out of [`apply`] to keep that
-/// dispatcher short.
+/// `Action::LoneWindow`, `Action::SwitchWorkspace` and `Action::PushQsLevel`,
+/// split out of [`apply`] to keep that dispatcher short.
 fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::LoneWindow(idx) => {
@@ -1255,20 +1405,17 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::SeedLongNotes(group_idx) => {
-            let strip_id = {
+            let target = {
                 let chrome = driver.chrome();
                 let tree = chrome.tree();
-                tree.desktop
-                    .active_workspace()
-                    .and_then(|workspace| workspace.strips.first())
-                    .map(|strip| strip.id)
+                tree.desktop.active_workspace().and_then(|workspace| {
+                    let strip = workspace.strips.first()?;
+                    let group = strip.window_groups.get(*group_idx)?;
+                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                })
             };
-            if let Some(strip_id) = strip_id
-                && let Some(host) = driver
-                    .host_mut()
-                    .group_at_for_tests(strip_id, *group_idx)
-                    .and_then(|group| group.active_host_mut())
-            {
+            let inputs = driver.chrome().hosted_inputs().clone();
+            if let Some((strip_id, room, tab)) = target {
                 let body = (1..=52)
                     .map(|line| {
                         format!(
@@ -1276,11 +1423,26 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
-                host.replace_content(ui::widget::TileContent::App(Box::new(
-                    shell::shell::notes_app::NotesApp::with_seed(body),
-                )));
-                driver.relayout();
+                    .join("\n\n");
+                match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
+                    Some(Ok(component)) => {
+                        match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
+                            Ok(app) => {
+                                if let Some(host) = driver
+                                    .host_mut()
+                                    .group_at_for_tests(strip_id, *group_idx)
+                                    .and_then(|group| group.active_host_mut())
+                                {
+                                    host.replace_content(ui::widget::TileContent::App(app));
+                                }
+                                driver.relayout();
+                            }
+                            Err(error) => eprintln!("shots: the long note did not mount: {error}"),
+                        }
+                    }
+                    Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
+                    None => eprintln!("shots: this host mounts no Notes"),
+                }
             }
         }
         Action::SwitchWorkspace(idx) => {
@@ -1292,13 +1454,6 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     drop(tree);
                     st.bump();
                 }
-            });
-        }
-        Action::SetWsSettings(tab) => {
-            let tab_copy = *tab;
-            driver.with_chrome(|st| {
-                st.overlays.ws_settings = true;
-                st.ws_settings_tab = tab_copy;
             });
         }
         Action::PushQsLevel(level) => {
@@ -1479,6 +1634,10 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// past its settle so the last one is the settled layout.
 const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 
+/// Points along the 130 ms sibling fade. Dense at the start, where
+/// ease-out does most of its travelling.
+const SIBLING_FADE_SAMPLES: &[u64] = &[0, 20, 40, 65, 100, 130];
+
 /// Frames to let the motion finish before the settled capture.
 const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 
@@ -1572,7 +1731,10 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
         "volume_low" => Osd::volume(0.10, false),
         "volume_muted" => Osd::volume(0.65, true),
         "brightness" => Osd::brightness(0.40),
+        "keyboard_backlight" => Osd::keyboard_backlight(0.5),
+        "keyboard_backlight_off" => Osd::keyboard_backlight(0.0),
         "mic_muted" => Osd::mic_mute(true),
+        "no_backlight" => Osd::no_backlight(),
         "next_track" => Osd::transport(Transport::Next),
         _ => Osd::volume(0.5, false),
     }
@@ -1585,15 +1747,61 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         Scenario {
+            name: "personal_workspace_on_laptop",
+            description: "The person's Research workspace as the laptop that made it shows it, before and after splitting off the outline.",
+            actions: vec![
+                Action::SeedOwnWorkspace,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-laptop-research"),
+                Action::SplitOwnOutline,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-laptop-outline-split"),
+            ],
+        },
+        Scenario {
+            name: "personal_workspace_on_board",
+            description: "The same Research workspace arriving on the person's Orange Pi from the laptop, and following the laptop's split.",
+            actions: vec![
+                Action::Snapshot("00-board-before"),
+                Action::SeedOtherOwnDevice,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-board-research-arrived"),
+                Action::OtherOwnDeviceSplitsOutline,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-board-outline-split"),
+            ],
+        },
+        Scenario {
             name: "host_desktop_first_login",
             description: "Render the host-session identity setup exactly as the compositor shows it.",
             actions: vec![
                 Action::ShowHostDesktopOnboarding,
                 Action::Wait(4),
-                Action::Snapshot("01-identity-introduction"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Intro),
                 Action::Relayout,
-                Action::Snapshot("02-restore-existing"),
+                Action::Snapshot("01-identity-introduction"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::Existing,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02-use-existing"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Nearby),
+                Action::Relayout,
+                Action::Snapshot("02a-nearby-waiting"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::NearbyCode,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02b-nearby-code"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Restore),
+                Action::Relayout,
+                Action::Snapshot("02c-restore-backup"),
                 Action::SetOnboardingVisual(
                     shell::onboarding_view::OnboardingVisualState::RestoreError,
                 ),
@@ -1896,6 +2104,48 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(1),
                 Action::Relayout,
                 Action::Snapshot("markup-saved"),
+            ],
+        },
+        Scenario {
+            name: "opening_card",
+            description: "An app asked for holds its place with the moving opening card from the \
+                          first frame, says so when the start runs long, and says what it is \
+                          doing while its app is still being fetched from the registry, with \
+                          how much has arrived once the download reports it.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::HoldLaunchPlace {
+                    app_id: "so.tilo.notes",
+                    label: "Notes",
+                },
+                Action::Wait(1),
+                Action::Relayout,
+                Action::Snapshot("opening-first-frame"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-slow"),
+                Action::SelectGroup(None),
+                Action::HoldInstallPlace {
+                    app_id: "so.tilo.slides",
+                    label: "Slides",
+                },
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("opening-installing"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-installing-slow"),
+                Action::InstallBytes {
+                    app_id: "so.tilo.slides",
+                    received: 4_200_000,
+                    total: 18_000_000,
+                },
+                // Past the dots-to-bar crossfade, so the shot shows where
+                // it settles rather than a frame of the fade.
+                Action::WaitWall(400),
+                Action::Relayout,
+                Action::Snapshot("opening-installing-progress"),
             ],
         },
         Scenario {
@@ -2384,6 +2634,36 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "tab_drag_cancel",
+            description: "Cancel a lifted tab with Escape before releasing the pointer.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::MoveCursorNamed("tab:Files"),
+                Action::MousePress,
+                Action::MoveCursor(Point::new(600.0, 300.0)),
+                Action::Snapshot("02-tab-dragging"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("03-tab-cancelled"),
+                Action::MouseRelease,
+                Action::Snapshot("04-pointer-released"),
+            ],
+        },
+        Scenario {
+            name: "tab_menu_keyboard",
+            description: "Open the focused tab menu with Super+F10, navigate and cancel.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::F10)),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-tab-menu-focused"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Snapshot("03-tab-menu-next"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("04-tab-menu-cancelled"),
+            ],
+        },
+        Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', then close with Esc.",
             actions: vec![
@@ -2729,6 +3009,44 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "overlay_edges",
+            description: "Open every top-bar chip and hover its affordances so the popovers and tooltips are reviewed anchored at the top, left and right screen edges.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(18),
+                Action::Snapshot("00-desktop"),
+                // Named targets, not coordinates: the scenario runs across
+                // the viewport sweep, where every chip moves. Hover dwell
+                // shows the tooltip of the tray pill against the right
+                // screen edge, then the overview button's against the left.
+                Action::MoveCursorNamed("topbar_tray_pill"),
+                Action::Wait(40),
+                Action::Snapshot("01-tooltip-right-edge"),
+                Action::MoveCursorNamed("topbar_overview_button"),
+                Action::Wait(40),
+                Action::Snapshot("02-tooltip-left-edge"),
+                Action::ClickNamed("topbar_workspace_pill"),
+                Action::Wait(4),
+                Action::Snapshot("03-workspace-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_center_clock"),
+                Action::Wait(4),
+                Action::Snapshot("04-clock-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_tray_pill"),
+                Action::Wait(4),
+                Action::Snapshot("05-status-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::SeedInvitePending,
+                Action::Wait(3),
+                Action::ClickNamed("topbar_avatar_stack"),
+                Action::Wait(4),
+                Action::Snapshot("06-people-with-pending-invite"),
+            ],
+        },
+        Scenario {
             name: "solo_and_shared_shell_states",
             description: "Compare the quiet solo desktop with the same workspace after collaborators arrive, then open its roster.",
             actions: vec![
@@ -2801,7 +3119,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "crowded_people_roster",
-            description: "Prove that a crowded live roster keeps full activity and intent rows, pages cleanly, and remains keyboard navigable.",
+            description: "Prove that a crowded live roster lists everyone with full activity and intent rows, scrolls under its pinned count, and remains keyboard navigable.",
             actions: vec![
                 Action::Wait(4),
                 Action::Relayout,
@@ -2809,19 +3127,11 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(18),
                 Action::SeedCrowdedWorkspace,
                 Action::Wait(3),
-                Action::Snapshot("01-first-three-people"),
+                Action::Snapshot("01-everyone-listed"),
                 Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Snapshot("02-next-page-keyboard-focus"),
-                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Key(Key::Named(NamedKey::End)),
                 Action::Wait(2),
-                Action::Snapshot("03-next-three-people"),
+                Action::Snapshot("02-last-person-focused"),
             ],
         },
         Scenario {
@@ -2897,13 +3207,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("00-before"),
                 // A sideways swipe steps focus one window along the strip —
                 // the same operation Super+ArrowRight performs — and the
-                // focus-follow pan brings it into view. Positive dx travels
-                // forward, matching the chord's direction.
-                Action::MouseWheel { dx: 10.0, dy: 0.0 },
+                // focus-follow pan brings it into view. A rightward wheel
+                // (negative dx, winit's sign) travels forward, matching the
+                // chord's direction.
+                Action::MouseWheel { dx: -10.0, dy: 0.0 },
                 Action::Wait(24),
                 Action::Snapshot("01-after-pan"),
                 // And back the way it came.
-                Action::MouseWheel { dx: -10.0, dy: 0.0 },
+                Action::MouseWheel { dx: 10.0, dy: 0.0 },
                 Action::Wait(24),
                 Action::Snapshot("02-back-to-start"),
             ],
@@ -2972,6 +3283,32 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickAt(Point::new(744.0, 103.0)),
                 Action::Wait(2),
                 Action::Snapshot("04-browser-active"),
+            ],
+        },
+        Scenario {
+            name: "floating_material",
+            description: "Quick settings, then the palette, over a long note: floating chrome is the blurred material.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("01-document"),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("02-quick-settings"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::OpenPalette,
+                Action::Wait(30),
+                Action::Snapshot("03-palette"),
+                // The same two surfaces under reduced transparency: opaque.
+                Action::ReduceTransparency(true),
+                Action::Snapshot("04-palette-opaque"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("05-quick-settings-opaque"),
             ],
         },
         Scenario {
@@ -3132,6 +3469,139 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
+            ],
+        },
+        Scenario {
+            name: "window_maximize_restore_spring",
+            description: "Super+M springs the focused group between its tiled rect and the \
+                      work area; a second Super+M restores from the current position.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6201,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-maximize-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-maximize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("04-restore-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-restore",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
+            name: "window_maximize_sibling_fade",
+            description: "Super+M fades neighbour windows on the fast curve instead of \
+                      collapsing them, then Super+M again fades them back in.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6301,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "02-maximize",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "04-restore",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
+            name: "window_width_spring",
+            description: "An opening window grows its slot from zero, a committed resize \
+                      springs to the new width, and Super+W collapses the last \
+                      frame while the slot closes.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6101,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(333),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-before-open"),
+                Action::OpenWindow {
+                    app_id: "org.example.new",
+                    surface_id: 6102,
+                },
+                // Placement gives a new group the default fraction; retarget
+                // the in-flight 0→width spring to a third so the slot stays
+                // on screen next to its neighbours (and so a new input keeps
+                // the current velocity).
+                Action::SetWindowWidths(333),
+                Action::Snapshot("02-open-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-open",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-open-settled"),
+                Action::SetWindowWidths(500),
+                Action::Snapshot("04-resize-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-resize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-resize-settled"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("w".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SnapshotSequence {
+                    prefix: "06-close",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("07-close-settled"),
             ],
         },
         Scenario {
@@ -3309,8 +3779,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(4),
                 Action::Snapshot("04-four-windows"),
-                // Back to the first window, which pans the strip home the way
-                // focus always does — the starting position for the travel.
+                // Back to the first window, which pans it flush with the screen
+                // edge (the least pan that shows it) — the starting position
+                // for the travel.
                 Action::SelectGroup(Some(0)),
                 Action::Wait(PAN_SETTLE_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
@@ -3555,26 +4026,32 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "media_key_osd",
-            description: "The transient slab a volume / brightness / mute / transport key raises.",
+            description: "The bottom-centre pill a volume / brightness / mute / backlight / transport key raises.",
             actions: vec![
                 Action::SeedOsd("volume"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("01-volume"),
                 Action::SeedOsd("volume_low"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("02-volume-low"),
                 Action::SeedOsd("volume_muted"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("03-muted"),
                 Action::SeedOsd("brightness"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("04-brightness"),
                 Action::SeedOsd("mic_muted"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("05-mic-muted"),
                 Action::SeedOsd("next_track"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("06-next-track"),
+                Action::SeedOsd("keyboard_backlight"),
+                Action::Wait(14),
+                Action::Snapshot("07-keyboard-backlight"),
+                Action::SeedOsd("no_backlight"),
+                Action::Wait(14),
+                Action::Snapshot("08-no-backlight"),
             ],
         },
         Scenario {
@@ -3911,7 +4388,7 @@ mod tests {
                     self.pending_invite_is_durable = ada.is_some_and(|person| {
                         person.invited
                             && person.active_tab.is_none()
-                            && workspace.role_of(&"ada".to_string()).is_some()
+                            && workspace.role_of("ada").is_some()
                     });
                 }
                 "04-attributed-history" => {
@@ -3968,7 +4445,7 @@ mod tests {
     /// Sink that records what the strip's scroll looks like at each
     /// named snapshot, straight off the live `GroupRow` the shell pans.
     struct StripScrollSink {
-        seen: Vec<(String, f64, f64, f64)>,
+        seen: Vec<(String, f64, f64, f64, f64)>,
     }
     impl SnapshotSink for StripScrollSink {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
@@ -3979,13 +4456,23 @@ mod tests {
                     .active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             };
-            let (scroll_x, max_scroll_x, pan_max_scroll_x) = strip_id
+            let (scroll_x, max_scroll_x, pan_max_scroll_x, leading_inset) = strip_id
                 .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
-                .map_or((f64::NAN, f64::NAN, f64::NAN), |row| {
-                    (row.scroll_x(), row.max_scroll_x(), row.pan_max_scroll_x())
+                .map_or((f64::NAN, f64::NAN, f64::NAN, f64::NAN), |row| {
+                    (
+                        row.scroll_x(),
+                        row.max_scroll_x(),
+                        row.pan_max_scroll_x(),
+                        row.leading_inset(),
+                    )
                 });
-            self.seen
-                .push((name.to_string(), scroll_x, max_scroll_x, pan_max_scroll_x));
+            self.seen.push((
+                name.to_string(),
+                scroll_x,
+                max_scroll_x,
+                pan_max_scroll_x,
+                leading_inset,
+            ));
         }
     }
 
@@ -4062,29 +4549,32 @@ mod tests {
             &mut sink,
         );
 
-        let at = |name: &str| -> (f64, f64, f64) {
-            let (_, sx, mx, pan_mx) = sink
+        let at = |name: &str| -> (f64, f64, f64, f64) {
+            let (_, sx, mx, pan_mx, inset) = sink
                 .seen
                 .iter()
-                .find(|(n, _, _, _)| n == name)
+                .find(|(n, ..)| n == name)
                 .unwrap_or_else(|| panic!("scenario should snapshot {name}"));
-            (*sx, *mx, *pan_mx)
+            (*sx, *mx, *pan_mx, *inset)
         };
-        let (rest_x, rest_max, rest_pan_max) = at("05-strip-at-rest");
+        let (rest_x, rest_max, rest_pan_max, rest_inset) = at("05-strip-at-rest");
         assert!(
             rest_max > 400.0,
             "four half-width windows must overflow the display by more than a third of \
              a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
         );
+        // Focusing the first window reveals it by the least pan: flush with
+        // the screen edge, the wheel-disc gutter scrolled off to its left.
         assert!(
-            rest_x < 1.0,
-            "the strip starts at its leftmost position (scroll_x = {rest_x})"
+            rest_x <= rest_inset + 1.0,
+            "the strip starts with its first window flush at the screen edge \
+             (scroll_x = {rest_x}, leading inset = {rest_inset})"
         );
         assert!(
             rest_pan_max > rest_max,
             "direct panning must expose legal trailing canvas beyond the content-tight bound"
         );
-        let (held_x, held_max, held_pan_max) = at("06-held-past-trailing-edge");
+        let (held_x, held_max, held_pan_max, _) = at("06-held-past-trailing-edge");
         assert!(
             held_x > held_pan_max,
             "the held gesture must visibly pull beyond its legal resting end \
@@ -4096,13 +4586,13 @@ mod tests {
             "rubber-band travel must stay below its 28%-viewport asymptote \
              (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
         );
-        let (settled_x, _, settled_pan_max) = at("07-settled-trailing-room");
+        let (settled_x, _, settled_pan_max, _) = at("07-settled-trailing-room");
         assert!(
             (settled_x - settled_pan_max).abs() < 1.0,
             "release must settle to the legal 20%-viewport trailing rest \
              (scroll_x = {settled_x}, pan_max_scroll_x = {settled_pan_max})"
         );
-        let (back_x, _, _) = at("08-panned-back");
+        let (back_x, ..) = at("08-panned-back");
         assert!(
             back_x < 1.0,
             "the reverse direct pan returns the strip home (scroll_x = {back_x})"

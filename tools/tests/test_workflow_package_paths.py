@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from fnmatch import fnmatchcase
@@ -9,6 +10,8 @@ from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
+    t_check_blocks,
+    unmatched_patterns,
     workflow_path_blocks,
 )
 
@@ -45,6 +48,32 @@ def metadata(root: Path) -> dict:
 
 
 class WorkflowPackagePathTests(unittest.TestCase):
+    def test_a_t_check_naming_the_package_covers_its_closure(self) -> None:
+        text = """
+[[check]]
+name = "image"
+run = "build"
+cargo_packages = ["app", "tool-*"]
+inputs = ["tools/build.sh"]
+
+[[check]]
+name = "packages-only"
+run = "build"
+cargo_packages = ["other"]
+
+[[check]]
+name = "globs"
+run = "build"
+inputs = ["apps/app/**"]
+"""
+        self.assertEqual(t_check_blocks(text, "image", "app"), [])
+        self.assertEqual(t_check_blocks(text, "image", "tool-x"), [])
+        self.assertEqual(t_check_blocks(text, "image", "shared"), [{"tools/build.sh"}])
+        self.assertEqual(t_check_blocks(text, "packages-only", "app"), [set()])
+        self.assertEqual(t_check_blocks(text, "globs", "app"), [{"apps/app/**"}])
+        with self.assertRaises(ValueError):
+            t_check_blocks(text, "missing", "app")
+
     def test_workflow_path_filters_cover_every_package_closure(self) -> None:
         with self.subTest(phase='extracts each paths block and ignores other lists'):
             text = """on:
@@ -99,6 +128,18 @@ jobs:
                 [str(item) for item in violations],
                 ['paths block 2 misses - "crates/shared/**"'],
             )
+        with self.subTest(phase='a pattern matching no tracked file is reported'):
+            text = "on:\n  push:\n    paths:\n      - apps/app/**\n      - apps/gone.rs\n      - '!apps/x'\n"
+            self.assertEqual(unmatched_patterns(text, ["apps/app/src/lib.rs"]), ["apps/gone.rs"])
+        with self.subTest(phase='every repository workflow trigger names a tracked file'):
+            files = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True,
+                                   capture_output=True, check=True).stdout.split()
+            stale = [
+                f"{workflow.name}: {pattern}"
+                for workflow in sorted((ROOT / ".forgejo/workflows").glob("*.yml"))
+                for pattern in unmatched_patterns(workflow.read_text(encoding="utf-8"), files)
+            ]
+            self.assertEqual(stale, [])
         with self.subTest(phase='repository targeted workflows follow package closures'):
             from tools.policy.check_workflow_package_paths import load_metadata
 

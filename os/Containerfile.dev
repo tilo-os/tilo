@@ -15,7 +15,7 @@
 #
 #   * The components that declare `dev_features` in os/components.toml (the
 #     compositor today) are rebuilt as release builds with those features. The
-#     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
+#     dev-only components (`dev-*` layers), such as tilo-vmd, are
 #     built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * A build toolchain, installed into the image. The binaries above are
@@ -31,6 +31,9 @@
 #   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
+#   * tilo-device-admin.service (enabled): tilo-vmd's requests over the peer
+#     network for the owner's administrators, so `tilo-vm` reaches the machine
+#     beyond the LAN, at the greeter too.
 #   * The image is UNSEALED. A layer on the sealed image breaks the composefs
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
@@ -86,6 +89,8 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared /tmp/build-clock.c -o /b
 # (which SELinux hosts would refuse without relabelling the checkout).
 FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
+COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
+COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
@@ -113,6 +118,8 @@ RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
 
+# Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
+ARG RUST_TOOLCHAIN_IMAGE
 # The pinned Rust release and the production builder's packages but for its
 # Rust compiler (os/scripts/install-dev-toolchain.sh), plus sshd for `tilo-vm`
 # and rsync for worktree sync. openssh-server is the one package the production
@@ -134,20 +141,52 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,ta
 # tilo-rpm-snapshot-package: openssh-server
 # tilo-rpm-snapshot-package: rsync
 ARG SOURCE_DATE_EPOCH=0
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
     sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages openssh-server rsync
 RUN ldconfig
 
+# ---- The tilo-dev-tools sysext tree -------------------------------------------
+# The Rust toolchain (about 680 MB) and the test GUI clients (about 600 MB,
+# two thirds Chromium) as a separate /usr overlay instead of base content:
+#
+#     podman build -f os/Containerfile.dev --target dev-tools-sysext \
+#         --build-arg ... -o type=tar,dest=tilo-dev-tools.tar .
+#
+# The tar is a layer tilo-vm imports (crates/dev/tilo-vmd/src/layers.rs accepts
+# only usr/ and opt/, and writes the extension-release itself). It is computed
+# on dev-toolchain, so it holds exactly the packages the clients add to what
+# the base already has. The `dev` stage below still installs both into the
+# base image until tilo-vm installs this layer on the VMs that need it and
+# os/scripts/finalize-dev-image.py stops requiring rustc in the base.
+FROM dev-toolchain AS dev-tools-tree
+ARG RUST_TOOLCHAIN_IMAGE
+ARG SOURCE_DATE_EPOCH=0
+ARG RPMS_REF
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
+    --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh tools-tree /out-tools
+
+FROM scratch AS dev-tools-sysext
+COPY --from=dev-tools-tree /out-tools/ /
+
 # ---- The toolchain the dev binaries compile with ------------------------------
 # BASE_REF with the same Rust release and builder packages: what os/Containerfile's
 # builder-base links the production binaries against, from the same snapshot.
 FROM ${BASE_REF} AS dev-compile-toolchain
+# Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
+ARG RUST_TOOLCHAIN_IMAGE
 RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh rust
 ARG SOURCE_DATE_EPOCH=0
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
@@ -166,11 +205,17 @@ COPY apps /build/apps
 COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
+COPY docs/developers/tasks /build/docs/developers/tasks
 COPY os/components.toml /build/os/components.toml
 COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
+COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
+COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
+COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
+COPY tools/test-assets.py /build/tools/test-assets.py
+COPY tools/ci/measure.sh /build/tools/ci/measure.sh
 
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
@@ -183,8 +228,11 @@ COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_u
 # unchanged crate is neither recompiled nor relinked.
 FROM dev-compile-toolchain AS dev-builder
 WORKDIR /build
+# A private socket lets this compile overlap the production compile without
+# sharing its sccache server or falling back after a TCP port collision.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    SCCACHE_SERVER_UDS=/tmp/tilo-dev-image-sccache.sock \
     RUSTC_WRAPPER=sccache \
     SCCACHE_IDLE_TIMEOUT=0 \
     CARGO_INCREMENTAL=0 \
@@ -208,18 +256,20 @@ ARG SCCACHE_ENDPOINT=""
 ARG SCCACHE_REGION="auto"
 ARG SCCACHE_S3_KEY_PREFIX="tilo/dev-image/v1"
 ARG SCCACHE_S3_USE_SSL="false"
+# Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
+ARG RUST_TOOLCHAIN_IMAGE
 # Fedora's sccache has neither the S3 nor the GitHub Actions cache backend;
 # the compile runs the builder image's pinned full-feature client.
 RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/usr/lib/tilo-dev-builder/bin/sccache \
     --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-dev-image-target,target=/build/target \
+    --mount=type=cache,id=tilo-dev-image-target,target=/build/target,sharing=locked \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
     --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     export PATH="/usr/lib/tilo-dev-builder/bin:$PATH" \
-    && trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && trap 'status=$?; if [ "$status" != 0 ]; then df -h /build /build/target /tmp; df -i /build /build/target /tmp; fi; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) printf 'TILO_DEV_RUST_LTO must be thin or off\n' >&2; exit 1 ;; esac \
     && if [ -n "$SCCACHE_BUCKET" ]; then \
          export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL \
@@ -238,7 +288,7 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
        fi \
     && case "$TILO_CARGO_FRESHNESS" in \
          clean) cargo clean --release ;; \
-         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-built-sources \
                     || cargo clean --release ;; \
          *) printf 'TILO_CARGO_FRESHNESS must be clean or content\n' >&2; exit 1 ;; \
        esac \
@@ -249,8 +299,11 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
     && printf 'dev image build: cargo build --release %s\n' "$DEV_CARGO_ARGS" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_DEV_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
-       cargo build --release ${DEV_CARGO_ARGS} \
+       bash tools/ci/measure.sh "dev cargo" -- cargo build --release ${DEV_CARGO_ARGS} \
     && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
+    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
+         sh os/scripts/cargo-freshness.sh --built /build/target/.tilo-built-sources; \
+       fi \
     && mkdir -p /out \
     && for b in ${DEV_BINS}; do cp "target/release/$b" /out/; done \
     && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
@@ -269,11 +322,35 @@ RUN --network=none \
 
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
+
+# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A08-A13)
+# opens, one per toolkit and protocol path people use every day: Chromium, the
+# engine Electron apps (VS Code, Cursor, chat clients) ship, on Wayland and
+# forced onto X11 through Xwayland; GNOME Text Editor (GTK4 and libadwaita);
+# FeatherPad on Qt's Wayland platform (Qt6); alacritty (winit and OpenGL); and
+# glxgears, an OpenGL X11 client the way games are. os/dev-image/ carries the
+# desktop entries and the page that start the variants. Without weak
+# dependencies they add about 600 MiB, two thirds of it Chromium. Like the
+# toolchain layer this one is the same for every commit on one rootfs.
+ARG SOURCE_DATE_EPOCH=0
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
+      --setopt=install_weak_deps=False \
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils \
+    && dnf clean all \
+    && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
+RUN ldconfig
+
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
 COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
 COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service /usr/lib/systemd/system/tilo-vm-reconcile-image.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
 COPY os/dev-image/ /
 
@@ -289,8 +366,10 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
+       tilo-vm-reconcile-image.service \
+       tilo-device-admin.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
-    && /usr/bin/tilo-vmd --version \
+    && /usr/bin/tilo-vmd --version && /usr/bin/tilo-device-admin --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \

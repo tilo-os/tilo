@@ -1,0 +1,26 @@
+[package]
+name = "tilo-polkit-agent"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Polkit authentication agent: asks in a sheet its host draws"
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# `getpwuid_r`/`getgrgid_r` turn polkit's identities into user names.
+libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
+# Reads the helper's line protocol and cancels a request polkit withdraws.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-copy-lint = { path = "../../dev/copy-lint" }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

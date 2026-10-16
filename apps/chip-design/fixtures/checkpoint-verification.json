@@ -1,0 +1,43 @@
+{
+  "artifact_sha256": {
+    "netlist-compile.log": "905695759fb57df00887f81d1b83a9a8a08e2e397ee72712f1491fdaa04a5659",
+    "netlist-simulation.log": "28eeb21c3794d53ac8a09e0e56603d2fd612b774f689d9767ad07567173d6fd6",
+    "rtl-compile.log": "2cbc5c25bf8f87adfdc88ae79f631f713944e0d749daefdecf5db16eefe52f31",
+    "rtl-simulation.log": "d3c9e9385d67c2458b9dae9a68ea87a5f6981567f212b914b130822a9daf9831",
+    "synthesis.log": "3d429ab0eec878c615dbc6e1a019cbb5ea695d57c4ab798e4f67a5b2bc22b482",
+    "synthesized.v": "2f33cb6e54fc8cd7e98b104d8e74d4080bad0851fbd7a09356ffd9e42dba0fb8",
+    "verilator-version.log": "2175ffb050acb6313454034aaf1695eccd48050d53818498656c8f6038895d71",
+    "yosys-version.log": "381c9074689e35e1774ea321defab123870434217a3a15960fb74ce54242aa51"
+  },
+  "checks": {
+    "generic_synthesis": "passed",
+    "netlist_vs_integer_oracle": "passed",
+    "rtl_vs_integer_oracle": "passed"
+  },
+  "declared_toolchain_image": "sha256:cad34536eae2acc360319a2515aa0a799519ad93bc77eb721d657cfac7448558",
+  "evidence": "checkpoint_tile_integer_contract",
+  "excludes": [
+    "full_checkpoint_integrity",
+    "group_rescaling",
+    "activation_quantization",
+    "full_model_execution",
+    "coding_quality",
+    "physical_ppa"
+  ],
+  "input_validation": "passed",
+  "sample_manifest_sha256": "94211c4ffae237d5920f16f2f4ab39ce2720e813d5fad90c7506578bee497c86",
+  "schema_version": 1,
+  "status": "passed",
+  "synthetic_activations": true,
+  "tools": {
+    "verilator": {
+      "executable_sha256": "5705421431fc14e781881ca71c61bfdcf228c212d9f8f22ff26a54234e8bac41",
+      "version": "Synthetic contract tool identity 1.0"
+    },
+    "yosys": {
+      "executable_sha256": "8fed2d40b40a22ead3956dad9d067e09444c56a0dbf732d3ac74b6b9aa8cbb3b",
+      "version": "Synthetic contract tool identity 1.0"
+    }
+  },
+  "verifier_sha256": "b6817c5e0762dd32427186c1fa3e314f408d019f91cab02616fef60fc73dfd0a"
+}

@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: false
+      installer_rootfs:
+        description: "Live installer root filesystem: btrfs (default) or ext4. Use ext4 for WHPX diagnostics with a matching OS image."
+        type: string
+        required: false
+        default: "btrfs"
       published_os_image:
         description: "Optional signed Tilo manifest-list digest; empty uses vars.TILO_INSTALLER_OS_IMAGE."
         type: string
@@ -70,8 +75,13 @@ jobs:
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
           GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
+          INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs }}
           PUBLISHED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision }}
         run: |
+          case "${INSTALLER_ROOTFS:-btrfs}" in
+            btrfs|ext4) ;;
+            *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
+          esac
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
@@ -141,12 +151,13 @@ jobs:
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
       TILO_LENOVO_TARGET_IMAGE: ${{ matrix.target_profile == 'lenovo-83ed' && github.event.inputs.lenovo_target_image || '' }}
       TILO_GENERIC_TARGET: ${{ matrix.target_profile == 'generic' && 'true' || 'false' }}
+      TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
       # The live medium must boot QEMU virt; the separately signed Lenovo
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
       # A release tag must use an OS release from the identical source commit.
-      # Offline media use the explicitly pinned signed OS source. Other manual
-      # rehearsals may still layer current installer code onto a published OS.
+      # Offline media verify the explicitly pinned signed OS source while
+      # layering the dispatched main installer code onto that immutable image.
       TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
@@ -157,12 +168,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}
-      - name: Verify checked out source revision
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Verify installer source descends from signed OS source
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: |
-          test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION" || {
-            echo '::error::offline medium checkout differs from signed OS source pin'; exit 1;
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" \
+            && git merge-base --is-ancestor "$TILO_EXPECTED_OS_SOURCE_REVISION" HEAD || {
+            echo '::error::offline installer source is not a descendant of the signed OS source'; exit 1;
           }
       - name: Require the native medium architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
@@ -273,7 +287,7 @@ jobs:
                 | tee "$target_verification_log"
             fi
             grep -Fq "verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation " "$target_verification_log" || {
-              echo '::error::signed offline target source differs from pinned installer source'; exit 1;
+              echo '::error::signed offline target source differs from pinned OS source'; exit 1;
             }
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
             printf 'TILO_OFFLINE_TARGET_IMAGE=%s\nTILO_OFFLINE_TARGET_PROFILE=%s\n' "$target_image" "$target_profile" >> "${GITHUB_ENV:?}"
@@ -410,7 +424,7 @@ jobs:
                 --software-tpm \
                 --out dist/installer-software-tpm-pin-cycle
           fi
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: tilo-installer-full-cycle-${{ matrix.arch }}-${{ matrix.target_profile || 'standard' }}
@@ -436,18 +450,20 @@ jobs:
             > "dist/tilo-installer/$stem.qcow2.sha256"
           test "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" = \
             "$(sha256sum os/output/installer/qcow2/disk.qcow2 | awk '{print $1}')"
-          jq -n --arg schema tilo.whpx-ci-installer-medium.v1 \
+          jq -n --arg schema tilo.whpx-ci-installer-medium.v2 \
             --arg profile "$TILO_OFFLINE_TARGET_PROFILE" \
             --arg target "$TILO_OFFLINE_TARGET_IMAGE" \
             --arg live_base "$TILO_PUBLISHED_OS_IMAGE" \
             --arg build_revision "$(git rev-parse HEAD)" \
+            --arg os_source_revision "${TILO_EXPECTED_OS_SOURCE_REVISION:-$(git rev-parse HEAD)}" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg qcow2_sha256 "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" \
             --arg archive_sha256 "$(awk '{print $1}' "$output.sha256")" \
             --arg guest_proof_sha256 "$(sha256sum dist/installer-guided-alongside-cycle/guest-install-proof.json | awk '{print $1}')" \
             '{schema:$schema,target_profile:$profile,target_image:$target,live_base_image:$live_base,
-              build_revision:$build_revision,run_id:$run_id,run_attempt:$run_attempt,
+              build_revision:$build_revision,os_source_revision:$os_source_revision,
+              run_id:$run_id,run_attempt:$run_attempt,
               qcow2_sha256:$qcow2_sha256,archive_sha256:$archive_sha256,
               guest_proof_sha256:$guest_proof_sha256}' \
             > "dist/tilo-installer/$stem.whpx-source.json"
@@ -464,7 +480,7 @@ jobs:
             --bundle "$identity.bundle" --output-signature "$identity.sig" "$identity"
           cosign verify-blob --offline --key keys/cosign.pub \
             --bundle "$identity.bundle" --signature "$identity.sig" "$identity"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         with:
           name: tilo-${{ matrix.target_profile }}-whpx-installer-${{ github.event.inputs.published_os_source_revision || github.sha }}
@@ -492,7 +508,7 @@ jobs:
           test -s "dist/tilo-installer/$medium.sha256"
           test -s "dist/tilo-installer/catalog-${{ matrix.arch }}.json"
           (cd dist/tilo-installer && sha256sum --check "$medium.sha256")
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: matrix.target_profile != 'generic' && matrix.target_profile != 'lenovo-83ed'
         with:
           name: tilo-installer-medium-${{ matrix.arch }}-${{ matrix.target_profile || 'standard' }}
@@ -540,7 +556,7 @@ jobs:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER }}
           TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
         run: apps/imager/packaging/publish-internal-bundle.sh dist/tilo-internal/bundle
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
         with:
           # Only the manifest and its catalog entry: the component images are
@@ -597,7 +613,7 @@ jobs:
             exit 1
           fi
           test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-installer-medium-x86_64
           path: dist/internal-cycle-medium
@@ -612,7 +628,7 @@ jobs:
       - name: Remove internal-cycle VM storage
         if: always()
         run: sudo -n rm -rf "$TILO_INTERNAL_CYCLE_STORAGE_ROOT" "$TILO_INTERNAL_CYCLE_STORAGE_ROOT.installer.raw"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: tilo-internal-install-cycle-x86_64
@@ -627,7 +643,23 @@ jobs:
       linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the reviewed Desktop catalog against exact package bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 apps/imager/packaging/desktop-catalog-release.py prepare \
+            --catalog apps/imager/desktop-catalog.json \
+            --review-manifest apps/imager/packaging/desktop-release-manifest.json \
+            --output dist/tilo-desktop-catalog --source "$GITHUB_SHA" --fetch
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: dist/tilo-desktop-catalog/*
+          if-no-files-found: error
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
           path: release-assets
@@ -643,7 +675,7 @@ jobs:
             cp apps/imager/release-catalog.json \
               dist/tilo-installer-catalog/tilo-installer-catalog-v1.json
           fi
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-installer-catalog
           path: dist/tilo-installer-catalog/*
@@ -660,6 +692,17 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        run: >-
+          python3 apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog
+          --source "$GITHUB_SHA" --copy-to apps/imager/desktop-catalog.json
       - name: Materialize checksum-verified AppImage tools
         uses: ./.forgejo/actions/cache-github-assets
         with:
@@ -687,12 +730,12 @@ jobs:
           printf 'TILO_APPIMAGE_RUNTIME=%s\n' \
             "$GITHUB_WORKSPACE/os/external-assets/cache/type2-runtime-20251108-${arch}" \
             >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-installer-catalog
           path: release-catalog
       - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
           # All media are needed: each native lane signs its catalogued boards.
@@ -776,7 +819,7 @@ jobs:
             exit 1
           fi
       # Forgejo does not implement the Artifact API v2 used by v4.
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-imager-linux-${{ matrix.arch }}
           path: |
@@ -791,7 +834,7 @@ jobs:
             dist/tilo-imager/tilo-imager-linux-*.flatpak.asc
             dist/tilo-imager/tilo-installer-*.asc
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: matrix.arch == 'x86_64' && startsWith(github.ref, 'refs/tags/imager-v')
         with:
           name: tilo-imager-linux-release-key
@@ -820,7 +863,24 @@ jobs:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        shell: powershell
+        run: |
+          python apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog --source $env:GITHUB_SHA --copy-to apps/imager/desktop-catalog.json
+          if ($LASTEXITCODE -ne 0) { throw "Desktop catalog receipt verification failed" }
+      - name: Check Windows scenario tool overrides
+        shell: powershell
+        run: |
+          powershell -NoProfile -File os/tests/vm-windows-tool-resolver-test.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows scenario tool resolution failed" }
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-installer-catalog
           path: release-catalog
@@ -903,7 +963,7 @@ jobs:
           $Winget = (Get-Command winget.exe -ErrorAction Stop).Source
           & $Winget validate --manifest dist/tilo-imager/winget
           if ($LASTEXITCODE -ne 0) { throw "WinGet manifest validation failed" }
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-imager-windows-${{ matrix.arch }}
           path: |
@@ -930,7 +990,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        run: >-
+          python3 apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog
+          --source "$GITHUB_SHA" --copy-to apps/imager/desktop-catalog.json
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-installer-catalog
           path: release-catalog
@@ -1011,7 +1082,7 @@ jobs:
               --shots "$smoke/app.png" --scenario done --viewport 1180x820
             test -s "$smoke/app.png"
           fi
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-imager-macos-${{ matrix.arch }}
           path: |
@@ -1031,7 +1102,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-assets
       - name: Generate the complete WinGet manifest set
@@ -1122,7 +1193,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-assets
       - name: Publish the Tilo Homebrew tap
@@ -1218,7 +1289,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-assets
       - name: Submit Tilo Imager to the public WinGet index

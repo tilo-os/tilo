@@ -24,8 +24,8 @@ use std::fmt::Write as _;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::{
-    Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
-    ToggleGroup, Widget,
+    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
+    Text, ToggleGroup, Widget,
 };
 use tilo_ui::{App, State};
 
@@ -45,9 +45,9 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     // Block layout. Without this the panel columns flatten to
     // ~0 px and the dashboard fits the window in one frame —
     // which would defeat the whole point of having a Scrollable.
-    let mut col = Column::new()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(title_key).with_size(18.0)));
+    let mut col = Column::new().with_intrinsic_height().push(Box::new(
+        Text::new(title_key).with_role(tilo_ui::TextRole::Heading),
+    ));
     for i in 0..ROWS_PER_PANEL {
         let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
@@ -59,7 +59,6 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                         .push(Box::new(Button::new(
                             leak_label(&format!("dash_btn_{row_idx}")),
                             leak_label(&format!("dash_btnlbl_{row_idx}")),
-                            None,
                         ))),
                 ));
             }
@@ -76,7 +75,10 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                        .push(Box::new(
+                            Avatar::person(format!("Teammate {i}"), format!("teammate-{i}"))
+                                .size(AvatarSize::Small),
+                        )),
                 ));
             }
         }
@@ -103,7 +105,9 @@ pub fn run(_args: &[String]) {
     let state = State::new();
 
     let header = Row::new()
-        .push(Box::new(Text::new("dash_title").with_size(24.0)))
+        .push(Box::new(
+            Text::new("dash_title").with_role(tilo_ui::TextRole::LargeTitle),
+        ))
         .push(Box::new(ToggleGroup::new(
             vec![
                 Segment::new("Day"),
@@ -134,10 +138,18 @@ pub fn run(_args: &[String]) {
 
     let footer = Row::new()
         .push(Box::new(Text::new("dash_title")))
-        .push(Box::new(Avatar::from_initials("DB", 28.0)))
-        .push(Box::new(Avatar::from_initials("QD", 28.0)))
-        .push(Box::new(Avatar::from_initials("AL", 28.0)))
-        .push(Box::new(Avatar::from_initials("PB", 28.0)))
+        .push(Box::new(
+            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Priya Bose", "priya.bose").size(AvatarSize::Regular),
+        ))
         .push(Box::new(Badge::count(42)))
         .push(Box::new(Badge::count(7)))
         .push(Box::new(Badge::count(120)));

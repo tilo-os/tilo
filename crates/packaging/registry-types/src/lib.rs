@@ -26,7 +26,9 @@
 //! `blake3(b"tilo-registry-entry-v1\0" || postcard(entry_signing_payload))`
 //! where `entry_signing_payload` mirrors every field of
 //! [`RegistryEntry`] except `signature_hex` (the field that
-//! carries the sig would form a fixed-point otherwise).
+//! carries the sig would form a fixed-point otherwise) and `kind`. A bot
+//! entry signs the same payload under `tilo-registry-bot-entry-v1`, so the
+//! kind is bound by the domain and app entries keep their original bytes.
 //!
 //! Registry-owner signatures for federation cover
 //! `blake3(b"tilo-registry-index-v1\0" || postcard(index_manifest))`.
@@ -49,23 +51,23 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod application;
+pub mod catalogue;
 pub mod change;
+pub mod compact;
 pub mod entry;
 pub mod handshake;
+pub mod interfaces;
 pub mod moderation;
 pub mod namespace;
 pub mod pending;
+pub mod retention;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
@@ -73,18 +75,31 @@ pub mod verify;
 pub mod version;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
+pub use compact::{
+    COMPACT_SNAPSHOT_PROTOCOL, CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry,
+    CompactRegistrySnapshot, MAX_VERSION_INDEX_BYTES, RegistryVersionIndex, VERSION_INDEX_PROTOCOL,
+    VersionIndexError, VersionIndexFile, VersionIndexRef, compact_signing_message,
+    compact_snapshot, compact_snapshot_hash, newest_versions, sign_compact_snapshot,
+    verify_compact_snapshot, verify_version_index, version_index_bytes,
+};
 pub use entry::{
-    ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
-    RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,
+    BOT_ENTRY_DOMAIN, BotArtifact, BotRequirements, DirectoryRef, ENTRY_DOMAIN, EntryKind,
+    EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText, MAX_BOT_PROGRAM_BYTES,
+    PackageRequirement, RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget,
+    RegistryVersion, TappArtifact, VersionArtifact, VersionGroup, bot_program_url,
     entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
+pub use interfaces::{
+    InterfaceError, InterfaceRequirement, ProvidedInterfaces, SYSTEM_INTERFACE, Unmet,
+    describe_unmet, valid_interface_name,
+};
 pub use moderation::{
     MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
-    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_signing_message,
-    sign_moderation_mutation, transparency_event_hash, verify_moderation_authorization,
-    verify_moderation_mutation, verify_transparency_chain,
+    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_case_id,
+    moderation_signing_message, sign_moderation_mutation, transparency_event_hash,
+    verify_moderation_authorization, verify_moderation_mutation, verify_transparency_chain,
 };
 pub use snapshot::{
     CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, DELEGATED_SNAPSHOT_PROTOCOL,
@@ -92,13 +107,13 @@ pub use snapshot::{
     MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization, SNAPSHOT_PROTOCOL,
     SignedRegistrySnapshot, SnapshotError, sign_channel_authorization, sign_snapshot,
     sign_snapshot_delegated, snapshot_hash, snapshot_signing_message, verify_channel_authorization,
-    verify_snapshot,
+    verify_snapshot, within_validity_window,
 };
 pub use target::{
     ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,
-    MACOS_PLATFORM, NATIVE_PLATFORMS, TILO_OS_PLATFORM, TargetError, WASM_FEATURES,
-    WASM_ISA_BASELINE, WASM32_ARCHITECTURE, WEB_PLATFORM, WEB_RUNTIME_ID_HEX_LEN, WEB_RUNTIME_NAME,
-    WINDOWS_PLATFORM, WasmIsa, WebRuntime, canonical_wasm_isa, parse_wasm_isa, parse_web_runtime,
+    MACOS_PLATFORM, NATIVE_PLATFORMS, NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER,
+    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM,
+    is_runtime_package_id, parse_native_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 

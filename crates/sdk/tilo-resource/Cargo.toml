@@ -14,7 +14,13 @@ description = "The Tilo resource layer: typed, hierarchical app resources."
 # nothing about rendering, widgets or windows. The UI toolkit uses its
 # document-generic history; `tilo-app` binds resources to views.
 
+[features]
+test-support = []
+# Dates and times of `chrono` as model values.
+chrono = ["dep:chrono"]
+
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 automerge.workspace = true
 blake3.workspace = true
@@ -23,7 +29,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
+chrono = { workspace = true, optional = true, features = ["alloc"] }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tilo-wake.workspace = true
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
 
 [[test]]
@@ -36,3 +46,6 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+hex.workspace = true

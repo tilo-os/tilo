@@ -22,8 +22,10 @@ use crate::shell::now_playing::{
 };
 use tilo_desktop::drill_in::{
     CONTROL_INSET, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SIBLING_GAP, TARGET,
-    centred_text_top, control_radius, leading_glyph, paint_control, trailing_glyph, type_size,
+    centred_text_top, control_radius, leading_glyph, paint_control, trailing_glyph,
 };
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 /// The artwork square: a list row plus one sibling step, so the three text
 /// lines beside it sit comfortably at 1×.
@@ -128,12 +130,11 @@ pub fn paint_transport(
             .hovered(enabled && cursor.is_some_and(|p| rect.contains(p)))
             .focused(focused == Some(*transport))
             .disabled(!enabled)
-            .radius(rect.height() / 2.0)
             .accessible_name(&label);
         face = if *transport == Transport::PlayPause {
-            face.primary()
+            face.role(ButtonRole::Primary)
         } else {
-            face.ghost()
+            face.role(ButtonRole::Plain)
         };
         Button::paint(scene, transform, text, theme, &face);
     }
@@ -201,12 +202,11 @@ pub fn paint_artwork(
         );
         return;
     }
-    let size = type_size(text, theme.tokens.typography.scale.lg);
-    let (w, h) = text.measure_weighted(&monogram, size, None, TextWeight::Semibold);
-    text.draw_text_weighted(
+    let style = theme.text(TextRole::Heading);
+    let (w, h) = text.measure_style(&monogram, None, &style);
+    text.draw_style(
         scene,
         &monogram,
-        size,
         theme.tokens.colors.text_primary,
         transform.pre_translate(
             (
@@ -216,7 +216,7 @@ pub fn paint_artwork(
                 .into(),
         ),
         None,
-        TextWeight::Semibold,
+        &style,
     );
 }
 
@@ -292,11 +292,11 @@ impl NowPlayingCard {
     }
 
     fn title_line(&self) -> f64 {
-        self.line(ui::tokens::TypeScale::default().sm)
+        self.line(ui::tokens::Typography::default().size(ui::TextRole::Caption))
     }
 
     fn caption_line(&self) -> f64 {
-        self.line(ui::tokens::TypeScale::default().xs)
+        self.line(ui::tokens::Typography::default().size(ui::TextRole::Caption))
     }
 
     /// Artwork beside title, artist and application.
@@ -750,13 +750,11 @@ impl NowPlayingCard {
         {
             return Some(image.clone());
         }
-        let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(art.rgba.clone()),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: art.width,
-            height: art.height,
-        };
+        let image = ui::raster::rgba8(
+            vello::peniko::Blob::new(art.rgba.clone()),
+            art.width,
+            art.height,
+        );
         self.image = Some((identity, image.clone()));
         Some(image)
     }
@@ -792,46 +790,48 @@ impl NowPlayingCard {
             reason = "card widths are bounded by the output; f32 is the shaping precision"
         )]
         let width = (header.x1 - text_x).max(1.0) as f32;
-        let title_size = type_size(text, theme.tokens.typography.scale.sm);
-        let caption_size = type_size(text, theme.tokens.typography.scale.xs);
-        let title = text.elide_to_width_weighted(
+        let title_style = theme.text(TextRole::Caption);
+        let caption_style = theme.text(TextRole::Caption);
+        let title = text.elide_to_width_style(
             player.headline(),
-            title_size,
             width,
-            TextWeight::Semibold,
+            &title_style.clone().with_weight(TextWeight::Semibold),
         );
         let subline = player
             .subline()
-            .map(|subline| text.elide_to_width(subline, caption_size, width));
+            .map(|subline| text.elide_to_width_style(subline, width, &caption_style));
         let app = (player.subline() != Some(player.identity.as_str())
             && player.headline() != player.identity)
-            .then(|| text.elide_to_width(&player.identity, caption_size, width));
-        let (_, title_h) = text.measure_weighted(&title, title_size, None, TextWeight::Semibold);
-        let caption_h = f64::from(text.measure("Ag", caption_size, None).1);
+            .then(|| text.elide_to_width_style(&player.identity, width, &caption_style));
+        let (_, title_h) = text.measure_style(
+            &title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Semibold),
+        );
+        let caption_h = f64::from(text.measure_style("Ag", None, &caption_style).1);
         let lines = [subline.is_some(), app.is_some()]
             .into_iter()
             .filter(|line| *line)
             .count();
         let block = f64::from(title_h) + caption_h * f64::from(u32::try_from(lines).unwrap_or(0));
         let mut y = centred_text_top(header, block);
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate((text_x, y).into()),
             None,
-            TextWeight::Semibold,
+            &title_style.with_weight(TextWeight::Semibold),
         );
         y += f64::from(title_h);
         for line in [subline, app].into_iter().flatten() {
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &line,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate((text_x, y).into()),
                 None,
+                &caption_style,
             );
             y += caption_h;
         }
@@ -849,24 +849,24 @@ impl NowPlayingCard {
                         .saturating_sub(player.position_at(view.now))
                 )
             );
-            let (_, time_h) = text.measure(&elapsed, caption_size, None);
+            let (_, time_h) = text.measure_style(&elapsed, None, &caption_style);
             let time_y = centred_text_top(band, f64::from(time_h));
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &elapsed,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate((band.x0, time_y).into()),
                 None,
+                &caption_style,
             );
-            let (remaining_w, _) = text.measure(&remaining, caption_size, None);
-            text.draw_text(
+            let (remaining_w, _) = text.measure_style(&remaining, None, &caption_style);
+            text.draw_style(
                 scene,
                 &remaining,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate((band.x1 - f64::from(remaining_w), time_y).into()),
                 None,
+                &caption_style,
             );
             let seekable = player.seekable();
             Slider::paint(
@@ -885,11 +885,11 @@ impl NowPlayingCard {
                 clippy::cast_possible_truncation,
                 reason = "card widths are bounded by the output; f32 is the shaping precision"
             )]
-            let line = text.elide_to_width(&speakers.text(), caption_size, band.width() as f32);
-            text.draw_text(
+            let line =
+                text.elide_to_width_style(&speakers.text(), band.width() as f32, &caption_style);
+            text.draw_style(
                 scene,
                 &line,
-                caption_size,
                 if speakers.failed() {
                     colors.semantic.danger
                 } else {
@@ -897,6 +897,7 @@ impl NowPlayingCard {
                 },
                 transform.pre_translate((band.x0, band.y0).into()),
                 None,
+                &caption_style,
             );
         }
 
@@ -938,7 +939,7 @@ impl NowPlayingCard {
                 theme,
                 &ButtonFace::new(rect, "")
                     .icon(icon)
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .pressed(open)
                     .hovered(cursor.is_some_and(|p| rect.contains(p)))
                     .focused(self.focus == Some(target))
@@ -1015,7 +1016,7 @@ impl NowPlayingCard {
                 transform,
                 check,
                 ui::icons::Icon::Check,
-                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                colors.intent.inverted,
                 1.5,
             );
         }
@@ -1025,29 +1026,36 @@ impl NowPlayingCard {
             reason = "row widths are bounded by the output; f32 is the shaping precision"
         )]
         let width = (check.x0 - RELATED_GAP - text_x).max(1.0) as f32;
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
-        let label = text.elide_to_width_weighted(label, label_size, width, TextWeight::Medium);
-        let detail = text.elide_to_width(detail, detail_size, width);
-        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Medium);
-        let (_, detail_h) = text.measure(&detail, detail_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let detail_style = theme.text(TextRole::Caption);
+        let label = text.elide_to_width_style(
+            label,
+            width,
+            &label_style.clone().with_weight(TextWeight::Medium),
+        );
+        let detail = text.elide_to_width_style(detail, width, &detail_style);
+        let (_, label_h) = text.measure_style(
+            &label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Medium),
+        );
+        let (_, detail_h) = text.measure_style(&detail, None, &detail_style);
         let top = centred_text_top(rect, f64::from(label_h) + f64::from(detail_h));
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((text_x, top).into()),
             None,
-            TextWeight::Medium,
+            &label_style.with_weight(TextWeight::Medium),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &detail,
-            detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, top + f64::from(label_h)).into()),
             None,
+            &detail_style,
         );
     }
 }

@@ -10,8 +10,8 @@
 //! ## The payload is the CRDT document
 //!
 //! A project file is a header followed by a serialized Automerge document
-//! carrying exactly the maps [`crate::doc`] defines — `project`, `media`,
-//! `tracks`, `clips`. That choice is not incidental:
+//! holding the [`Project`] model exactly as the editor stores it. That
+//! choice is not incidental:
 //!
 //!   * **It round-trips losslessly.** The document shape *is* the editor's
 //!     storage shape, so saving is not a lossy projection into some other
@@ -20,9 +20,10 @@
 //!     file is a document, merges like a document, and is applied through
 //!     the ordinary action pipeline — so opening a project is one undo
 //!     boundary and replicates to a peer like any other edit.
-//!   * **It absorbs model growth for free.**
-//!     [`VideoDoc::load_project`] reads every field with an explicit
-//!     default for "this document predates the field". The model grew
+//!   * **It absorbs model growth for free.** The project's reader,
+//!     [`Project`]'s own read, reads
+//!     every field with an explicit default for "this document predates the
+//!     field". The model grew
 //!     repeatedly in a single day — `solo`, `transition_duration`, `text`,
 //!     `Transform`, `speed`, keyframes, markers — and every one of those
 //!     additions is already backward-compatible at the document layer. The
@@ -71,9 +72,8 @@
 
 use std::path::Path;
 
-use automerge::AutoCommit;
+use ui::tilo_resource::Replica;
 
-use crate::doc::VideoDoc;
 use crate::model::Project;
 
 /// First nine bytes of every project file.
@@ -150,10 +150,20 @@ impl std::error::Error for ProjectFileError {}
 /// live session, which is what keeps session-only root keys (recents, view
 /// state) and the whole local edit history — including the paths of sources
 /// since deleted — out of a file the user may hand to someone else.
-pub fn encode(project: &Project) -> Vec<u8> {
-    let mut doc = AutoCommit::new();
-    VideoDoc::write_project(&mut doc, project);
-    let payload = doc.save();
+///
+/// # Errors
+///
+/// [`ProjectFileError::Corrupt`] when the project does not apply to a fresh
+/// document.
+pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
+    let mut replica = Replica::<Project>::new();
+    replica
+        .apply(
+            ui::tilo_resource::Invoke::edit(&crate::resource::load_project(project))
+                .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?,
+        )
+        .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
+    let payload = replica.save();
 
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
     out.extend_from_slice(MAGIC);
@@ -161,7 +171,7 @@ pub fn encode(project: &Project) -> Vec<u8> {
     out.extend_from_slice(&MIN_READER_VERSION.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     out.extend_from_slice(&payload);
-    out
+    Ok(out)
 }
 
 /// The fixed header's fields: `(version, min_reader, declared payload length)`.
@@ -177,17 +187,6 @@ fn header_fields(bytes: &[u8]) -> Result<(u16, u16, u32), ProjectFileError> {
         u16::from_le_bytes([*r0, *r1]),
         u32::from_le_bytes([*l0, *l1, *l2, *l3]),
     ))
-}
-
-/// The `version` / `min_reader` a file declares, without loading it.
-///
-/// # Errors
-///
-/// [`ProjectFileError::NotAProject`] when `bytes` do not open with a whole
-/// project-file header.
-pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
-    let (version, min_reader, _) = header_fields(bytes)?;
-    Ok((version, min_reader))
 }
 
 /// Read project-file `bytes` back into the model.
@@ -211,8 +210,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
     let Some(payload) = bytes.get(HEADER_LEN..HEADER_LEN + declared) else {
         return Err(ProjectFileError::Truncated { declared, present });
     };
-    let doc = AutoCommit::load(payload).map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
-    Ok(VideoDoc::load_project(&doc))
+    Replica::<Project>::load(payload)
+        .and_then(|replica| replica.state())
+        .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }
 
 /// Write `project` to `path`.
@@ -229,7 +229,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
 ///
 /// [`ProjectFileError::Io`] when the file cannot be written.
 pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
-    crate::files::save(path, &encode(project))
+    crate::files::save(path, &encode(project)?)
         .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
 }
 
@@ -420,7 +420,6 @@ mod tests {
             fps: 24.0,
             palette: 2,
             path: "media/Drone.mov".into(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -462,7 +461,7 @@ mod tests {
             // model, read back and compared. A format that loses `solo` or the
             // keyframe curve is a format that silently eats a user's work.
             let p = rich_project();
-            let back = decode(&encode(&p)).expect("round-trips");
+            let back = decode(&encode(&p).expect("the project encodes")).expect("round-trips");
 
             assert_eq!(back.name, "Coastline");
             assert_eq!((back.fps, back.width, back.height), (24.0, 3840, 2160));
@@ -494,7 +493,7 @@ mod tests {
             // would produce a *disjoint* project that merges into duplicates
             // rather than converging, and every clip would lose its source.
             let p = rich_project();
-            let back = decode(&encode(&p)).expect("round-trips");
+            let back = decode(&encode(&p).expect("the project encodes")).expect("round-trips");
             assert_eq!(back.media[0].id, p.media[0].id);
             assert_eq!(back.tracks[0].id, p.tracks[0].id);
             assert_eq!(back.clips[0].id, p.clips[0].id);
@@ -519,14 +518,11 @@ mod tests {
             // `version` and leaves `min_reader` alone; this build must open that
             // file, because the document layer already defaults what it cannot
             // see. Without this, every field addition would orphan old files.
-            let mut bytes = encode(&rich_project());
+            let mut bytes = encode(&rich_project()).expect("the project encodes");
             bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
             let back = decode(&bytes).expect("a compatible newer file still opens");
             assert_eq!(back.clips.len(), 1);
-            assert_eq!(
-                header_versions(&bytes).unwrap(),
-                (FORMAT_VERSION + 7, MIN_READER_VERSION)
-            );
+            assert_eq!(header_fields(&bytes).unwrap().0, FORMAT_VERSION + 7);
         }
     }
 
@@ -534,7 +530,7 @@ mod tests {
     fn project_header_refuses_foreign_truncated_newer_or_damaged_files() {
         // Case `the_header_is_the_documented_layout`.
         {
-            let bytes = encode(&Project::new("x"));
+            let bytes = encode(&Project::new("x")).expect("the project encodes");
             assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
             assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
             assert_eq!(
@@ -560,22 +556,22 @@ mod tests {
             assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
             // A file shorter than the header is not a readable project either.
             assert_eq!(
-                header_versions(&[0u8; 4]).unwrap_err(),
+                header_fields(&[0u8; 4]).unwrap_err(),
                 ProjectFileError::NotAProject
             );
         }
         // Case `every_short_prefix_of_a_header_is_not_a_project`.
         {
-            let bytes = encode(&Project::new("t"));
+            let bytes = encode(&Project::new("t")).expect("the project encodes");
             for n in 0..HEADER_LEN {
                 assert_eq!(
-                    header_versions(&bytes[..n]),
-                    Err(ProjectFileError::NotAProject),
+                    header_fields(&bytes[..n]).unwrap_err(),
+                    ProjectFileError::NotAProject,
                     "{n} bytes"
                 );
             }
             assert_eq!(
-                header_versions(&bytes[..HEADER_LEN]),
+                header_fields(&bytes[..HEADER_LEN]).map(|(v, m, _)| (v, m)),
                 Ok((FORMAT_VERSION, MIN_READER_VERSION))
             );
         }
@@ -585,7 +581,7 @@ mod tests {
             // load a prefix of a document and hand back *some* of the clips —
             // exactly the plausible-but-wrong result that must never reach a user
             // who believes they opened their project.
-            let full = encode(&rich_project());
+            let full = encode(&rich_project()).expect("the project encodes");
             let cut = &full[..full.len() - 8];
             match decode(cut) {
                 Err(ProjectFileError::Truncated { declared, present }) => {
@@ -599,7 +595,7 @@ mod tests {
         {
             // Refuse, never guess: an unknown layout read with today's rules
             // produces a project that looks fine and is wrong.
-            let mut bytes = encode(&rich_project());
+            let mut bytes = encode(&rich_project()).expect("the project encodes");
             bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
             match decode(&bytes) {
                 Err(ProjectFileError::TooNew {
@@ -614,7 +610,7 @@ mod tests {
         }
         // Case `a_damaged_payload_is_reported_as_damage`.
         {
-            let mut bytes = encode(&rich_project());
+            let mut bytes = encode(&rich_project()).expect("the project encodes");
             // Scribble over the middle of the Automerge document, leaving the
             // header (and so the length) intact.
             let mid = HEADER_LEN + (bytes.len() - HEADER_LEN) / 2;
@@ -720,9 +716,6 @@ mod tests {
         }
         // Case `missing_sources_separate_absent_bytes_from_titles_and_present_files`.
         {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_VE_MEDIA_DIR");
-
             let mut p = Project::new("moved");
             // A reference whose bytes are nowhere on this box.
             p.media.push(MediaItem {

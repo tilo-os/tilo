@@ -5,8 +5,17 @@
 //! lives on the dedicated authenticated session, so task failure, health
 //! regression, shutdown, or connection loss withdraws eligibility without a
 //! stale durable capability.
+//!
+//! A routed job's inputs are hydrated from its requester through the relay
+//! into a private per-job directory ([`hydrate_job_inputs`]) — or, for an
+//! input this worker already holds and the requester proves it holds too,
+//! from the worker's own copy, with no bytes moving — and its outputs are
+//! retained for that requester to fetch by digest ([`ComputeOutputSource`])
+//! for [`OUTPUT_RETENTION`]. Retained outputs are themselves held content:
+//! a job chained on an earlier job's output runs without the requester
+//! sending it back.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -22,8 +31,13 @@ use tilo_clock::unix_now_ms;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::compute::{
-    ComputeContentStore, ComputeJobPhase, ComputeJobResult, ComputeWorker,
+    ComputeContentStore, ComputeExecutionError, ComputeJobPhase, ComputeJobResult, ComputeJobSpec,
+    ComputeOutputSource, ComputePackageCatalogue, ComputeSandbox, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, MAX_COMPUTE_INPUT_BYTES,
+    OUTPUT_INDEX_SUFFIX,
+};
+use crate::compute_content::{
+    ContentFetchError, answer_content, content_proof, fetch_job_content, prove_job_input,
 };
 use crate::compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 use crate::compute_transport::{
@@ -33,10 +47,16 @@ use crate::compute_transport::{
 use crate::mesh::{
     ComputeAccelerator, DeviceRole, PowerAvailability, ServerAdvertisement, ServiceCapabilities,
 };
+use crate::offload_content::ReplicaContent;
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
 const ADVERTISEMENT_LIFETIME_MS: u64 = 30_000;
 const DEFAULT_ASSIGNMENT_CAPACITY: u32 = 1;
+/// How long a completed job's outputs stay retrievable by its requester.
+/// The result reaches an offline requester whenever it reattaches, so this
+/// spans a day rather than the job's lifetime.
+pub const OUTPUT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const OUTPUT_PRUNE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Failure while establishing or owning the production worker.
 #[derive(Debug, Error)]
@@ -140,7 +160,94 @@ impl ComputeContentStore for FileComputeContentStore {
         if path.exists() {
             return self.get(digest).map(|_| ());
         }
-        atomic_file::write(&path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())
+    }
+}
+
+impl HeldContent for FileComputeContentStore {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        _locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = match fs::symlink_metadata(self.path_for(digest)) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if len > max_bytes {
+            return Ok(None);
+        }
+        self.get(digest)
+    }
+}
+
+/// Content a worker holds in several places: the first source that holds
+/// an input serves it, and one that cannot be read does not stop the rest.
+struct HeldSources(Vec<Arc<dyn HeldContent>>);
+
+impl HeldContent for HeldSources {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut failure = None;
+        for source in &self.0 {
+            match source.held(digest, locator, max_bytes) {
+                Ok(Some(bytes)) => return Ok(Some(bytes)),
+                Ok(None) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+        failure.map_or(Ok(None), Err)
+    }
+
+    fn locates(&self) -> bool {
+        self.0.iter().any(|source| source.locates())
+    }
+}
+
+/// What a production worker holds for the jobs routed to it: the outputs
+/// it retains, for a job in any workspace, and the filesystem replica this
+/// device keeps of a workspace ([`ReplicaContent`]), for that workspace's
+/// jobs only. Either is used only once the job's requester proves it holds
+/// the same bytes ([`hydrate_job_inputs`]).
+#[derive(Clone)]
+pub struct WorkerHeldContent {
+    outputs: Arc<dyn HeldContent>,
+    by_workspace: HashMap<u64, Arc<dyn HeldContent>>,
+}
+
+impl WorkerHeldContent {
+    /// `outputs`, plus each workspace's replica stores in `replicas`.
+    #[must_use]
+    pub fn new(outputs: Arc<dyn HeldContent>, replicas: &BTreeMap<u64, Vec<PathBuf>>) -> Self {
+        let by_workspace = replicas
+            .iter()
+            .filter(|(_, dirs)| !dirs.is_empty())
+            .map(|(&workspace_id, dirs)| {
+                let replica: Arc<dyn HeldContent> = Arc::new(ReplicaContent::new(dirs.clone()));
+                let sources: Arc<dyn HeldContent> =
+                    Arc::new(HeldSources(vec![Arc::clone(&outputs), replica]));
+                (workspace_id, sources)
+            })
+            .collect();
+        Self {
+            outputs,
+            by_workspace,
+        }
+    }
+
+    /// What a job in `workspace_id` may run on in place of fetching.
+    #[must_use]
+    pub fn for_workspace(&self, workspace_id: u64) -> Arc<dyn HeldContent> {
+        self.by_workspace
+            .get(&workspace_id)
+            .map_or_else(|| Arc::clone(&self.outputs), Arc::clone)
     }
 }
 
@@ -164,6 +271,180 @@ pub struct ProductionComputeWorkerConfig {
     pub state_root: PathBuf,
     /// Process-local readiness projection cleared on every exit path.
     pub readiness: Arc<AtomicBool>,
+    /// Environment sessions and legacy apps this worker hosts for members.
+    pub environments: WorkerEnvironments,
+    /// The filesystem replica stores this device keeps, by relay workspace
+    /// (a home peer's cache directories): content a job in that workspace
+    /// may run on once its requester proves it holds the same bytes.
+    pub replicas: BTreeMap<u64, Vec<PathBuf>>,
+}
+
+/// What a worker hosts for members besides batch jobs.
+#[derive(Clone, Default)]
+pub struct WorkerEnvironments {
+    /// Interactive environment sessions.
+    pub host: Option<crate::environment_host::EnvironmentHost>,
+    /// Legacy apps, on a worker with KVM.
+    pub legacy: Option<crate::legacy_host::LegacyWorker>,
+    /// Where the hosted environments' legacy launches go: the relay, over
+    /// this worker's connection once it is attached.
+    #[cfg(target_os = "linux")]
+    pub legacy_route: Option<crate::legacy_route::LegacyLaunchRoute>,
+}
+
+impl WorkerEnvironments {
+    fn capacity(&self) -> (u32, u32) {
+        self.host.as_ref().map_or((0, 0), |host| {
+            (
+                host.config().capacity,
+                u32::try_from(host.active_sessions()).unwrap_or(u32::MAX),
+            )
+        })
+    }
+
+    fn accelerators(&self) -> BTreeSet<ComputeAccelerator> {
+        if self.legacy.is_some() && Path::new("/dev/kvm").exists() {
+            BTreeSet::from([ComputeAccelerator::Kvm])
+        } else {
+            BTreeSet::new()
+        }
+    }
+
+    fn hosts_anything(&self) -> bool {
+        self.host.is_some() || self.legacy.is_some()
+    }
+}
+
+/// Serve a stream the relay opened to this worker on a task of its own;
+/// `outputs` answers for the outputs of the jobs this worker ran.
+pub fn spawn_worker_stream(
+    environments: WorkerEnvironments,
+    outputs: Option<Arc<dyn ComputeOutputSource>>,
+    (mut send, mut receive): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+) {
+    tokio::spawn(async move {
+        if let Err(error) =
+            serve_worker_stream_with(environments, outputs, &mut send, &mut receive).await
+        {
+            tracing::debug!(%error, "worker environment stream ended");
+        }
+        let _ = send.finish();
+    });
+}
+
+/// Serve one stream the relay opened to this worker, which runs no batch
+/// jobs: it has no job outputs to serve.
+///
+/// # Errors
+///
+/// Returns an error when the stream fails or its first frame is malformed.
+pub async fn serve_worker_stream<S, R>(
+    environments: WorkerEnvironments,
+    send: &mut S,
+    receive: &mut R,
+) -> Result<(), crate::environment_host::EnvironmentStreamError>
+where
+    S: tokio::io::AsyncWrite + Unpin + Send,
+    R: tokio::io::AsyncRead + Unpin + Send,
+{
+    serve_worker_stream_with(environments, None, send, receive).await
+}
+
+/// Serve one stream the relay opened to this worker: an environment
+/// session, a legacy app, or an output of a job it ran, from `outputs`
+/// ([`WorkerStreamOpen::ComputeContent`](tilo_relay_protocol::environment::WorkerStreamOpen::ComputeContent)).
+///
+/// # Errors
+///
+/// Returns an error when the stream fails or its first frame is malformed.
+pub async fn serve_worker_stream_with<S, R>(
+    environments: WorkerEnvironments,
+    outputs: Option<Arc<dyn ComputeOutputSource>>,
+    send: &mut S,
+    receive: &mut R,
+) -> Result<(), crate::environment_host::EnvironmentStreamError>
+where
+    S: tokio::io::AsyncWrite + Unpin + Send,
+    R: tokio::io::AsyncRead + Unpin + Send,
+{
+    use crate::environment_host::{read_message, write_message};
+    use tilo_relay_protocol::environment::{
+        ContentReply, ENVIRONMENT_PROTOCOL_VERSION, LegacyFrame, Refusal, ServerFrame,
+        WorkerStreamOpen,
+    };
+    let Some(open) = read_message::<_, WorkerStreamOpen>(receive).await? else {
+        return Ok(());
+    };
+    match open {
+        // Proofs are a requester's to give, for the inputs of jobs it
+        // submitted; a worker proves nothing of what it retains.
+        WorkerStreamOpen::ComputeContentProof { .. } => {
+            crate::compute_content::refuse_proof(send, "not_authorised").await
+        }
+        WorkerStreamOpen::ComputeContent {
+            version,
+            workspace_id,
+            asker,
+            job_id,
+            digest,
+        } => {
+            let code = match outputs {
+                Some(outputs) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                    let found = tokio::task::spawn_blocking(move || {
+                        outputs.retained_output(asker.device, workspace_id, job_id, digest)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("retained output read panicked".into()));
+                    return answer_content(send, digest, found).await;
+                }
+                Some(_) => "unsupported_version",
+                None => "content_plane_unavailable",
+            };
+            write_message(send, &ContentReply::Refused { code: code.into() }).await
+        }
+        WorkerStreamOpen::Environment {
+            version,
+            member,
+            request,
+            session,
+            ..
+        } => match environments.host {
+            Some(host) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                host.serve(member, session, request, send, receive).await
+            }
+            _ => {
+                write_message(
+                    send,
+                    &ServerFrame::Refused {
+                        reason: Refusal::NoWorker,
+                        detail: "this worker runs no environments".into(),
+                    },
+                )
+                .await
+            }
+        },
+        WorkerStreamOpen::Legacy {
+            version,
+            member,
+            launch,
+            request,
+            ..
+        } => match environments.legacy {
+            Some(legacy) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                legacy.serve(member, launch, request, send, receive).await
+            }
+            _ => {
+                write_message(
+                    send,
+                    &LegacyFrame::Refused {
+                        reason: Refusal::NoWorker,
+                        detail: "this worker runs no legacy apps".into(),
+                    },
+                )
+                .await
+            }
+        },
+    }
 }
 
 struct WorkerHealth {
@@ -182,7 +463,7 @@ struct WorkerHealth {
 pub async fn run_production_compute_worker(
     config: ProductionComputeWorkerConfig,
 ) -> Result<(), ComputeWorkerError> {
-    let health = inspect_health()?;
+    let health = inspect_health(config.environments.hosts_anything())?;
     if config.workspaces.is_empty() {
         return Err(ComputeWorkerError::Health(
             "worker has no configured workspace".into(),
@@ -191,6 +472,10 @@ pub async fn run_production_compute_worker(
     let data_home = launcher::appdir::host_data_home()
         .ok_or_else(|| ComputeWorkerError::Health("launcher has no trusted data home".into()))?;
     let content = FileComputeContentStore::open(config.state_root.join("content"))?;
+    // The outputs this worker retains are content it holds: a job chained
+    // on one runs without its requester sending it back. So is a workspace
+    // replica this device keeps: a job on its files runs on them in place.
+    let held = WorkerHeldContent::new(Arc::new(content.clone()), &config.replicas);
     let advertisement = server_advertisement(&config, &health, 0);
     let executor = Arc::new(ComputeWorker::new(
         advertisement,
@@ -210,18 +495,7 @@ pub async fn run_production_compute_worker(
         config.revocations.clone(),
     )
     .await?;
-    for workspace in &config.workspaces {
-        client.attach(*workspace).await?;
-        let delivery = client.receive().await?;
-        if !matches!(
-            delivery.envelope,
-            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
-        ) {
-            return Err(ComputeWorkerError::Health(
-                "relay rejected compute worker workspace attachment".into(),
-            ));
-        }
-    }
+    attach_workspaces(&mut client, &config.workspaces).await?;
 
     advertise_all(&mut client, &config, &health, 0).await?;
     config.readiness.store(true, Ordering::Release);
@@ -234,16 +508,36 @@ pub async fn run_production_compute_worker(
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_tick.tick().await;
+    let mut prune_tick = tokio::time::interval(OUTPUT_PRUNE_INTERVAL);
+    prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let _reaper = config
+        .environments
+        .host
+        .as_ref()
+        .map(|host| AbortOnDrop(host.spawn_reaper()));
+    let connection = client.connection();
+    // Hosted environments send their legacy launches up this connection.
+    #[cfg(target_os = "linux")]
+    if let Some(route) = &config.environments.legacy_route {
+        route.set_relay(connection.clone());
+    }
+    let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
 
     loop {
         tokio::select! {
+            stream = connection.accept_bi() => {
+                let stream = stream
+                    .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
+                spawn_worker_stream(config.environments.clone(), Some(Arc::clone(&outputs)), stream);
+            }
+            _ = prune_tick.tick() => spawn_output_prune(&config.state_root),
             delivery = client.receive() => {
                 let delivery = delivery?;
                 handle_delivery(
                     &mut client,
                     &config,
                     &health,
-                    &executor,
+                    (&executor, &held),
                     &completed_tx,
                     &mut active,
                     delivery,
@@ -258,7 +552,7 @@ pub async fn run_production_compute_worker(
                 advertise_all(&mut client, &config, &health, active.len()).await?;
             }
             _ = health_tick.tick() => {
-                let refreshed = inspect_health()?;
+                let refreshed = inspect_health(config.environments.hosts_anything())?;
                 if !health_unchanged(&health, &refreshed) {
                     return Err(ComputeWorkerError::Health(
                         "worker catalogue or power health changed; withdrawing before re-advertising".into(),
@@ -268,6 +562,43 @@ pub async fn run_production_compute_worker(
             }
         }
     }
+}
+
+/// Attach the worker session to each configured workspace, failing when the
+/// relay refuses any of them.
+async fn attach_workspaces(
+    client: &mut ComputeClient,
+    workspaces: &BTreeSet<u64>,
+) -> Result<(), ComputeWorkerError> {
+    for workspace in workspaces {
+        client.attach(*workspace).await?;
+        let delivery = client.receive().await?;
+        if !matches!(
+            delivery.envelope,
+            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
+        ) {
+            return Err(ComputeWorkerError::Health(
+                "relay rejected compute worker workspace attachment".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Prune retained outputs under `state_root` off the async runtime.
+fn spawn_output_prune(state_root: &Path) {
+    let execution = state_root.join("execution");
+    let content = state_root.join("content");
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = prune_retained_outputs(
+            &execution,
+            &content,
+            std::time::SystemTime::now(),
+            OUTPUT_RETENTION,
+        ) {
+            tracing::warn!(%error, "pruning retained compute outputs failed");
+        }
+    });
 }
 
 struct ActiveJob {
@@ -322,16 +653,410 @@ impl Drop for ActiveJobs {
 
 struct CompletedJob {
     binding: ComputeJobBinding,
-    result: Result<ComputeJobResult, String>,
+    phase: ComputeJobPhase,
+    log_tail: Vec<u8>,
 }
+
+/// The content a worker staged to run one job, by where it came from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputTransfer {
+    /// Distinct input digests fetched from the requester.
+    pub inputs: usize,
+    /// Their bytes: what crossed the network.
+    pub bytes: u64,
+    /// Distinct input digests this worker already held, used once the
+    /// requester proved it holds the same bytes: nothing was sent.
+    pub held: usize,
+    /// Their bytes.
+    pub held_bytes: u64,
+    /// Time spent staging them all, proofs included.
+    pub elapsed: Duration,
+}
+
+/// Where a worker stages a job's inputs: a private per-job directory under
+/// `root`, from content it already holds (`held`) where the requester
+/// proves it may, and from the requester otherwise.
+#[derive(Clone)]
+pub struct InputStaging {
+    /// Parent of the per-job directories.
+    pub root: PathBuf,
+    /// Content this worker already holds, if any.
+    pub held: Option<Arc<dyn HeldContent>>,
+}
+
+impl From<PathBuf> for InputStaging {
+    /// Staging that fetches every input from the requester.
+    fn from(root: PathBuf) -> Self {
+        Self { root, held: None }
+    }
+}
+
+/// A job's inputs could not be hydrated.
+#[derive(Debug)]
+struct InputFailure {
+    code: &'static str,
+    detail: String,
+}
+
+impl InputFailure {
+    fn fetch(digest: [u8; 32], error: &ContentFetchError) -> Self {
+        let code = match error {
+            ContentFetchError::TooLarge => "input_too_large",
+            ContentFetchError::Integrity => "input_integrity",
+            ContentFetchError::Refused(_)
+            | ContentFetchError::Stream(_)
+            | ContentFetchError::Store(_) => "input_unavailable",
+        };
+        Self {
+            code,
+            detail: format!("input {}: {error}", hex::encode(digest)),
+        }
+    }
+}
+
+/// Stage every input `spec` names, once each, into the private per-job
+/// `store`, over the worker's authenticated compute `connection`.
+///
+/// An input this worker already holds (`held`) is staged from its own copy
+/// when the job's requester proves, through the relay, that it holds the
+/// same bytes ([`prove_job_input`]): the copy must hash to the digest *and*
+/// match the proof under a fresh challenge, so a worker never runs a job on
+/// content its invoker could not produce, and nothing is sent. Every other
+/// input is asked for through the relay, which serves it from the job's
+/// requester ([`crate::compute_content`]). Either way the worker stages
+/// exactly what the job lists. The total is bounded by
+/// [`MAX_COMPUTE_INPUT_BYTES`] and the job's memory limit, and the whole
+/// staging by the job's lifetime.
+///
+/// # Errors
+///
+/// Returns the failure code the requester sees (`input_unavailable`,
+/// `input_integrity`, `input_too_large`, `input_timeout`, `staging`) and a
+/// diagnostic.
+pub async fn hydrate_job_inputs(
+    connection: &iroh::endpoint::Connection,
+    spec: &ComputeJobSpec,
+    store: &dyn ComputeContentStore,
+    held: Option<&Arc<dyn HeldContent>>,
+) -> Result<InputTransfer, (&'static str, String)> {
+    let started = std::time::Instant::now();
+    let budget = MAX_COMPUTE_INPUT_BYTES.min(spec.limits.memory_bytes);
+    let lifetime = Duration::from_millis(spec.expires_at_ms.saturating_sub(unix_now_ms()));
+    let unique = spec.inputs.iter().copied().collect::<BTreeSet<_>>();
+    let stage_all = async {
+        let mut transfer = InputTransfer::default();
+        let mut staged = BTreeSet::new();
+        if let Some(held) = held {
+            for (digest, bytes) in proven_held(connection, spec, &unique, held, budget).await {
+                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                if transfer.held_bytes.saturating_add(len) > budget {
+                    // Over the bound together; the fetch below refuses it.
+                    continue;
+                }
+                store.put(digest, &bytes).map_err(|detail| InputFailure {
+                    code: "staging",
+                    detail,
+                })?;
+                staged.insert(digest);
+                transfer.held = transfer.held.saturating_add(1);
+                transfer.held_bytes = transfer.held_bytes.saturating_add(len);
+            }
+        }
+        for digest in unique.difference(&staged).copied() {
+            let remaining = budget
+                .saturating_sub(transfer.held_bytes)
+                .saturating_sub(transfer.bytes);
+            let bytes = fetch_job_content(
+                connection,
+                spec.workspace_id,
+                spec.job_id,
+                digest,
+                remaining,
+            )
+            .await
+            .map_err(|error| InputFailure::fetch(digest, &error))?;
+            store.put(digest, &bytes).map_err(|detail| InputFailure {
+                code: "staging",
+                detail,
+            })?;
+            transfer.inputs = transfer.inputs.saturating_add(1);
+            transfer.bytes = transfer
+                .bytes
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        Ok::<_, InputFailure>(transfer)
+    };
+    match tokio::time::timeout(lifetime, stage_all).await {
+        Ok(Ok(mut transfer)) => {
+            transfer.elapsed = started.elapsed();
+            Ok(transfer)
+        }
+        Ok(Err(failure)) => Err((failure.code, failure.detail)),
+        Err(_) => Err((
+            "input_timeout",
+            "inputs did not arrive within the job's lifetime".into(),
+        )),
+    }
+}
+
+/// The inputs of `spec` among `digests` that `held` has a copy of and the
+/// job's requester proved it holds too, each at most `max_bytes`. Every
+/// input is tried at once; one that is not held, not proven, or does not
+/// match is left out and fetched instead.
+async fn proven_held(
+    connection: &iroh::endpoint::Connection,
+    spec: &ComputeJobSpec,
+    digests: &BTreeSet<[u8; 32]>,
+    held: &Arc<dyn HeldContent>,
+    max_bytes: u64,
+) -> Vec<([u8; 32], Vec<u8>)> {
+    let mut proving = tokio::task::JoinSet::new();
+    for &digest in digests {
+        let connection = connection.clone();
+        let held = Arc::clone(held);
+        let job = (spec.workspace_id, spec.job_id);
+        proving.spawn(async move {
+            let proven = proven_copy(&connection, job, digest, held, max_bytes).await;
+            proven.map(|bytes| (digest, bytes))
+        });
+    }
+    let mut proven = Vec::new();
+    while let Some(joined) = proving.join_next().await {
+        if let Ok(Some(copy)) = joined {
+            proven.push(copy);
+        }
+    }
+    proven
+}
+
+/// Read what `held` has as `digest` (by `locator` when given), off the
+/// runtime; a read failure counts as not held.
+async fn read_held(
+    held: Arc<dyn HeldContent>,
+    digest: [u8; 32],
+    locator: Option<[u8; 32]>,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || held.held(digest, locator, max_bytes))
+        .await
+        .unwrap_or_else(|_| Err("held content read panicked".into()))
+        .inspect_err(|error| tracing::debug!(%error, "held compute input unreadable"))
+        .ok()
+        .flatten()
+}
+
+/// This worker's copy of input `digest` of `job`, when `held` has one and
+/// the requester proves it holds the same bytes; `None` otherwise.
+async fn proven_copy(
+    connection: &iroh::endpoint::Connection,
+    job: (u64, [u8; 16]),
+    digest: [u8; 32],
+    held: Arc<dyn HeldContent>,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    // Look by digest first: a store that cannot locate by hint has nothing
+    // to prove when it has nothing under the digest, so a miss costs no
+    // round trip.
+    let mut copy = read_held(Arc::clone(&held), digest, None, max_bytes).await;
+    if copy.is_none() && !held.locates() {
+        return None;
+    }
+    let mut nonce = [0_u8; 32];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
+    let (proof, locator) = match prove_job_input(connection, job, digest, nonce).await {
+        Ok(answer) => answer,
+        Err(error) => {
+            tracing::debug!(%error, input = %hex::encode(digest), "input not proven; fetching it");
+            return None;
+        }
+    };
+    if copy.is_none() {
+        copy = read_held(held, digest, Some(locator?), max_bytes).await;
+    }
+    // blake3's `Hash` compares in constant time.
+    copy.filter(|bytes| {
+        blake3::hash(bytes).as_bytes() == &digest
+            && blake3::Hash::from_bytes(content_proof(&nonce, bytes))
+                == blake3::Hash::from_bytes(proof)
+    })
+}
+
+/// What running one assignment produced: the terminal phase and log the
+/// worker reports, and what it fetched to get there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeAssignment {
+    /// The terminal phase to report.
+    pub phase: ComputeJobPhase,
+    /// The bounded diagnostic tail to report.
+    pub log_tail: Vec<u8>,
+    /// The inputs hydrated for the job.
+    pub transfer: InputTransfer,
+}
+
+/// Run one routed job end to end on `executor`: hydrate its inputs into a
+/// private directory under the `staging` root ([`hydrate_job_inputs`]), execute
+/// it in the package sandbox, and return what to report. Outputs stay in
+/// the executor's store, retrievable by the job's requester through
+/// [`ComputeOutputSource`]; the hydrated inputs are removed when the job
+/// ends.
+pub async fn run_compute_assignment<C, P, S>(
+    executor: Arc<ComputeWorker<C, P, S>>,
+    connection: iroh::endpoint::Connection,
+    spec: ComputeJobSpec,
+    staging: impl Into<InputStaging>,
+    cancellation: CaptureCancellation,
+) -> ComputeAssignment
+where
+    C: ComputeContentStore + 'static,
+    P: ComputePackageCatalogue + 'static,
+    S: ComputeSandbox + 'static,
+{
+    let failed = |code: &str, detail: String, transfer: InputTransfer| ComputeAssignment {
+        phase: ComputeJobPhase::Failed { code: code.into() },
+        log_tail: bounded_log(detail.into_bytes()),
+        transfer,
+    };
+    let InputStaging { root, held } = staging.into();
+    let job_inputs = root.join(hex::encode(spec.job_id));
+    let _remove_inputs = RemoveOnDrop(job_inputs.clone());
+    let (inputs, transfer): (Box<dyn ComputeContentStore>, InputTransfer) = if spec
+        .inputs
+        .is_empty()
+    {
+        (Box::new(NoInputs), InputTransfer::default())
+    } else {
+        let store = match FileComputeContentStore::open(job_inputs) {
+            Ok(store) => store,
+            Err(error) => return failed("staging", error.to_string(), InputTransfer::default()),
+        };
+        match hydrate_job_inputs(&connection, &spec, &store, held.as_ref()).await {
+            Ok(transfer) => (Box::new(store), transfer),
+            Err((code, detail)) => return failed(code, detail, InputTransfer::default()),
+        }
+    };
+    let executed = tokio::task::spawn_blocking(move || {
+        executor.execute_with_inputs(
+            inputs.as_ref(),
+            (spec.requester, spec.workspace_id),
+            &spec,
+            unix_now_ms(),
+            cancellation,
+        )
+    })
+    .await;
+    let (phase, log_tail) = match executed {
+        Ok(result) => sanitize_result(result),
+        Err(error) => (
+            ComputeJobPhase::Failed {
+                code: "execution".into(),
+            },
+            bounded_log(error.to_string().into_bytes()),
+        ),
+    };
+    ComputeAssignment {
+        phase,
+        log_tail,
+        transfer,
+    }
+}
+
+/// The inputs of a job that names none.
+struct NoInputs;
+
+impl ComputeContentStore for NoInputs {
+    fn get(&self, _digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
+
+    fn put(&self, _digest: [u8; 32], _bytes: &[u8]) -> Result<(), String> {
+        Err("a job without inputs stages none".into())
+    }
+}
+
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        match fs::remove_dir_all(&self.0) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(path = %self.0.display(), %error, "failed to remove hydrated compute inputs");
+            }
+        }
+    }
+}
+
+/// Forget outputs whose retention has passed: the index of every job
+/// completed longer than `retention` before `now`, then every retained
+/// output no remaining index names. A just-written output is kept even
+/// before its index lands, because only content older than `retention` is
+/// removed.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be read.
+pub fn prune_retained_outputs(
+    execution_root: &Path,
+    content_root: &Path,
+    now: std::time::SystemTime,
+    retention: Duration,
+) -> std::io::Result<()> {
+    let expired = |entry: &fs::DirEntry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age > retention)
+            })
+    };
+    let mut referenced = std::collections::HashSet::new();
+    match fs::read_dir(execution_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                if !name.to_string_lossy().ends_with(OUTPUT_INDEX_SUFFIX) {
+                    continue;
+                }
+                if expired(&entry) {
+                    fs::remove_file(entry.path())?;
+                    continue;
+                }
+                let index = fs::read_to_string(entry.path())?;
+                referenced.extend(index.lines().map(str::to_owned));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match fs::read_dir(content_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || referenced.contains(&name) || !expired(&entry) {
+                    continue;
+                }
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+/// The executor a production worker runs jobs on.
+type ProductionExecutor =
+    ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>;
 
 async fn handle_delivery(
     client: &mut ComputeClient,
     config: &ProductionComputeWorkerConfig,
     health: &WorkerHealth,
-    executor: &Arc<
-        ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>,
-    >,
+    (executor, held): (&Arc<ProductionExecutor>, &WorkerHeldContent),
     completed: &tokio::sync::mpsc::Sender<CompletedJob>,
     active: &mut ActiveJobs,
     delivery: ComputeDelivery,
@@ -351,23 +1076,6 @@ async fn handle_delivery(
                     ));
                 }
                 client.acknowledge(&delivery).await?;
-                return Ok(());
-            }
-            if !spec.inputs.is_empty() {
-                client.acknowledge(&delivery).await?;
-                client
-                    .send(&ComputeEnvelope::Result {
-                        result: ComputeResultUpdate {
-                            binding,
-                            sequence: 1,
-                            phase: ComputeJobPhase::Failed {
-                                code: "content_plane_unavailable".into(),
-                            },
-                            log_tail: b"remote content hydration is not enabled on this worker"
-                                .to_vec(),
-                        },
-                    })
-                    .await?;
                 return Ok(());
             }
             let assignment_capacity =
@@ -402,17 +1110,31 @@ async fn handle_delivery(
             let executor = Arc::clone(executor);
             let spec = spec.clone();
             let completed = completed.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = executor
-                    .execute(
-                        spec.requester,
-                        spec.workspace_id,
-                        &spec,
-                        unix_now_ms(),
-                        cancellation,
-                    )
-                    .map_err(|error| error.to_string());
-                let _ = completed.blocking_send(CompletedJob { binding, result });
+            let connection = client.connection();
+            let staging = InputStaging {
+                root: config.state_root.join("inputs"),
+                held: Some(held.for_workspace(spec.workspace_id)),
+            };
+            tokio::spawn(async move {
+                let job = hex::encode(spec.job_id);
+                let assignment =
+                    run_compute_assignment(executor, connection, spec, staging, cancellation).await;
+                tracing::debug!(
+                    %job,
+                    inputs = assignment.transfer.inputs,
+                    input_bytes = assignment.transfer.bytes,
+                    held_inputs = assignment.transfer.held,
+                    held_bytes = assignment.transfer.held_bytes,
+                    hydration_ms = assignment.transfer.elapsed.as_millis(),
+                    "compute job finished"
+                );
+                let _ = completed
+                    .send(CompletedJob {
+                        binding,
+                        phase: assignment.phase,
+                        log_tail: assignment.log_tail,
+                    })
+                    .await;
             });
         }
         ComputeEnvelope::Cancel { binding } => {
@@ -436,43 +1158,36 @@ async fn send_completion(
     client: &mut ComputeClient,
     completed: CompletedJob,
 ) -> Result<(), ComputeWorkerError> {
-    let (phase, log) = sanitize_result(completed.result);
     client
         .send(&ComputeEnvelope::Result {
             result: ComputeResultUpdate {
                 binding: completed.binding,
                 sequence: 2,
-                phase,
-                log_tail: log,
+                phase: completed.phase,
+                log_tail: completed.log_tail,
             },
         })
         .await?;
     Ok(())
 }
 
-fn sanitize_result(result: Result<ComputeJobResult, String>) -> (ComputeJobPhase, Vec<u8>) {
+/// The phase and bounded log a finished execution reports. A completed
+/// job's outputs are reported as they are: [`ComputeWorker`] retained each
+/// for the job's requester before completing.
+fn sanitize_result(
+    result: Result<ComputeJobResult, ComputeExecutionError>,
+) -> (ComputeJobPhase, Vec<u8>) {
     match result {
         Ok(result) => {
             let mut log = result.stdout;
             log.extend_from_slice(&result.stderr);
-            let phase = match result.lifecycle.phase {
-                ComputeJobPhase::Completed { ref outputs } if !outputs.is_empty() => {
-                    log.extend_from_slice(
-                        b"\nremote output retrieval is not enabled on this worker",
-                    );
-                    ComputeJobPhase::Failed {
-                        code: "content_plane_unavailable".into(),
-                    }
-                }
-                phase => phase,
-            };
-            (phase, bounded_log(log))
+            (result.lifecycle.phase, bounded_log(log))
         }
         Err(error) => (
             ComputeJobPhase::Failed {
-                code: "execution".into(),
+                code: error.code().into(),
             },
-            bounded_log(error.into_bytes()),
+            bounded_log(error.to_string().into_bytes()),
         ),
     }
 }
@@ -505,6 +1220,7 @@ async fn advertise_all(
 ) -> Result<(), ComputeWorkerError> {
     let issued_at_ms = unix_now_ms();
     let active_assignments = u32::try_from(active_assignments).unwrap_or(u32::MAX);
+    let (environment_capacity, active_environments) = config.environments.capacity();
     for workspace_id in &config.workspaces {
         client
             .send(&ComputeEnvelope::Advertise {
@@ -514,9 +1230,11 @@ async fn advertise_all(
                     worker: config.device_cert.device_public_key,
                     workspace_id: *workspace_id,
                     apps: health.apps.clone(),
-                    gpu: false,
+                    accelerators: config.environments.accelerators(),
                     assignment_capacity: DEFAULT_ASSIGNMENT_CAPACITY,
                     active_assignments,
+                    environment_capacity,
+                    active_environments,
                     power: health.power,
                     energy_saver: false,
                     issued_at_ms,
@@ -542,7 +1260,7 @@ fn server_advertisement(
         },
         workspaces: config.workspaces.clone(),
         apps: health.apps.clone(),
-        accelerators: BTreeSet::<ComputeAccelerator>::new(),
+        accelerators: config.environments.accelerators(),
         priority: 0,
         latency_ms: 0,
         power: health.power,
@@ -553,7 +1271,7 @@ fn server_advertisement(
     }
 }
 
-fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
+fn inspect_health(hosts_environments: bool) -> Result<WorkerHealth, ComputeWorkerError> {
     if !bubblewrap_available() {
         return Err(ComputeWorkerError::Health(
             "bubblewrap launcher is unavailable".into(),
@@ -589,7 +1307,7 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
             apps.insert(package.id);
         }
     }
-    if apps.is_empty() {
+    if apps.is_empty() && !hosts_environments {
         return Err(ComputeWorkerError::Health(
             "no intact signed package exposes a CLI compute entrypoint".into(),
         ));
@@ -637,6 +1355,14 @@ fn bounded_log(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct ReadinessGuard(Arc<AtomicBool>);
 
 impl Drop for ReadinessGuard {
@@ -648,6 +1374,104 @@ impl Drop for ReadinessGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replica_s_small_files_are_held_only_for_that_workspace_s_jobs() {
+        // Two workspaces' replicas, each serving its own store as
+        // `fs replica` does, each holding one small file.
+        let root = tempfile::tempdir().unwrap();
+        let mut files = Vec::new();
+        let mut servers = Vec::new();
+        for (workspace, text) in [(7_u64, "a photo in seven"), (8, "a photo in eight")] {
+            let dir = root.path().join(format!("replica-{workspace}"));
+            let store = Arc::new(::fs::store::ContentStore::open(&dir).await.unwrap());
+            let bytes = text.as_bytes().to_vec();
+            let manifest = *store
+                .write_content(&bytes)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_bytes();
+            let listener =
+                tilo_files::native::private::bind_socket(&::fs::replica_content::socket_path(&dir))
+                    .unwrap();
+            listener.set_nonblocking(true).unwrap();
+            servers.push(tokio::spawn(::fs::replica_content::serve(
+                tokio::net::UnixListener::from_std(listener).unwrap(),
+                store,
+            )));
+            files.push((workspace, dir, bytes, manifest));
+        }
+        let outputs = FileComputeContentStore::open(root.path().join("content")).unwrap();
+        let replicas = files
+            .iter()
+            .map(|(workspace, dir, _, _)| (*workspace, vec![dir.clone()]))
+            .collect::<BTreeMap<_, _>>();
+        let held = WorkerHeldContent::new(Arc::new(outputs), &replicas);
+
+        for (workspace, _, bytes, manifest) in &files {
+            for (other, ..) in &files {
+                let digest = *blake3::hash(bytes).as_bytes();
+                let source = held.for_workspace(*other);
+                let manifest = *manifest;
+                let read =
+                    tokio::task::spawn_blocking(move || source.held(digest, Some(manifest), 1024))
+                        .await
+                        .unwrap();
+                if other == workspace {
+                    assert_eq!(read, Ok(Some(bytes.clone())), "its own workspace's job");
+                } else {
+                    assert_eq!(read, Ok(None), "another workspace's file is never served");
+                }
+            }
+        }
+        for server in servers {
+            server.abort();
+        }
+    }
+
+    #[test]
+    fn a_workspace_replica_is_held_only_for_that_workspace_s_jobs() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        let file: Vec<u8> = (0..2 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 239).unwrap())
+            .collect();
+        let file_digest = *blake3::hash(&file).as_bytes();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = runtime
+            .block_on(::fs::store::ContentStore::open(&replica))
+            .unwrap();
+        let manifest = *runtime
+            .block_on(store.write_content(&file))
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let outputs = FileComputeContentStore::open(root.path().join("content")).unwrap();
+        let output = b"a retained output".to_vec();
+        let output_digest = *blake3::hash(&output).as_bytes();
+        outputs.put(output_digest, &output).unwrap();
+        let held = WorkerHeldContent::new(Arc::new(outputs), &BTreeMap::from([(7, vec![replica])]));
+
+        let own = held.for_workspace(7);
+        assert!(own.locates());
+        assert_eq!(
+            own.held(file_digest, Some(manifest), u64::MAX),
+            Ok(Some(file))
+        );
+        assert_eq!(own.held(file_digest, None, u64::MAX), Ok(None));
+        assert_eq!(
+            own.held(output_digest, None, u64::MAX),
+            Ok(Some(output.clone()))
+        );
+        // Another workspace's job never reaches this replica, only the
+        // outputs every job may chain on.
+        let other = held.for_workspace(8);
+        assert!(!other.locates());
+        assert_eq!(other.held(file_digest, Some(manifest), u64::MAX), Ok(None));
+        assert_eq!(other.held(output_digest, None, u64::MAX), Ok(Some(output)));
+        drop(store);
+    }
 
     #[test]
     #[allow(
@@ -775,7 +1599,7 @@ mod tests {
             }
             assert!(cancellation.is_cancelled());
         }
-        // Phase `inaccessible_outputs_are_never_advertised_as_retrievable`.
+        // Phase `retained_outputs_are_reported_and_failures_keep_their_code`.
         {
             let result = ComputeJobResult {
                 lifecycle: crate::compute::ComputeJobLifecycle {
@@ -785,17 +1609,82 @@ mod tests {
                         outputs: vec![[3; 32]],
                     },
                 },
-                stdout: Vec::new(),
-                stderr: Vec::new(),
+                stdout: b"out".to_vec(),
+                stderr: b"err".to_vec(),
             };
             let (phase, log) = sanitize_result(Ok(result));
             assert_eq!(
                 phase,
-                ComputeJobPhase::Failed {
-                    code: "content_plane_unavailable".into()
+                ComputeJobPhase::Completed {
+                    outputs: vec![[3; 32]]
                 }
             );
-            assert!(String::from_utf8(log).unwrap().contains("output retrieval"));
+            assert_eq!(log, b"outerr");
+            let (phase, log) = sanitize_result(Err(ComputeExecutionError::MissingInput));
+            assert_eq!(
+                phase,
+                ComputeJobPhase::Failed {
+                    code: "input_unavailable".into()
+                }
+            );
+            assert!(String::from_utf8(log).unwrap().contains("unavailable"));
         }
+    }
+
+    #[test]
+    fn retention_forgets_expired_outputs_and_keeps_live_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let execution = root.path().join("execution");
+        let content = root.path().join("content");
+        fs::create_dir_all(&execution).unwrap();
+        fs::create_dir_all(&content).unwrap();
+        let now = std::time::SystemTime::now();
+        let long_ago = now
+            .checked_sub(Duration::from_secs(2 * 24 * 60 * 60))
+            .unwrap();
+        let write = |path: PathBuf, bytes: &[u8], modified| {
+            fs::write(&path, bytes).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let live = hex::encode([1; 32]);
+        let expired = hex::encode([2; 32]);
+        let fresh = hex::encode([3; 32]);
+        write(
+            execution.join(format!("aa{OUTPUT_INDEX_SUFFIX}")),
+            format!("{live}\n").as_bytes(),
+            now,
+        );
+        write(
+            execution.join(format!("bb{OUTPUT_INDEX_SUFFIX}")),
+            format!("{expired}\n").as_bytes(),
+            long_ago,
+        );
+        write(execution.join("bb.claim"), b"claim", long_ago);
+        write(content.join(&live), b"live", long_ago);
+        write(content.join(&expired), b"expired", long_ago);
+        write(content.join(&fresh), b"fresh", now);
+
+        prune_retained_outputs(&execution, &content, now, OUTPUT_RETENTION).unwrap();
+
+        assert!(execution.join(format!("aa{OUTPUT_INDEX_SUFFIX}")).exists());
+        assert!(!execution.join(format!("bb{OUTPUT_INDEX_SUFFIX}")).exists());
+        assert!(
+            execution.join("bb.claim").exists(),
+            "claims outlive retention: they refuse a replayed job id"
+        );
+        assert!(
+            content.join(&live).exists(),
+            "a live index keeps its output"
+        );
+        assert!(!content.join(&expired).exists());
+        assert!(
+            content.join(&fresh).exists(),
+            "an output written before its index lands is kept"
+        );
     }
 }

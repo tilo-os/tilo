@@ -59,6 +59,7 @@ use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1};
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
 use crate::workspace_authority::{AuthorityRequest, AuthorityResponse, WorkspaceAuthority};
+use tilo_lock::MutexRecover as _;
 
 pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/2";
 pub const SESSION_PROTOCOL_VERSION: u16 = 2;
@@ -171,10 +172,6 @@ pub struct SessionBlobV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "frames are decoded one at a time; boxing would change nothing but the wire-facing type"
-)]
 pub enum SessionFrameV1 {
     /// One answer per requested range, in order.
     Reconciled {
@@ -364,7 +361,7 @@ impl SessionProtocol {
                     .await?;
             }
             SessionOperationV1::NamespaceSync => {
-                self.serve_namespace_sync(peer, &mut send, &mut recv)
+                self.serve_namespace_sync(peer, remote, &mut send, &mut recv)
                     .await?;
             }
             SessionOperationV1::NamespaceSince { heads } => {
@@ -504,7 +501,7 @@ impl SessionProtocol {
         let mut batches = Vec::new();
         let mut size = 0_usize;
         // The content each pulled record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         for pull in streams {
             let stream = pull.stream;
             let key = RecordRepositoryKey {
@@ -601,7 +598,7 @@ impl SessionProtocol {
     /// The bytes of the small files `current` names, in frames.
     async fn send_inline(
         &self,
-        current: BTreeMap<collab_types::FileRecordId, [u8; 32]>,
+        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
         inline_limit: u64,
         send: &mut SendStream,
     ) -> Result<()> {
@@ -703,7 +700,7 @@ impl SessionProtocol {
             .await;
         };
         // The content each sent record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         let mut note = |envelope: &RecordEnvelopeV1| {
             if let RecordOperationV1::SetContentRevision(revision) = &envelope.operation {
                 match revision.content_hash {
@@ -867,6 +864,7 @@ impl SessionProtocol {
     async fn serve_namespace_sync(
         &self,
         peer: &AuthenticatedFsPeer,
+        remote: iroh_base::PublicKey,
         send: &mut SendStream,
         recv: &mut RecvStream,
     ) -> Result<()> {
@@ -874,21 +872,24 @@ impl SessionProtocol {
             return write_frame(send, &SessionFrameV1::Denied).await;
         }
         write_frame(send, &SessionFrameV1::Done).await?;
-        let before = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
-        let mut state = automerge::sync::State::new();
+        let (before, mut state) = {
+            let mut namespace = self.namespace.lock_recover();
+            (
+                namespace.heads(),
+                namespace.begin_sync_with(&peer.device_public_key),
+            )
+        };
         let exchanged = self.namespace_rounds(peer, &mut state, send, recv).await;
+        // Only a completed exchange is resumed from: one cut off midway
+        // may not have agreed on what both sides hold.
+        if matches!(exchanged, Ok(true)) {
+            self.namespace
+                .lock_recover()
+                .finish_sync_with(peer.device_public_key, &state);
+        }
         // Records that arrived before the placements this exchange brought
         // are projected now, not at this device's next pass.
-        let changed = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads()
-            != before;
+        let changed = self.namespace.lock_recover().heads() != before;
         if changed
             && let Some(records) = &self.records
             && let Some(materializer) = &records.materializer
@@ -901,16 +902,23 @@ impl SessionProtocol {
             }
             drop(gate);
         }
-        exchanged
+        // The peer's own pass brought changes: it published something, and
+        // its records are pulled now rather than at this device's next
+        // timer pass, which backs off while nothing happens.
+        if changed {
+            let _ = self.announcements.send(remote);
+        }
+        exchanged.map(|_| ())
     }
 
+    /// Whether the exchange completed: both sides had nothing more to send.
     async fn namespace_rounds(
         &self,
         peer: &AuthenticatedFsPeer,
         state: &mut automerge::sync::State,
         send: &mut SendStream,
         recv: &mut RecvStream,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         for _ in 0..MAX_SYNC_ROUNDS {
             // The authority handle is live: a revocation cuts a connected
             // writer off at the next round.
@@ -940,18 +948,10 @@ impl SessionProtocol {
                 None => Vec::new(),
             };
             if !message.is_empty() {
-                let _ = self
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_receive(state, &message);
+                let _ = self.namespace.lock_recover().sync_receive(state, &message);
             }
             let gate = self.publication_gate().await;
-            let reply = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .sync_generate(state);
+            let reply = self.namespace.lock_recover().sync_generate(state);
             drop(gate);
             let done = message.is_empty() && reply.is_none();
             let reply = reply
@@ -965,10 +965,10 @@ impl SessionProtocol {
                 .transpose()?;
             write_frame(send, &SessionFrameV1::Sync(reply)).await?;
             if done {
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn serve_namespace_since(
@@ -983,11 +983,7 @@ impl SessionProtocol {
         let heads: Vec<automerge::ChangeHash> =
             heads.iter().map(|h| automerge::ChangeHash(*h)).collect();
         let gate = self.publication_gate().await;
-        let delta = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .changes_since(&heads);
+        let delta = self.namespace.lock_recover().changes_since(&heads);
         drop(gate);
         if !delta.is_empty() {
             let binding = NamespaceBindingV1::sign(
@@ -1181,8 +1177,7 @@ impl SessionPool {
         }
         if self
             .legacy
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&addr.id)
             .is_some_and(|until| Instant::now() < *until)
         {
@@ -1242,10 +1237,7 @@ impl SessionPool {
             }
             Err(error) if protocol_unsupported(&error) => {
                 if let Some(until) = Instant::now().checked_add(LEGACY_RETRY) {
-                    self.legacy
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(addr.id, until);
+                    self.legacy.lock_recover().insert(addr.id, until);
                 }
                 Ok(None)
             }
@@ -1360,18 +1352,19 @@ pub(super) async fn sync_namespace(
     if session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
         anyhow::bail!("unexpected namespace sync response");
     }
-    let mut state = automerge::sync::State::new();
-    let mut received = false;
+    let peer = session.peer.device_public_key;
+    let (before, mut state) = {
+        let mut namespace = namespace.lock_recover();
+        (namespace.heads(), namespace.begin_sync_with(&peer))
+    };
+    let mut completed = false;
     for _ in 0..MAX_SYNC_ROUNDS {
         // Only namespace state between changesets leaves this device.
         let gate = match repository {
             Some(repository) => Some(repository.publication_gate().read().await),
             None => None,
         };
-        let message = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sync_generate(&mut state);
+        let message = namespace.lock_recover().sync_generate(&mut state);
         drop(gate);
         let sent_nothing = message.is_none();
         let message = message
@@ -1403,18 +1396,21 @@ pub(super) async fn sync_namespace(
             None => Vec::new(),
         };
         if !reply.is_empty() {
-            received = true;
-            let _ = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .sync_receive(&mut state, &reply);
+            let _ = namespace.lock_recover().sync_receive(&mut state, &reply);
         }
         if sent_nothing && reply.is_empty() {
+            completed = true;
             break;
         }
     }
     let _ = send.finish();
-    Ok(received)
+    let mut namespace = namespace.lock_recover();
+    if completed {
+        namespace.finish_sync_with(peer, &state);
+    }
+    // Every reply of an idle exchange carries the peer's heads; only
+    // changes that moved this document's heads count as received.
+    Ok(namespace.heads() != before)
 }
 
 /// The namespace changes a peer holds beyond this device's heads, for a
@@ -1428,8 +1424,7 @@ pub(super) async fn pull_namespace(
     policy: &PeerPolicy,
 ) -> Result<(bool, Vec<u8>)> {
     let heads = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .heads()
         .into_iter()
         .map(|h| h.0)
@@ -1474,9 +1469,7 @@ pub(super) async fn pull_namespace(
     )
     .map_err(|error| anyhow!("refusing the peer's namespace changes: {error}"))?;
     let delta = payload.bytes;
-    let mut ns = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ns = namespace.lock_recover();
     let before = ns.heads();
     let resolution = ns.apply_remote_and_resolve(&delta).unwrap_or_default();
     let changed = ns.heads() != before;
@@ -2081,9 +2074,7 @@ pub(super) async fn collect_replica_acks(
         if observations.is_empty() {
             continue;
         }
-        let mut registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = registry.lock_recover();
         registry.batch(|registry| {
             for (revision, observation) in observations {
                 let observed = observation.observed_at_ms;

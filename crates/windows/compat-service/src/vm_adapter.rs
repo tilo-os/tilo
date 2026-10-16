@@ -350,7 +350,7 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
                     "Windows network lease state is unavailable".to_string(),
                 )
             })?;
-            let proxy = windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
+            let proxy = windows_vm::GuestNetworkProxy::start(&request.grants.network_hosts)
                 .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
             let binding = proxy.binding().clone();
             if leases.insert(lease_id.clone(), proxy).is_some() {
@@ -448,8 +448,7 @@ pub struct AudioIsolatedRailLauncher<R> {
 impl<R> AudioIsolatedRailLauncher<R> {
     #[must_use]
     pub fn new(runner: R) -> Self {
-        // SAFETY: `geteuid` reads process credentials and has no preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         Self {
             runner,
             root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),
@@ -509,9 +508,7 @@ impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolat
 impl<R> AudioIsolatedSpiceLauncher<R> {
     #[must_use]
     pub fn new(runner: R) -> Self {
-        // SAFETY: libc get-effective-uid has no preconditions and does not
-        // dereference memory; it reads process credentials.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         Self {
             runner,
             root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),

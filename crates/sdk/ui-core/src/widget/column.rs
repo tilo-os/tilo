@@ -1,34 +1,16 @@
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
+use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use winit::event::WindowEvent;
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent invalidation and cache flags model orthogonal retained-widget state"
+    reason = "independent layout flags model orthogonal sizing choices"
 )]
 pub struct Column {
-    children: Vec<Box<dyn Widget>>,
-    /// Retained Taffy identities for `children`. Rebuilt only with the layout
-    /// tree; hot event/layout traversal must not allocate `taffy.children()`.
-    child_nodes: Vec<NodeId>,
-    /// Stable graph / test identity when this column was built from a
-    /// serialized UI node.
-    id: Option<String>,
-    rect: vello::kurbo::Rect,
-    /// Overflow extent used for culling independently of an exact allocation.
-    paint_rect: vello::kurbo::Rect,
-    presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
+    flow: Flow,
     extra_left_padding: f32,
     extra_top_padding: f32,
     extra_bottom_padding: f32,
@@ -37,22 +19,11 @@ pub struct Column {
     vertical_padding_override: Option<f32>,
     /// See [`Column::with_horizontal_padding`].
     horizontal_padding_override: Option<(f32, f32)>,
-    /// See [`Column::with_gap`].
-    gap_override: Option<f32>,
     intrinsic_height: bool,
+    /// See [`Column::with_intrinsic_width`].
+    intrinsic_width: bool,
     /// See [`Column::with_fill_remaining_height`].
     fill_remaining_height: bool,
-    /// Composition of every descendant's own cached scene, recorded once and
-    /// translated on subsequent frames as long as no descendant signals
-    /// dirty. Saves hundreds of `Scene::append` calls per frame when most of
-    /// the column's content is stable.
-    subtree_cache: Scene,
-    /// Rect (at cache-emit time) the subtree was composed against. Size
-    /// mismatch → rebuild; pure translation → reuse with a
-    /// `translate(delta)` on the outer append.
-    cache_rect: vello::kurbo::Rect,
-    cache_present: bool,
-    descendant_caches_released: bool,
 }
 
 impl Default for Column {
@@ -64,28 +35,20 @@ impl Default for Column {
 impl Column {
     pub fn new() -> Self {
         Self {
-            children: Vec::new(),
-            child_nodes: Vec::new(),
-            id: None,
-            rect: vello::kurbo::Rect::ZERO,
-            paint_rect: vello::kurbo::Rect::ZERO,
-            presence_path: Vec::new(),
-            permission_scope: None,
+            flow: Flow::new(),
             extra_left_padding: 0.0,
             extra_top_padding: 0.0,
             extra_bottom_padding: 0.0,
             no_padding: false,
             vertical_padding_override: None,
             horizontal_padding_override: None,
-            gap_override: None,
             intrinsic_height: false,
+            intrinsic_width: false,
             fill_remaining_height: false,
-            subtree_cache: Scene::new(),
-            cache_rect: vello::kurbo::Rect::ZERO,
-            cache_present: false,
-            descendant_caches_released: false,
         }
     }
+
+    flow_builders!();
 
     /// Resolve the column's height from its content (`auto`) instead of
     /// filling the parent (`percent(1.0)`). Required when wrapping the
@@ -94,6 +57,15 @@ impl Column {
     #[must_use]
     pub fn with_intrinsic_height(mut self) -> Self {
         self.intrinsic_height = true;
+        self
+    }
+
+    /// Size the column's width from its widest child instead of filling the
+    /// parent: a column of buttons or labels beside other content in a
+    /// row, a popover body. Children still align to its leading edge.
+    #[must_use]
+    pub fn with_intrinsic_width(mut self) -> Self {
+        self.intrinsic_width = true;
         self
     }
 
@@ -106,33 +78,6 @@ impl Column {
         self
     }
 
-    #[must_use]
-    pub fn push(mut self, child: Box<dyn Widget>) -> Self {
-        self.children.push(child);
-        self
-    }
-
-    /// Address this column by a stable id in inspection and graph reconcile.
-    #[must_use]
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-
-    /// Take ownership of the child list for identity-preserving reconcile.
-    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
-        self.child_nodes.clear();
-        self.cache_present = false;
-        std::mem::take(&mut self.children)
-    }
-
-    /// Replace the child list after a graph reconcile pass.
-    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
-        self.children = children;
-        self.child_nodes.clear();
-        self.cache_present = false;
-    }
-
     /// Apply layout flags from a serialized column node without rebuilding.
     pub fn apply_graph_props(
         &mut self,
@@ -142,22 +87,12 @@ impl Column {
         intrinsic_height: bool,
         fill_remaining_height: bool,
     ) {
-        self.id = Some(id.to_owned());
-        self.gap_override = gap;
+        self.flow.id = Some(id.to_owned());
+        self.flow.gap_override = gap;
         self.no_padding = no_padding;
         self.intrinsic_height = intrinsic_height;
         self.fill_remaining_height = fill_remaining_height;
-        self.cache_present = false;
-    }
-
-    /// Extra padding on the left, on top of the default
-    /// `spacing.s6` inset. Used to displace a workspace area to the
-    /// right of an absolutely-positioned sidebar without shifting the
-    /// surrounding chrome.
-    #[must_use]
-    pub fn with_extra_left_padding(mut self, px: f32) -> Self {
-        self.extra_left_padding = px;
-        self
+        self.flow.invalidate();
     }
 
     /// Extra padding on top, e.g. to reserve room for a floating
@@ -171,7 +106,14 @@ impl Column {
 
     /// Update the extra top inset before the next layout pass.
     pub fn set_extra_top_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.extra_top_padding.to_bits() != px.to_bits();
         self.extra_top_padding = px;
+    }
+
+    /// Update the extra bottom inset before the next layout pass.
+    pub fn set_extra_bottom_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.extra_bottom_padding.to_bits() != px.to_bits();
+        self.extra_bottom_padding = px;
     }
 
     /// Extra padding on the bottom, on top of the default
@@ -193,6 +135,7 @@ impl Column {
 
     /// Update the top + bottom inset before the next layout pass.
     pub fn set_vertical_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.vertical_padding_override != Some(px);
         self.vertical_padding_override = Some(px);
     }
 
@@ -209,13 +152,16 @@ impl Column {
     /// children own their own internal spacing.
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
-        self.gap_override = Some(px);
+        self.flow.gap_override = Some(px);
+        self.flow.rhythm = None;
         self
     }
 
     /// Update the inter-child gap before the next layout pass.
     pub fn set_gap(&mut self, px: f32) {
-        self.gap_override = Some(px);
+        self.flow.style_dirty |= self.flow.gap_override != Some(px) || self.flow.rhythm.is_some();
+        self.flow.gap_override = Some(px);
+        self.flow.rhythm = None;
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
@@ -228,29 +174,16 @@ impl Column {
         self.fill_remaining_height = true;
         self
     }
-
-    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
-    #[must_use]
-    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
-        self.presence_path = path;
-        self
-    }
-
-    /// Gate this layout behind a permission scope.
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Column {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
+
+    flow_widget_methods!();
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -259,415 +192,131 @@ impl Widget for Column {
         Some(self)
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler: offer each child once.
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    /// Forward the per-frame update pass; every child runs, and a
-    /// change in any of them is a change here. Not short-circuited —
-    /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in &mut self.children {
-            changed |= child.update(state, path);
-        }
-        changed
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.child_nodes = self
-            .children
-            .iter_mut()
-            .map(|c| c.build_layout(taffy, theme, node_map))
-            .collect();
+        self.flow.build_children(taffy, theme, node_map);
 
-        let resolved_gap = self.gap_override.unwrap_or(theme.gap_standard);
-
-        let node = taffy.parent_node(
-            Style {
-                // Intrinsic-height columns use a one-column implicit Grid.
-                // Taffy's Block layout ignores `gap`, while flex layout can
-                // truncate the intrinsic main axis to a Scrollable's viewport.
-                // Grid honors row gaps and intrinsically sizes every implicit
-                // row, preserving both scroll extent and the one widget / one
-                // direct Taffy child identity expected by host traversal.
-                display: if self.intrinsic_height {
-                    taffy::Display::Grid
-                } else {
-                    taffy::Display::Flex
-                },
-                flex_direction: taffy::FlexDirection::Column,
-                align_items: Some(taffy::AlignItems::FlexStart),
-                // A parent may legitimately stretch or explicitly size this
-                // Column taller than its content. Pack implicit Grid rows at
-                // the start so surplus block space does not inflate the
-                // requested gap between them.
-                align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
-                flex_shrink: 0.0, // Prevent vertical squashing
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(resolved_gap),
-                },
-                padding: {
-                    // The page gutter: the `s6` token (24). Tokens are the
-                    // source of truth; on every theme built through
-                    // `Theme::from_tokens` / `with_ui_scale` / a custom
-                    // spec this is exactly twice `padding_standard`. A host
-                    // theme that overrides the legacy `padding_standard`
-                    // alias alone (`Theme::with_component_scales` preserves
-                    // such aliases) no longer moves this gutter.
-                    let base = if self.no_padding {
-                        0.0
-                    } else {
-                        theme.tokens.spacing.s6
-                    };
-                    let vert = self.vertical_padding_override.unwrap_or(base);
-                    let (left, right) = self
-                        .horizontal_padding_override
-                        .unwrap_or((base + self.extra_left_padding, base));
-                    super::layout::insets(
-                        vert + self.extra_top_padding,
-                        right,
-                        vert + self.extra_bottom_padding,
-                        left,
-                    )
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: if self.intrinsic_height || self.fill_remaining_height {
-                        taffy::Dimension::auto()
-                    } else {
-                        percent(1.0_f32)
-                    },
-                },
-                flex_basis: if self.fill_remaining_height {
-                    taffy::Dimension::length(0.0)
-                } else {
-                    taffy::Dimension::auto()
-                },
-                flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
-                ..Default::default()
+        let style = Style {
+            // Intrinsic-height columns use a one-column implicit Grid.
+            // Taffy's Block layout ignores `gap`, while flex layout can
+            // truncate the intrinsic main axis to a Scrollable's viewport.
+            // Grid honors row gaps and intrinsically sizes every implicit
+            // row, preserving both scroll extent and the one widget / one
+            // direct Taffy child identity expected by host traversal.
+            display: if self.intrinsic_height {
+                taffy::Display::Grid
+            } else {
+                taffy::Display::Flex
             },
-            &self.child_nodes,
-        );
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::FlexStart),
+            // A parent may legitimately stretch or explicitly size this
+            // Column taller than its content. Pack implicit Grid rows at
+            // the start so surplus block space does not inflate the
+            // requested gap between them.
+            align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
+            // The one column is the Column's own width, never wider: an
+            // `auto` track grows to its widest child's content and pushes
+            // a padded child past the Column's edge.
+            grid_template_columns: if self.intrinsic_height {
+                vec![taffy::style_helpers::minmax(
+                    length(0.0_f32),
+                    taffy::style_helpers::fr(1.0_f32),
+                )]
+            } else {
+                Vec::new()
+            },
+            flex_shrink: 0.0, // Prevent vertical squashing
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(self.flow.gap(theme)),
+            },
+            padding: {
+                // The page gutter: the `s6` token (24). Tokens are the
+                // source of truth; on every theme built through
+                // `Theme::from_tokens` / `with_ui_scale` / a custom
+                // spec this is exactly twice `padding_standard`. A host
+                // theme that overrides the legacy `padding_standard`
+                // alias alone (`Theme::with_component_scales` preserves
+                // such aliases) no longer moves this gutter.
+                let (base_x, base_y) = if self.no_padding {
+                    (0.0, 0.0)
+                } else {
+                    self.flow
+                        .rhythm_padding(theme)
+                        .unwrap_or((theme.tokens.spacing.s6, theme.tokens.spacing.s6))
+                };
+                let vert = self.vertical_padding_override.unwrap_or(base_y);
+                let (left, right) = self
+                    .horizontal_padding_override
+                    .unwrap_or((base_x + self.extra_left_padding, base_x));
+                super::layout::insets(
+                    vert + self.extra_top_padding,
+                    right,
+                    vert + self.extra_bottom_padding,
+                    left,
+                )
+            },
+            size: taffy::Size {
+                width: if self.intrinsic_width {
+                    taffy::Dimension::auto()
+                } else {
+                    percent(1.0_f32)
+                },
+                height: if self.intrinsic_height || self.fill_remaining_height {
+                    taffy::Dimension::auto()
+                } else {
+                    percent(1.0_f32)
+                },
+            },
+            flex_basis: if self.fill_remaining_height {
+                taffy::Dimension::length(0.0)
+            } else {
+                taffy::Dimension::auto()
+            },
+            flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
-        let w = f64::from(allocated.width);
-        let h = f64::from(allocated.height);
-        self.paint_rect = vello::kurbo::Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (
-                f64::from(layout.size.width.max(layout.content_size.width)),
-                f64::from(layout.size.height.max(layout.content_size.height)),
-            ),
-        );
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + w,
-            origin.y + f64::from(layout.location.y) + h,
-        );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
-
-        for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.apply_layout(taffy, *child_node, new_origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // A child with a latched drag (e.g. a slider's knob) gets ALL
-        // events exclusively for the frame, so the drag survives the
-        // cursor crossing a peer widget's rect — otherwise the peer's
-        // CursorMoved handler could set `handled` first.
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            let Some(&cnode) = self.child_nodes.get(idx) else {
-                return;
-            };
-            let Some(child) = self.children.get_mut(idx) else {
-                return;
-            };
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            return;
-        }
-        for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
-    /// Propagate pointer-capture intent from any descendant — without this,
-    /// a Column wrapping a Row containing a dragging slider would inherit
-    /// the leaf-widget default of `false`, and the `handle_event`
-    /// short-circuit above would never fire.
-    fn wants_pointer_capture(&self) -> bool {
-        self.children.iter().any(|c| c.wants_pointer_capture())
-    }
-
-    /// Direct-field recurse — the default impl allocates a
-    /// `Vec` via `children()`, which the subtree-cache check
-    /// hits per frame.
-    fn needs_redraw(&self) -> bool {
-        self.children.iter().any(|c| c.needs_redraw())
-    }
-
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        for child in &self.children {
+        for child in &self.flow.children {
             child.collect_damage(regions);
         }
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.children.iter().any(|c| c.is_layout_dirty())
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in &self.children {
-            visitor(child.as_ref());
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children
-            .iter_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .collect()
-    }
-
-    fn mark_drawn(&mut self) {
-        for child in &mut self.children {
-            child.mark_drawn();
-        }
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
     }
 
     fn name(&self) -> &'static str {
         "Column"
     }
-
-    fn test_id(&self) -> Option<&str> {
-        self.id.as_deref()
-    }
-
-    fn is_focused(&self) -> bool {
-        false
-    }
-
-    // `.any` would short-circuit and skip `take_structure_dirty()` on later
-    // children once one reports dirty, leaving their flags uncleared --
-    // the non-short-circuiting `.fold` below is required, not incidental.
-    #[allow(
-        clippy::unnecessary_fold,
-        reason = "Every child must clear its structure-dirty flag; a short-circuiting any would leave later children dirty."
-    )]
-    fn take_structure_dirty(&mut self) -> bool {
-        // Forward to every child; fold over the full set so each child's
-        // flag is cleared even if an earlier one already reported dirty.
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |acc, d| acc || d)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.paint_rect) {
-            return;
-        }
-
-        // Exact equality is deliberate: layout is deterministic given identical
-        // inputs, so this asks "did anything at all change since the cache was
-        // built", not "is the size close enough" — an epsilon would let a
-        // genuine sub-pixel resize slip past and leave the cache stale.
-        #[allow(
-            clippy::float_cmp,
-            reason = "deliberate exact reproducibility check on deterministic layout output"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
-
-        if needs_rebuild {
-            // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
-            // its transform with each stored primitive transform, so passing
-            // `transform` here would double-apply it on the outer `append`
-            // below, landing cached widgets off-screen at any DPI scale ≠ 1.
-            //
-            // Culling is cleared for the recursion too: with it on, the
-            // cache would only hold primitives for the currently-visible
-            // sub-range, and a later scroll (cache-hit, no rebuild) would
-            // translate the cache into a viewport where the now-visible
-            // widgets were never recorded. vello's tile binner already
-            // skips off-viewport tiles at compose time, so nothing is saved
-            // by culling here.
-            let prev_vp = presence.viewport.replace(None);
-            let mut local = std::mem::take(&mut self.subtree_cache);
-            local.reset();
-            for child in &mut self.children {
-                child.draw_with_presence(
-                    &mut local,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
-            scene.append(&local, Some(transform));
-            self.subtree_cache = local;
-            self.cache_rect = self.rect;
-            self.cache_present = true;
-            self.descendant_caches_released = false;
-            presence.viewport.set(prev_vp);
-        } else {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            // Affine composition: pure `f64` matrix multiply, cannot panic
-            // regardless of operand magnitude.
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix math and cannot panic"
-            )]
-            let cache_transform = transform * Affine::translate((dx, dy));
-            scene.append(&self.subtree_cache, Some(cache_transform));
-            if !self.descendant_caches_released {
-                for child in &mut self.children {
-                    child.release_scene_cache();
-                }
-                self.descendant_caches_released = true;
-            }
-        }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
-
-    fn release_scene_cache(&mut self) {
-        self.subtree_cache = Scene::new();
-        self.cache_present = false;
-        self.descendant_caches_released = true;
-        for child in &mut self.children {
-            child.release_scene_cache();
-        }
-    }
 }
 
-impl crate::undo::UndoPoints for Column {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
-impl crate::presence::capability::PublishesPresence for Column {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-}
-
-impl crate::permissions::capability::PermissionGated for Column {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-}
+flow_capabilities!(Column);
 
 impl crate::widget::controls::ActionControls for Column {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        crate::widget::controls::children_action_control_bindings(self)
+    }
     fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = crate::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
+        crate::widget::controls::children_have_action_control_bindings(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_render::TextRenderer;
+    use crate::tokens::Rhythm;
     use crate::widget::{Container, Row, Text};
     use std::collections::HashMap;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
     use vello_encoding::DrawTag;
 
     /// Build the five-pass layout for `root` inside an 800×600 viewport and
@@ -704,19 +353,10 @@ mod tests {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        // Use draw_with_presence so the column's cached-draw path (the
-        // buggy one) is exercised — that's where the leading Text was
+        // Draw through the column's cached-draw path (the buggy one) — that's where the leading Text was
         // dropped.
-        root.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
+        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene
             .encoding()
             .draw_tags
@@ -726,33 +366,98 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_inset_or_gap_rebuilds_the_retained_layout_and_an_unchanged_one_does_not() {
+        let mut col = Column::new()
+            .with_vertical_padding(0.0)
+            .with_gap(0.0)
+            .push(Box::new(Text::new("a")));
+        let _ = lay_out(&mut col);
+        assert!(!col.take_structure_dirty(), "a fresh build owes nothing");
+        // Hosts restyle every frame; restating the same values is free.
+        col.set_vertical_padding(0.0);
+        col.set_gap(0.0);
+        col.set_extra_top_padding(0.0);
+        col.set_extra_bottom_padding(0.0);
+        assert!(!col.take_structure_dirty());
+        // A new inset only reaches layout through a rebuild of the node.
+        col.set_extra_bottom_padding(12.0);
+        assert!(col.take_structure_dirty());
+        assert!(!col.take_structure_dirty(), "the flag drains once");
+        col.set_extra_top_padding(12.0);
+        assert!(matches!(
+            col.take_structure_change(),
+            crate::widget::StructureChange::Rebuild
+        ));
+        let (taffy, node) = lay_out(&mut col);
+        assert_eq!(taffy.style(node).unwrap().padding.top, length(12.0_f32));
+    }
+
+    #[test]
+    fn rhythm_gaps_and_insets_resolve_from_the_theme_scale() {
+        use crate::widget::Spacer;
+        for scale in [1.0_f32, 1.5] {
+            let theme = Theme::dark().with_ui_scale(scale);
+            let r = theme.tokens.spacing.rhythm;
+            let mut column = Column::new()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Section)
+                .with_padding_rhythm(Rhythm::Group, Rhythm::Related)
+                .push(Box::new(Spacer::fixed(10.0)))
+                .push(Box::new(Spacer::fixed(10.0)));
+            let mut taffy = TaffyTree::<()>::new();
+            let mut map = HashMap::new();
+            let node = column.build_layout(&mut taffy, &theme, &mut map);
+            let style = taffy.style(node).unwrap();
+            assert_eq!(style.gap.height, length(r.section));
+            assert_eq!(style.padding.left, length(r.group));
+            assert_eq!(style.padding.top, length(r.related));
+
+            let mut row = Row::new()
+                .with_rhythm(Rhythm::Related)
+                .with_padding_rhythm(None, Rhythm::Tight);
+            let node = row.build_layout(&mut taffy, &theme, &mut map);
+            let style = taffy.style(node).unwrap();
+            assert_eq!(style.gap.width, length(r.related));
+            assert_eq!(style.padding.left, length(0.0_f32));
+            assert_eq!(style.padding.top, length(r.tight));
+        }
+        // A later pixel gap replaces the rhythm, and the other way round.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map = HashMap::new();
+        let mut column = Column::new().with_rhythm(Rhythm::Group).with_gap(3.0);
+        let node = column.build_layout(&mut taffy, &theme, &mut map);
+        assert_eq!(taffy.style(node).unwrap().gap.height, length(3.0_f32));
+    }
+
+    #[test]
+    fn an_intrinsic_width_column_hugs_its_widest_child() {
+        use crate::widget::Spacer;
+        let mut row = Row::new().no_wrap().push(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_intrinsic_width()
+                .push(Box::new(Spacer::fixed(40.0)))
+                .push(Box::new(Spacer::fixed(90.0))),
+        ));
+        lay_out(&mut row);
+        let column = row.children()[0].get_rect();
+        assert!((column.width() - 90.0).abs() < 0.5, "{column:?}");
+    }
+
+    #[test]
     fn intrinsic_column_gap_applies_between_children_and_to_content_height() {
         /// The default inset is the `s6` token — 24 on the stock scale and still
         /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
-        /// `spacing_px` has rescaled the whole spacing scale.
+        /// a theme's density has rescaled the whole spacing scale.
         fn default_inset_is_the_s6_token_on_every_scale() {
             for theme in [
                 Theme::dark(),
                 Theme::dark().with_ui_scale(1.5),
-                Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
-                    schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-                    id: "dense".into(),
-                    name: "Dense".into(),
-                    dark_base: true,
-                    accent: [12, 120, 220],
-                    accent_hover: [8, 96, 190],
-                    surface_base: [9, 18, 30],
-                    surface_raised: [18, 32, 48],
-                    text_primary: [238, 244, 250],
-                    text_dim: [170, 184, 199],
-                    border: [48, 68, 88],
-                    success: [50, 190, 110],
-                    warning: [230, 170, 50],
-                    danger: [225, 75, 80],
-                    info: [70, 165, 230],
-                    radius_px: 6.0,
-                    spacing_px: 9.0,
-                    font: "Inter".into(),
+                Theme::from_document(&crate::theme::ThemeDocument {
+                    density: crate::theme::ThemeDensity { spacing: 0.75 },
+                    ..crate::theme::Preset::Dark.document()
                 })
                 .unwrap(),
             ] {
@@ -787,8 +492,8 @@ mod tests {
 
             let _ = lay_out(&mut col);
 
-            assert_eq!(col.children[0].get_rect().y0, 0.0);
-            assert_eq!(col.children[1].get_rect().y0, 30.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 30.0);
             assert_eq!(col.get_rect().height(), 40.0);
         }
 
@@ -810,10 +515,7 @@ mod tests {
             let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
             let host_node = taffy.parent_node(
                 Style {
-                    size: taffy::Size {
-                        width: length(400.0_f32),
-                        height: length(300.0_f32),
-                    },
+                    size: taffy::Size::from_lengths(400.0_f32, 300.0_f32),
                     ..Default::default()
                 },
                 &[column_node],
@@ -839,10 +541,10 @@ mod tests {
 
             assert_eq!(taffy.layout(column_node).unwrap().size.height, 300.0);
             assert_eq!(col.get_rect().height(), 300.0);
-            assert_eq!(col.children[0].get_rect().y0, 0.0);
-            assert_eq!(col.children[1].get_rect().y0, 30.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 30.0);
             assert_eq!(
-                col.children[1].get_rect().y0 - col.children[0].get_rect().y1,
+                col.flow.children[1].get_rect().y0 - col.flow.children[0].get_rect().y1,
                 20.0
             );
         }
@@ -861,8 +563,8 @@ mod tests {
 
             let _ = lay_out(&mut col);
 
-            assert_eq!(col.children[0].get_rect().y0, 0.0);
-            assert_eq!(col.children[1].get_rect().y0, 10.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 10.0);
             assert_eq!(col.get_rect().height(), 20.0);
         }
 
@@ -880,7 +582,7 @@ mod tests {
             let _ = lay_out(&mut col);
 
             // The dark theme's default gap is 12 px.
-            assert_eq!(col.children[1].get_rect().y0, 22.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 22.0);
             assert_eq!(col.get_rect().height(), 32.0);
         }
 
@@ -901,9 +603,9 @@ mod tests {
 
             let _ = lay_out(&mut col);
 
-            assert_eq!(col.children[0].get_rect().y0, 0.0);
-            assert_eq!(col.children[1].get_rect().y0, 17.0);
-            assert_eq!(col.children[2].get_rect().y0, 34.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 17.0);
+            assert_eq!(col.flow.children[2].get_rect().y0, 34.0);
             assert_eq!(col.get_rect().height(), 44.0);
         }
 
@@ -934,9 +636,9 @@ mod tests {
 
             let _ = lay_out(&mut col);
 
-            assert_eq!(col.children[0].get_rect().x0, 7.0);
-            assert_eq!(col.children[0].get_rect().y0, 8.0);
-            assert_eq!(col.children[1].get_rect().y0, 38.0);
+            assert_eq!(col.flow.children[0].get_rect().x0, 7.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 8.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 38.0);
             assert_eq!(col.get_rect().height(), 57.0);
         }
 
@@ -957,14 +659,18 @@ mod tests {
             let mut tr = TextRenderer::new();
             let node = col.build_layout(&mut taffy, &theme, &mut node_map);
 
-            let mut first_style = taffy.style(col.child_nodes[0]).unwrap().clone();
+            let mut first_style = taffy.style(col.flow.child_nodes[0]).unwrap().clone();
             first_style.margin.top = length(2.0_f32);
             first_style.margin.bottom = length(3.0_f32);
-            taffy.set_style(col.child_nodes[0], first_style).unwrap();
-            let mut second_style = taffy.style(col.child_nodes[1]).unwrap().clone();
+            taffy
+                .set_style(col.flow.child_nodes[0], first_style)
+                .unwrap();
+            let mut second_style = taffy.style(col.flow.child_nodes[1]).unwrap().clone();
             second_style.margin.top = length(4.0_f32);
             second_style.margin.bottom = length(6.0_f32);
-            taffy.set_style(col.child_nodes[1], second_style).unwrap();
+            taffy
+                .set_style(col.flow.child_nodes[1], second_style)
+                .unwrap();
 
             taffy
                 .compute_layout_with_measure(
@@ -984,8 +690,8 @@ mod tests {
                 .unwrap();
             col.apply_layout(&taffy, node, Point::ZERO);
 
-            assert_eq!(col.children[0].get_rect().y0, 2.0);
-            assert_eq!(col.children[1].get_rect().y0, 39.0);
+            assert_eq!(col.flow.children[0].get_rect().y0, 2.0);
+            assert_eq!(col.flow.children[1].get_rect().y0, 39.0);
             assert_eq!(col.get_rect().height(), 55.0);
         }
 
@@ -1014,22 +720,22 @@ mod tests {
 
             let (mut taffy, node) = lay_out(&mut outer);
 
-            assert_eq!(taffy.children(node).unwrap(), outer.child_nodes);
+            assert_eq!(taffy.children(node).unwrap(), outer.flow.child_nodes);
             assert_eq!(
-                taffy.layout(outer.child_nodes[0]).unwrap().size.width,
+                taffy.layout(outer.flow.child_nodes[0]).unwrap().size.width,
                 800.0
             );
             assert_eq!(
-                taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+                taffy.layout(outer.flow.child_nodes[0]).unwrap().size.height,
                 130.0
             );
-            assert_eq!(outer.children[0].get_rect().width(), 800.0);
-            assert_eq!(outer.children[0].get_rect().height(), 130.0);
+            assert_eq!(outer.flow.children[0].get_rect().width(), 800.0);
+            assert_eq!(outer.flow.children[0].get_rect().height(), 130.0);
             assert_eq!(
-                taffy.layout(outer.child_nodes[1]).unwrap().location.y,
+                taffy.layout(outer.flow.child_nodes[1]).unwrap().location.y,
                 130.0
             );
-            assert_eq!(outer.children[1].get_rect().y0, 130.0);
+            assert_eq!(outer.flow.children[1].get_rect().y0, 130.0);
             assert_eq!(outer.get_rect().height(), 140.0);
 
             taffy
@@ -1043,11 +749,11 @@ mod tests {
                 .unwrap();
             outer.apply_layout(&taffy, node, Point::ZERO);
             assert_eq!(
-                taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+                taffy.layout(outer.flow.child_nodes[0]).unwrap().size.height,
                 130.0
             );
-            assert_eq!(outer.children[0].get_rect().height(), 130.0);
-            assert_eq!(outer.children[1].get_rect().y0, 130.0);
+            assert_eq!(outer.flow.children[0].get_rect().height(), 130.0);
+            assert_eq!(outer.flow.children[1].get_rect().y0, 130.0);
         }
 
         fn intrinsic_column_in_row_respects_parent_center_alignment() {
@@ -1146,14 +852,14 @@ mod tests {
 
             // The leading Row's resolved rect must be non-degenerate — if it
             // collapsed to zero the text could never paint.
-            let row_rect = col.children[0].get_rect();
+            let row_rect = col.flow.children[0].get_rect();
             assert!(
                 row_rect.width() > 1.0 && row_rect.height() > 1.0,
                 "leading Row collapsed to a degenerate rect: {row_rect:?}"
             );
 
             // And the leading Text inside the Row must have a real rect too.
-            let text_rect = col.children[0].children()[0].get_rect();
+            let text_rect = col.flow.children[0].children()[0].get_rect();
             assert!(
                 text_rect.width() > 1.0 && text_rect.height() > 1.0,
                 "leading Text collapsed to a degenerate rect: {text_rect:?}"
@@ -1250,7 +956,7 @@ mod tests {
                         .with_child(Box::new(Text::new("Body"))),
                 ));
             let _ = lay_out(&mut col);
-            let text_rect = col.children[0].get_rect();
+            let text_rect = col.flow.children[0].get_rect();
             assert!(
                 text_rect.width() > 1.0 && text_rect.height() > 1.0,
                 "leading Text collapsed: {text_rect:?}"

@@ -47,7 +47,7 @@ impl CapabilityAuthority for WorkspaceCapabilityAuthority {
             .find(|workspace| workspace.room.to_string() == workspace_id)
             // Return the canonical list including restrictions. The broker's
             // CapabilityPlan filters it to the server-owned application ID.
-            .map(|workspace| workspace.capabilities.clone())
+            .map(|workspace| workspace.sandbox.clone())
             .ok_or_else(|| "workspace is no longer present in this session".to_string())
     }
 }
@@ -88,13 +88,10 @@ impl Drop for EntryRegistryRefresh {
 }
 
 pub struct WindowsCompatHandle {
-    #[allow(
-        dead_code,
-        reason = "dropping it closes the authenticated session service"
-    )]
-    service: CompatSessionHandle,
-    #[allow(dead_code, reason = "dropping it cancels and joins registry refresh")]
-    registry_refresh: EntryRegistryRefresh,
+    /// Dropping it closes the authenticated session service.
+    _service: CompatSessionHandle,
+    /// Dropping it cancels and joins registry refresh.
+    _registry_refresh: EntryRegistryRefresh,
 }
 
 struct SessionPresentationLauncher {
@@ -294,6 +291,17 @@ impl VmDelegate for SessionVmDelegate {
             .map_err(windows_vm::AgentError::Transport)?
             .launch(request)
     }
+
+    fn launch_with_portal_file(
+        &self,
+        request: VmRouteRequest<'_>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .launch_with_portal_file(request, source, access)
+    }
 }
 
 fn spawn_entry_registry_refresh(
@@ -388,8 +396,7 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     let render_node = crate::compositor::render_node::resolved()
         .map(std::path::Path::to_path_buf)
         .ok_or_else(|| "the compositor has no safe render node to delegate".to_string())?;
-    // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let session = HostSession {
         uid,
         wayland_socket,
@@ -419,8 +426,8 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     )
     .map_err(|error| error.to_string())?;
     Ok(WindowsCompatHandle {
-        service,
-        registry_refresh,
+        _service: service,
+        _registry_refresh: registry_refresh,
     })
 }
 
@@ -531,6 +538,46 @@ mod tests {
         ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
             Err(windows_vm::AgentError::Unavailable.into())
         }
+
+        fn launch_with_portal_file(
+            &self,
+            _request: VmRouteRequest<'_>,
+            _source: File,
+            _access: windows_vm::PortalDocumentAccess,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            Err(windows_vm::LaunchError::CapabilityBroker(
+                "recorded portal launch".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn session_vm_delegate_forwards_portal_file_launch() {
+        let delegate = SessionVmDelegate {
+            live: Mutex::new(Some(Arc::new(RecordingVmDelegate {
+                calls: AtomicU8::new(0),
+            }) as Arc<dyn VmDelegate>)),
+        };
+        let request = VmRouteRequest {
+            route: compat_service::RouteKind::Vm,
+            app_id: "app",
+            workspace_id: "workspace",
+            published_application_id: "application",
+            capabilities: &[],
+            resolved_capabilities: &launcher::capabilities::CapabilityPlan::empty(),
+        };
+
+        let Err(error) = delegate.launch_with_portal_file(
+            request,
+            File::open("/dev/null").unwrap(),
+            windows_vm::PortalDocumentAccess::ReadOnly,
+        ) else {
+            panic!("the recording delegate refuses every launch");
+        };
+        assert!(
+            error.to_string().contains("recorded portal launch"),
+            "{error}"
+        );
     }
 
     #[test]

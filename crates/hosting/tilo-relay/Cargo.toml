@@ -20,12 +20,18 @@ name = "tilo_relay"
 path = "src/lib.rs"
 
 [features]
-test-support = []
+# Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
+# test barriers, and the replay and staging entry points the shell replay
+# adapter's selection tests drive the store through.
+test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "dep:tilo-agent-participant"]
-web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-desktop-model", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
+web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+# The legacy_stream_source example: a session streaming a window through the
+# production encoder (H.264, VP9 or AV1; needs the GStreamer stack). No binary uses it.
+stream-source = ["dep:tilo-media"]
 
 [[bin]]
 name = "tilo-relay"
@@ -41,7 +47,19 @@ path = "src/enroll.rs"
 
 [[bin]]
 name = "tilo-home-peer-control"
-path = "src/home_peer_control.rs"
+path = "src/home_peer_control/main.rs"
+
+# A terminal's pty carried to an environment session on a relay; the
+# device's `ush` supervisor runs it for a relay environment target.
+[[bin]]
+name = "tilo-relay-environment"
+path = "src/environment_cli.rs"
+
+# Asks this device's relays what their workers run for environments, for
+# Terminal's relay picker; the `ush` supervisor runs it without waiting.
+[[bin]]
+name = "tilo-relay-offers"
+path = "src/relay_offers_cli.rs"
 
 # The host / relay daemon.
 #
@@ -57,15 +75,31 @@ path = "src/home_peer_control.rs"
 #   keypair + a signed cert (capability `can_act_as_host`) issued by
 #   the user's root. Every inbound peer must present a valid cert
 #   chaining to the same user identity.
-# - Passive CRDT peer — the relay never *originates* mutations, only
-#   receives, stores, and forwards.
+# - Mostly a store-and-forward peer, not a passive one. Device deltas are
+#   received, retained and forwarded, but the host also originates, under
+#   its own device key:
+#   - governance commits for the rooms it governs (`rooms*`);
+#   - its retained `IdentityHello` certificate frame (`compaction`);
+#   - legacy-window input on behalf of browsers (`tilo_relay_shell::legacy`);
+#   - folded snapshots of unsealed document channels (`compaction`).
+#   It reads the desktop's peer-sync messages inside co-edit bodies to
+#   decide retention, replay and compaction: document frames, checkpoint
+#   kinds and audiences through the injected `payloads::ShellPayloads`
+#   (`tilo-relay-shell`), and native
+#   shell replay through the selection a bound shell authority hands the
+#   store (`tilo-relay-shell`); it refuses document
+#   changes an app's surface does not allow (`surfaces`). Sealed document
+#   content stays opaque. `docs/architecture/security.md` ("What a
+#   workspace host reads and originates") lists the same powers.
 # - Multi-host by construction — several relays bound to the same
 #   workspace merge like any other automerge peers.
 # - Fully in-process testable — `Relay::start` binds a random-port
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -79,6 +113,10 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
+# The session clients (relay, co-edit, anti-entropy, room administration and
+# workspace join): the daemon dials other relays with them and re-exports them
+# under its historic paths. Clients depend on that crate, not on this one.
+tilo-relay-session = { path = "../tilo-relay-session" }
 # Delivery, private-action, agent-read, v2 live and join records the relay carries.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
@@ -93,6 +131,8 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The production real-time encoder, for the legacy_stream_source example only.
+tilo-media = { path = "../../platform/tilo-media", features = ["realtime"], optional = true }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -105,6 +145,8 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+# Install bodies carry certificates' canonical encoding as base64.
+base64 = { workspace = true, optional = true }
 
 # Signing / hashing — reused for the connection-level nonce challenge.
 getrandom.workspace = true
@@ -112,6 +154,8 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 # Enrollment envelopes are sealed through the one reviewed sealing crate.
 tilo-seal = { path = "../../system/tilo-seal" }
+# Content addresses the room keeps bytes under.
+tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true
@@ -119,7 +163,7 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
 
@@ -143,33 +187,88 @@ http-body-util = { version = "0.1", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+# Who-is-here lines may be summarised by a model provider the operator
+# configures, in the dialects shared with the model gateway.
+tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
+# A persistent room's shared desktop starts with the strips its operator names.
+tilo-desktop-model = { path = "../../session/desktop-model", optional = true }
+# A persistent public room keeps its owner and spectator roots in the host's
+# secret store.
+tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
+# The persistent room's moderation agent and its model provider.
+tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
+# A persistent public room starts with a welcome note and a canvas, written
+# through those apps' own models (the agent participant links them anyway).
+notes = { path = "../../../apps/notes", optional = true }
+chat = { path = "../../../apps/chat", optional = true, default-features = false }
+discord = { path = "../../../apps/discord", optional = true }
+tilo-connector = { path = "../../agent/connector", optional = true }
+tilo-automation = { path = "../../collab/automation", optional = true }
+tilo-bot-directory = { path = "../../packaging/bot-directory", optional = true }
+app-cli = { path = "../../packaging/app-cli", optional = true }
+canvas = { path = "../../../apps/canvas", optional = true }
+tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
+# The room's default record id, the one members' first windows open.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
+# Read existing signed document envelopes through the shared, read-only cipher.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
+# The environment record a relay session is opened from.
+tilo-environment = { path = "../../runtime/environment" }
+# Members' tool builds: built as the member, signed here.
+env-tools = { path = "../../runtime/env-tools" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# App surfaces, fetched by hash from the registry's reviewed payload blobs.
+app-registry = { path = "../../packaging/app-registry" }
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 sd-notify.workspace = true
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../system/atomic-file" }
+# `watch`: the daemon follows membership files `tilo-relay-admin` edits.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
+# The scope of a room's document media, which an offloaded action's inputs
+# and outputs are.
+runtime-fs = { path = "../../runtime/runtime-fs" }
 collab-types = { path = "../../collab/collab-types" }
+# A node stewards the encrypted channels of the rooms it governs.
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The seam the core asks about opaque co-edit bodies, the desktop's adapter
+# `Relay::start` injects, and (with `web`) the browser legacy-window bridge.
+tilo-relay-shell = { path = "../tilo-relay-shell" }
+# Retained-store primitives the workspace store shares with the shell replay
+# adapter, and the seam it drives shell replay selection through.
+tilo-relay-store = { path = "../tilo-relay-store" }
+# Owners pre-admit people by the SHA-256 of a token someone else hands them.
+sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Nearby pairing redeems enrollment tokens through the identity host's one
+# redemption: its issuer checks, nonce store and device fleet.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only the local Linux guest backend needs namespaces, Landlock and vsock.
+# Portable relay routing and remote environment sessions do not link it.
+ush = { path = "../../runtime/ush" }
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
@@ -177,15 +276,27 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# The shell-selection fixture, the selection construction counter and the
+# barriers inside selection that the store, peer and persistence tests use.
+tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
+tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# The offloadable action the offload journey runs: a batch of thumbnails.
+tilo-thumbnail = { path = "../../media/thumbnail" }
+# The app that publishes it, whose handler is its local run, and the content
+# store that handler keeps its outputs in.
+photos = { path = "../../../apps/photos" }
+tilo-content = { path = "../../system/content" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
@@ -205,5 +316,29 @@ path = "tests/held_memory.rs"
 name = "inspect-peer-archive"
 test = true
 
+# What an active collaborator costs a relay in CPU, memory and egress:
+# the scheduled lane's `hosting` group (.forgejo/workflows/perf-scheduled.yml).
+# An example, not a binary, so relay images that build `--bins` leave it out.
+[[example]]
+name = "relay_load"
+test = true
+
+# The original timed median-one-write assertion, run only in Perf / scheduled.
+# Examples with test = false are compiled, not executed, by normal test jobs.
+[[example]]
+name = "keystroke_writes"
+test = false
+
+# A native session streaming a legacy window to the host through the
+# production encoder, for the browser streaming qualification
+# (scripts/perf/native_stream_qualification.mjs).
+[[example]]
+name = "legacy_stream_source"
+test = true
+required-features = ["stream-source"]
+
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

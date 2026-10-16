@@ -43,8 +43,8 @@ test('a second tab cannot take custody while the first holds it', async () => {
     openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')}),
     error => error instanceof CustodyError && error.code === 'custody-busy',
   );
-  first.close();
-  await new Promise(resolve => setImmediate(resolve));
+  // Closing resolves once the key is free: the next holder takes it at once.
+  await first.close();
   const second = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')});
   assert.deepEqual(second.publicKey, first.publicKey);
   second.close();
@@ -74,4 +74,23 @@ test('two profiles on one origin hold two device keys', async () => {
   const b = await openDeviceCustody({profile: 'b', storage, locks: locks.manager('tab-1')});
   assert.notDeepEqual(a.publicKey, b.publicKey);
   a.close(); b.close();
+});
+
+test('a link recipient requires existing custody without creating a key', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  let generations = 0;
+  const unavailableCrypto = {subtle: {generateKey: async () => { generations++; throw new Error('unexpected generation'); }}};
+  await assert.rejects(openDeviceCustody({profile: 'existing', storage,
+    locks: locks.manager('tab-1'), crypto: unavailableCrypto, requireExisting: true}),
+    error => error instanceof CustodyError && error.code === 'custody-missing');
+  assert.equal(generations, 0);
+  assert.equal(storage.rows.size, 0);
+  // The refusal releases custody, so the ordinary enrollment flow can continue.
+  const enrolled = await openDeviceCustody({profile: 'existing', storage, locks: locks.manager('tab-2')});
+  await enrolled.close();
+  const reopened = await openDeviceCustody({profile: 'existing', storage,
+    locks: locks.manager('tab-1'), requireExisting: true});
+  assert.deepEqual(reopened.publicKey, enrolled.publicKey);
+  await reopened.close();
 });

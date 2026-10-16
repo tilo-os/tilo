@@ -30,6 +30,9 @@ pub enum Destination {
     /// Join the focused group as a tab, whatever the rule would say.
     /// Falls back to `Beside` when nothing is focused.
     Here,
+    /// Join this very group as a tab: the group whose "+" asked.
+    /// Falls back to `Here` when the group has since closed.
+    InGroup(GroupId),
 }
 
 /// The group the user is looking at, or `None` when the active workspace
@@ -58,6 +61,18 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
             Some(g) => Placement::TabIn(g),
             None => rule_placement(st),
         },
+        Destination::InGroup(group) => {
+            let exists = st.tree().desktop.active_workspace().is_some_and(|ws| {
+                ws.strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            });
+            if exists {
+                Placement::TabIn(group)
+            } else {
+                placement_for(st, Destination::Here)
+            }
+        }
         Destination::Beside => rule_placement(st),
         Destination::Search => {
             let tree = st.tree();
@@ -71,6 +86,40 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
 fn rule_placement(st: &ChromeState) -> Placement {
     let tree = st.tree();
     crate::shell::placement::placement_for(&tree, OpenIntent::Launch, st.strip_viewport())
+}
+
+/// The package id of the native Terminal app.
+pub const TERMINAL_PACKAGE: &str = "so.tilo.terminal";
+
+/// A new Terminal session at `dest`, always: another Terminal process in a
+/// tab of the focused group (or by the placement rule), however many the
+/// room already shows. Ordinary "Open Terminal" refocuses the running one;
+/// this is the explicit ask for another shell — the group's "+", the
+/// palette's "New terminal", Duplicate on a terminal tab. When no Terminal
+/// package is installed the tab is hosted in-process instead, so the first
+/// window of an image without one still opens.
+///
+/// # Errors
+///
+/// The launch was refused; nothing opened.
+pub fn new_terminal(
+    st: &mut ChromeState,
+    dest: Destination,
+) -> Result<(), crate::shell::app_tabs::AppTabError> {
+    let anchor = match (dest, focused_group(st)) {
+        (Destination::InGroup(group), _) | (Destination::Here, Some(group)) => {
+            let tree = st.tree();
+            crate::shell::app_tabs::anchor_in_group(&tree, group)
+        }
+        _ => None,
+    };
+    match crate::shell::app_tabs::open_beside(st, TERMINAL_PACKAGE, None, anchor, false) {
+        Err(crate::shell::app_tabs::AppTabError::UnknownApp(_)) => {
+            open_terminal(st, dest);
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Hosted in-process, so this is a tree splice rather than a launch — a
@@ -139,13 +188,7 @@ impl DuplicateError {
 /// workspace, or a strip/group/tab list gone empty underneath the
 /// active ids); [`DuplicateError::ForeignWindow`] when the focused tab
 /// is a client-owned or peer surface the compositor can't clone.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "every field this reads is chained from the previous lookup (ws -> strip -> group \
-              -> tab), so the ChromeState borrow can't be dropped before the last one without \
-              cloning each step early for no real gain"
-)]
-pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
+pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
         let ws = tree
@@ -176,11 +219,30 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
+            // A terminal of this machine is the case this exists for: a
+            // second shell is another Terminal process, a tab right after it.
+            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }
+                if app_id == TERMINAL_PACKAGE
+                    && crate::shell::state::peer_salt_of(tab.id) == tree.local_salt() =>
+            {
+                let anchor = crate::shell::app_tabs::anchor_for_tab(&tree, tab.id);
+                drop(tree);
+                return crate::shell::app_tabs::open_beside(
+                    st,
+                    TERMINAL_PACKAGE,
+                    None,
+                    anchor,
+                    false,
+                )
+                .map(|()| None)
+                .map_err(|_| DuplicateError::ForeignWindow);
+            }
             // None can be duplicated: the workspace recap, a live client's
             // surface, or a window belonging to somebody else's machine.
             TileContent::WorkspaceActivity
             | TileContent::Foreign { .. }
             | TileContent::PeerWindow { .. }
+            | TileContent::HostedWindow { .. }
             | TileContent::LocalApp { .. } => {
                 return Err(DuplicateError::ForeignWindow);
             }
@@ -193,7 +255,7 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
     };
     st.create_new_tab_record(id);
     st.bump();
-    Ok(id)
+    Ok(Some(id))
 }
 
 /// Why a tab could not be closed or split. One type for the chord, the
@@ -261,12 +323,10 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
     tab
 }
 
-/// Close `tab_id`: the replicated tree and document first, the atomic
-/// local state, then the exact foreign surface, in that order — so a
-/// crash, an unrelated revision or a slow client all observe absence. The
-/// `✕`, the keyboard chord, the tab menu's "Close Tab" and the `tab.close`
-/// action converge here; a pointer close has already begun its widget
-/// animation when this runs, the others let the resync take the tab out.
+/// Close `tab_id` through the tab's owner. Local content is removed durably;
+/// a confined native client first receives a close request and retains its
+/// visible tab until actual surface destruction admits the close. The `✕`,
+/// keyboard chord, tab menu and declared action converge here.
 ///
 /// # Errors
 ///
@@ -276,7 +336,7 @@ pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionErr
     let closed = crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id);
     close_tab_unrecorded(st, tab_id)?;
     if let Some(entry) = closed {
-        st.remember_closed_tab(entry);
+        st.remember_closed_tab_after_removal(entry);
     }
     Ok(())
 }
@@ -308,6 +368,34 @@ pub(crate) fn close_tab_unrecorded(
     let launch_key = foreign
         .as_ref()
         .map(|(app_id, surface_id)| host_launch_key(app_id, *surface_id));
+    // A confined/native client may defer close to save or show a decision.
+    // Its surface, tab and focus stay live until the real destroy callback.
+    // A restored/layout-only tab has no live client to answer and is removed
+    // immediately, as are supervised unconfined host launches.
+    #[cfg(any(test, target_os = "linux"))]
+    let supervised_unconfined = launch_key.as_deref().is_some_and(|key| {
+        let known = crate::shell::launcher::launch_key_for_surface(
+            foreign.as_ref().map_or(0, |(_, id)| *id),
+        )
+        .is_some()
+            || crate::shell::launcher::launch_key_for_app_id(
+                foreign.as_ref().map_or("", |(id, _)| id),
+            )
+            .is_some();
+        crate::shell::launcher::unconfined_launch_is_live(key)
+            || (!known
+                && !crate::shell::launcher::unconfined_launches_for_unresolved_close().is_empty())
+    });
+    #[cfg(not(any(test, target_os = "linux")))]
+    let supervised_unconfined = false;
+    if let Some((_, surface_id)) = &foreign
+        && !supervised_unconfined
+        && crate::shell::foreign::store().is_adopted(*surface_id)
+    {
+        st.request_surface_close(*surface_id);
+        st.bump();
+        return Ok(());
+    }
     let removed = {
         let mut tree = st.tree_mut();
         tab_binding::remove_tab(&mut tree, tab_id)
@@ -317,7 +405,7 @@ pub(crate) fn close_tab_unrecorded(
     }
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
-    st.tree().flush_to_disk();
+    st.tree().queue_save();
     if let Some((_, surface_id)) = foreign {
         st.request_surface_close(surface_id);
     }
@@ -326,8 +414,10 @@ pub(crate) fn close_tab_unrecorded(
         && !foreign_tabs_remain_for(&st.tree().desktop, key)
     {
         // Wine File's tab announces wineboot.exe. That is not the desktop
-        // id the launch table uses, so terminate(key) is a no-op. Sweep
-        // every unconfined launch that now has no window.
+        // id the launch table uses, so terminate(key) is a no-op until the
+        // surface was attributed to the launch. A second X11 window of that
+        // launch (Wine Mono announces control.exe) still counts. Session
+        // helpers that never asked for a window are not part of this close.
         let known = crate::shell::launcher::unconfined_launch_is_live(key)
             || crate::shell::launcher::launch_key_for_surface(
                 foreign.as_ref().map_or(0, |(_, id)| *id),
@@ -339,7 +429,7 @@ pub(crate) fn close_tab_unrecorded(
             .is_some();
         crate::shell::launcher::terminate_unconfined_launches(key);
         if !known {
-            for package_id in crate::shell::launcher::live_unconfined_package_ids() {
+            for package_id in crate::shell::launcher::unconfined_launches_for_unresolved_close() {
                 if !foreign_tabs_remain_for(&st.tree().desktop, &package_id) {
                     crate::shell::launcher::terminate_unconfined_launches(&package_id);
                 }
@@ -355,19 +445,72 @@ fn host_launch_key(app_id: &str, surface_id: u64) -> String {
 }
 
 fn foreign_tabs_remain_for(desktop: &crate::shell::state::DesktopTree, launch_key: &str) -> bool {
-    desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .any(|tab| match &tab.tile {
-            TileContent::Foreign { app_id, surface_id } => {
-                host_launch_key(app_id, *surface_id) == launch_key
-                    || app_id.eq_ignore_ascii_case(launch_key)
+    let mut unresolved = false;
+    for workspace in &desktop.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+                        continue;
+                    };
+                    let resolved = host_launch_key(app_id, *surface_id);
+                    if resolved.eq_ignore_ascii_case(launch_key)
+                        || app_id.eq_ignore_ascii_case(launch_key)
+                    {
+                        return true;
+                    }
+                    // `durable_app_id` falls back to the announced toolkit id
+                    // (wineboot.exe, control.exe) when the desktop id never
+                    // matched. That window still belongs to the user launch
+                    // that asked for it, even when autostart helpers are also
+                    // live.
+                    if resolved.eq_ignore_ascii_case(app_id) {
+                        unresolved = true;
+                    }
+                }
             }
-            _ => false,
-        })
+        }
+    }
+    unresolved && unresolved_window_belongs_to(launch_key)
+}
+
+/// An unmatched toolkit window belongs to `launch_key` when that launch is
+/// the only unconfined process, or the one user launch waiting on a window.
+fn unresolved_window_belongs_to(launch_key: &str) -> bool {
+    sole_live_unconfined_launch(launch_key) || unresolved_launch_is_the_user_launch(launch_key)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn unresolved_launch_is_the_user_launch(launch_key: &str) -> bool {
+    crate::shell::launcher::unconfined_launches_for_unresolved_close()
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(launch_key))
+}
+
+#[cfg(not(any(test, target_os = "linux")))]
+fn unresolved_launch_is_the_user_launch(launch_key: &str) -> bool {
+    let _ = launch_key;
+    false
+}
+
+/// True when `launch_key` is the only unconfined host launch still running.
+///
+/// On hosts that do not track launches this is false: there is no process
+/// to keep, and a toolkit window id must not invent one.
+fn sole_live_unconfined_launch(launch_key: &str) -> bool {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        let live = crate::shell::launcher::live_unconfined_package_ids();
+        live.len() == 1
+            && live
+                .first()
+                .is_some_and(|package| package.eq_ignore_ascii_case(launch_key))
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        let _ = launch_key;
+        false
+    }
 }
 
 /// [`close_tab`] on the focused group's active tab — the `tab.close`
@@ -518,7 +661,9 @@ pub fn transfer_tab_to_workspace(
         }
         if matches!(
             tile,
-            TileContent::WorkspaceActivity | TileContent::PeerWindow { .. }
+            TileContent::WorkspaceActivity
+                | TileContent::PeerWindow { .. }
+                | TileContent::HostedWindow { .. }
         ) {
             return Err(MoveTabError::Pinned);
         }
@@ -644,7 +789,9 @@ mod tests {
                 "Notes",
                 Destination::Beside,
             );
-            let second = duplicate_active_tab(&mut st).unwrap();
+            let second = duplicate_active_tab(&mut st)
+                .unwrap()
+                .expect("hosted duplicate");
             for id in [first, second] {
                 assert!(
                     st.records()
@@ -673,7 +820,7 @@ mod tests {
             let (changes, restarted) = {
                 let mut tree = st.tree_mut();
                 let changes = tree.export_changes_since(&baseline);
-                tree.flush_to_disk();
+                tree.queue_save();
                 drop(tree);
                 let restarted = crate::shell::persist::load_tree_from(&state_path)
                     .expect("opening a hosted app must leave a loadable state file");
@@ -752,11 +899,6 @@ mod tests {
     }
 
     /// The group the user is looking at, and the number of tabs in it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the borrow is used for exactly one chained expression that is this fn's tail \
-                  return value; there is no later point to drop it earlier than"
-    )]
     fn focused_group_tab_count(st: &ChromeState) -> usize {
         let g = focused_group(st).expect("a focused group");
         let tree = st.tree();
@@ -880,11 +1022,13 @@ mod tests {
                     })
                     .map(|t| t.id)
                     .expect("the default tree seeds a terminal");
-                g.active_tab = id;
+                g.activate_tab(id);
                 id
             };
             let before = focused_group_tab_count(&st);
-            let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
+            let new_id = duplicate_active_tab(&mut st)
+                .expect("a hosted tab duplicates")
+                .expect("a hosted duplicate is a tab of this tree");
             assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
             assert_eq!(focused_group_tab_count(&st), before + 1);
             let tree = st.tree();
@@ -925,7 +1069,7 @@ mod tests {
                         surface_id: 7,
                     },
                 });
-                g.active_tab = id;
+                g.activate_tab(id);
             }
             assert_eq!(
                 duplicate_active_tab(&mut st),

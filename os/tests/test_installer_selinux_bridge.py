@@ -39,6 +39,16 @@ class BridgeContract(unittest.TestCase):
                 self.assertIn(label, backend)
                 self.assertLess(backend.index(label), backend.index(publication))
 
+        handoff = backend.index(
+            '/usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/etc" "$DEPLOY_ETC"'
+        )
+        wifi_label = backend.index(
+            'label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" '
+            '/etc/NetworkManager/system-connections/tilo-setup.nmconnection'
+        )
+        self.assertLess(handoff, wifi_label)
+        self.assertLess(wifi_label, backend.index('step "Closing the encrypted root"', wifi_label))
+
     def test_selinux_bridge_policy(self):
         with self.subTest(phase="policy_enforces_greeter_and_scopes_bridge"):
             policy = active_policy()

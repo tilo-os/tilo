@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The expected strings use a decimal point; a decimal-comma locale on the
+# machine running the test would otherwise print 12,000s.
+export LC_ALL=C
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
@@ -10,6 +18,18 @@ export TILO_ZRAM_SYSFS="$work/zram0"
 export TILO_BLOCK_SYSFS="$work/block"
 export TILO_NTSYNC_DEVICE=/dev/null
 export TILO_GREETD_SOCKET="$work/greetd.sock"
+mkdir -p "$work/drm/card1-eDP-1" "$work/drm/card1-DP-1" "$work/backlight/panel"
+printf 'connected\n' >"$work/drm/card1-eDP-1/status"
+printf 'enabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'On\n' >"$work/drm/card1-eDP-1/dpms"
+# The kernel reports a disconnected connector's DPMS as On as well.
+printf 'disconnected\n' >"$work/drm/card1-DP-1/status"
+printf 'disabled\n' >"$work/drm/card1-DP-1/enabled"
+printf 'On\n' >"$work/drm/card1-DP-1/dpms"
+printf '1024\n' >"$work/backlight/panel/brightness"
+printf '0\n' >"$work/backlight/panel/bl_power"
+export TILO_DRM_SYSFS="$work/drm"
+export TILO_BACKLIGHT_SYSFS="$work/backlight"
 python3 - "$TILO_GREETD_SOCKET" <<'PY'
 import socket
 import sys
@@ -29,10 +49,35 @@ if [ "${1:-}" = is-active ]; then
   exit
 fi
 case "${2:-}" in
+  --property=NRestarts) printf '%s\n' "${TILO_TEST_GREETD_RESTARTS:-0}" ;;
+  --property=InitRDTimestampMonotonic) printf '%s\n' "${TILO_TEST_INITRD_US:-}" ;;
+  --property=UserspaceTimestampMonotonic) printf '%s\n' "${TILO_TEST_USERSPACE_US:-}" ;;
   graphical.target) printf '%s\n' "${TILO_TEST_GRAPHICAL_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
   greetd.service) printf '%s\n' "${TILO_TEST_GREETD_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
+  ldconfig.service|systemd-hwdb-update.service)
+    case " ${TILO_TEST_REBUILT:-} " in *" $2 "*) echo yes ;; *) echo no ;; esac ;;
   *) exit 1 ;;
 esac
+EOF
+cat >"$work/dmesg" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[    2.000000] host kernel: Trying to unpack rootfs image as initramfs...' \
+  '[   14.000000] host kernel: Freeing initrd memory: 98000K' \
+  '  continuation of a multi-line message, with no [stamp] of its own' \
+  '[   14.100000] host kernel: clk: Disabling unused clocks' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   20.000000] host systemd[1]: after the initrd'
+EOF
+cat >"$work/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   15.000000] host systemd[1]: Starting tilo-root-discover.service - Discover the root...' \
+  '[   19.000000] host systemd[1]: Finished tilo-root-discover.service - Discover the root.' \
+  '[   20.000000] host systemd[1]: after the initrd'
+[ -z "${TILO_TEST_DEVICE_TIMEOUT:-}" ] \
+  || printf '[   66.000000] host systemd[1]: Timed out waiting for device %s.\n' "$TILO_TEST_DEVICE_TIMEOUT"
 EOF
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
@@ -45,11 +90,18 @@ if [ "${TILO_TEST_ZRAM_SWAP:-yes}" = yes ]; then
 fi
 [ -z "${TILO_TEST_EXTRA_SWAP:-}" ] || printf '%s\n' "$TILO_TEST_EXTRA_SWAP"
 EOF
-chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon"
+chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" "$work/journalctl"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
 grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
+
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_REBUILT=systemd-hwdb-update.service \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/rebuilt"; then
+  echo 'boot performance gate accepted a first boot that rebuilt the hardware database' >&2
+  exit 1
+fi
+grep -Fq 'this boot rebuilt caches the image already carries: systemd-hwdb-update.service' "$work/rebuilt"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/fail.out" 2>"$work/fail.err"; then
@@ -58,6 +110,47 @@ if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
 fi
 grep -Fq '20.000s (budget: 20s)' "$work/fail.err"
 grep -Fq 'mock critical chain' "$work/fail.err"
+
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
+  TILO_TEST_USERSPACE_US=18000000 "$repo/os/tests/boot_performance_gate.sh" \
+  >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
+grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
+grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
+# An untimestamped continuation line is not a gap of the boot so far.
+if grep -Fq 'Disabling unused clocks' "$work/gaps.err"; then
+  cat "$work/gaps.err" >&2
+  fail 'kernel gap report read an untimestamped continuation line as time 0'
+fi
+grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
+grep -Fq 'switch-root milestones:' "$work/gaps.err"
+grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
+  TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
+  >/dev/null 2>"$work/initrd-gaps.err" || true
+grep -Fq '4.000s before [   19.000000] host systemd[1]: Finished tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq '4.000s tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq 'initrd, longest units (4 journal entries in the phase):' "$work/initrd-gaps.err" \
+  || { cat "$work/initrd-gaps.err" >&2; exit 1; }
+if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the initrd'; then
+  echo 'kernel gap report reached past the initrd start' >&2
+  exit 1
+fi
+
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19000000 TILO_TEST_INITRD_US=4000000 \
+  TILO_TEST_USERSPACE_US=14000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/phases"
+grep -Fq 'phases: kernel 4.000s, initrd 10.000s, userspace to greeter 5.000s' "$work/phases"
+
+# 4 CPUs, 1000 ticks of steal at 100 Hz = 10 s of 76 CPU-seconds.
+printf 'cpu  100 0 100 1000 0 0 0 1000 0 0\ncpu0 1 0 0 0\ncpu1 1 0 0 0\ncpu2 1 0 0 0\ncpu3 1 0 0 0\n' >"$work/stat"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=19000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/steal"
+grep -Fq 'cpu steal since boot: 10.000s over 4 CPUs (13% of 19.000s)' "$work/steal"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=5000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/fast"
+if grep -Fq 'cpu steal' "$work/fast"; then
+  echo 'a boot well inside the budget printed contention diagnostics' >&2
+  exit 1
+fi
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
@@ -130,6 +223,58 @@ if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_ACTIVE=no \
 fi
 grep -Fq 'greetd.service is not active' "$work/no-greeter"
 
+# A first boot whose initial session account did not exist yet: greetd failed
+# and was restarted until it hit its start limit, leaving the panel dark.
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_RESTARTS=4 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/restarted-greeter"; then
+  echo 'boot performance gate accepted a greeter that systemd had to restart' >&2
+  exit 1
+fi
+grep -Fq 'greetd.service was restarted 4 times' "$work/restarted-greeter"
+
+printf 'disabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'Off\n' >"$work/drm/card1-eDP-1/dpms"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-crtc"; then
+  echo 'boot performance gate accepted a greeter on a switched-off display' >&2
+  exit 1
+fi
+grep -Fq 'no connected display is lit at the greeter (1 connected)' "$work/dark-crtc"
+printf 'enabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'On\n' >"$work/drm/card1-eDP-1/dpms"
+
+printf '0\n' >"$work/backlight/panel/brightness"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-backlight"; then
+  echo 'boot performance gate accepted a greeter behind a zero backlight' >&2
+  exit 1
+fi
+grep -Fq 'backlight panel is dark at the greeter (brightness 0, bl_power 0)' "$work/dark-backlight"
+printf '1024\n' >"$work/backlight/panel/brightness"
+printf '4\n' >"$work/backlight/panel/bl_power"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/powered-down-backlight"; then
+  echo 'boot performance gate accepted a powered-down backlight' >&2
+  exit 1
+fi
+grep -Fq 'backlight panel is dark at the greeter (brightness 1024, bl_power 4)' "$work/powered-down-backlight"
+printf '0\n' >"$work/backlight/panel/bl_power"
+
+# A machine without a display (a headless board) has nothing to light.
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_DRM_SYSFS="$work/no-drm" \
+  TILO_BACKLIGHT_SYSFS="$work/no-backlight" "$repo/os/tests/boot_performance_gate.sh" >/dev/null
+
+# Firmware that reports a TPM no driver serves made systemd wait out the
+# device timeout under the splash, in the initrd and again after switch-root.
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  TILO_TEST_DEVICE_TIMEOUT='dev-tpmrm0.device - /dev/tpmrm0' \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/device-timeout"; then
+  echo 'boot performance gate accepted a boot that waited out a missing device' >&2
+  exit 1
+fi
+grep -Fq 'this boot waited out a device that never appeared:' "$work/device-timeout"
+grep -Fq '  dev-tpmrm0.device - /dev/tpmrm0.' "$work/device-timeout"
+
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_GREETD_SOCKET="$work/missing-greetd.sock" \
   "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/no-greeter-socket"; then
   echo 'boot performance gate accepted a display manager without a login endpoint' >&2
@@ -200,13 +345,32 @@ if grep -Eq 'systemctl enable (NetworkManager|firewalld|chronyd)\.service' "$rep
   exit 1
 fi
 grep -Fq 'systemctl disable NetworkManager.service firewalld.service chronyd.service' "$repo/os/Containerfile"
-grep -Fq 'systemctl enable tilo-network-start.timer' "$repo/os/Containerfile"
-network_timer="$repo/os/usr/lib/systemd/system/tilo-network-start.timer"
-grep -Fqx 'OnBootSec=0' "$network_timer"
-grep -Fqx 'AccuracySec=1ms' "$network_timer"
-grep -Fqx 'Unit=tilo-network-start.target' "$network_timer"
-if grep -Eq '^(Before|After|Wants|Requires)=.*(greetd|graphical)' "$network_timer"; then
+# The greeter waits for systemd-user-sessions.service, which upstream orders
+# After=network.target: a NetworkManager start job queued any earlier (a timer
+# at OnBootSec=0 did) holds the greeter for NetworkManager's whole start. The
+# network is queued from a unit that runs once logins are allowed, and is not
+# waited for.
+grep -Fq 'systemctl enable tilo-network-start.service' "$repo/os/Containerfile"
+if [ -e "$repo/os/usr/lib/systemd/system/tilo-network-start.timer" ] \
+   || grep -Fq 'tilo-network-start.timer' "$repo/os/Containerfile"; then
+  echo 'a boot timer queues the network before logins are allowed, ahead of the greeter' >&2
+  exit 1
+fi
+network_start="$repo/os/usr/lib/systemd/system/tilo-network-start.service"
+grep -Fqx 'After=systemd-user-sessions.service' "$network_start"
+grep -Fqx 'Type=oneshot' "$network_start"
+grep -Fqx 'ExecStart=/usr/bin/systemctl --no-block start tilo-network-start.target' "$network_start"
+grep -Fqx 'WantedBy=multi-user.target' "$network_start"
+if grep -Eq '^(Before|Wants|Requires)=.*(greetd|graphical|display-manager|systemd-user-sessions)' "$network_start"; then
   echo 'asynchronous network start gained login-path ordering' >&2
+  exit 1
+fi
+# Nothing enabled at boot may pull the network units in directly either.
+if grep -Erq '^(Wants|Requires)=.*(NetworkManager|firewalld|tilo-network-start)\.(service|target)' \
+    "$repo/os/usr/lib/systemd/system" --include='*.service' --include='*.target' \
+    --exclude='tilo-network-start.target' --exclude='tilo-repair.target' \
+    --exclude='tilo-board-headless-session@.service'; then
+  echo 'a boot unit pulls the network in before logins are allowed' >&2
   exit 1
 fi
 network_target="$repo/os/usr/lib/systemd/system/tilo-network-start.target"
@@ -218,6 +382,9 @@ grep -Fqx 'Requires=firewalld.service' "$network_manager_firewall"
 grep -Fqx 'After=firewalld.service' "$network_manager_firewall"
 grep -Fq 'OnUnitInactiveSec=1h' \
   "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'OnBootSec=2min' "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'CPUSchedulingPolicy=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
+grep -Fqx 'IOSchedulingClass=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
 if grep -Fq 'RemainAfterExit=yes' \
     "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   echo 'security audit oneshot remains active and cannot recur from its timer' >&2
@@ -293,6 +460,16 @@ cmp -s "$app_host_service" "$repo/crates/packaging/app-host/systemd/tilo-app-hos
 cmp -s "$app_host_socket" "$repo/crates/packaging/app-host/systemd/tilo-app-host.socket" || {
   fail 'source-packaged and OS app-host activation sockets have drifted'
 }
+grep -Fqx 'ProtectHome=read-only' "$app_host_service" \
+  || fail 'app-host exposes writable home outside its scoped broker state'
+grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
+  || fail 'app-host broker state is not provisioned before confinement'
+grep -Fqx 'ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
+  || fail 'app-host checkpoint and account package-manager writes lack exact scoped storage'
+grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-host/cache' "$app_host_service" \
+  || fail 'app-host verified downloads do not use its private writable state directory'
+grep -Fqx 'StateDirectoryMode=0700' "$app_host_service" \
+  || fail 'app-host download state is not private'
 app_host_source="$repo/crates/packaging/app-host/src/main.rs"
 app_host_rpc="$repo/crates/packaging/app-host/src/service.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/app-host.sock' "$app_host_socket"
@@ -314,8 +491,7 @@ if grep -Eq '^\[Install\]|^WantedBy=' "$app_host_service"; then
   fail 'tilo-app-host service remains directly enableable instead of socket-only'
 fi
 grep -Fqx 'RuntimeDirectoryPreserve=yes' "$app_host_service"
-grep -Fq 'std::env::var("LISTEN_PID")' "$app_host_source"
-grep -Fq 'actual.as_pathname() == Some(expected)' "$app_host_source"
+grep -Fq 'activated_socket(&socket)' "$app_host_source"
 grep -Fq 'bounded_command::run_prepared(' "$app_host_rpc" \
   || fail 'app-host RPC trusts unbounded package-manager subprocesses'
 if grep -Fq '.output()' "$app_host_rpc"; then
@@ -335,6 +511,7 @@ grep -Fqx 'Service=tilo-ush.service' "$ush_socket"
 grep -Fqx 'SocketMode=0600' "$ush_socket"
 grep -Fqx 'Backlog=16' "$ush_socket"
 grep -Fqx 'ProtectHostname=private' "$ush_service"
+grep -Fqx 'Environment=TILO_USH_BIN=/usr/libexec/tilo-ush' "$ush_service"
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_service"
 if grep -Fqx 'ProtectHostname=yes' "$ush_service"; then
   fail 'ush supervisor denies Bubblewrap the nested guest hostname'
@@ -346,8 +523,7 @@ for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs
 done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
 grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
-grep -Fq 'std::env::var("LISTEN_PID")' "$ush_source"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(expected)' "$ush_source"
+grep -Fq 'activated_socket(socket)' "$ush_source"
 ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
 grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
 grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
@@ -362,10 +538,14 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-# Activation may omit a pathname; an explicit path must still be this socket.
 recipient_src="$repo/crates/system/fs/src/main.rs"
-if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
-  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+grep -Fq 'activated_socket(socket)' "$recipient_src"
+# Activation may omit a pathname; an explicit path must still be the socket.
+activation_src="$repo/crates/platform/tilo-files/src/native/private.rs"
+grep -Fq 'std::env::var("LISTEN_PID")' "$activation_src"
+if ! grep -A2 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$activation_src" \
+  | grep -Fq 'actual != expected'; then
+  echo 'socket activation no longer requires the listener to be the expected socket' >&2
   exit 1
 fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
@@ -416,6 +596,31 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   echo 'composefs VM still exercises blocking boot-entry maintenance' >&2
   exit 1
 fi
+
+# bootc drops /etc/.updated from every deployment, so the caches the image
+# builds must not hang on ConditionNeedsUpdate=/etc.
+dropin="$repo/os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf"
+{ grep -Fxq 'ConditionNeedsUpdate=' "$dropin" \
+    && grep -Fxq 'ConditionFileNotEmpty=|!/etc/ld.so.cache' "$dropin" \
+    && grep -Fq 'install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf' "$repo/os/Containerfile" \
+    && grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment regenerates the linker cache on the login critical chain' >&2
+  exit 1
+}
+{ grep -Fq '&& systemd-hwdb update --usr' "$repo/os/Containerfile" \
+    && grep -Fq '&& rm -f /etc/udev/hwdb.bin' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment rebuilds the hardware database' >&2
+  exit 1
+}
+
+for preset_wants in multi-user.target.wants/ModemManager.service \
+    graphical.target.wants/power-profiles-daemon.service \
+    multi-user.target.wants/virtqemud.service; do
+  grep -Fq "/etc/systemd/system/$preset_wants" "$repo/os/Containerfile" || {
+    echo "the preset still starts $preset_wants before login" >&2
+    exit 1
+  }
+done
 
 for demand_activated in bluetooth ModemManager fwupd power-profiles-daemon systemd-homed; do
   if grep -Fq "systemctl enable $demand_activated.service" "$repo/os/Containerfile"; then

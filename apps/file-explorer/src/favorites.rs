@@ -1,8 +1,9 @@
 //! The **Favourites / Places** model: the user-curated list of shortcut
 //! folders shown at the top of the sidebar. The XDG home folder is a distinct,
 //! specially-styled "Home" entry; the rest are ordinary folders the user can
-//! add, remove and reorder. The list is persisted (one path per line) so it
-//! survives across sessions.
+//! add, remove and reorder. The list itself is the Files document's
+//! ([`crate::resource::FileExplorer::places`]), stored as [`crate::places`]
+//! names them.
 //!
 //! The standard entries follow the user's **real, localized XDG user
 //! directories** (`~/.config/user-dirs.dirs`) — so a German desktop shows
@@ -12,9 +13,8 @@
 //! off the kind, not a fragile label string-match).
 //!
 //! Rendering + drag-to-reorder live in [`crate::places_sidebar`]; this module
-//! owns only the data and its disk format, as pure functions over an explicit
-//! directory + [`UserDirs`] (so it is testable without touching the real
-//! config dir or the machine's actual locale).
+//! owns only the data, as pure functions over an explicit home + [`UserDirs`]
+//! (so it is testable without depending on the machine's actual locale).
 
 use std::path::{Path, PathBuf};
 use ui::icons::Icon;
@@ -141,48 +141,16 @@ pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
     favs
 }
 
-/// Load the favourites from `dir/favorites` (one path per line). Falls back to
-/// [`defaults`] when the file is absent or empty. Kinds/labels are re-derived
-/// from each path against the live [`UserDirs`], so localized standard folders
-/// keep their evocative glyph after a restart.
-pub fn load(dir: &Path, home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
-    match std::fs::read_to_string(dir.join("favorites")) {
-        Ok(body) => {
-            let favs: Vec<Favorite> = body
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(|l| {
-                    let p = PathBuf::from(l);
-                    let (label, is_home, kind) = describe(&p, home, dirs);
-                    Favorite {
-                        label,
-                        path: p,
-                        is_home,
-                        kind,
-                    }
-                })
-                .collect();
-            if favs.is_empty() {
-                defaults(home, dirs)
-            } else {
-                favs
-            }
-        }
-        Err(_) => defaults(home, dirs),
+/// The favourite for folder `path`: its (localized) label, and whether it is
+/// Home or a standard folder, for its glyph.
+pub fn favorite(path: PathBuf, home: &Path, dirs: &UserDirs) -> Favorite {
+    let (label, is_home, kind) = describe(&path, home, dirs);
+    Favorite {
+        label,
+        path,
+        is_home,
+        kind,
     }
-}
-
-/// Persist `favs` to `dir/favorites` (one path per line). Errors are swallowed
-/// — a failed save must never break the UI.
-pub fn save(dir: &Path, favs: &[Favorite]) {
-    let _ = std::fs::create_dir_all(dir);
-    let body = favs
-        .iter()
-        .map(|f| f.path.display().to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let _ = std::fs::write(dir.join("favorites"), body);
 }
 
 /// Move the favourite at `from` to index `to`, sliding the rest along
@@ -237,10 +205,6 @@ mod tests {
     }
 
     /// Favourite defaults fall back to English or localised XDG dirs, keep their kind through persistence, dedup, pin home and persist reorders.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
     #[test]
     fn favourites_default_localise_edit_and_persist() {
         // --- phase: defaults_fall_back_to_english_when_no_xdg_dirs ---
@@ -293,24 +257,16 @@ mod tests {
             assert_eq!(pics.icon(), Icon::Image);
         }
 
-        // --- phase: localized_favourite_keeps_its_kind_after_a_persistence_round_trip ---
+        // --- phase: a_stored_place_resolves_to_a_localized_favourite_with_its_kind ---
         {
-            // Persistence stores paths only; the kind (and thus the glyph) must be
-            // re-derived from the path against the live XDG dirs on reload.
+            // The document stores places by name; the kind (and thus the
+            // glyph) is derived from the folder this device resolves.
             let home = Path::new("/home/u");
             let dirs = german_dirs();
-            let d = tempfile::tempdir().unwrap();
-            save(d.path(), &defaults(home, &dirs));
-            let reloaded = load(d.path(), home, &dirs);
-            let docs = reloaded
-                .iter()
-                .find(|f| f.path == *"/home/u/Dokumente")
-                .unwrap();
-            assert_eq!(
-                docs.kind,
-                FavKind::Documents,
-                "localized documents keeps its kind on reload"
-            );
+            let place = crate::places::place_of(&home.join("Dokumente"), Some(home), &dirs);
+            let path = crate::places::path_of(&place, Some(home), &dirs).unwrap();
+            let docs = favorite(path, home, &dirs);
+            assert_eq!(docs.kind, FavKind::Documents);
             assert_eq!(docs.label, "Dokumente");
             assert_eq!(docs.icon(), Icon::FileText);
         }
@@ -334,11 +290,10 @@ mod tests {
             assert!(favs[0].is_home);
         }
 
-        // --- phase: reorder_moves_an_entry_and_persists_the_new_order ---
+        // --- phase: reorder_moves_an_entry ---
         {
             let home = Path::new("/home/u");
             let dirs = UserDirs::default();
-            let d = tempfile::tempdir().unwrap();
             let mut favs = defaults(home, &dirs);
             // Move "Videos" (index 5) to the top-after-home position (index 1).
             reorder(&mut favs, 5, 1);
@@ -354,31 +309,6 @@ mod tests {
                     "Music"
                 ]
             );
-            save(d.path(), &favs);
-
-            // Reloading yields the reordered list, not the defaults.
-            let reloaded = load(d.path(), home, &dirs);
-            let reloaded_labels: Vec<&str> = reloaded.iter().map(|f| f.label.as_str()).collect();
-            assert_eq!(
-                reloaded_labels,
-                [
-                    "Home",
-                    "Videos",
-                    "Documents",
-                    "Downloads",
-                    "Pictures",
-                    "Music"
-                ]
-            );
-            assert!(reloaded[0].is_home, "home is recognised on reload");
-        }
-
-        // --- phase: load_defaults_when_no_file ---
-        {
-            let d = tempfile::tempdir().unwrap();
-            let dirs = UserDirs::default();
-            let favs = load(d.path(), Path::new("/home/u"), &dirs);
-            assert_eq!(favs, defaults(Path::new("/home/u"), &dirs));
         }
     }
 }

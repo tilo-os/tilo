@@ -3,7 +3,8 @@
 # An input surface, not a document app: it needs the compositor's
 # input-method/virtual-keyboard protocols on the compositor's private,
 # process-credential-gated OSK display and its own keymap + swipe-model
-# files. Nothing else — no documents, no network, no exec.
+# files. Paste optionally uses the shared clipboard; it needs no documents,
+# network or exec.
 #
 # `kind = "service"` keeps it out of the launcher; its `gui` entrypoint is a
 # compositor-managed surface shown when text input needs it.
@@ -30,7 +31,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.paths", "app-files", "threads"]
+optional = ["clipboard", "files.paths", "app-files", "threads"]
+
+[resources]
+kinds = ["osk.keyboard", "osk.learned"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

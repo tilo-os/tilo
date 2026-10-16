@@ -6,16 +6,6 @@
 //! Corpus: bold in paragraph, italic in heading, code in bullet,
 //! nested bold-italic, link in paragraph, kitchen sink.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use notes::markdown::{parse, serialize};
 
 #[test]

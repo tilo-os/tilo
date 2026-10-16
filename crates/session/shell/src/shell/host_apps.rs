@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use desktop_entry::{DesktopEntry, EntrySource};
 
 use crate::shell::launcher::{self, LaunchError};
+use tilo_lock::MutexRecover as _;
 
 /// A projection of [`DesktopEntry`] holding only what the shell needs,
 /// testable against a fixed list without real `.desktop` files.
@@ -88,20 +89,13 @@ fn require_host_execution() -> Result<(), LaunchError> {
 
 pub(crate) fn queue_launch(request: QueuedLaunch) -> Result<(), LaunchError> {
     require_host_execution()?;
-    queued_launches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(request);
+    queued_launches().lock_recover().push(request);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
-    std::mem::take(
-        &mut *queued_launches()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+    std::mem::take(&mut *queued_launches().lock_recover())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,7 +420,8 @@ fn launch_resolved(
             .as_deref()
             .and_then(crate::shell::state::RoomId::parse)
             .ok_or(LaunchError::NoWorkspace)?;
-        launcher::launch_terminal_command(&argv, room)?;
+        // Queued: the caller can be the compositor thread.
+        launcher::queue_terminal_command(&argv, room)?;
         return Ok(app);
     }
     let document = match open {
@@ -492,6 +487,40 @@ pub(crate) fn build_autostart_command(
     command
 }
 
+/// Answers autostart's questions about this machine.
+struct HostAutostartProbe;
+
+impl desktop_entry::autostart::AutostartProbe for HostAutostartProbe {
+    fn program_exists(&self, program: &str) -> bool {
+        desktop_entry::autostart::program_on_path(program)
+    }
+
+    /// `gsettings get`, bounded: login must not wait on a wedged dconf.
+    fn gsettings_bool(&self, schema: &str, key: &str) -> Option<bool> {
+        let mut command = std::process::Command::new("gsettings");
+        command.args(["get", schema, key]);
+        let output = bounded_command::run_prepared(
+            command,
+            None,
+            4 * 1024,
+            std::time::Duration::from_secs(2),
+        )
+        .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        match String::from_utf8_lossy(&output.stdout).trim() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn config_file_exists(&self, relative: &str) -> bool {
+        desktop_entry::autostart::config_file_exists(relative)
+    }
+}
+
 /// Start the session's XDG autostart entries, attributing their portal
 /// requests to `portal_workspace_id`. Console programs (`Terminal=true`)
 /// are not started at login: a terminal window nobody asked for is noise.
@@ -504,27 +533,26 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
     require_host_execution()?;
     let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = launcher::resolve_launcher_bin()?;
-    let desktops = vec![crate::compositor::session_env::CURRENT_DESKTOP.to_string()];
     let scan = desktop_entry::autostart::scan_autostart(
         &desktop_entry::autostart::autostart_dirs(),
-        &desktops,
-        desktop_entry::autostart::program_on_path,
+        &HostAutostartProbe,
     );
     for (path, reason) in &scan.skipped {
         tracing::info!(path = %path.display(), ?reason, "autostart entry not started");
     }
     let x11 = x11_session_for(portal_workspace_id);
-    let startable: Vec<&DesktopEntry> = scan
+    let startable: Vec<&desktop_entry::autostart::Autostart> = scan
         .start
         .iter()
-        .filter(|entry| {
-            if entry.terminal {
-                tracing::info!(id = %entry.id, "autostart console program not started");
+        .filter(|start| {
+            if start.entry.terminal {
+                tracing::info!(id = %start.entry.id, "autostart console program not started");
             }
-            !entry.terminal
+            !start.entry.terminal
         })
         .collect();
-    for entry in &startable {
+    for start in &startable {
+        let entry = &start.entry;
         let command = build_autostart_command(
             entry,
             &launcher_bin,
@@ -532,6 +560,10 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
             x11.as_ref(),
             portal_workspace_id.map(str::to_string),
         );
+        launcher::note_session_helper(&entry.id);
+        if start.auto_restart {
+            launcher::note_restartable_session_helper(&entry.id, &entry.name, command.clone());
+        }
         launcher::remember_launch_named(&entry.id, &entry.window_identities(), &entry.name);
         let _ = launcher::spawn_launch(entry.id.clone(), entry.name.clone(), command);
     }
@@ -768,7 +800,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod unavailable_provider_tests {
     use super::*;
 
@@ -896,14 +929,13 @@ mod unavailable_provider_tests {
         .unwrap();
         let scan = desktop_entry::autostart::scan_autostart(
             &[dir.path().to_path_buf()],
-            &["tilo".to_string()],
-            |_| true,
+            &HostAutostartProbe,
         );
-        let [entry] = scan.start.as_slice() else {
+        let [start] = scan.start.as_slice() else {
             panic!("one entry to start: {scan:?}");
         };
         let command = build_autostart_command(
-            entry,
+            &start.entry,
             Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             None,

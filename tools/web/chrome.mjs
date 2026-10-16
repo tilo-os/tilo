@@ -9,6 +9,7 @@ import {createReadStream, existsSync, mkdtempSync, readdirSync, rmSync, statSync
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
 import {extname, join, normalize} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -69,7 +70,9 @@ function chromeBinary() {
 /** A headless browser on a fresh profile. */
 export async function launch({args = []} = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'tilo-chrome-'));
-  const child = spawn(chromeBinary(), [
+  const supervised = process.platform === 'linux';
+  const browser = chromeBinary();
+  const browserArgs = [
     '--headless=new',
     '--remote-debugging-port=0',
     `--user-data-dir=${profile}`,
@@ -82,16 +85,30 @@ export async function launch({args = []} = {}) {
     '--disable-backgrounding-occluded-windows',
     ...args,
     'about:blank',
-  ], {stdio: ['ignore', 'ignore', 'pipe']});
+  ];
+  // The existing subreaper owns even detached utility processes. Chromium's
+  // root exiting alone does not prove that its profile has stopped changing.
+  const child = spawn(supervised ? 'python3' : browser, supervised
+    ? [fileURLToPath(new URL('./owned_browser.py', import.meta.url)), browser, ...browserArgs]
+    : browserArgs, {stdio: ['ignore', 'ignore', 'pipe']});
+  // The end of what the browser (or its supervisor) said: why a launch or a
+  // shutdown failed is otherwise lost with the pipe.
+  let said = '';
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
+      said = (said + chunk).slice(-4000);
+      if (buffered === null) return;
       buffered += chunk;
       const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
+      if (match) { buffered = null; resolve(match[1]); }
     });
-    child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${buffered.slice(-400)}`)));
+    child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${said.slice(-400)}`)));
   });
+  // Browser and supervisor lines that explain a failed shutdown, not
+  // Chrome's routine noise.
+  const shutdownLines = () => said.split('\n')
+    .filter(line => !/registration_request|DEPRECATED_ENDPOINT/.test(line)).slice(-12).join('\n');
   const ws = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, {once: true});
@@ -115,9 +132,11 @@ export async function launch({args = []} = {}) {
     ws.send(JSON.stringify({id: n, method, params, sessionId}));
   });
 
-  /** A tab: navigate, evaluate (awaiting promises), collect errors. */
-  async function tab() {
-    const {result: {targetId}} = await send('Target.createTarget', {url: 'about:blank'});
+  /** A tab: navigate, evaluate (awaiting promises), collect errors. In
+   * `context` (from `context()`) when given, else the browser's own profile. */
+  async function tab({context} = {}) {
+    const {result: {targetId}} = await send('Target.createTarget',
+      {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     const log = [];
     const listener = message => {
@@ -175,12 +194,49 @@ export async function launch({args = []} = {}) {
 
   return {
     tab,
+    /** A fresh browser context: storage, cookies and Web Locks of its own, as
+     * another person's browser profile would have. Resolves to its id. */
+    context: async () => (await send('Target.createBrowserContext', {disposeOnDetach: true})).result.browserContextId,
     send,
+    /** Observe every protocol event; returns the unsubscribe function. */
+    on: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     close: async () => {
-      ws.close();
-      child.kill();
-      await new Promise(resolve => child.once('exit', resolve));
-      rmSync(profile, {recursive: true, force: true});
+      const exited = child.exitCode === null
+        ? new Promise(resolve => child.once('exit', resolve))
+        : Promise.resolve();
+      let timer;
+      const deadline = new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), 10_000);
+      });
+      // A wedged CDP close must not consume the supervisor's cleanup budget.
+      // Request bounded termination while the original ten-second deadline
+      // still covers reaping every owned writer. Never kill the subreaper.
+      const stopOwned = supervised ? setTimeout(() => child.kill('SIGTERM'), 2_000) : null;
+      let closed;
+      try {
+        await Promise.race([send('Browser.close'), exited, deadline]);
+        closed = await Promise.race([exited.then(() => true), deadline]);
+      } finally {
+        clearTimeout(timer);
+        clearTimeout(stopOwned);
+        ws.close();
+      }
+      if (!closed) {
+        if (supervised) {
+          // Keep the subreaper alive to stop its own descendants; killing it
+          // would orphan precisely the writers whose exit we need to prove.
+          child.kill('SIGTERM');
+          throw new Error(`owned browser shutdown timed out; profile retained\n${shutdownLines()}`);
+        }
+        child.kill('SIGKILL');
+        await exited;
+      }
+      if (supervised && child.exitCode !== 0) {
+        throw new Error(`owned browser shutdown failed (${child.exitCode}); profile retained\n${shutdownLines()}`);
+      }
+      // Only the supervisor's successful exit proves every owned writer was
+      // reaped. Keep filesystem retries bounded and report persistent errors.
+      rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
     },
   };
 }

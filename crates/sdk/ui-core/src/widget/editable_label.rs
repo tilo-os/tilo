@@ -11,7 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -21,14 +21,10 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
-
-/// Same ratio [`TextInput`] centres its own glyph band against, so text
-/// doesn't jump vertically when the field enters/leaves edit mode.
-const LINE_HEIGHT_RATIO: f32 = 1.25;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -48,14 +44,38 @@ pub struct EditableLabel {
     /// editing affordance.
     input: TextInput,
     editing: bool,
-    family: FontChoice,
-    size: f32,
+    /// An explicit family; otherwise the role's.
+    family: Option<FontChoice>,
+    /// What the label is; its idle text is set in the theme's style for it.
+    role: crate::tokens::TextRole,
+    /// The role resolved in the latest theme (stock before the first
+    /// layout): size, weight, line height and family, at the text scale.
+    style: TextStyle,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
     /// Tracked so a press can be classified as inside (caret) vs. outside
     /// (blur-commit) without the press event carrying a position.
     last_pointer: Point,
     outcome: EditOutcome,
+    /// Invoked with each committed new value.
+    action: Option<crate::widget::ActionEmitter<String>>,
+    /// A double click on the idle label begins an edit.
+    renames: bool,
+    /// When the last press on the idle label was, to count the second.
+    last_press: Option<crate::time::Instant>,
+    /// Take the width the row leaves.
+    grow: bool,
+    /// A single press on the idle label begins an edit, as a document's
+    /// title does.
+    edits_on_click: bool,
+    /// Shown, dimmed, while the value is empty and no edit is open.
+    placeholder: Option<String>,
+    /// Set by something else that offers a rename (a context menu's
+    /// "Rename"): the label begins an edit with the next event it sees.
+    edit_request: Option<crate::LocalState<bool>>,
+    /// The text and style the last `measure` sized; the label needs measuring
+    /// again only when either changed.
+    measured: Option<(String, TextStyle)>,
 }
 
 impl EditableLabel {
@@ -67,32 +87,106 @@ impl EditableLabel {
             value: value.to_string(),
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
-            family: FontChoice::SansSerif,
-            size: 16.0,
+            family: None,
+            role: crate::tokens::TextRole::Body,
+            style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: EditOutcome::None,
+            action: None,
+            renames: false,
+            last_press: None,
+            grow: false,
+            edits_on_click: false,
+            placeholder: None,
+            edit_request: None,
+            measured: None,
         }
+    }
+
+    /// Begin an edit when `request` is set, as a rename offered elsewhere
+    /// (a context menu) asks; the label clears it once the edit is open.
+    #[must_use]
+    pub fn begins_editing_on(mut self, request: &crate::LocalState<bool>) -> Self {
+        self.edit_request = Some(request.clone());
+        self
+    }
+
+    /// Invoke `binding` with each committed value that differs from the one
+    /// before: a rename is the app's own action.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Begin an edit on a double click, the way a list renames its items in
+    /// place. A single click is left to what is beneath (selecting the row).
+    #[must_use]
+    pub fn renames_on_double_click(mut self) -> Self {
+        self.renames = true;
+        self
+    }
+
+    /// Begin an edit on a single press, the way a document's title is
+    /// renamed in place. The edit still ends as every edit does: Enter or
+    /// a click away commits it once, Escape keeps the value.
+    #[must_use]
+    pub fn edits_on_click(mut self) -> Self {
+        self.edits_on_click = true;
+        self
+    }
+
+    /// What the idle label reads, dimmed, while its value is empty.
+    #[must_use]
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Take the width the row leaves, eliding a long value.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.grow = true;
+        self
     }
 
     #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.input.set_font_family(Some(family.clone()));
-        self.family = family;
+        self.family = Some(family);
         self
     }
 
+    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]),
+    /// idle and while editing.
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.size = size;
-        self.input.set_font_size(size);
+    pub fn with_text_role(mut self, role: crate::tokens::TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
-        self.size = size;
-        self.input.set_font_size(size);
+    /// Change the label's role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
+        self.role = role;
+        self.style = crate::tokens::typography::stock().style(role);
+        self.input.set_text_role(role);
+    }
+
+    /// The idle style: the theme's style for the role, in an explicit
+    /// family when one was given.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        let mut style = theme.text(self.role);
+        if let Some(family) = &self.family {
+            style = style.with_family(family.clone());
+        }
+        self.style = style;
+    }
+
+    /// The label's band: the role's line, never under the minimum target.
+    fn band(&self) -> f32 {
+        self.style.line_height_px().max(28.0)
     }
 
     /// Hide the insertion caret beneath a modal without committing an edit.
@@ -137,6 +231,15 @@ impl EditableLabel {
         }
     }
 
+    /// What the idle label shows: its value, or the placeholder while the
+    /// value is empty.
+    fn shown_text(&self) -> &str {
+        match &self.placeholder {
+            Some(placeholder) if !self.editing && self.value.is_empty() => placeholder,
+            _ => self.current_text(),
+        }
+    }
+
     /// Ignored while editing so it doesn't stomp the user's typing.
     pub fn set_value(&mut self, value: &str) {
         if !self.editing {
@@ -146,6 +249,17 @@ impl EditableLabel {
 
     pub fn is_editing(&self) -> bool {
         self.editing
+    }
+
+    /// What the last draw painted outside the label's rect: while it is
+    /// being edited, what its field painted beyond it (a correction chip).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        if self.editing {
+            self.input.overhang()
+        } else {
+            None
+        }
     }
 
     /// Selects the whole value so the first keystroke replaces it (native
@@ -164,12 +278,16 @@ impl EditableLabel {
             return;
         }
         let trimmed = self.input.value().trim().to_string();
+        let changed = !trimmed.is_empty() && trimmed != self.value;
         if !trimmed.is_empty() {
             self.value = trimmed;
         }
         self.editing = false;
         self.input.set_focus(false);
         self.outcome = EditOutcome::Committed(self.value.clone());
+        if changed && let Some(action) = self.action.as_mut() {
+            let _ = action.emit(self.value.clone());
+        }
     }
 
     /// No-op when not editing.
@@ -193,32 +311,73 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
+    /// A press on the idle label that begins an edit: any press with
+    /// [`Self::edits_on_click`], else the second of a double click.
+    fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !(self.renames || self.edits_on_click)
+            || !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+            || !self.rect.contains(self.last_pointer)
+        {
+            return;
+        }
+        if self.edits_on_click {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+            return;
+        }
+        let now = crate::time::now();
+        let second = self.last_press.is_some_and(|at| {
+            now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+        });
+        self.last_press = if second { None } else { Some(now) };
+        if second {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+        }
+    }
+
+    /// The idle text's line, centred in the rect as the editing field
+    /// centres its own.
     fn text_band(&self) -> (f64, f64) {
-        let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
+        let line_height = f64::from(self.style.line_height_px());
         let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (top, line_height)
     }
 }
 
 impl Widget for EditableLabel {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        self.adopt_theme(theme);
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
-                height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
+                height: Dimension::length(self.band()),
             },
             flex_shrink: 1.0,
-            flex_grow: 0.0,
+            flex_grow: if self.grow { 1.0 } else { 0.0 },
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
+            },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -227,29 +386,27 @@ impl Widget for EditableLabel {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (w, _) = text_renderer.measure_font(
-            self.current_text(),
-            self.size,
-            None,
-            TextWeight::Regular,
-            false,
-            &self.family,
-        );
+        let (w, _) = text_renderer.measure_style(self.shown_text(), None, &self.style);
+        self.measured = Some((self.shown_text().to_owned(), self.style.clone()));
         taffy::Size {
             width: w + 4.0,
-            height: (self.size * LINE_HEIGHT_RATIO).max(28.0),
+            height: self.band(),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.input.apply_layout_external(self.rect);
+    }
+
+    /// Its size follows the text it shows and the style it shows it in, so
+    /// it is measured again when either changed since the last measure.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+            || self
+                .measured
+                .as_ref()
+                .is_none_or(|(text, style)| text != self.shown_text() || *style != self.style)
     }
 
     fn draw(
@@ -260,16 +417,24 @@ impl Widget for EditableLabel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.adopt_theme(theme);
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        if self.value.is_empty() {
-            return;
-        }
-        let color = self.idle_color.unwrap_or(theme.text_primary);
+        let (shown, color) = if self.value.is_empty() {
+            match &self.placeholder {
+                Some(placeholder) => (placeholder.as_str(), theme.text_tertiary),
+                None => return,
+            }
+        } else {
+            (
+                self.value.as_str(),
+                self.idle_color.unwrap_or(theme.text_primary),
+            )
+        };
         let (top, _lh) = self.text_band();
         #[allow(
             clippy::arithmetic_side_effects,
@@ -281,22 +446,31 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
+        let shown = text_renderer.elide_to_width_style(shown, width, &self.style);
         text_renderer.draw_style(
             scene,
-            &self.value,
+            &shown,
             color,
             text_transform,
             Some(width),
-            &TextStyle::new(self.size).with_family(self.family.clone()),
+            &self.style,
         );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_pointer = ctx.logical(position);
+        }
+        if !self.editing
+            && let Some(request) = &self.edit_request
+            && request.get()
+        {
+            request.set(false);
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
         }
         if !self.editing {
+            self.begin_on_press(event, ctx);
             return;
         }
         match event {
@@ -369,7 +543,7 @@ impl Widget for EditableLabel {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.editing && self.rect.contains(point) {
+        if (self.editing || self.edits_on_click) && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
@@ -396,6 +570,11 @@ impl Widget for EditableLabel {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.input.ime_edit_fingerprint(key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
@@ -431,16 +610,18 @@ impl Widget for EditableLabel {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
+        self.semantic_target.as_deref() == Some(target)
+            && self.perform_action(action, &[], state, path)
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        _key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -458,88 +639,66 @@ impl Widget for EditableLabel {
                 _ => return false,
             }
         }
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, &[], state, path)
+    }
+}
+
+impl crate::widget::controls::ActionControls for EditableLabel {
+    crate::widget::controls::optional_emitter_controls!();
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        let control_id = self
+            .semantic_target
+            .as_deref()
+            .or_else(|| self.test_id())
+            .unwrap_or("editable_label");
+        vec![action.metadata(control_id)]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        el.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).modifiers(m).send(el, ev).handled
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
+    }
+
+    /// A frame re-solves the label's size only when what it shows changed,
+    /// not on every frame that moves it.
+    #[test]
+    fn a_label_asks_for_a_measure_only_when_its_text_changes() {
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            EditableLabel::new("Budget"),
+            (400, 80),
+            Theme::dark(),
+        );
+        harness.relayout();
+        assert!(!harness.root::<EditableLabel>().layout_needs_measure());
+        harness
+            .root_mut::<EditableLabel>()
+            .set_value("Quarterly budget");
+        assert!(harness.root::<EditableLabel>().layout_needs_measure());
+        harness.relayout();
+        assert!(!harness.root::<EditableLabel>().layout_needs_measure());
     }
 
     #[test]
@@ -564,8 +723,8 @@ mod tests {
             assert!(el.is_editing(), "still editing until a commit trigger");
 
             // Move the pointer well outside the field, then press — a click away.
-            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+            drive(&mut el, &mut doc, &cursor_moved(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &mouse_press(), no_mods());
 
             assert!(!el.is_editing(), "click outside ends the edit");
             assert_eq!(el.value(), "New", "blur committed the typed value");
@@ -699,5 +858,21 @@ mod tests {
 
         modal_paint_suppression_retains_title_draft_and_selection();
         ctrl_a_selects_all_through_embedded_field();
+    }
+    #[test]
+    fn the_idle_label_sets_in_its_roles_style() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut label =
+            EditableLabel::new("Groceries").with_text_role(crate::tokens::TextRole::Title);
+        let mut tree = TaffyTree::new();
+        let node = label.build_layout(&mut tree, &theme, &mut HashMap::new());
+        let style = theme.text(crate::tokens::TextRole::Title);
+        assert_eq!(label.style, style, "weight, size and leading of the role");
+        let height = tree.style(node).unwrap().size.height;
+        assert_eq!(
+            height,
+            Dimension::length(style.line_height_px().max(28.0)),
+            "the band is the role's scaled line"
+        );
     }
 }

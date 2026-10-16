@@ -25,6 +25,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::scan::{Scan, scan_dirs};
+use tilo_lock::MutexRecover as _;
 
 /// How long a scan is reused before the directories are re-examined.
 pub const SCAN_TTL: Duration = Duration::from_secs(5);
@@ -47,22 +48,26 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 /// a lock guard to a caller that then does UI work under it, and the
 /// list is a few hundred small structs.
 pub fn cached_scan() -> Scan {
+    cached_scan_snapshot().1
+}
+
+/// Generation and records observed under the same cache lock. Filling a cold
+/// cache is a valid snapshot, not an invalidation racing its read.
+pub fn cached_scan_snapshot() -> (u64, Scan) {
     let dirs = crate::scan::application_dirs();
-    let desktop = vec![crate::scan::CURRENT_DESKTOP.to_string()];
-    let mut guard = cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let desktop = crate::scan::current_desktops();
+    let mut guard = cell().lock_recover();
 
     if let Some(cached) = guard.as_mut() {
         if cached.at.elapsed() < SCAN_TTL {
-            return cached.scan.clone();
+            return (REVISION.load(Ordering::Acquire), cached.scan.clone());
         }
         let fingerprint = fingerprint(&dirs);
         if fingerprint == cached.fingerprint {
             // Nothing was installed or removed. Push the deadline out
             // rather than re-reading two hundred files.
             cached.at = Instant::now();
-            return cached.scan.clone();
+            return (REVISION.load(Ordering::Acquire), cached.scan.clone());
         }
     }
 
@@ -73,17 +78,9 @@ pub fn cached_scan() -> Scan {
         at: Instant::now(),
         fingerprint,
     });
+    let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
     drop(guard);
-    REVISION.fetch_add(1, Ordering::Relaxed);
-    scan
-}
-
-/// Generation paired with [`cached_scan`] for retained UI projections.
-pub fn cached_scan_snapshot() -> (u64, Scan) {
-    let before = REVISION.load(Ordering::Acquire);
-    let scan = cached_scan();
-    let after = REVISION.load(Ordering::Acquire);
-    (if before == after { before } else { 0 }, scan)
+    (generation, scan)
 }
 
 /// Current desktop-entry source generation, without cloning the scan.
@@ -96,10 +93,10 @@ pub fn cached_scan_generation() -> u64 {
 /// changed — a Flatpak install finishing, say — and by tests, which
 /// share this process-wide state.
 pub fn invalidate() {
-    *cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    REVISION.fetch_add(1, Ordering::Relaxed);
+    let mut guard = cell().lock_recover();
+    *guard = None;
+    REVISION.fetch_add(1, Ordering::Release);
+    drop(guard);
 }
 
 fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
@@ -122,8 +119,14 @@ mod tests {
         // `invalidate` must undo that.
         {
             invalidate();
-            let first = cached_scan();
-            let second = cached_scan();
+            let (cold_generation, first) = cached_scan_snapshot();
+            assert_eq!(
+                cold_generation,
+                cached_scan_generation(),
+                "filling a cold cache produces a current snapshot"
+            );
+            let (warm_generation, second) = cached_scan_snapshot();
+            assert_eq!(warm_generation, cold_generation);
             assert_eq!(
                 first.entries.len(),
                 second.entries.len(),

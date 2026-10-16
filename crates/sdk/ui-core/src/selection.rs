@@ -6,8 +6,7 @@
 //! virtualized, and partially resident collections.
 //!
 //! Several toolkit widgets surface a list of homogeneous items that the
-//! user can select — `DataTable` list mode,
-//! [`IconGrid`](crate::widget::IconGrid), the file picker, the
+//! user can select — `DataTable` list mode, the file picker, the
 //! file-explorer's views — and they all need the *same* selection
 //! semantics, so that logic lives here once instead of being re-derived
 //! (subtly differently) in each widget.
@@ -252,6 +251,16 @@ impl SelectionModel {
         self.anchor
     }
 
+    /// Follow items when their owning collection changes row order. Map each
+    /// old position to its new position, or `None` if the item disappeared.
+    /// The cursor and range anchor remain independent of the selected set,
+    /// including a cursor left on an item deselected by Ctrl-click.
+    pub fn remap_indices(&mut self, map: impl Fn(usize) -> Option<usize>) {
+        self.selected = self.selected.iter().copied().filter_map(&map).collect();
+        self.primary = self.primary.and_then(&map);
+        self.anchor = self.anchor.and_then(map);
+    }
+
     /// Drop everything — no selection, no anchor, no cursor.
     pub fn clear(&mut self) {
         self.selected.clear();
@@ -370,16 +379,9 @@ impl SelectionModel {
         let before = self.selected.len();
         self.selected.retain(|&i| i < count);
         let pruned_set = self.selected.len() != before;
-        let mut pruned_meta = false;
-        if self.anchor.is_some_and(|a| a >= count) {
-            self.anchor = None;
-            pruned_meta = true;
-        }
-        if self.primary.is_some_and(|p| p >= count) {
-            self.primary = None;
-            pruned_meta = true;
-        }
-        pruned_set || pruned_meta
+        let pruned_anchor = self.anchor.take_if(|a| *a >= count).is_some();
+        let pruned_primary = self.primary.take_if(|p| *p >= count).is_some();
+        pruned_set || pruned_anchor || pruned_primary
     }
 }
 
@@ -440,6 +442,24 @@ mod tests {
             assert!(selection.is_selected(&3));
             assert_eq!(selection.primary(), Some(&3));
         }
+    }
+
+    #[test]
+    fn remapping_selection_preserves_an_unselected_cursor_and_drops_missing_items() {
+        let mut selection = SelectionModel::new();
+        selection.apply_click(0, false, false);
+        selection.apply_click(2, true, false);
+        selection.apply_click(2, true, false);
+        selection.remap_indices(|index| [Some(3), None, Some(1)].get(index).copied().flatten());
+        assert_eq!(selection.selected(), vec![3]);
+        assert_eq!(selection.primary(), Some(1));
+        assert_eq!(selection.anchor(), Some(1));
+        selection.apply_click(2, false, true);
+        assert_eq!(selection.selected(), vec![1, 2]);
+        selection.remap_indices(|index| (index == 2).then_some(0));
+        assert_eq!(selection.selected(), vec![0]);
+        assert_eq!(selection.primary(), Some(0));
+        assert_eq!(selection.anchor(), None);
     }
 
     /// What must hold after one click of a scripted sequence.

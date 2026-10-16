@@ -20,10 +20,12 @@ use crate::ActionContract;
 use crate::ActionParam;
 use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
+use crate::entry::Described;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
     ActionInput, ActionSpec, Collects, KEY_SEP, Resource, ResourceViewMountSpec,
+    ResourceViewRangeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +83,43 @@ pub enum InputSpec {
     },
 }
 
+impl ActionDescriptor {
+    /// The parameter this action's one line of typed text goes into, when it
+    /// is a prompted action: what an agent or a host holding only the
+    /// descriptor learns instead of assuming a name.
+    #[must_use]
+    pub fn prompt_param(&self) -> Option<&str> {
+        match self.input {
+            InputSpec::Text { .. } => self
+                .params
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| self.params.first())
+                .map(|param| param.name.as_ref()),
+            InputSpec::None => None,
+        }
+    }
+
+    /// `arguments` as this action takes them. A text argument on the wire
+    /// (`InvokeArgument::Text`) names no parameter and reaches a host as a lone
+    /// [`PROMPTED_PARAM`](crate::PROMPTED_PARAM); it is moved under this
+    /// action's own prompt parameter. Anything else is returned as given.
+    #[must_use]
+    pub fn bind_prompt_text(
+        &self,
+        mut arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        if arguments.len() == 1
+            && let Some(name) = self.prompt_param()
+            && name != crate::PROMPTED_PARAM
+            && let Some(text) = arguments.remove(crate::PROMPTED_PARAM)
+        {
+            arguments.insert(name.to_owned(), text);
+        }
+        arguments
+    }
+}
+
 impl InputSpec {
     fn of(input: &ActionInput) -> Self {
         match input {
@@ -123,6 +162,8 @@ impl InputSpec {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDescriptor {
     pub address: ActionAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<crate::ResourceSemanticIdentity>,
     /// The publishing resource's stable kind tag (`word_processor.section`,
     /// `files.entry`), shared with the OS-wide type registry so the same kind
     /// means the same thing across apps.
@@ -157,6 +198,8 @@ pub struct ResourceViewDescriptor {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ResourceViewMountSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ResourceViewRangeSpec>,
 }
 
 impl ResourceViewDescriptor {
@@ -175,6 +218,7 @@ impl ResourceViewDescriptor {
                 open_action: view.open_action.clone(),
                 primary: view.primary,
                 mount: view.mount.clone(),
+                range: view.range.clone(),
             })
     }
 }
@@ -194,6 +238,13 @@ pub enum DoorError {
     UnexpectedArgument(ActionAddress),
     /// Typed arguments failed the action's declared schema.
     InvalidArguments(String),
+    /// A typed argument is a number outside the range its parameter
+    /// declares: [`InvalidArguments`](Self::InvalidArguments) whose bound
+    /// reaches the caller as data ([`DoorError::failure_details`]).
+    ArgumentOutOfRange {
+        param: String,
+        violation: crate::params::ArgViolation,
+    },
     /// The address exists and is intentionally advertised, but its current
     /// precondition is not satisfied.
     Unavailable { code: String, reason: String },
@@ -209,6 +260,20 @@ pub enum DoorError {
 }
 
 impl DoorError {
+    /// Why an encoded action could not be turned back into one: no decoder
+    /// for its type, or a payload the registered decoder does not read (the
+    /// code that encoded it and the code decoding it disagree). The second is
+    /// a fault of its own and says so; reporting it as an unknown type sends
+    /// whoever reads it looking for a registration that is there.
+    pub fn decoding(error: crate::action::ActionError) -> Self {
+        match error {
+            crate::action::ActionError::UnknownType(type_id) => {
+                DoorError::UnregisteredType(type_id)
+            }
+            other => DoorError::Failed(other.to_string()),
+        }
+    }
+
     /// Stable machine-readable code, distinguishing "I addressed this
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &'static str {
@@ -216,10 +281,41 @@ impl DoorError {
             DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
             DoorError::MissingArgument(_)
             | DoorError::UnexpectedArgument(_)
-            | DoorError::InvalidArguments(_) => "invalid_arguments",
+            | DoorError::InvalidArguments(_)
+            | DoorError::ArgumentOutOfRange { .. } => "invalid_arguments",
             DoorError::Unavailable { .. } => "action_unavailable",
             DoorError::ConfirmationRequired => "action_confirmation_required",
             DoorError::Failed(_) => "action_failed",
+        }
+    }
+
+    /// What an [`ActionFailure`](crate::ActionFailure) reporting this
+    /// refusal carries beside its message, for a caller to act on without
+    /// reading prose: `{"param": …, "violation": …}` for an argument out of
+    /// its declared range.
+    #[must_use]
+    pub fn failure_details(&self) -> Option<serde_json::Value> {
+        match self {
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                Some(serde_json::json!({ "param": param, "violation": violation }))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// An argument out of its declared range keeps its bound as data; every
+/// other argument refusal is reported in words.
+impl From<crate::params::ArgError> for DoorError {
+    fn from(error: crate::params::ArgError) -> Self {
+        match error {
+            crate::params::ArgError::OutOfRange { name, violation } => {
+                DoorError::ArgumentOutOfRange {
+                    param: name,
+                    violation,
+                }
+            }
+            error => DoorError::InvalidArguments(error.to_string()),
         }
     }
 }
@@ -239,6 +335,9 @@ impl std::fmt::Display for DoorError {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
             DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                write!(f, "argument `{param}` {violation}")
+            }
             DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
             DoorError::ConfirmationRequired => {
                 f.write_str("this action requires explicit confirmation")
@@ -269,6 +368,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
         let view = ResourceViewDescriptor::declared_for(resource, &action.id);
         out.push(ActionDescriptor {
             address: ActionAddress::new(resource.id.as_str(), &action.id),
+            semantic_identity: resource.semantic_identity.clone(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
@@ -289,11 +389,23 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
 /// Resolve `address` against `resources` without running anything, so a caller
 /// can check what an address currently names before committing to it.
 pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option<&'a ActionSpec> {
-    fn walk<'a>(r: &'a Resource, address: &ActionAddress) -> Option<&'a ActionSpec> {
+    locate(resources, address).map(|(_, spec)| spec)
+}
+
+/// [`resolve`], with the resource that publishes the action: what a door
+/// needs to place the action in the tree it grants over.
+pub fn locate<'a>(
+    resources: &'a [Resource],
+    address: &ActionAddress,
+) -> Option<(&'a Resource, &'a ActionSpec)> {
+    fn walk<'a>(
+        r: &'a Resource,
+        address: &ActionAddress,
+    ) -> Option<(&'a Resource, &'a ActionSpec)> {
         if r.id.as_str() == address.resource
             && let Some(spec) = r.actions.iter().find(|a| a.id == address.action)
         {
-            return Some(spec);
+            return Some((r, spec));
         }
         r.children.iter().find_map(|c| walk(c, address))
     }
@@ -325,6 +437,11 @@ pub fn encode(
     match (&spec.input, argument) {
         (ActionInput::Deferred { type_id, build }, None) => {
             let encoded = build();
+            if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+                return Err(DoorError::InvalidArguments(
+                    String::from_utf8_lossy(&encoded.payload).into_owned(),
+                ));
+            }
             if encoded.type_id != *type_id {
                 return Err(DoorError::InvalidArguments(format!(
                     "builder returned `{}` but declared `{type_id}`",
@@ -336,7 +453,7 @@ pub fn encode(
         (ActionInput::Deferred { .. }, Some(_)) => {
             Err(DoorError::UnexpectedArgument(address.clone()))
         }
-        (ActionInput::Immediate(encoded), None) => Ok(encoded.clone()),
+        (ActionInput::Immediate(encoded), None) => Ok(encoded.as_ref().clone()),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { build, .. }, Some(text)) => {
             let encoded = build(text);
@@ -359,8 +476,8 @@ pub fn encode(
 ///
 /// Returns [`DoorError::Unknown`] when the address is not published,
 /// [`DoorError::Unavailable`] when policy currently disables it, or
-/// [`DoorError::InvalidArguments`] when the object violates its parameter
-/// contract.
+/// [`DoorError::InvalidArguments`] (or [`DoorError::ArgumentOutOfRange`])
+/// when the object violates its parameter contract.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -368,9 +485,7 @@ pub fn encode_json(
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let encoded = spec
-        .build_json(arguments)
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+    let encoded = spec.build_json(arguments).map_err(DoorError::from)?;
     if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
         return Err(DoorError::InvalidArguments(
             String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -632,18 +747,21 @@ fn dispatch_encoded_with_context(
             spec.kind.as_str()
         )));
     }
-    let mut context = ActionContext::for_resource(
-        &spec.label,
-        resource.id.as_str(),
-        &resource.kind,
-        &resource.label,
-    );
+    let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }
-    let action = registry
-        .decode(&encoded)
-        .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+    // The published action is the verb history names, unless the value
+    // describes itself or the action only carries others.
+    if !spec.carries_actions()
+        && let Some(described) = Described::of_published(
+            &encoded,
+            crate::ActionKey::new("", &resource.kind, &spec.id),
+        )
+    {
+        context = context.with_described(described);
+    }
+    let action = registry.decode(&encoded).map_err(DoorError::decoding)?;
     if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
         return Err(DoorError::Failed(
             "Deferred action locus differs from its declaration".into(),
@@ -675,7 +793,6 @@ mod tests {
     use super::*;
     use crate::action::{Action, ActionError, Doc};
     use crate::executor::{LocalTransport, replay};
-    use crate::resource::ResourceProvider;
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
@@ -719,10 +836,10 @@ mod tests {
         vec![
             Resource::new("notes.note:1", "notes.note", "Harbour")
                 .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, star_does).unwrap())
-                .with_action(ActionSpec::prompted(
+                .with_action(ActionSpec::prompted_param(
                     "retitle",
                     "Rename",
-                    "New title",
+                    ActionParam::required("title", crate::ParamType::Text, "New title"),
                     "title",
                     ExecutionLocus::ClientLocal,
                     move |text| encoded(&retitle_does(text)),
@@ -837,6 +954,7 @@ mod tests {
                 description: Some("Edit the note".into()),
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             })
         );
@@ -859,6 +977,7 @@ mod tests {
         an_address_that_no_longer_resolves_is_refused_not_redirected();
         an_argument_that_does_not_match_the_declaration_is_refused();
         an_unregistered_action_type_is_refused_rather_than_applied();
+        a_payload_its_decoder_cannot_read_is_not_called_unregistered();
         a_change_through_the_door_is_attributed_to_the_caller();
         ambient_task_context_reaches_door_actions_without_overwriting_resource();
     }
@@ -914,6 +1033,37 @@ mod tests {
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
     }
 
+    /// A text argument on the wire names no parameter; the descriptor says
+    /// where it goes.
+    #[test]
+    fn a_wire_text_argument_goes_under_the_actions_own_prompt_parameter() {
+        let tree = open();
+        let described = survey(&tree);
+        let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
+        assert_eq!(retitle_spec.prompt_param(), Some("title"));
+        let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            retitle_spec.bind_prompt_text(lone.clone()),
+            serde_json::json!({"title": "Ledger"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // Already named, or more than one argument: left as given.
+        let named = serde_json::json!({"title": "Ledger"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(retitle_spec.bind_prompt_text(named.clone()), named);
+        // An action that collects no text has no prompt parameter.
+        let star_spec = described.iter().find(|d| d.address == star()).unwrap();
+        assert_eq!(star_spec.prompt_param(), None);
+        assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
+    }
+
     /// An action the app never registered a decoder for cannot be run, even
     /// though its own tree offers it: the door will not dispatch what it cannot
     /// reconstruct the way a replaying peer would.
@@ -938,24 +1088,59 @@ mod tests {
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
     }
 
-    /// A provider that reads the document to build its tree, so enumeration
-    /// exercises the path an app actually takes.
-    struct Notes;
-
-    impl ResourceProvider for Notes {
-        fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-            let label = doc
-                .get(&ROOT, "title")
-                .ok()
-                .flatten()
-                .and_then(|(v, _)| v.into_string().ok())
-                .unwrap_or_else(|| "Untitled".into());
-            vec![
-                Resource::new("notes.note:1", "notes.note", label).with_action(
-                    ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
-                ),
-            ]
+    /// The type is registered, but by code that reads another shape (as after
+    /// the code that encodes it changed): the refusal names the payload, not a
+    /// missing registration, and nothing is applied.
+    fn a_payload_its_decoder_cannot_read_is_not_called_unregistered() {
+        #[derive(Debug, Serialize, Deserialize)]
+        struct OtherShape {
+            // Only its shape is decoded.
+            #[serde(rename = "pinned")]
+            _pinned: bool,
         }
+        impl Action for OtherShape {
+            fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
+                Ok(())
+            }
+        }
+        let tree = open();
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        let mut other = ActionRegistry::new();
+        other.register::<OtherShape>(NOTE_TYPE);
+
+        let err = invoke(
+            &mut doc,
+            &tree,
+            &star(),
+            None,
+            InvocationProvenance::caller(b"caller-key"),
+            &other,
+            &mut LocalTransport::new(),
+        )
+        .unwrap_err();
+
+        let DoorError::Failed(why) = &err else {
+            panic!("a payload the decoder cannot read is its own failure: {err:?}");
+        };
+        assert!(why.contains(NOTE_TYPE), "{why}");
+        assert_eq!(doc.get_heads(), before);
+    }
+
+    /// Build the tree by reading the document, so enumeration exercises the
+    /// path an app actually takes.
+    fn notes(doc: &AutoCommit) -> Vec<Resource> {
+        let label = doc
+            .get(&ROOT, "title")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.into_string().ok())
+            .unwrap_or_else(|| "Untitled".into());
+        vec![
+            Resource::new("notes.note:1", "notes.note", label).with_action(
+                ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
+            ),
+        ]
     }
 
     /// Asking what can be done here is not doing it: building the tree and
@@ -969,8 +1154,8 @@ mod tests {
         let heads = doc.get_heads();
         let saved = doc.save();
 
-        let first = survey(&Notes.resources(&doc));
-        let second = survey(&Notes.resources(&doc));
+        let first = survey(&notes(&doc));
+        let second = survey(&notes(&doc));
 
         assert_eq!(first, second);
         assert_eq!(
@@ -1014,7 +1199,7 @@ mod tests {
         let env = dispatched.envelope().clone();
         assert_eq!(env.actor.as_deref(), Some(caller));
         let context = env.context.as_ref().expect("door supplies provenance");
-        assert_eq!(context.action_label, "Star");
+        assert_eq!(published_verb(context), "star");
         assert_eq!(
             context
                 .resource
@@ -1071,7 +1256,7 @@ mod tests {
         .expect("door action");
 
         let context = dispatched.envelope().context.as_ref().expect("context");
-        assert_eq!(context.action_label, "Star");
+        assert_eq!(published_verb(context), "star");
         assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
         assert_eq!(
             context.group.as_ref().map(|group| group.id.as_str()),
@@ -1245,7 +1430,18 @@ mod tests {
 
     /// Read the durable change the door just committed back from its message,
     /// and require it to carry both the resource's own context and the run's.
-    fn assert_recorded_within_run(doc: &mut AutoCommit, label: &str) {
+    /// The published action an entry names, with the resource kind it was
+    /// published on.
+    fn published_verb(context: &ActionContext) -> &str {
+        let Some(crate::Did::Verb(verb)) = &context.what else {
+            panic!("a verb: {context:?}");
+        };
+        assert_eq!(verb.action.kind, "notes.note");
+        assert!(!verb.action.app.is_empty(), "the app is filled in");
+        &verb.action.action
+    }
+
+    fn assert_recorded_within_run(doc: &mut AutoCommit, action: &str) {
         let heads = doc.get_heads();
         let change = doc
             .get_change_by_hash(&heads[0])
@@ -1255,7 +1451,7 @@ mod tests {
             .message()
             .and_then(ActionContext::from_change_message)
             .expect("the change carries its semantic provenance");
-        assert_eq!(context.action_label, label);
+        assert_eq!(published_verb(&context), action);
         assert_eq!(
             context
                 .resource
@@ -1321,7 +1517,7 @@ mod tests {
             Some("agent-run:7"),
             "the replicated envelope carries the run too"
         );
-        assert_recorded_within_run(&mut doc, "Star");
+        assert_recorded_within_run(&mut doc, "star");
     }
 
     /// Both typed-argument entry points record the run's context: the
@@ -1345,7 +1541,7 @@ mod tests {
             &mut transport,
         )
         .expect("an ordinary value runs");
-        assert_recorded_within_run(&mut doc, "Edit");
+        assert_recorded_within_run(&mut doc, "edit");
 
         invoke_json_confirmed(
             &mut doc,
@@ -1358,7 +1554,7 @@ mod tests {
         )
         .expect("a confirmed destructive value runs");
         assert_eq!(stored_title(&doc).as_deref(), Some(""));
-        assert_recorded_within_run(&mut doc, "Edit");
+        assert_recorded_within_run(&mut doc, "edit");
     }
 
     fn effective_confirmation_reads_every_argument_form() {

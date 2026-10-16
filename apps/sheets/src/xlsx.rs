@@ -1,8 +1,8 @@
 //! Spreadsheet interchange: the [`SheetTable`] Sheets imports and exports, and
 //! Excel `.xlsx` import and export.
 //!
-//! Both package formats go through qdoc's codecs ([`qdoc_codecs::XlsxCodec`] here,
-//! [`qdoc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
+//! Both package formats go through tilo-doc's codecs ([`tilo_doc_codecs::XlsxCodec`] here,
+//! [`tilo_doc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
 //! shared zip-bomb and DTD/XXE bounds into plain cells, never through a
 //! dense grid, and only then materialised — within
 //! [`MAX_MATERIALIZED_SLOTS`] — as a table. The exchange unit is a dense grid
@@ -16,12 +16,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use qdoc::sheet::a1::{make_ref, parse_ref};
-use qdoc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
-use qdoc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
-use qdoc_codecs::{ParsedSheet, XlsxCodec};
+use tilo_doc::sheet::a1::{make_ref, parse_ref};
+use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
+use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
+use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
-use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
+use crate::model::{CellFormat, CellValue, format_number_general};
+use tilo_locale::DateStyle;
 
 /// The most grid slots (rows plus the cells of every row, up to its last
 /// populated column) one imported tab may materialise into a [`SheetTable`].
@@ -125,7 +126,16 @@ impl SheetTable {
 /// (including one over the zip-bomb bounds or carrying a DTD), or a tab
 /// spans more than [`MAX_MATERIALIZED_SLOTS`].
 pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let parsed = XlsxCodec::parse(&read_file(path)?)?;
+    parse_xlsx(&read_file(path)?)
+}
+
+/// Read every sheet of the `.xlsx` workbook `bytes` into tables.
+///
+/// # Errors
+///
+/// As [`read_xlsx`], for a package that is already read.
+pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
+    let parsed = XlsxCodec::parse(bytes)?;
     // Excel stores dates as serial numbers; the cell's number format is the
     // only sign one is a date.
     let dates = parsed
@@ -366,7 +376,7 @@ pub(crate) fn export_cell(
     }
 }
 
-/// A snapshot of `tables` for qdoc's exporters, each cell written by
+/// A snapshot of `tables` for tilo-doc's exporters, each cell written by
 /// [`export_cell`] with the style `style_for` picks for its format.
 pub(crate) fn snapshot_of(
     tables: &[SheetTable],
@@ -393,8 +403,8 @@ pub(crate) fn snapshot_of(
         })
         .collect();
     WorkbookSnapshot {
-        schema: qdoc::sheet::schema::SHEET_SCHEMA_ID.to_string(),
-        schema_version: qdoc::sheet::schema::SHEET_SCHEMA_VERSION,
+        schema: tilo_doc::sheet::schema::SHEET_SCHEMA_ID.to_string(),
+        schema_version: tilo_doc::sheet::schema::SHEET_SCHEMA_VERSION,
         sheets,
         properties: BTreeMap::new(),
     }
@@ -411,6 +421,16 @@ pub(crate) fn snapshot_of(
 /// Returns an error if the package can't be assembled or `path` can't be
 /// written.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
+    write_file(path, &xlsx_bytes(tables)?)?;
+    Ok(())
+}
+
+/// Tables as the bytes of an `.xlsx` workbook, as [`write_xlsx`] writes it.
+///
+/// # Errors
+///
+/// Returns an error if the package can't be assembled.
+pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let mut styles: Vec<CellStyle<'static>> = Vec::new();
     let snap = snapshot_of(
         tables,
@@ -435,8 +455,7 @@ pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     if !styles.is_empty() {
         preserved.insert("xl/styles.xml".to_string(), cell_styles(&styles));
     }
-    write_file(path, &XlsxCodec::export_snapshot(&snap, &preserved)?)?;
-    Ok(())
+    Ok(XlsxCodec::export_snapshot(&snap, &preserved)?)
 }
 
 /// The bytes of a file a chooser named.
@@ -462,7 +481,7 @@ pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), tilo_files::Fs
 
 /// Map our format to an Excel number-format code string.
 fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
-    use crate::model::Currency;
+    use tilo_locale::Currency;
     Some(match fmt {
         CellFormat::Number => "#,##0.00",
         CellFormat::Percent => "0.00%",
@@ -481,18 +500,11 @@ fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
     })
 }
 
-/// Render a cell value through a format — used by callers building a
-/// `SheetTable` from already-computed values where they want the display
-/// string rather than the numeric raw (e.g. the CSV path).
-pub fn display(value: &CellValue, fmt: CellFormat) -> String {
-    format_value(value, fmt)
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::model::Currency;
+    use tilo_locale::Currency;
 
     /// XLSX values/formats, colliding tab names, formulas and formula normalisation.
     #[test]

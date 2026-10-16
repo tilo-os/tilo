@@ -4,11 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -20,8 +15,7 @@ use tilo_ui::ColorCompat;
 use tilo_ui::Widget;
 use tilo_ui::widget::ColorPicker;
 use vello::peniko::Color;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Ime, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Ime, Modifiers, WindowEvent};
 
 fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
     let mut taffy = TaffyTree::<()>::new();
@@ -42,13 +36,6 @@ fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
         .unwrap();
     (picker as &mut dyn Widget).apply_layout(&taffy, root_node, vello::kurbo::Point::ZERO);
     (taffy, root_node)
-}
-
-/// Synthesise a `DeviceId`. Winit doesn't expose a public
-/// constructor; zero-init is the project convention (see
-/// `color_picker.rs` unit tests).
-fn synth_device_id() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
 }
 
 #[allow(
@@ -76,7 +63,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -106,7 +93,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -136,16 +123,13 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let center_x = f64::midpoint(hex_rect.x0, hex_rect.x1);
         let center_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
 
-        let move_ev = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
-            position: PhysicalPosition::new(center_x, center_y),
-        };
+        let move_ev = tilo_ui::synthetic_input::cursor_moved(center_x, center_y);
         (&mut picker as &mut dyn Widget).handle_event(
             &move_ev,
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -156,17 +140,13 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
 
         // The picker proposes focus on its own node id (the App needs that to
         // blur sibling widgets); set_focus(true) then redirects onto the input.
-        let press_ev = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let press_ev = tilo_ui::synthetic_input::mouse_press();
         (&mut picker as &mut dyn Widget).handle_event(
             &press_ev,
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -206,21 +186,14 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let hex_rect = picker.hex_input_rect();
         let in_x = f64::midpoint(hex_rect.x0, hex_rect.x1);
         let in_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
-        let move_in = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
-            position: PhysicalPosition::new(in_x, in_y),
-        };
-        let press = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let move_in = tilo_ui::synthetic_input::cursor_moved(in_x, in_y);
+        let press = tilo_ui::synthetic_input::mouse_press();
         (&mut picker as &mut dyn Widget).handle_event(
             &move_in,
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -233,7 +206,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -248,17 +221,13 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             "precondition: input must be focused after click-in"
         );
 
-        let release = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
+        let release = tilo_ui::synthetic_input::mouse_release();
         (&mut picker as &mut dyn Widget).handle_event(
             &release,
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -272,16 +241,13 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let sv = picker.hex_input_rect();
         let out_x = sv.x0 - 10.0;
         let out_y = 8.0;
-        let move_out = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
-            position: PhysicalPosition::new(out_x, out_y),
-        };
+        let move_out = tilo_ui::synthetic_input::cursor_moved(out_x, out_y);
         (&mut picker as &mut dyn Widget).handle_event(
             &move_out,
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -294,7 +260,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

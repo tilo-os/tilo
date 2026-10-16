@@ -141,7 +141,7 @@ impl Histogram {
             ..Default::default()
         };
         CartesianPlot::new(vec![series])
-            .styled(style)
+            .with_style(style)
             .titled(self.title)
     }
 

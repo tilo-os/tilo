@@ -1,7 +1,10 @@
 # Build a Tilo app
 
-Install the `tilo-app` CLI once. It needs rustup and nothing else: no Tilo
-checkout, no capnp, and no system development packages.
+Install the `tilo-app` CLI once. It needs rustup and Python 3.11 or newer
+and nothing else: no Tilo checkout, no capnp, and no system development
+packages. Building the SDK stages its pinned fonts with a Python script;
+macOS's own `/usr/bin/python3` is too old, and `brew install python` provides
+one (or name an interpreter with `$PYTHON`).
 
 ```bash
 cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
@@ -131,8 +134,10 @@ development packages. Wayland, X11 and xkbcommon are loaded when the app
 starts, and fonts are found without fontconfig's C library. The first Cargo
 command inside the app installs the compiler its `rust-toolchain.toml` pins,
 through rustup. An app's tests lay out text, so `check` and `test` need one
-installed font; every desktop has several, and on a bare machine or container
-`check` names the package (`google-noto-sans-fonts` on Fedora,
+installed font; every desktop has several (`check` looks in the XDG font
+directories, macOS's `/System/Library/Fonts`, `/Library/Fonts` and
+`~/Library/Fonts`, and the Windows font folder), and on a bare machine or
+container `check` names the package (`google-noto-sans-fonts` on Fedora,
 `fonts-noto-core` on Debian and Ubuntu).
 
 A thin Tilo OS package, which `tilo-app package` builds by default, links the
@@ -164,8 +169,10 @@ Generated applications depend on `tilo-app` (normally under the concise Rust
 name `ui`), never directly on the internal `ui-core` package. `tilo-app` is not
 a reduced or declarative-only widget set: it re-exports the complete layout,
 retained-widget, canvas, custom-painting, native-view and GPU surface API.
-Applications keep full control of presentation and composition. The boundary
-exists so tooling can prove that an application participates in Tilo actions,
+Applications control their content and composition, not the theme. Colours,
+fonts, borders, shadows and motion come from theme tokens that the system and
+the user own, so a user's theme applies to every app. The boundary exists so
+tooling can prove that an application participates in Tilo actions,
 collaboration, history, accessibility and lifecycle contracts. `ui-core` is
 reserved for the shell and framework implementation.
 
@@ -175,10 +182,10 @@ For a zero-argument control, keep ordinary closure ergonomics with
 `Button::on_effect` or `Button::on_view`:
 
 ```rust
-let refresh = ui::Button::new("refresh", "Refresh", None)
+let refresh = ui::Button::new("refresh", "Refresh")
     .on_effect(move || refresh_from_service());
 
-let inspector = ui::Button::new("toggle-inspector", "Toggle inspector", None)
+let inspector = ui::Button::new("toggle-inspector", "Toggle inspector")
     .on_view(move || inspector_state.toggle());
 ```
 
@@ -189,21 +196,23 @@ Use `on_effect` for external work and `on_view` for transient presentation
 state; use the domain path below for document mutations, parameters, explicit
 contracts, or an action shared by several controls.
 
-### The domain path: bind a declared action
+### The domain path: bind a field or a verb
 
 An interactive control binds to the same action that search, scripts and
-agents see:
+agents see. In a framework view that is a path or a verb, never an id string:
 
 ```rust
-let resource = document_resource(&model);
-let save = ui::tilo_actions::ActionBinding::unit_for(&resource, "save")?;
-let button = ui::Button::new("save", "Save", None).on_action(save);
+let p = cx.paths();
+let title = cx.input(p.title);                                   // field edits
+let pinned = cx.checkbox("notes-pinned", p.pinned);
+let save = cx.button("notes-save", Notes::SAVE.invoke());   // a verb
 ```
 
-`ActionBinding::unit_for` looks up the actual `ActionSpec` on the resource, so
-the UI cannot silently drift to a parallel contract. Parameterized controls
-use `ActionBinding::new` to map typed control values to JSON arguments, or
-`static_json_for` for a fixed, strictly validated argument object.
+Controls look the action up on the resource's published tree by its key, so
+the UI cannot drift to a parallel contract; one bound to something the
+resource does not publish fails `TestApp` and `tilo-app check`. A control
+built outside the view (a row a table creates on demand) binds through
+`cx.actions()`: `actions.bind(control, Notes::OPEN.map(..))`.
 
 The control emits only an inert typed intent. The app host re-resolves its
 stable address against the fresh resource tree, applies current permissions
@@ -213,6 +222,8 @@ confirmation flow used by the command palette. Document actions use the shared
 collaboration and undo-history executor. Effects and background jobs use the
 same admitted/progress/terminal lifecycle as remote callers. Do not duplicate
 the operation in `on_click`, a private command enum, or a second mutation path.
+[docs/action-model-recipe.md](action-model-recipe.md) walks through the model,
+verbs, views, forms and surfaces.
 
 ### Command palettes come from resources
 
@@ -224,7 +235,13 @@ list or callback table. If availability changes, return the updated resource
 tree. The host resolves the selected address again immediately before
 execution.
 
-### Custom widgets retain custom rendering
+### Custom widgets draw with the system theme
+
+An app can build its own widgets, down to fully custom GPU-accelerated drawing,
+but ordinary tasks should use the toolkit widgets. The goal is a custom widget
+that still looks native: build it from the system's primitives and draw
+it with the theme's real colours, fonts, borders and shadows rather than
+hard-coded values. The user stays in control of the theme.
 
 Custom rendering follows the same contract without being forced into a stock
 widget. A custom `Widget` can own `ActionEmitter<T>`, call `emit(value)` from
@@ -234,7 +251,8 @@ its pointer, keyboard or accessibility path, return queued intents from
 accessibility semantics and route semantic activation to the same emitter.
 Those semantics and declared resources are projected into the searchable,
 agent-operable tree. Canvas geometry, native views, shaders and bespoke input
-remain app-defined; only the meaning and route of an interaction are explicit.
+remain app-defined; the theme they draw with and the meaning and route of an
+interaction do not.
 
 ### Certification requirements
 
@@ -664,13 +682,21 @@ complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 30 ms quiet period.
+When the debug build is too slow to judge what you are changing (painting,
+video, large documents), `tilo-app dev --release` builds the app with the
+`thin-app` profile thin Tilo builds ship with: release optimisation without
+LTO, so it still links quickly and reloads in place. `--profile NAME` picks any
+Cargo profile; one other than `dev` or `thin-app` restarts the app on each
+change instead, as an LTO profile cannot link the toolkit dynamically.
+`scripts/agent-loop/session.py start APP --release` passes it on.
 `tilo-app dev --platform web` runs the same loop in the browser
 ([The web](#the-web)).
 
 Every template starts on the app framework (`ui::framework`): the app's
-state is a `#[derive(Model)]` resource, every edit is an `#[action]` method in
-its `#[resource]` impl, and `impl ResourceApp` supplies a view that binds
-controls to those actions. `main` is one line, `ui::framework::run::<App>()`,
+state is a `#[derive(Model)]` resource whose fields are edited at their typed
+paths, operations beyond setting a field are `#[action]` verbs in its
+`#[resource]` impl, and `impl ResourceApp` supplies a view that binds controls
+to those paths and verbs. `main` is one line, `ui::framework::run::<App>()`,
 which provides the live window, durable record storage, sync and
 collaboration, a History mode, per-author undo, permissions, the action
 palette, agents, scripts, search, and the standard `--shots`,
@@ -683,9 +709,9 @@ generated template also includes a native-contract test, so ordinary
 invalid virtual-collection metadata, or unstable synthetic identity.
 Interaction-specific states remain covered by `tilo-app scenario run --audit`.
 
-`starter` binds a profile resource to a text field, checkbox, number field,
-slider and dropdown (`cx.input`, `cx.checkbox`, and `cx.control` for any other
-toolkit control); `data` begins with a selectable `DataTable` over a
+`starter` binds a profile resource's fields by path to a text field,
+checkbox, number field, slider and dropdown (`cx.input`, `cx.checkbox`, and
+`cx.control` for any other toolkit control); `data` begins with a selectable `DataTable` over a
 100-million-row sparse model with a background page request, stale-result
 suppression, targeted row notifications, and retained cell buttons that open
 rows through the resource (`cx.actions()` binds controls a table, list or tree
@@ -720,10 +746,10 @@ tilo-app shot --viewport 1280x800
 tilo-app shot --output artifacts/empty.png --scenario empty
 ```
 
-Arguments after `--` are forwarded as app-defined screenshot options. Use
-`shot_root` only when a deterministic scenario needs different seeded data,
-or `shot_handler` for an app-specific capture pipeline. The default is the
-production widget tree at the requested viewport and active shot theme.
+Arguments after `--` are forwarded as app-defined screenshot options. A
+capture is the production view at the requested viewport and active shot
+theme; a scenario stages it through the resource's actions and its views'
+stage hooks.
 
 Build an installable package from the same app root with:
 
@@ -826,7 +852,7 @@ dynamic linking, so an app's web build is the runtime bundle with the app
 linked in and registered:
 
 ```bash
-tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, app/#/me/<id>
 tilo-app dev --platform web        # serve it, rebuild and reload on save
 tilo-app package --target web      # the bundle in the immutable layout Cloud serves
 ```
@@ -840,6 +866,24 @@ workspace's target directory, so the runtime compiles once and later builds
 relink only what changed. `build --target web --bundle app` is the same
 build; Tilo's own apps also build into the shared desktop bundle
 (`--bundle desktop`).
+
+The core the build links exports what the app imports. The core the registry
+serves is built for Tilo's own web apps, so a package that imports something
+only this app uses (a generic instantiation from `serde_json`, say) can fail
+to link in a page that runs that core; the page names the missing symbols.
+
+`dev --platform web` serves the page and rebuilds after every save. An edit to
+the app relinks only its module; the page notices the finished build and
+reloads into the same record. The record's state lives in the browser's
+storage, not in the module, so the document survives the new code. An edit
+to the SDK rebuilds the core too. `--bind` picks another address.
+
+The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
+Node.js and brotli, which the builder image `tilo-app add ci` uses has.
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
+example a wrapper that runs it on a remote machine and brings `target/web`
+back. A web package's `[budget]` applies to its module as it
+does to a thin binary.
 
 ### Android
 
@@ -907,9 +951,8 @@ to the app the host prepared.
 | Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
 | Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
 
-Apps do not depend on `settings-store`, `app-state`, `xdg-paths` or
-`atomic-file`: those are the SDK's internals (the last two are deprecated
-shims over `tilo-paths` and `tilo_files::native::atomic`). The exceptions are
+Apps do not depend on `settings-store` or `app-state`: those are the SDK's
+internals. The exceptions are
 the Settings app, which owns the settings document, and Notes' capture
 fault-injection scenario, which locates its record on disk. Desktop-only code
 that must name a native path uses `tilo_paths` and `tilo_files::native`
@@ -944,22 +987,30 @@ fn main() {
 }
 ```
 
-The library declares the resource, its actions, and the view:
+The library declares the model, its verbs, and the view:
 
 ```rust
 use ui::prelude::*;
 
-#[derive(Model, Default)]
+#[derive(Model, Default, Clone, PartialEq)]
 pub struct List {
     pub title: String,
+    pub books: Collection<Book>,
+}
+
+#[derive(Model, Default, Clone, PartialEq)]
+pub struct Book {
+    #[model(label)]
+    pub title: String,
+    pub read: bool,
 }
 
 #[resource(kind = "reading.list", label = "Reading list")]
 impl List {
-    /// Rename the list.
+    /// Add a book.
     #[action]
-    pub fn rename(&mut self, title: String) {
-        self.title = title;
+    pub fn add(&mut self, cx: &mut ActionCx, title: String) {
+        self.books.push(cx.id(), Book { title, read: false });
     }
 }
 
@@ -971,20 +1022,32 @@ impl ResourceApp for App {
     const TITLE: &'static str = "Reading list";
 
     fn view(cx: &mut ViewCx<List>) -> Element {
+        let p = cx.paths();
+        let next = cx.form::<list::Add>();
+        let books = cx.each(|list| &list.books, |row| {
+            let p = row.paths();
+            Box::new(ui::row![row.checkbox("list-read", p.read), row.input(p.title)])
+        });
         Box::new(ui::column![
-            cx.input(|list| list.title.clone(), List::RENAME).with_id("title"),
+            cx.input(p.title).with_id("title"),
+            ui::row![cx.input(next.paths().title), cx.button("list-add", next.submit())],
+            books,
         ])
     }
 }
 ```
 
+Fields are edited where they are (`cx.input(p.title)` submits
+`p.title.replace(..)`), so a setter verb is never written. The form is the
+`add` verb's parameters, local to the window until its button submits them
+as one invocation.
+
 The same declaration is shared by the real event loop, screenshots, the
 headless driver and `TestApp`. Use toolkit widgets for controls so focus,
 keyboard input, IME positioning, accessibility, theme behavior, and testing
-metadata remain one implementation rather than app-local replicas. The
-toolkit-level `LaunchSpec::new(id, app_root)` path, where the library returns a
-`Box<dyn Widget>` root itself, remains available for roots that manage their
-own documents.
+metadata remain one implementation rather than app-local replicas. A custom
+widget takes part as a surface (`ResourceSurface`) of the app's resource;
+every launch is the framework app's.
 
 Compose ordinary heterogeneous children with the layout macros instead of
 writing one allocation step per child:
@@ -1005,8 +1068,8 @@ pub fn app_root() -> Box<dyn Widget> {
             Checkbox::new("project-pinned", "project-pinned"),
         ),
         ui::row![
-            Button::new("cancel", "cancel-label", None),
-            Button::new("save", "save-label", None).primary(),
+            Button::new("cancel", "cancel-label"),
+            Button::new("save", "save-label").role(ButtonRole::Primary),
         ],
     ])
 }
@@ -1043,11 +1106,8 @@ Declare a semantic control once. Pointer, direct-touch tap, keyboard,
 accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
-let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
-Button::new("save", "app-save", None)
-    .on_action(save)
-    .primary()
-    .fit_content(32.0)
+cx.button("app-save", Document::SAVE.invoke())
+    .role(ButtonRole::Primary)
 ```
 
 The host detects the current `InteractionEnvironment` and propagates it through
@@ -1398,9 +1458,9 @@ let root: Box<dyn Widget> = Box::new(graph.widget(&theme)?);
 let selected = graph.node("save")?;
 
 graph.update_node("save", |node| {
-    if let UiNode::Button { label, style, .. } = node {
+    if let UiNode::Button { label, role, .. } = node {
         *label = "Publish".into();
-        *style = UiButtonStyle::Danger;
+        *role = UiButtonRole::Destructive;
     }
 })?;
 
@@ -1517,6 +1577,32 @@ host resolves the action back to the shortest enabled visible semantic path,
 so the ordinary retained UI updates from the same state transition a human
 would have caused.
 
+#### Tabs belong to the desktop
+
+An app shows one thing: a page, a file, a conversation. Never build a tab
+strip, a list of open documents or a "switch document" control into an app.
+Several things side by side are several instances of the app, and the shell
+groups them as tabs of a window group, with one tab model, one set of chords
+and one closed-tab history for every app.
+
+When the app wants another of itself next to it — a link opened in a new tab,
+"open beside", a file from a project tree — call
+`ui::shell_tabs::open_beside(Some(uri), background)`. The shell launches
+another instance right after this app's tab, opening `uri` (a scheme the
+manifest declares under `[providers] schemes`), in front or, with
+`background`, behind the current tab. `ui::shell_tabs::close_this()` closes
+the app's own tab through the desktop's tab lifecycle, so it can be reopened.
+Each instance keeps its own record; what it shows comes back on restart or
+reopen through its continuity metadata, not through a session file of the
+app's own.
+
+Ctrl+T (another instance), Ctrl+W (close this tab) and Ctrl+Shift+T (reopen
+the last closed tab) — Cmd on macOS — reach these requests whenever the
+focused widget leaves the chord unhandled; Ctrl+Tab and Ctrl+Shift+Tab are
+the shell's own tab bindings. Outside a Tilo session the same calls open a
+new window of the app and close this one. The `tab.open-beside` shell action
+is the same open for agents and scripts.
+
 ### One driveability surface
 
 Every operation must be reachable through the resource/action catalogue. Use
@@ -1568,9 +1654,6 @@ facts that let a caller plan safely:
 - `execution`: immediate, background, or streaming, with explicit cooperative
   cancellation. Long work reports monotonic progress and one terminal state;
   every streaming item is validated against the stream's declared JSON Schema.
-- `discovery`: live, launchable, or durable. Instance operations normally stay
-  live; an app-level action may opt into launchable discovery when it can run
-  after the shell starts the installed app.
 - `result`: no value, JSON checked by JSON Schema, a resource address, or the
   broker-owned job identity.
 
@@ -1601,7 +1684,42 @@ not invalidate an address. Duplicate resource or semantic IDs fail closed;
 they are never repaired with an ordinal suffix that could target the wrong
 thing.
 
-A representative effect looks like this:
+A framework app declares its effects as one typed enum and answers them where
+the state they need lives:
+
+```rust
+#[derive(Clone, Debug, Effect)]
+#[effect(operation = "mail.effects")]
+pub enum MailEffect {
+    /// Archive conversation.
+    #[effect(job)]
+    Archive { conversation: String },
+}
+
+// In the view (a custom surface implements `ResourceSurface<R, MailEffect>`
+// and answers in `effect(&mut self, ..)` instead).
+cx.effects(move |effect: MailEffect, cx| match effect {
+    MailEffect::Archive { conversation } => Ok(cx.thread(
+        move |progress| server.archive(&conversation, &progress),
+        |(), archived, cx| {
+            cx.submit(Mail::MARK_ARCHIVED.with(archived?));
+            Ok(Effected::done())
+        },
+    )),
+});
+let archive = cx.effect_button("Archive", &MailEffect::Archive { conversation: id });
+```
+
+Each variant is a published `Effect` action with typed parameters; its options
+(`job`, `cancellable`, `returns`, `destructive`, `permission = "read"`) are its
+contract. The framework publishes the vocabulary beside the resource's
+actions, with the availability the handler reports now (`EffectStatus`), and
+routes the palette, agents, scripts and bound controls to the handler as a
+typed value. A job reports progress through its `Progress`, finishes on the UI
+thread, and changes the document only through actions. A projection queued in
+the document (an outbox) is drained with `ViewCx::drain`.
+
+A widget outside the framework describes an effect with an `ActionSpec`:
 
 ```rust
 ActionSpec::operation(
@@ -1619,14 +1737,12 @@ ActionSpec::operation(
 })
 ```
 
-For a small app with one launchable resource, wrap its ordinary retained root
-with `ui::widget::resource_actions::immediate` or `background`. The toolkit
-owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
-failure conversion; the app supplies only its resource contract and operation
-closure. The generated `async` app uses this path for its effect action inside a
-framework view, and imports action types through
-`ui::tilo_actions`, so a generated project contains no copied host
-implementation and needs no direct internal actions dependency.
+For a small widget root with one launchable resource,
+`ui::widget::resource_actions::immediate` owns the forwarding widget,
+operation dispatch and failure conversion; the app supplies only its resource
+contract and operation closure. An app on the framework declares its effects
+with `#[derive(Effect)]` instead, and runs long work as a job through the
+`EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::start_operation`, the single entry: return
@@ -1893,8 +2009,9 @@ reach the connection. Tests stand in for the session with
 
 ### Localization
 
-`tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry
-installed by the app's view. Add a catalog and wire it into that registry in one command:
+`tilo-app new` creates `locales/en-US.ftl` and a generated `src/locales.rs`
+whose `CATALOG` the app returns from `ResourceApp::catalog`; every host loads it
+before building the view. Add a catalog and wire it into that registry in one command:
 
 ```bash
 tilo-app add locale de-DE
@@ -1902,12 +2019,11 @@ tilo-app add locale de-DE
 
 The generated `src/locales.rs` uses `include_str!`, so packaging cannot omit a
 registered catalog. `tilo-app` only rewrites a registry carrying its generated
-header. It recognizes and migrates the previous generated inline
-`install_catalog` block, but an app-owned localization module is left untouched
-and must register additional catalogs in its own setup.
+header; an app-owned localization module is left untouched and must register
+additional catalogs in its own setup.
 
-Installation validates every locale and Fluent resource before replacing the
-live catalog. The process locale accepts BCP-47 and POSIX forms such as `de`,
+A host's live catalog is joined, never replaced; on a thread with none, the
+user's locale is selected. The process locale accepts BCP-47 and POSIX forms such as `de`,
 `de-DE`, and `de_DE.UTF-8`; lookup tries the active locale's language, then the
 source catalog, then exposes the untranslated key so missing messages remain
 debuggable.
@@ -1916,7 +2032,7 @@ Pass message ids—not eagerly translated strings—to retained controls:
 
 ```rust
 let title = Text::new("project-title");
-let save = Button::new("save", "save-project", None);
+let save = Button::new("save", "save-project");
 let name = TextInput::local()
     .with_accessible_name("project-name")
     .with_placeholder("project-name-placeholder");
@@ -1924,6 +2040,14 @@ let name = TextInput::local()
 
 `Text`, fitted `Button` labels, input placeholders and accessible names,
 collection names, and table headers resolve through the same catalog.
+
+`tilo-app check` fails on a label key the catalog lacks and on a shipped
+translation missing a source message.
+
+History renders each change from the app's catalogue by convention:
+`<app>-<type>-<field>` for a field edit, `<app>-<verb>` for a verb, where
+`<app>` is the last part of the app id (`bookmarks-bookmark-favorite`,
+`bookmarks-add`); `tilo-app check` lists the missing ones.
 `I18nManager::set_locale("de-DE")` advances one observable catalog revision;
 the next normal synchronization pass invalidates paint, intrinsic measurement,
 and accessibility together. `Text::from_state` also reruns its formatter on a
@@ -2245,7 +2369,8 @@ keeps its own focus, input, animation, inspection, and accessibility behavior:
 let actions = ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0))
     .with_widget(|row: &ResultRow, _visible_index| {
         let id = format!("open-{}", row.id);
-        Box::new(Button::new(&id, "Open", Some("open-result")))
+        let row_id = row.id.clone();
+        Box::new(Button::new(&id, "Open").on_view(move || open(&row_id)))
     });
 ```
 
@@ -2288,7 +2413,7 @@ let list = VirtualList::from_items(
     |contact, _index, _key| {
         Box::new(ui::row![
             Text::new(&contact.name),
-            Button::new("message", "Message", None),
+            Button::new("message", "Message"),
         ])
     },
 )?
@@ -2510,7 +2635,7 @@ let tree = TreeView::from_model(files)
     .with_row_delegate(|model, id, _depth| {
         Box::new(ui::row![
             Text::new(model.label(id).unwrap_or("")),
-            Button::new("more", "More actions", None),
+            Button::new("more", "More actions"),
         ])
     });
 ```
@@ -2558,11 +2683,40 @@ over pixel coordinates: inspect roles, names, selected/expanded state, and
 focus after dispatching keyboard or pointer input. Use deterministic rendering
 only for visual behavior that semantics cannot express.
 
+`tilo-app check` runs the app contract beside the tests: verbs that read a
+clock, randomness, files, the network or another process, label keys the
+catalog lacks, incomplete shipped translations, controls bound to something
+the resource does not publish, and a public surface that differs from the
+committed `surface.toml` (write it with `tilo-app surface`; a stored field
+read differently needs a new `#[resource(version = N)]`) all fail it.
+
+### Confirming destructive actions in tests
+
+A destructive verb or a removal never applies before the person agrees, from
+whatever path it comes: a button, a menu, the palette, an agent, or an editor
+applying its own edit now (`Dispatcher::submit_now` / `apply_now` hand it to
+the host, which asks). Do not give the app a dialog of its own for this; the
+host asks. A test confirms what the host asks with one call, through the real
+dialog:
+
+```rust
+app.harness().click_named("delete-sheet")?;
+assert_eq!(app.state().sheets.len(), 2, "nothing is removed before confirming");
+app.confirm_asked().expect("the host asks first");
+assert_eq!(app.state().sheets.len(), 1);
+```
+
+`TestApp::asking()` names what is being asked (and the text that confirms
+it), `TestApp::confirm_asked()` confirms it and settles. A test on the live
+`ui::App` has the same `asking()` / `confirm_asked()`. A unit test of a
+surface with a detached dispatcher (no host) takes what it asked with
+`Dispatcher::take_asked()` and applies those actions itself, as the host
+would once confirmed.
+
 The toolkit's debug and capture switches are `TILO_UI_*` environment
 variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
 rendering ones are listed in [`performance-flags.md`](performance-flags.md).
-Read one from app or test code with `ui::env::var`. The old `QUICK_UI_*`
-names still work and warn once per variable; new scripts use the new names.
+Read one from app or test code with `ui::env::var`.
 
 For a post-layout inspection without opening a window, write the widget and
 accessibility tree directly. `inspect` writes `inspect.json` in the app root by

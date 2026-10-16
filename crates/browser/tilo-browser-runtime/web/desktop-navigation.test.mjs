@@ -84,25 +84,40 @@ test('close deduplicates and settles only when the route leaves the snapshot',as
  const orphan=pending.controller.dispatch({kind:'close',generation:'g',route});
  pending.close();await assert.rejects(orphan,/disposed/);
 });
-test('open links the app before dispatching its full id',async()=>{
- const raw={version:1,generation:'surface',entries:[],capabilities:{open:true}},sent=[],installed=[];
- let release;const linked=new Promise(resolve=>{release=resolve;});
- const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:command=>{sent.push(JSON.parse(command));return'invocation';},awaitTerminal:async()=>{},
-  install:async app=>{installed.push(app);await linked;return app==='writer'?'so.tilo.word-processor':app;},active:()=>true});
- assert.equal(nav.controller.getSnapshot().capabilities.open,true);
- const opening=nav.controller.dispatch({kind:'open',generation:'surface',app:'writer'});
- await Promise.resolve();
- assert.deepEqual(installed,['writer']);assert.deepEqual(sent,[],'nothing is opened before the app is linked');
- release();await opening;
- assert.deepEqual(sent,[{kind:'open',generation:'surface',app:'so.tilo.word-processor'}]);
- await assert.rejects(nav.controller.dispatch({kind:'open',generation:'old',app:'so.tilo.notes'}),/Stale/);
- await assert.rejects(nav.controller.dispatch({kind:'open',generation:'surface',app:''}),/Invalid application/);
- sent.length=0;
- await nav.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.ebook',record:'tab:00000000000000aa'});
- assert.deepEqual(sent,[{kind:'open',generation:'surface',app:'so.tilo.ebook',record:'tab:00000000000000aa'}],'an existing record travels with the open');
- for(const record of ['',7,null])await assert.rejects(nav.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.ebook',record}),/Invalid record/);
+test('launch is handed to the runtime as given',async()=>{
+ const raw={version:1,generation:'surface',entries:[],capabilities:{launch:true}},sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:command=>{sent.push(JSON.parse(command));},active:()=>true});
+ await nav.controller.dispatch({kind:'launch',generation:'surface',app:'so.tilo.notes'});
+ assert.deepEqual(sent,[{kind:'launch',generation:'surface',app:'so.tilo.notes'}]);
+ await assert.rejects(nav.controller.dispatch({kind:'launch',generation:'old',app:'so.tilo.notes'}),/Stale/);
  nav.close();
- const unavailable=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},awaitTerminal:async()=>{},install:async app=>{throw Error(`application "${app}" is not available`);},active:()=>true});
- await assert.rejects(unavailable.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.nope'}),/not available/);
- unavailable.close();
+});
+
+
+test('retained activity and notification commands preserve the runtime contract', async () => {
+ const raw={version:1,generation:'g',entries:[],capabilities:{workspaceHistory:true,workspaceReplay:true,notifications:true},
+  workspaceActivity:{workspace:'7',view:'replay',playing:false,coverage:'complete',inSurface:true},
+  notifications:{active:0,retained:2,centerOpen:true}};
+ const sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:command=>sent.push(JSON.parse(command)),active:()=>true});
+ assert.equal(nav.controller.getSnapshot().workspaceActivity.inSurface,true);
+ assert.equal(nav.controller.getSnapshot().notifications.retained,2);
+ for(const view of ['catch-up','explore','replay'])
+  await nav.controller.dispatch({kind:'workspace-activity',generation:'g',workspace:'7',view});
+ await nav.controller.dispatch({kind:'notification-center',generation:'g',open:true});
+ assert.deepEqual(sent.map(command=>command.kind),['workspace-activity','workspace-activity','workspace-activity','notification-center']);
+ assert.deepEqual(sent.slice(0,3).map(command=>command.view),['catch-up','explore','replay']);
+ assert.equal(sent[3].open,true);
+ nav.close();
+});
+
+test('a snapshot read sees a move the surface made between reports',()=>{
+ let raw={version:1,generation:'g',active:{tab:'1'},entries:[]},revision=1,calls=0;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ nav.controller.subscribe(()=>calls++);
+ raw={...raw,active:{tab:'2'}};revision=2;
+ assert.equal(nav.controller.getSnapshot().active.tab,'2');
+ assert.equal(calls,1);
+ nav.controller.getSnapshot();
+ assert.equal(calls,1);
 });

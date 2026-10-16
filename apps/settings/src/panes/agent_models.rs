@@ -3,31 +3,2257 @@
 //! Tilo owns the user-facing lifecycle, while a small adapter speaks to the
 //! privileged model manager that pins Hugging Face snapshots and supervises
 //! vLLM. Settings never downloads model bytes or starts a server itself.
+//! Provider profiles are the person's `agent_providers` settings; their API
+//! keys stay in the gateway's vault. Every change is an
+//! [`AgentModelsEffect`].
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use ui::time::{Duration, Instant};
-use ui::widget::{AppModel, ModelPath};
 
-use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+pub use agent_provider_config::local::snapshot::{
+    AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
+    InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
+    LocalModelSnapshot,
 };
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use agent_provider_config::{
+    EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
+    ProviderProtocol,
+};
 use serde::{Deserialize, Serialize};
-use taffy::{NodeId, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::{Button, ProgressBar, Row, Spacer, Text, TextInput, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::tilo_resource::{self, Effect};
+use ui::time::{Duration, Instant};
+use ui::widget::{Button, ProgressBar, Row, Text, TextInput, Widget};
 use zeroize::Zeroize;
 
-use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
+use crate::effects::{SettingsEffect, effect};
+use crate::host::{Followed, PaneCx};
+use crate::i18n::{t, t_args};
+use crate::panes::accounts::{BrowserOpener, PortalOpener};
+use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
+use crate::panes::model::{PaneModel, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{
+    Item, SettingsSection, StatusTone, card, card_with_action, field_row, note, row, rows,
+    semantic_status_pill, value_row,
+};
+use ui::lock::MutexRecover as _;
 
-const SETUP_KEY: &str = "agent_models.local.setup";
-pub(crate) const CONFIRM_KEY: &str = "agent_models.local.confirm";
-const CANCEL_KEY: &str = "agent_models.local.cancel";
-pub(crate) const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
+/// The person's agent providers, as their settings hold them: the hosted
+/// ones roam with the person, those on this device or its network stay.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
+#[serde(from = "StoredProviders", into = "StoredProviders")]
+pub struct AgentProviders {
+    #[model(readonly)]
+    pub config: ProviderConfig,
+}
+
+/// [`AgentProviders`] as the settings section stores them.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct StoredProviders {
+    config: ProviderConfig,
+    hosted: agent_provider_config::HostedProfiles,
+}
+
+impl From<StoredProviders> for AgentProviders {
+    fn from(stored: StoredProviders) -> Self {
+        Self {
+            config: ProviderConfig::from_stored(stored.config, stored.hosted),
+        }
+    }
+}
+
+impl From<AgentProviders> for StoredProviders {
+    fn from(providers: AgentProviders) -> Self {
+        let (config, hosted) = providers.config.stored();
+        Self { config, hosted }
+    }
+}
+
+impl ui::storage::SettingsSchema for AgentProviders {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
+}
+
+#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
+impl AgentProviders {}
+
+/// Local models on this device and the person's model providers.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AgentModelsEffect {
+    /// Stage the accelerator drivers the recommended model needs.
+    #[effect(job, label = "Set up accelerator")]
+    SetUpAccelerator,
+    /// Show or hide what downloading the recommended model involves.
+    #[effect(view)]
+    ReviewModelDownload { show: bool },
+    /// Show or hide what downloading one in-process model involves.
+    #[effect(view, row)]
+    ReviewLocalModel {
+        #[param("The model's id")]
+        model: String,
+        show: bool,
+    },
+    /// Show one signed in-process model in Agent Models, first, at its
+    /// licence confirmation when it is not installed yet. Installs nothing.
+    #[effect(view, label = "Show local model")]
+    ShowLocalModel {
+        #[param("Signed model id, for example u2net-subject")]
+        model: String,
+    },
+    /// Download and install the recommended model or an in-process one,
+    /// accepting its license.
+    #[effect(job, label = "Install model")]
+    InstallModel {
+        #[param("The model's id")]
+        model: String,
+        #[param("The pinned revision")]
+        revision: String,
+    },
+    /// Start serving an installed model.
+    #[effect(job, row, idempotent, label = "Start model")]
+    StartModel {
+        #[param("The model's id")]
+        model: String,
+    },
+    /// Stop serving a model.
+    #[effect(job, row, idempotent, label = "Stop model")]
+    StopModel {
+        #[param("The model's id")]
+        model: String,
+    },
+    /// Install a model again after it failed.
+    #[effect(job, row, label = "Retry")]
+    RetryModel {
+        #[param("The model's id")]
+        model: String,
+        #[param("The pinned revision")]
+        revision: String,
+    },
+    /// Remove an installed model and its files.
+    #[effect(job, row, destructive, label = "Remove model")]
+    RemoveModel {
+        #[param("The model's id")]
+        model: String,
+    },
+    /// Add a hosted provider speaking `anthropic` or `openai-compatible`.
+    #[effect(label = "Add provider")]
+    AddProvider {
+        #[param("`anthropic` or `openai-compatible`")]
+        protocol: String,
+    },
+    /// Speak another protocol to a provider.
+    #[effect(row, idempotent)]
+    SetProviderProtocol {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("`anthropic` or `openai-compatible`")]
+        protocol: String,
+    },
+    /// Offer a provider to agents, or stop offering it.
+    #[effect(row, idempotent)]
+    SetProviderEnabled {
+        #[param("The provider's id")]
+        provider: String,
+        on: bool,
+    },
+    /// Name a provider, where it is, and the model agents use from it.
+    #[effect(row)]
+    SetProviderDetails {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("Its name")]
+        label: String,
+        #[param("Its endpoint URL")]
+        endpoint: String,
+        #[param("The model agents use")]
+        model: Option<String>,
+    },
+    /// Set this model's request allowance; omit both values to restore defaults.
+    #[effect(row, idempotent)]
+    SetModelRequestLimits {
+        provider: String,
+        model: String,
+        max_output_tokens: Option<u32>,
+        runtime_context_tokens: Option<u32>,
+        plan_timeout_ms: Option<u32>,
+    },
+    /// Read source context and this model's configured deployment limits.
+    #[effect(row, returns, kind = "read")]
+    InspectModelRequestLimits { provider: String, model: String },
+    /// Make a provider the one agents use unless told otherwise.
+    #[effect(row, idempotent, label = "Use by default")]
+    SetDefaultProvider {
+        #[param("The provider's id")]
+        provider: String,
+    },
+    /// Remove a provider and its stored API key.
+    #[effect(row, destructive, label = "Remove provider")]
+    RemoveProvider {
+        #[param("The provider's id")]
+        provider: String,
+    },
+    /// Store a provider's API key in this device's vault: a hosted
+    /// provider that roamed here from another device needs its own.
+    #[effect(job, row, label = "Save API key")]
+    SaveProviderKey {
+        #[param("The provider's id")]
+        provider: String,
+        #[param(secret, "The API key; what the key field holds when omitted")]
+        key: Option<String>,
+    },
+    /// Remove a provider's stored API key.
+    #[effect(job, row, destructive, label = "Remove API key")]
+    RemoveProviderKey {
+        #[param("The provider's id")]
+        provider: String,
+    },
+    /// Start adding Google Vertex AI, which signs in with Google instead of
+    /// taking an API key. Shows its setup; signs in to nothing yet.
+    #[effect(view, label = "Add Google Vertex AI")]
+    AddGoogleVertex,
+    /// Sign in with Google in the browser for Vertex AI: for the provider
+    /// being added, or again for an existing one whose sign-in ended.
+    #[effect(row, label = "Sign in with Google")]
+    SignInWithGoogle {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+    },
+    /// Stop a Google sign-in, or the setup of a provider being added.
+    #[effect(view)]
+    CancelGoogleSignIn,
+    /// Put one of the person's listed Google Cloud projects in the setup.
+    #[effect(view)]
+    ChooseVertexProject {
+        #[param("The Google Cloud project id")]
+        project: String,
+    },
+    /// Save the Vertex AI provider being added, once signed in, or change
+    /// an existing one's project, location and model.
+    #[effect(row)]
+    SetVertexProvider {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+        #[param("The Google Cloud project billed for requests")]
+        project: String,
+        #[param("The Vertex AI location; `global` when omitted")]
+        location: Option<String>,
+        #[param("The model, for example gemini-4-argon; the default when omitted")]
+        model: Option<String>,
+    },
+}
+
+fn protocol_slug(protocol: ProviderProtocol) -> &'static str {
+    match protocol {
+        ProviderProtocol::Anthropic => "anthropic",
+        ProviderProtocol::OpenAiCompatible => "openai-compatible",
+    }
+}
+
+fn protocol(slug: &str) -> Result<ProviderProtocol, String> {
+    match slug {
+        "anthropic" => Ok(ProviderProtocol::Anthropic),
+        "openai-compatible" => Ok(ProviderProtocol::OpenAiCompatible),
+        _ => Err("unsupported provider protocol".to_owned()),
+    }
+}
+
+fn token(id: &str) -> String {
+    id.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The effect `action` is for `model`.
+fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModelsEffect {
+    let id = model.package.id.clone();
+    match action {
+        ModelAction::Start => AgentModelsEffect::StartModel { model: id },
+        ModelAction::Stop => AgentModelsEffect::StopModel { model: id },
+        ModelAction::Retry => AgentModelsEffect::RetryModel {
+            model: id,
+            revision: model.package.revision.clone(),
+        },
+        ModelAction::Remove => AgentModelsEffect::RemoveModel { model: id },
+    }
+}
+
+/// Answer `effect`: the manager's work runs on a worker, then the models
+/// are read again; provider changes write the person's settings.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per effect of the area, each answered where it is read"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AgentModelsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let shared = app.agent_models().model();
+    let mut model = shared.borrow_mut();
+    model.changed = true;
+    match effect {
+        AgentModelsEffect::InspectModelRequestLimits {
+            provider,
+            model: id,
+        } => {
+            let config = model.providers.get().config.clone();
+            let selected = config
+                .profiles
+                .iter()
+                .find(|item| item.id == provider)
+                .and_then(|profile| profile.models.iter().find(|item| item.id == id))
+                .ok_or_else(|| t("agent-model-gone"))?;
+            Ok(Effected::value(serde_json::json!({
+                "provider":provider, "model":id,
+                "source_context_tokens":selected.context_window,
+                "request_limits":selected.request_limits,
+                "plan_timeout_ceiling_ms":selected.request_limits.as_ref()
+                    .and_then(|limits| limits.plan_timeout_ms).unwrap_or(60_000),
+                "caller_may_request_shorter_deadline":true,
+                "runtime_context_attested":false, "prompt_fit_proven":false
+            })))
+        }
+        AgentModelsEffect::ReviewModelDownload { show } => {
+            model.reviewing.set(show);
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ReviewLocalModel { model: id, show } => {
+            let installable = model
+                .snapshot
+                .in_process_model(&id)
+                .is_some_and(InProcessLocalModel::installable);
+            if show && !installable {
+                return Err(t("agent-notice-inprocess-changed"));
+            }
+            model.reviewing_local.set(show.then_some(id));
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ShowLocalModel { model: id } => {
+            drop(model);
+            // The pane switches at the next sync, as a sidebar pick does.
+            app.request_pane(crate::categories::Category::AgentModels);
+            let shared = app.agent_models().model();
+            let mut model = shared.borrow_mut();
+            model.reveal(&id)?;
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::SetUpAccelerator
+        | AgentModelsEffect::InstallModel { .. }
+        | AgentModelsEffect::StartModel { .. }
+        | AgentModelsEffect::StopModel { .. }
+        | AgentModelsEffect::RetryModel { .. }
+        | AgentModelsEffect::RemoveModel { .. } => {
+            let work = model.manager_work(&effect)?;
+            let control = Arc::clone(&model.control);
+            if matches!(effect, AgentModelsEffect::InstallModel { .. }) {
+                model.reviewing.set(false);
+                model.reviewing_local.set(None);
+            }
+            drop(model);
+            Ok(cx.thread(
+                move |_| work.run(control.as_ref()),
+                |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.refresh();
+                    if let Err(error) = &outcome {
+                        model.notice = Some(error.clone());
+                    }
+                    outcome.map(|_| Effected::done())
+                },
+            ))
+        }
+        AgentModelsEffect::SaveProviderKey { provider, key } => {
+            let buffer = model.key_buffer(&provider);
+            drop(model);
+            Ok(cx.thread(
+                move |_| {
+                    let mut typed = buffer.lock_recover();
+                    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
+                    typed.zeroize();
+                    drop(typed);
+                    if value.trim().is_empty() {
+                        return Err(t_args(
+                            "agent-key-save-err",
+                            &[("error", "the key is empty".into())],
+                        ));
+                    }
+                    tilo_model_gateway::set_api_key(&provider, value).map_err(|error| {
+                        t_args("agent-key-save-err", &[("error", error.to_string().into())])
+                    })
+                },
+                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-saved")));
+                    outcome.map(|()| Effected::done())
+                },
+            ))
+        }
+        AgentModelsEffect::RemoveProviderKey { provider } => {
+            drop(model);
+            Ok(cx.thread(
+                move |_| {
+                    tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
+                        t_args(
+                            "agent-key-remove-err",
+                            &[("error", error.to_string().into())],
+                        )
+                    })
+                },
+                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
+                    outcome.map(|()| Effected::done())
+                },
+            ))
+        }
+        AgentModelsEffect::AddGoogleVertex => {
+            if model.vertex.as_ref().is_none_or(|setup| setup.existing) {
+                model.cancel_vertex();
+                model.vertex = Some(VertexSetup::adding());
+            }
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::SignInWithGoogle { provider } => {
+            model.sign_in_with_google(provider.as_deref())?;
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::CancelGoogleSignIn => {
+            model.cancel_vertex();
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ChooseVertexProject { project } => {
+            model
+                .vertex
+                .as_ref()
+                .filter(|setup| setup.choosing())
+                .ok_or_else(|| t("agent-vertex-sign-in-first"))?
+                .choose_project(&project);
+            Ok(Effected::done())
+        }
+        provider => {
+            let result = model.change_providers(provider);
+            model.provider_notice(result.as_ref().map(|()| t("agent-provider-saved")));
+            result.map(|()| Effected::done())
+        }
+    }
+}
+
+/// One call to the model manager, checked against what it reported.
+enum ManagerWork {
+    Accelerator,
+    Install(LocalModelPackage),
+    Start(String),
+    Stop(String),
+    Remove(String),
+}
+
+impl ManagerWork {
+    /// Carry the call out. Never on the UI thread: the manager may take
+    /// seconds.
+    fn run(&self, control: &dyn LocalModelControl) -> Result<String, String> {
+        match self {
+            Self::Accelerator => control
+                .stage_accelerator()
+                .map(|()| t("agent-notice-accel-ok"))
+                .map_err(|error| t_args("agent-notice-accel-err", &[("error", error.into())])),
+            Self::Install(package) => control
+                .install(package)
+                .map(|()| t("agent-notice-install-ok"))
+                .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
+            Self::Start(id) => Self::named(ModelAction::Start, control.start(id)),
+            Self::Stop(id) => Self::named(ModelAction::Stop, control.stop(id)),
+            Self::Remove(id) => Self::named(ModelAction::Remove, control.remove(id)),
+        }
+    }
+
+    fn named(action: ModelAction, result: Result<(), String>) -> Result<String, String> {
+        result
+            .map(|()| {
+                t_args(
+                    "agent-notice-action-ok",
+                    &[("action", action_label(action).into())],
+                )
+            })
+            .map_err(|error| {
+                t_args(
+                    "agent-notice-action-failed",
+                    &[
+                        ("action", action_label(action).into()),
+                        ("error", error.into()),
+                    ],
+                )
+            })
+    }
+}
+
+/// What the agent models area keeps for the window: the model, asked of
+/// the manager when first needed.
+pub struct AgentModelsArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<AgentModelsModel>>,
+    /// The manager's snapshot and the hosted keys, asked off the UI thread
+    /// after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AgentModelsRead>,
+}
+
+/// What the agent models area asks of the device: the model manager's
+/// snapshot, and whether this device's vault holds the key of each hosted
+/// provider configured when it asked. Asked off the UI thread; the model is
+/// built from it on the UI thread ([`AgentModelsModel::from_read`]).
+pub(crate) struct AgentModelsRead {
+    snapshot: Result<LocalModelSnapshot, String>,
+    keys: HashMap<String, Result<bool, String>>,
+}
+
+impl AgentModelsRead {
+    /// Ask `control` for its snapshot and the gateway for the keys of the
+    /// `hosted` providers.
+    fn of(control: &dyn LocalModelControl, hosted: Vec<String>) -> Self {
+        Self {
+            snapshot: control.snapshot(),
+            keys: hosted_keys(hosted),
+        }
+    }
+}
+
+/// The ids of the hosted providers in `providers`, whose keys this
+/// device's vault holds or not.
+fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
+    providers
+        .config
+        .profiles
+        .iter()
+        .filter(|profile| profile.location == EndpointLocation::Hosted)
+        .map(|profile| profile.id.clone())
+        .collect()
+}
+
+/// Ask the gateway whether this device's vault holds each of `hosted`'s
+/// keys: one blocking request each.
+fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+    hosted
+        .into_iter()
+        .map(|id| {
+            let configured =
+                tilo_model_gateway::secret_configured(&id).map_err(|error| error.to_string());
+            (id, configured)
+        })
+        .collect()
+}
+
+fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
+    let mut result = Vec::new();
+    let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
+    for selected in &profile.models {
+        result.push(
+            LiveRow::new(
+                format!(
+                    "settings.agent-provider-model:{}:{}",
+                    hex::encode(&profile.id),
+                    hex::encode(&selected.id)
+                ),
+                "settings.agent-provider-model",
+                selected.display_label().to_owned(),
+            )
+            .operation(offer(AgentModelsEffect::InspectModelRequestLimits {
+                provider: profile.id.clone(),
+                model: selected.id.clone(),
+            }))
+            .operation(
+                SettingsEffect::from(AgentModelsEffect::SetModelRequestLimits {
+                    provider: profile.id.clone(),
+                    model: selected.id.clone(),
+                    max_output_tokens: None,
+                    runtime_context_tokens: None,
+                    plan_timeout_ms: None,
+                })
+                .bound_asking(&[
+                    "max_output_tokens",
+                    "runtime_context_tokens",
+                    "plan_timeout_ms",
+                ]),
+            ),
+        );
+    }
+    result
+}
+
+impl AgentModelsArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// The model manager: this device's, or a sample one for a screenshot.
+    fn control(&self) -> Arc<dyn LocalModelControl> {
+        if self.cx.reaches_devices() {
+            Arc::new(ModelManagerCli)
+        } else {
+            Arc::new(SampleManager)
+        }
+    }
+
+    /// The model, over the model manager, or over a sample one for a
+    /// screenshot: from the read [`Self::start_read`] started, waiting for
+    /// it if it still runs, else asked here.
+    pub fn model(&self) -> &Shared<AgentModelsModel> {
+        self.model.get_or_init(|| {
+            let control = self.control();
+            let model = match self.read.take() {
+                Some(read) => AgentModelsModel::from_read(self.cx.clone(), control, read),
+                None => AgentModelsModel::new(self.cx.clone(), control),
+            };
+            Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Ask the model manager and the gateway off the UI thread; `false`
+    /// when they have been asked or are being asked.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let control = self.control();
+        let hosted = hosted_profiles(self.cx.follow::<AgentProviders>().get());
+        self.read
+            .start(move || AgentModelsRead::of(control.as_ref(), hosted))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per installed model, per provider, and the recommendation.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
+        let mut rows: Vec<LiveRow> = model
+            .snapshot
+            .models
+            .iter()
+            .map(|installed| {
+                available_actions(&installed.phase).into_iter().fold(
+                    LiveRow::new(
+                        format!("settings.agent-model:{}", installed.package.id),
+                        "settings.agent-model",
+                        installed.package.name.clone(),
+                    ),
+                    |row, action| row.operation(offer(model_effect(installed, action))),
+                )
+            })
+            .collect();
+        // In-process models run inside the apps that use them on any CPU, so
+        // neither the hardware fit nor accelerator setup gates them.
+        for local in &model.snapshot.in_process {
+            let mut row = LiveRow::new(
+                format!("settings.agent-model:{}", local.package.id),
+                "settings.agent-model-in-process",
+                local.package.name.clone(),
+            );
+            if local.installable() {
+                row = row.operation(offer(AgentModelsEffect::InstallModel {
+                    model: local.package.id.clone(),
+                    revision: local.package.revision.clone(),
+                }));
+            }
+            if local.removable() {
+                row = row.operation(offer(AgentModelsEffect::RemoveModel {
+                    model: local.package.id.clone(),
+                }));
+            }
+            rows.push(row);
+        }
+        if let Some(package) = &model.snapshot.recommendation {
+            rows.push(
+                LiveRow::new(
+                    format!("settings.agent-model-recommendation:{}", package.id),
+                    "settings.agent-model-recommendation",
+                    package.name.clone(),
+                )
+                .operation(offer(AgentModelsEffect::InstallModel {
+                    model: package.id.clone(),
+                    revision: package.revision.clone(),
+                })),
+            );
+        }
+        for profile in &model.providers.get().config.profiles {
+            let id = profile.id.clone();
+            let row = LiveRow::new(
+                format!("settings.agent-provider:{id}"),
+                "settings.agent-provider",
+                profile.display_label().to_owned(),
+            )
+            .operation(offer(AgentModelsEffect::SetProviderEnabled {
+                provider: id.clone(),
+                on: !profile.enabled,
+            }))
+            .operation(offer(AgentModelsEffect::SetDefaultProvider {
+                provider: id.clone(),
+            }))
+            .operation(offer(AgentModelsEffect::RemoveProvider {
+                provider: id.clone(),
+            }));
+            let row = if profile.sign_in.is_some() {
+                row.operation(offer(AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(id.clone()),
+                }))
+            } else if model.needs_key(profile) {
+                row.operation(
+                    SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
+                        provider: id,
+                        key: None,
+                    })
+                    .bound_asking(&["key"]),
+                )
+            } else {
+                row
+            };
+            rows.push(row);
+            rows.extend(request_limit_rows(profile));
+        }
+        rows
+    }
+}
+
+pub struct AgentModelsModel {
+    cx: PaneCx,
+    control: Arc<dyn LocalModelControl>,
+    snapshot: LocalModelSnapshot,
+    manager_available: bool,
+    /// Whether the local provider profile follows what the manager runs.
+    follow_local_profile: bool,
+    providers: Followed<AgentProviders>,
+    /// Whether the download of the recommended model is being reviewed.
+    reviewing: LocalState<bool>,
+    /// The in-process model whose download is being reviewed.
+    reviewing_local: LocalState<Option<String>>,
+    /// The in-process model a link asked to show; its card comes first.
+    revealed: Option<String>,
+    notice: Option<String>,
+    last_poll: Instant,
+    /// API keys are deliberately process-local masked-input buffers. They
+    /// never enter the settings, and are erased as soon as the gateway
+    /// accepts or rejects them.
+    provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
+    provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
+    limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
+    /// Whether this device's vault holds each hosted provider's key (for
+    /// a provider that signs in, a usable sign-in), or why that could not
+    /// be told.
+    keys: HashMap<String, Result<bool, String>>,
+    /// A Google Vertex AI sign-in: of a provider being added, or again of
+    /// an existing one.
+    vertex: Option<VertexSetup>,
+    /// The project, location and model fields of each Vertex AI provider.
+    vertex_fields: Mutex<HashMap<String, VertexFields>>,
+    /// Where Vertex AI sign-ins are sealed and forgotten.
+    custodian: account_custody::Custodian,
+    /// What opens Google's consent page.
+    opener: Arc<dyn BrowserOpener>,
+    changed: bool,
+}
+
+impl AgentModelsModel {
+    /// The model over `control`, asking it and the gateway here.
+    fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
+        let hosted = hosted_profiles(cx.follow::<AgentProviders>().get());
+        let read = AgentModelsRead::of(control.as_ref(), hosted);
+        Self::from_read(cx, control, read)
+    }
+
+    /// The model over `control`, from what was asked of it and of the
+    /// gateway. Keys asked for a different set of hosted providers than the
+    /// person's settings now hold are asked again.
+    fn from_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, read: AgentModelsRead) -> Self {
+        let (snapshot, manager_available, notice) = match read.snapshot {
+            Ok(snapshot) => (snapshot, true, None),
+            Err(error) => (
+                fallback_snapshot(),
+                false,
+                Some(t_args(
+                    "agent-notice-service-down",
+                    &[("error", error.into())],
+                )),
+            ),
+        };
+        let mut model = Self {
+            providers: cx.follow::<AgentProviders>(),
+            cx,
+            control,
+            snapshot,
+            manager_available,
+            follow_local_profile: true,
+            reviewing: LocalState::new(false),
+            reviewing_local: LocalState::new(None),
+            revealed: None,
+            notice,
+            last_poll: ui::time::now(),
+            provider_key_buffers: Mutex::new(HashMap::new()),
+            provider_field_buffers: Mutex::new(HashMap::new()),
+            limit_field_buffers: Mutex::new(HashMap::new()),
+            keys: HashMap::new(),
+            vertex: None,
+            vertex_fields: Mutex::new(HashMap::new()),
+            custodian: account_custody::Custodian::live(),
+            opener: Arc::new(PortalOpener),
+            changed: false,
+        };
+        model.sync_local_profile();
+        let hosted = hosted_profiles(model.providers.get());
+        if hosted.len() == read.keys.len() && hosted.iter().all(|id| read.keys.contains_key(id)) {
+            model.keys = read.keys;
+            model.changed = true;
+        } else {
+            model.read_keys();
+        }
+        model
+    }
+
+    /// Ask the gateway whether this device's vault holds each hosted
+    /// provider's key.
+    fn read_keys(&mut self) {
+        self.keys = hosted_keys(hosted_profiles(self.providers.get()));
+        self.changed = true;
+    }
+
+    /// Whether `profile` is hosted and this device's vault has no key for
+    /// it: one that roamed here from another device needs its own. For a
+    /// provider that signs in, whether it needs to sign in again.
+    fn needs_key(&self, profile: &ProviderProfile) -> bool {
+        profile.location == EndpointLocation::Hosted
+            && matches!(self.keys.get(&profile.id), Some(Ok(false)))
+    }
+
+    /// Open Google's consent page for Vertex AI: for the provider being
+    /// added when `provider` is `None`, else again for that provider.
+    fn sign_in_with_google(&mut self, provider: Option<&str>) -> Result<(), String> {
+        let current = self.vertex.take();
+        let reuse = |setup: &VertexSetup| match provider {
+            None => !setup.existing,
+            Some(id) => setup.profile_id == id,
+        };
+        let mut setup = match current {
+            Some(setup) if reuse(&setup) => setup,
+            other => {
+                self.vertex = other;
+                self.cancel_vertex();
+                match provider {
+                    None => VertexSetup::adding(),
+                    Some(id) => VertexSetup::again(
+                        self.providers
+                            .get()
+                            .config
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == id && profile.signs_in_with_google())
+                            .ok_or_else(|| t("agent-provider-gone"))?,
+                    ),
+                }
+            }
+        };
+        setup.begin(&self.custodian, &self.opener);
+        self.vertex = Some(setup);
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Stop the Vertex AI sign-in or setup. A provider that was being added
+    /// leaves no grant behind.
+    fn cancel_vertex(&mut self) {
+        if let Some(mut setup) = self.vertex.take() {
+            setup.cancel();
+            if !setup.existing {
+                // Nothing may have been sealed yet; there is nothing to report.
+                let _ = self
+                    .custodian
+                    .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+            }
+        }
+        self.changed = true;
+    }
+
+    fn vertex_fields(&self, profile: &ProviderProfile) -> VertexFields {
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(profile.id.clone())
+            .or_insert_with(|| VertexFields::of(profile))
+            .clone()
+    }
+
+    fn refresh(&mut self) {
+        match self.control.snapshot() {
+            Ok(snapshot) => {
+                self.snapshot = snapshot;
+                self.manager_available = true;
+                self.notice = None;
+                self.sync_local_profile();
+            }
+            Err(error) => {
+                self.manager_available = false;
+                self.notice = Some(t_args(
+                    "agent-notice-refresh-err",
+                    &[("error", error.into())],
+                ));
+            }
+        }
+        self.last_poll = ui::time::now();
+        self.changed = true;
+    }
+
+    /// Keep the local provider profile on what the manager serves.
+    fn sync_local_profile(&mut self) {
+        if !self.follow_local_profile {
+            return;
+        }
+        let config = &self.providers.get().config;
+        let existing = config
+            .profiles
+            .iter()
+            .find(|profile| profile.is_local_vllm_candidate())
+            .cloned();
+        let Some(profile) = synced_local_profile(existing.clone(), &self.snapshot.models) else {
+            return;
+        };
+        if existing.as_ref() != Some(&profile) {
+            let _ = self.providers.settings().update(|providers| {
+                providers.config.upsert(profile);
+            });
+            self.providers.refresh();
+        }
+    }
+
+    /// Show one in-process model's card first, opened at its licence
+    /// confirmation when it is not installed yet. Nothing is downloaded
+    /// until the person accepts there.
+    fn reveal(&mut self, id: &str) -> Result<(), String> {
+        self.changed = true;
+        let Some(model) = self.snapshot.in_process_model(id) else {
+            let unknown = t_args(
+                "agent-notice-unknown-model",
+                &[("id", id.to_owned().into())],
+            );
+            self.notice = Some(unknown.clone());
+            return Err(unknown);
+        };
+        if model.installable() {
+            self.reviewing_local.set(Some(model.package.id.clone()));
+        }
+        self.revealed = Some(model.package.id.clone());
+        Ok(())
+    }
+
+    fn is_busy(&self) -> bool {
+        self.snapshot
+            .models
+            .iter()
+            .any(|model| model.phase.is_transient())
+            || self.snapshot.in_process.iter().any(|model| {
+                model
+                    .phase
+                    .as_ref()
+                    .is_some_and(LocalModelPhase::is_transient)
+            })
+            || self
+                .snapshot
+                .accelerator_setup
+                .as_ref()
+                .is_some_and(|setup| setup.status.is_transient())
+    }
+
+    /// The manager call `effect` asks for, revalidated against the models
+    /// the manager last reported.
+    fn manager_work(&self, effect: &AgentModelsEffect) -> Result<ManagerWork, String> {
+        let installed = |id: &str| {
+            self.snapshot
+                .models
+                .iter()
+                .find(|model| model.package.id == id)
+                .ok_or_else(|| t("agent-model-gone"))
+        };
+        let allowed = |model: &InstalledLocalModel, action: ModelAction| {
+            if available_actions(&model.phase).contains(&action) {
+                Ok(())
+            } else {
+                Err(t("agent-model-busy"))
+            }
+        };
+        match effect {
+            AgentModelsEffect::SetUpAccelerator => Ok(ManagerWork::Accelerator),
+            AgentModelsEffect::InstallModel { model, revision } => {
+                if let Some(local) = self.snapshot.in_process_model(model) {
+                    // The action's label is the licence acceptance; it holds
+                    // only for the revision it was offered with.
+                    return if &local.package.revision == revision && local.installable() {
+                        Ok(ManagerWork::Install(local.package.clone()))
+                    } else {
+                        Err(t("agent-notice-inprocess-changed"))
+                    };
+                }
+                self.snapshot
+                    .recommendation
+                    .clone()
+                    .filter(|package| &package.id == model && &package.revision == revision)
+                    .map(ManagerWork::Install)
+                    .ok_or_else(|| t("agent-model-gone"))
+            }
+            AgentModelsEffect::StartModel { model } => {
+                let model = installed(model)?;
+                allowed(model, ModelAction::Start)?;
+                Ok(ManagerWork::Start(model.package.id.clone()))
+            }
+            AgentModelsEffect::StopModel { model } => {
+                let model = installed(model)?;
+                allowed(model, ModelAction::Stop)?;
+                Ok(ManagerWork::Stop(model.package.id.clone()))
+            }
+            AgentModelsEffect::RetryModel { model, revision } => {
+                let model = installed(model)?;
+                allowed(model, ModelAction::Retry)?;
+                if &model.package.revision != revision {
+                    return Err(t("agent-model-gone"));
+                }
+                Ok(ManagerWork::Install(model.package.clone()))
+            }
+            AgentModelsEffect::RemoveModel { model } => {
+                if let Some(local) = self.snapshot.in_process_model(model) {
+                    return if local.removable() {
+                        Ok(ManagerWork::Remove(local.package.id.clone()))
+                    } else {
+                        Err(t("agent-notice-inprocess-changed"))
+                    };
+                }
+                let model = installed(model)?;
+                allowed(model, ModelAction::Remove)?;
+                Ok(ManagerWork::Remove(model.package.id.clone()))
+            }
+            _ => Err("not a model manager effect".into()),
+        }
+    }
+
+    /// Remove `provider` from `config` with its credential on this device:
+    /// its API key, or its Google sign-in.
+    fn remove_provider(
+        &mut self,
+        config: &mut ProviderConfig,
+        provider: &str,
+    ) -> Result<(), String> {
+        let removed = config
+            .remove(provider)
+            .ok_or_else(|| t("agent-provider-gone"))?;
+        if removed.sign_in.is_none() {
+            return tilo_model_gateway::remove_api_key(provider).map_err(|error| {
+                t_args(
+                    "agent-key-remove-err",
+                    &[("error", error.to_string().into())],
+                )
+            });
+        }
+        // Forgotten here only: revoking at Google would end every grant of
+        // Tilo's client for this person, Mail's included.
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == provider)
+        {
+            self.cancel_vertex();
+        }
+        self.custodian
+            .forget_oauth(&agent_vertex::grant_id(provider))
+            .map_err(|error| {
+                t_args(
+                    "agent-sign-in-forget-err",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider);
+        Ok(())
+    }
+
+    /// Add the Vertex AI provider being set up (`provider` `None`), once
+    /// signed in, or change an existing one; the provider's id.
+    fn set_vertex_provider(
+        &self,
+        config: &mut ProviderConfig,
+        provider: Option<String>,
+        fields: (&str, Option<&str>, Option<&str>),
+    ) -> Result<String, String> {
+        let (id, existing) = match provider {
+            Some(id) => (id, true),
+            None => (
+                self.vertex
+                    .as_ref()
+                    .filter(|setup| !setup.existing)
+                    .map(|setup| setup.profile_id.clone())
+                    .ok_or_else(|| t("agent-vertex-sign-in-first"))?,
+                false,
+            ),
+        };
+        if !existing && !agent_vertex::signed_in(&self.custodian, &id) {
+            return Err(t("agent-vertex-sign-in-first"));
+        }
+        agent_vertex::apply(config, &id, existing, fields)?;
+        Ok(id)
+    }
+
+    /// Close the setup of the Vertex AI provider `id` once it is saved, and
+    /// read its fields and sign-in again.
+    fn vertex_saved(&mut self, id: &str) {
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == id)
+        {
+            self.vertex = None;
+        }
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+        self.read_keys();
+    }
+
+    /// Apply a provider change to the person's settings.
+    fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
+        let mut config = self.providers.get().config.clone();
+        let mut vertex_saved = None;
+        match effect {
+            AgentModelsEffect::SetModelRequestLimits {
+                provider,
+                model,
+                max_output_tokens,
+                runtime_context_tokens,
+                plan_timeout_ms,
+            } => {
+                set_model_limits(
+                    &mut config,
+                    &provider,
+                    &model,
+                    (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
+                )?;
+                self.limit_field_buffers
+                    .lock_recover()
+                    .remove(&(provider, model));
+            }
+            AgentModelsEffect::AddProvider { protocol: slug } => {
+                config.upsert(ProviderProfile::hosted(protocol(&slug)?));
+            }
+            AgentModelsEffect::SetProviderProtocol {
+                provider,
+                protocol: slug,
+            } => {
+                find(&mut config, &provider)?.protocol = protocol(&slug)?;
+            }
+            AgentModelsEffect::SetProviderEnabled { provider, on } => {
+                find(&mut config, &provider)?.enabled = on;
+            }
+            AgentModelsEffect::SetDefaultProvider { provider } => {
+                let available = config.profiles.iter().any(|profile| {
+                    profile.id == provider && profile.enabled && profile.default_model.is_some()
+                });
+                if !available {
+                    return Err(t("agent-provider-not-default"));
+                }
+                config.default_profile = Some(provider);
+            }
+            AgentModelsEffect::SetProviderDetails {
+                provider,
+                label,
+                endpoint,
+                model,
+            } => {
+                if label.trim().is_empty() || endpoint.trim().is_empty() {
+                    return Err(t("agent-provider-details-required"));
+                }
+                let profile = find(&mut config, &provider)?;
+                profile.label = label;
+                profile.endpoint = endpoint;
+                if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+                    if !profile.models.iter().any(|candidate| candidate.id == model) {
+                        profile.models.push(ModelDescriptor::new(model.clone()));
+                    }
+                    profile.default_model = Some(model);
+                }
+            }
+            AgentModelsEffect::RemoveProvider { provider } => {
+                self.remove_provider(&mut config, &provider)?;
+            }
+            AgentModelsEffect::SetVertexProvider {
+                provider,
+                project,
+                location,
+                model,
+            } => {
+                vertex_saved = Some(self.set_vertex_provider(
+                    &mut config,
+                    provider,
+                    (&project, location.as_deref(), model.as_deref()),
+                )?);
+            }
+            _ => return Err("not a provider effect".into()),
+        }
+        let config = config.sanitised();
+        self.providers
+            .settings()
+            .update(|providers| providers.config = config)
+            .map_err(|error| {
+                t_args(
+                    "agent-provider-save-err",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.providers.refresh();
+        if let Some(id) = vertex_saved {
+            self.vertex_saved(&id);
+        }
+        self.changed = true;
+        Ok(())
+    }
+
+    fn provider_notice(&mut self, outcome: Result<String, &String>) {
+        self.notice = Some(match outcome {
+            Ok(message) => message,
+            Err(error) => error.clone(),
+        });
+        self.changed = true;
+    }
+
+    fn accelerator_card(&self) -> Option<SettingsSection> {
+        let setup = self.snapshot.accelerator_setup.as_ref()?;
+        let match_label = t("agent-accel-match");
+        let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
+        let (status, tone) = match &setup.status {
+            AcceleratorSetupState::Available => {
+                body.push(note(&t("agent-accel-available")));
+                body.push(row(Box::new(Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                        AgentModelsEffect::SetUpAccelerator,
+                    ),
+                )))));
+                (t("agent-accel-ready"), StatusTone::Neutral)
+            }
+            AcceleratorSetupState::Queued => {
+                body.push(row(Box::new(
+                    ProgressBar::indeterminate().with_label(t("agent-accel-preparing")),
+                )));
+                body.push(note(&t("agent-accel-queued-caption")));
+                (t("agent-accel-queued"), StatusTone::Neutral)
+            }
+            AcceleratorSetupState::Staging => {
+                body.push(row(Box::new(
+                    ProgressBar::indeterminate().with_label(t("agent-accel-staging-label")),
+                )));
+                body.push(note(&t("agent-accel-staging-caption")));
+                (t("agent-accel-staging"), StatusTone::Warning)
+            }
+            AcceleratorSetupState::RestartRequired => {
+                body.push(note(&t("agent-accel-restart-caption")));
+                (t("agent-accel-restart"), StatusTone::Warning)
+            }
+            AcceleratorSetupState::Active => {
+                body.push(note(&t("agent-accel-active-caption")));
+                (t("agent-accel-active"), StatusTone::Success)
+            }
+            AcceleratorSetupState::Error { message } => {
+                body.push(note(message));
+                body.push(note(&t("agent-accel-error-retry")));
+                body.push(row(Box::new(Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                        AgentModelsEffect::SetUpAccelerator,
+                    ),
+                )))));
+                (t("agent-status-attention"), StatusTone::Warning)
+            }
+        };
+        Some(card_with_action(
+            &t("agent-accel-title"),
+            semantic_status_pill(&status, tone),
+            rows(body),
+        ))
+    }
+
+    fn push_recommendation_confirm(&self, body: &mut Vec<Item>, package: &LocalModelPackage) {
+        self.push_confirm(
+            body,
+            package,
+            (
+                "agent-models-confirm-install",
+                "agent-models-cancel-install",
+            ),
+            AgentModelsEffect::ReviewModelDownload { show: false },
+        );
+    }
+
+    /// The download, storage, source, revision and licence a person accepts,
+    /// with the accept and cancel controls (widget ids `controls`); cancel
+    /// invokes `cancel`.
+    fn push_confirm(
+        &self,
+        body: &mut Vec<Item>,
+        package: &LocalModelPackage,
+        controls: (&str, &str),
+        cancel_effect: AgentModelsEffect,
+    ) {
+        let download = t("agent-download");
+        let download_size = byte_size(package.download_bytes);
+        let after = t("agent-storage-after");
+        let after_size = byte_size(package.installed_bytes);
+        let source = t("agent-source");
+        let revision = t("agent-revision");
+        let license = t("agent-license");
+        let accept = t_args(
+            "agent-license-accept",
+            &[("url", package.license_url.as_str().into())],
+        );
+        let accept_btn = t("agent-accept-download");
+        let cancel = t("agent-cancel");
+        body.extend([
+            value_row(&download, &download_size),
+            value_row(&after, &after_size),
+            value_row(&source, &package.source),
+            value_row(&revision, &package.revision),
+            value_row(&license, &package.license),
+            note(&accept),
+            row(Box::new(
+                Row::new()
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(controls.0, &accept_btn),
+                        AgentModelsEffect::InstallModel {
+                            model: package.id.clone(),
+                            revision: package.revision.clone(),
+                        },
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(controls.1, &cancel),
+                        cancel_effect,
+                    ))),
+            )),
+        ]);
+    }
+
+    fn recommendation_card(&self) -> SettingsSection {
+        let hardware = &self.snapshot.hardware;
+        let fit_label = fit_label(hardware.fit);
+        let mem = gib(i64::from(hardware.memory_gib));
+        let hw_fit = t("agent-hw-fit");
+        let hw_mem = t("agent-hw-memory");
+        let hw_accel = t("agent-hw-accel");
+        let mut body = vec![
+            value_row(&hw_fit, &fit_label),
+            value_row(&hw_mem, &mem),
+            value_row(&hw_accel, &hardware.accelerator),
+        ];
+        if let Some(vram) = hardware.accelerator_memory_gib {
+            let label = t("agent-hw-accel-mem");
+            let value = gib(i64::from(vram));
+            body.push(value_row(&label, &value));
+        }
+        if let Some(storage) = hardware.free_storage_gib {
+            let label = t("agent-hw-storage");
+            let value = gib(i64::from(storage));
+            body.push(value_row(&label, &value));
+        }
+        body.push(note(&hardware.reason));
+        let Some(package) = &self.snapshot.recommendation else {
+            let rec_model = t("agent-rec-model");
+            let waiting = t("agent-rec-waiting");
+            body.push(value_row(&rec_model, &waiting));
+            body.push(note(&t("agent-rec-waiting-caption")));
+            let unavailable = t("agent-setup-unavailable");
+            body.push(row(Box::new(Row::new().push(Box::new(
+                Button::new("agent-models-setup-unavailable", &unavailable).with_enabled(false),
+            )))));
+            return card_with_action(
+                &t("agent-rec-title"),
+                semantic_status_pill(&t("agent-service-unavailable"), StatusTone::Warning),
+                rows(body),
+            );
+        };
+        let rec_model = t("agent-rec-model");
+        body.extend([
+            value_row(&rec_model, &package.name),
+            note(&package.description),
+        ]);
+        if self.reviewing.with(|reviewing| *reviewing) {
+            self.push_recommendation_confirm(&mut body, package);
+        } else {
+            let setup = t("agent-setup-device");
+            body.push(row(Box::new(
+                Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-setup-local", &setup).with_enabled(
+                            self.manager_available
+                                && hardware.fit != HardwareFit::Unsupported
+                                && self
+                                    .snapshot
+                                    .accelerator_setup
+                                    .as_ref()
+                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                        ),
+                        AgentModelsEffect::ReviewModelDownload { show: true },
+                    ),
+                )),
+            )));
+        }
+        card_with_action(
+            &t("agent-rec-title"),
+            semantic_status_pill(&fit_label, fit_tone(hardware.fit)),
+            rows(body),
+        )
+    }
+
+    /// One in-process model: what it does, then setup with the same licence
+    /// confirmation as the recommendation, progress, or ready with Remove.
+    /// Never Start or Stop: it runs inside the apps that use it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every install phase of the card stays beside its controls"
+    )]
+    fn in_process_card(&self, model: &InProcessLocalModel) -> SettingsSection {
+        let package = &model.package;
+        let widget_token = token(&package.id);
+        let mut body = vec![
+            value_row(&t("agent-inprocess-model"), &package.name),
+            note(&package.description),
+            note(&t("agent-inprocess-caption")),
+        ];
+        let confirming = self
+            .reviewing_local
+            .with(|reviewing| reviewing.as_deref() == Some(package.id.as_str()));
+        if confirming && model.installable() {
+            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
+            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
+            self.push_confirm(
+                &mut body,
+                package,
+                (&confirm_id, &cancel_id),
+                AgentModelsEffect::ReviewLocalModel {
+                    model: package.id.clone(),
+                    show: false,
+                },
+            );
+        } else {
+            match &model.phase {
+                None => {
+                    body.push(value_row(
+                        &t("agent-download"),
+                        &byte_size(package.download_bytes),
+                    ));
+                }
+                Some(
+                    phase @ LocalModelPhase::Downloading {
+                        downloaded_bytes,
+                        total_bytes,
+                    },
+                ) => {
+                    let progress = t_args(
+                        "agent-progress-downloading",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(row(Box::new(
+                        ProgressBar::new(phase_progress(phase).unwrap_or(0.0)).with_label(progress),
+                    )));
+                    let done = byte_size(*downloaded_bytes);
+                    let total = byte_size(*total_bytes);
+                    body.push(note(&t_args(
+                        "agent-download-progress",
+                        &[("done", done.as_str().into()), ("total", total.into())],
+                    )));
+                }
+                Some(LocalModelPhase::Installing { message, .. }) => {
+                    let progress = t_args(
+                        "agent-progress-installing",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(row(Box::new(
+                        ProgressBar::indeterminate().with_label(progress),
+                    )));
+                    body.push(note(message));
+                }
+                Some(LocalModelPhase::Ready { .. }) => {
+                    body.push(value_row(
+                        &t("agent-model-storage"),
+                        &byte_size(package.installed_bytes),
+                    ));
+                    body.push(value_row(&t("agent-license"), &package.license));
+                    body.push(note(&t("agent-inprocess-ready-caption")));
+                }
+                Some(LocalModelPhase::Error { message }) => {
+                    body.push(note(message));
+                    body.push(note(&t("agent-inprocess-error-caption")));
+                }
+            }
+            let mut buttons = Row::new();
+            let installable = model.installable();
+            let removable = model.removable();
+            if installable {
+                buttons = buttons.push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-inprocess-setup-{widget_token}"),
+                            &t("agent-setup-device"),
+                        )
+                        .with_enabled(self.manager_available),
+                        AgentModelsEffect::ReviewLocalModel {
+                            model: package.id.clone(),
+                            show: true,
+                        },
+                    ),
+                ));
+            }
+            if removable {
+                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-inprocess-remove-{widget_token}"),
+                        &action_label(ModelAction::Remove),
+                    ),
+                    AgentModelsEffect::RemoveModel {
+                        model: package.id.clone(),
+                    },
+                )));
+            }
+            if installable || removable {
+                body.push(row(Box::new(buttons)));
+            }
+        }
+        let (status, tone) = match &model.phase {
+            None => (t("agent-status-not-installed"), StatusTone::Neutral),
+            Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
+            Some(phase) => (phase_status(phase), phase_tone(phase)),
+        };
+        card_with_action(
+            &capability_title(package),
+            semantic_status_pill(&status, tone),
+            rows(body),
+        )
+    }
+
+    fn model_card(&self, model: &InstalledLocalModel) -> SettingsSection {
+        let status = phase_status(&model.phase);
+        let storage = byte_size(model.package.installed_bytes);
+        let status_label = t("agent-model-status");
+        let storage_label = t("agent-model-storage");
+        let license_label = t("agent-license");
+        let mut body = vec![
+            value_row(&status_label, &status),
+            value_row(&storage_label, &storage),
+            value_row(&license_label, &model.package.license),
+        ];
+        match &model.phase {
+            LocalModelPhase::Downloading {
+                downloaded_bytes,
+                total_bytes,
+            } => {
+                let progress = t_args(
+                    "agent-progress-downloading",
+                    &[("name", model.package.name.as_str().into())],
+                );
+                body.push(row(Box::new(
+                    ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
+                        .with_label(progress),
+                )));
+                let done = byte_size(*downloaded_bytes);
+                let total = byte_size(*total_bytes);
+                body.push(note(&t_args(
+                    "agent-download-progress",
+                    &[("done", done.as_str().into()), ("total", total.into())],
+                )));
+            }
+            LocalModelPhase::Installing { percent, message } => {
+                let progress = t_args(
+                    "agent-progress-installing",
+                    &[("name", model.package.name.as_str().into())],
+                );
+                body.push(row(Box::new(match percent {
+                    Some(_) => ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
+                        .with_label(progress),
+                    None => ProgressBar::indeterminate().with_label(progress),
+                })));
+                body.push(note(message));
+            }
+            LocalModelPhase::Error { message } => {
+                body.push(note(message));
+                body.push(note(&t("agent-error-retry-caption")));
+            }
+            LocalModelPhase::Ready { running: true, .. } => {
+                body.push(note(&t("agent-ready-running-caption")));
+            }
+            LocalModelPhase::Ready { running: false, .. } => {
+                body.push(note(&t("agent-ready-stopped-caption")));
+            }
+        }
+        let actions = available_actions(&model.phase);
+        if !actions.is_empty() {
+            let mut buttons = Row::new();
+            for action in actions {
+                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!(
+                            "agent-models-{}-{}",
+                            action_slug(action),
+                            token(&model.package.id)
+                        ),
+                        &action_label(action),
+                    ),
+                    model_effect(model, action),
+                )));
+            }
+            body.push(row(Box::new(buttons)));
+        }
+        card_with_action(
+            &model.package.name,
+            semantic_status_pill(&status, phase_tone(&model.phase)),
+            rows(body),
+        )
+    }
+
+    fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
+        let mut buffers = self.provider_key_buffers.lock_recover();
+        buffers
+            .entry(profile_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(String::new())))
+            .clone()
+    }
+
+    fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
+        let mut buffers = self.provider_field_buffers.lock_recover();
+        buffers
+            .entry(profile.id.clone())
+            .or_insert_with(|| HostedFieldBuffers {
+                label: Arc::new(Mutex::new(profile.label.clone())),
+                endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
+                model: Arc::new(Mutex::new(
+                    profile.default_model.clone().unwrap_or_default(),
+                )),
+            })
+            .clone()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hosted-provider editor keeps each credential and endpoint control together"
+    )]
+    fn hosted_profiles(&self) -> SettingsSection {
+        let config = self.providers.get().config.clone();
+        let mut body: Vec<Item> = vec![note(&t("agent-hosted-intro"))];
+        body.push(row(Box::new(
+            Row::new()
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "anthropic".into(),
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-openai", &t("agent-add-compatible")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "openai-compatible".into(),
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
+                    AgentModelsEffect::AddGoogleVertex,
+                ))),
+        )));
+        for profile in config
+            .profiles
+            .iter()
+            .filter(|profile| profile.location != EndpointLocation::ThisDevice)
+        {
+            let location = location_shown(profile.location);
+            body.push(value_row(profile.display_label(), &location));
+            if profile.sign_in.is_some() {
+                self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
+                continue;
+            }
+            let profile_id = profile.id.clone();
+            let fields = self.field_buffers(profile);
+            let label = fields
+                .label
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            let endpoint = fields
+                .endpoint
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            let model = fields
+                .model
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            body.push(field_row(
+                &t("agent-placeholder-name"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-label-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.label))
+                        .with_initial_value(&label)
+                        .with_placeholder(t("agent-placeholder-name")),
+                ),
+            ));
+            body.push(field_row(
+                &t("agent-placeholder-url"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-url-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.endpoint))
+                        .with_initial_value(&endpoint)
+                        .with_placeholder(t("agent-placeholder-url")),
+                ),
+            ));
+            body.push(field_row(
+                &t("agent-placeholder-model"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-model-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.model))
+                        .with_initial_value(&model)
+                        .with_placeholder(t("agent-placeholder-model")),
+                ),
+            ));
+            let alternate_protocol = match profile.protocol {
+                ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
+                ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
+            };
+            let alternate_protocol_label = t_args(
+                "agent-use-protocol",
+                &[("protocol", alternate_protocol.label().into())],
+            );
+            let save_id = profile_id.clone();
+            let save_fields = fields.clone();
+            let read = |field: &Arc<Mutex<String>>| {
+                field.lock().map(|value| value.clone()).unwrap_or_default()
+            };
+            body.push(row(Box::new(
+                Row::new()
+                    .push(Box::new(self.cx.bind(
+                        Button::new(
+                            &format!("agent-models-save-provider-{profile_id}"),
+                            &t("agent-save-details"),
+                        ),
+                        effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
+                            let model = read(&save_fields.model);
+                            (
+                                save_id.clone(),
+                                read(&save_fields.label),
+                                read(&save_fields.endpoint),
+                                (!model.trim().is_empty()).then_some(model),
+                            )
+                        }),
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-protocol-{profile_id}"),
+                            &alternate_protocol_label,
+                        ),
+                        AgentModelsEffect::SetProviderProtocol {
+                            provider: profile_id.clone(),
+                            protocol: protocol_slug(alternate_protocol).into(),
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-enabled-{profile_id}"),
+                            &if profile.enabled {
+                                t("agent-disable")
+                            } else {
+                                t("agent-enable")
+                            },
+                        ),
+                        AgentModelsEffect::SetProviderEnabled {
+                            provider: profile_id.clone(),
+                            on: !profile.enabled,
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-provider-{profile_id}"),
+                            &t("agent-remove-provider"),
+                        ),
+                        AgentModelsEffect::RemoveProvider {
+                            provider: profile_id.clone(),
+                        },
+                    ))),
+            )));
+            let protocol = t("agent-protocol");
+            body.push(value_row(&protocol, profile.protocol.label()));
+            let buffer = self.key_buffer(&profile_id);
+            let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
+            let (configured, configured_error) = match self.keys.get(&profile_id) {
+                Some(Ok(configured)) => (*configured, None),
+                Some(Err(error)) => (false, Some(error.clone())),
+                None => (false, None),
+            };
+            if let Some(error) = configured_error {
+                body.push(row(crate::widgets::error_caption(&t_args(
+                    "agent-key-read-error",
+                    &[("error", error.into())],
+                ))));
+            }
+            body.push(field_row(
+                &t("agent-placeholder-key"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-api-key-{profile_id}"))
+                        .with_external_buffer(buffer)
+                        .with_initial_value(&initial)
+                        .with_secret(true)
+                        .with_placeholder(t("agent-placeholder-key")),
+                ),
+            ));
+            body.push(row(Box::new(
+                Row::new()
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-set-api-key-{profile_id}"),
+                            &if configured {
+                                t("agent-replace-key")
+                            } else {
+                                t("agent-save-key")
+                            },
+                        ),
+                        AgentModelsEffect::SaveProviderKey {
+                            provider: profile_id.clone(),
+                            key: None,
+                        },
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-api-key-{profile_id}"),
+                            &t("agent-remove-key"),
+                        ),
+                        AgentModelsEffect::RemoveProviderKey {
+                            provider: profile_id.clone(),
+                        },
+                    ))),
+            )));
+            // why: a key-status sentence or badge is a status line, not a label/control pair.
+            body.push(row(if configured {
+                Box::new(Text::new(&t("agent-key-stored")).dimmed())
+            } else if self.needs_key(profile) {
+                semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
+            } else {
+                Box::new(Text::new(&t("agent-key-none")).dimmed())
+            }));
+            body.extend(self.default_button(profile, config.default_profile.as_deref()));
+        }
+        for issue in config.validation_errors() {
+            body.push(note(&t_args(
+                "agent-config-issue",
+                &[("message", issue.message.as_str().into())],
+            )));
+        }
+        card(&t("agent-hosted-title"), rows(body))
+    }
+
+    /// The offer to make `profile` the default, when it has a model.
+    fn default_button(
+        &self,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) -> Option<Item> {
+        profile.default_model.as_ref()?;
+        Some(row(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("agent-models-default-{}", profile.id),
+                &if default_profile == Some(profile.id.as_str()) {
+                    t("agent-default-current")
+                } else {
+                    t("agent-use-default")
+                },
+            ),
+            AgentModelsEffect::SetDefaultProvider {
+                provider: profile.id.clone(),
+            },
+        ))))
+    }
+
+    /// A provider that signs in with Google: its project, location and
+    /// model, whether its sign-in still holds on this device, and the offer
+    /// to sign in again. It has no key, endpoint or protocol to edit.
+    fn push_sign_in_profile(
+        &self,
+        body: &mut Vec<Item>,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) {
+        let profile_id = profile.id.clone();
+        self.vertex_fields(profile)
+            .push(&self.cx, body, &profile_id);
+        let setup = self
+            .vertex
+            .as_ref()
+            .filter(|setup| setup.profile_id == profile_id);
+        let waiting = setup.is_some_and(VertexSetup::waiting);
+        let state = self.keys.get(&profile_id);
+        if let Some(Err(error)) = state {
+            body.push(row(crate::widgets::error_caption(&t_args(
+                "agent-sign-in-read-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        // why: a sign-in status sentence or badge is a status line, not a label/control pair.
+        body.push(row(if waiting {
+            Box::new(Text::new(&t("agent-vertex-waiting")).dimmed())
+        } else if matches!(state, Some(Ok(true))) {
+            Box::new(Text::new(&t("agent-signed-in")).dimmed())
+        } else if self.needs_key(profile) {
+            semantic_status_pill(&t("agent-sign-in-again-needed"), StatusTone::Warning)
+        } else {
+            Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
+        }));
+        if let Some(message) = setup.and_then(VertexSetup::message) {
+            body.push(row(crate::widgets::error_caption(message)));
+        }
+        let sign_in: Box<dyn Widget> = if waiting {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-cancel-{profile_id}"),
+                    &t("agent-cancel"),
+                ),
+                AgentModelsEffect::CancelGoogleSignIn,
+            ))
+        } else {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-sign-in-{profile_id}"),
+                    &t("agent-sign-in-again"),
+                ),
+                AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(profile_id.clone()),
+                },
+            ))
+        };
+        body.push(row(Box::new(
+            Row::new()
+                .push(sign_in)
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-enabled-{profile_id}"),
+                        &if profile.enabled {
+                            t("agent-disable")
+                        } else {
+                            t("agent-enable")
+                        },
+                    ),
+                    AgentModelsEffect::SetProviderEnabled {
+                        provider: profile_id.clone(),
+                        on: !profile.enabled,
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        &t("agent-remove-provider"),
+                    ),
+                    AgentModelsEffect::RemoveProvider {
+                        provider: profile_id.clone(),
+                    },
+                ))),
+        )));
+        body.extend(self.default_button(profile, default_profile));
+    }
+
+    /// The setup of a Vertex AI provider being added, then the hosted
+    /// providers and their request limits.
+    fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
+        if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
+            cards.push(setup.card(&self.cx));
+        }
+        cards.push(self.hosted_profiles());
+        cards.push(self.request_limits_card());
+    }
+
+    fn request_limit_buffers(
+        &self,
+        profile: &ProviderProfile,
+        selected: &ModelDescriptor,
+    ) -> LimitFieldBuffers {
+        let key = (profile.id.clone(), selected.id.clone());
+        let mut buffers = self.limit_field_buffers.lock_recover();
+        let fields = buffers
+            .entry(key)
+            .or_insert_with(|| LimitFieldBuffers {
+                output: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .map_or_else(String::new, |limits| limits.max_output_tokens.to_string()),
+                )),
+                runtime: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.runtime_context_tokens)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+                deadline: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.plan_timeout_ms)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+            })
+            .clone();
+        drop(buffers);
+        fields
+    }
+
+    fn request_limits_card(&self) -> SettingsSection {
+        let config = self.providers.get().config.clone();
+        let mut body = vec![note(&t("agent-request-limits-caption"))];
+        for profile in &config.profiles {
+            for selected in &profile.models {
+                body.push(value_row(profile.display_label(), selected.display_label()));
+                body.push(value_row(
+                    &t("agent-source-context"),
+                    &selected
+                        .context_window
+                        .map_or_else(|| t("agent-context-unknown"), |value| value.to_string()),
+                ));
+                let fields = self.request_limit_buffers(profile, selected);
+                let widget_id =
+                    format!("{}-{}", hex::encode(&profile.id), hex::encode(&selected.id));
+                for (name, label, buffer) in [
+                    (
+                        "output",
+                        "agent-output-allowance",
+                        Arc::clone(&fields.output),
+                    ),
+                    (
+                        "runtime",
+                        "agent-runtime-context",
+                        Arc::clone(&fields.runtime),
+                    ),
+                    (
+                        "deadline",
+                        "agent-plan-timeout",
+                        Arc::clone(&fields.deadline),
+                    ),
+                ] {
+                    let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
+                    body.push(field_row(
+                        &t(label),
+                        Box::new(
+                            TextInput::local()
+                                .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
+                                .with_accessible_name(t(label))
+                                .with_external_buffer(buffer)
+                                .with_initial_value(&initial)
+                                .with_placeholder(t("agent-context-unknown")),
+                        ),
+                    ));
+                }
+                let provider = profile.id.clone();
+                let model = selected.id.clone();
+                body.push(row(Box::new(
+                    Row::new()
+                        .push(Box::new(self.cx.bind(
+                            Button::new(
+                                &format!("agent-model-limit-save-{widget_id}"),
+                                &t("agent-save-details"),
+                            ),
+                            effect(AgentModelsEffect::SET_MODEL_REQUEST_LIMITS).map(move |()| {
+                                (
+                                    provider.clone(),
+                                    model.clone(),
+                                    limit_input(&fields.output),
+                                    limit_input(&fields.runtime),
+                                    limit_input(&fields.deadline),
+                                )
+                            }),
+                        )))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new(
+                                &format!("agent-model-limit-clear-{widget_id}"),
+                                &t("agent-request-limits-clear"),
+                            ),
+                            AgentModelsEffect::SetModelRequestLimits {
+                                provider: profile.id.clone(),
+                                model: selected.id.clone(),
+                                max_output_tokens: None,
+                                runtime_context_tokens: None,
+                                plan_timeout_ms: None,
+                            },
+                        ))),
+                )));
+            }
+        }
+        card(&t("agent-request-limits-title"), rows(body))
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let private_title = t("agent-private-title");
+        let local_inf = t("agent-local-inference");
+        let local_gw = t("agent-local-gateway");
+        let downloads = t("agent-downloads");
+        let downloads_v = t("agent-downloads-value");
+        let mut cards = vec![card(
+            &private_title,
+            rows(vec![
+                note(&t("agent-private-caption")),
+                value_row(&local_inf, &local_gw),
+                value_row(&downloads, &downloads_v),
+            ]),
+        )];
+        if !self.manager_available {
+            cards.push(card(
+                &t("agent-service-down-title"),
+                rows(vec![note(&t("agent-service-down-body"))]),
+            ));
+            self.push_provider_cards(&mut cards);
+            return crate::widgets::cards(cards);
+        }
+        if let Some(notice) = &self.notice {
+            cards.push(card(&t("agent-service-title"), rows(vec![note(notice)])));
+        }
+        if let Some(accelerator) = self.accelerator_card() {
+            cards.push(accelerator);
+        }
+        // A link to one in-process model puts its card first, where the
+        // person who followed it sees it without hunting.
+        let revealed = self
+            .revealed
+            .as_deref()
+            .and_then(|id| self.snapshot.in_process_model(id));
+        if let Some(model) = revealed {
+            cards.push(self.in_process_card(model));
+        }
+        cards.push(self.recommendation_card());
+        for model in &self.snapshot.in_process {
+            if revealed.is_none_or(|shown| shown.package.id != model.package.id) {
+                cards.push(self.in_process_card(model));
+            }
+        }
+        if self.snapshot.models.is_empty() {
+            cards.push(card(
+                &t("agent-models-empty-title"),
+                rows(vec![note(&t("agent-models-empty"))]),
+            ));
+        } else {
+            for model in &self.snapshot.models {
+                cards.push(self.model_card(model));
+            }
+        }
+        self.push_provider_cards(&mut cards);
+        crate::widgets::cards(cards)
+    }
+}
+
+/// Change only the selected model's policy, retaining other profile metadata.
+fn set_model_limits(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    tokens: (Option<u32>, Option<u32>, Option<u32>),
+) -> Result<(), String> {
+    let selected = find(config, provider)?
+        .models
+        .iter_mut()
+        .find(|item| item.id == model)
+        .ok_or_else(|| t("agent-model-gone"))?;
+    let limits = match tokens.0 {
+        Some(max_output_tokens) => Some(ModelRequestLimits {
+            max_output_tokens,
+            runtime_context_tokens: tokens.1,
+            plan_timeout_ms: tokens.2,
+        }),
+        None if tokens.1.is_none() && tokens.2.is_none() => None,
+        None => return Err(t("agent-request-limits-invalid")),
+    };
+    if let Some(limits) = &limits {
+        limits
+            .validate(selected.context_window)
+            .map_err(|_| t("agent-request-limits-invalid"))?;
+    }
+    selected.request_limits = limits;
+    Ok(())
+}
+
+/// The provider `id` of `config`.
+fn find<'a>(config: &'a mut ProviderConfig, id: &str) -> Result<&'a mut ProviderProfile, String> {
+    config
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == id)
+        .ok_or_else(|| t("agent-provider-gone"))
+}
+
+fn location_shown(location: EndpointLocation) -> String {
+    match location {
+        EndpointLocation::Hosted => t("agent-location-hosted"),
+        EndpointLocation::ThisDevice => t("agent-location-this-device"),
+        EndpointLocation::PrivateNetwork => t("agent-location-private"),
+    }
+}
+
+fn gib(n: impl Into<i64>) -> String {
+    t_args("agent-gib", &[("n", n.into().into())])
+}
+
+fn fit_tone(fit: HardwareFit) -> StatusTone {
+    match fit {
+        HardwareFit::Excellent | HardwareFit::Good => StatusTone::Success,
+        HardwareFit::Tight | HardwareFit::Unsupported => StatusTone::Warning,
+    }
+}
+
+fn phase_tone(phase: &LocalModelPhase) -> StatusTone {
+    match phase {
+        LocalModelPhase::Ready { running: true, .. } => StatusTone::Success,
+        LocalModelPhase::Ready { running: false, .. } => StatusTone::Neutral,
+        LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => {
+            StatusTone::Info
+        }
+        LocalModelPhase::Error { .. } => StatusTone::Warning,
+    }
+}
+
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 const MANAGER_OUTPUT_LIMIT: usize = 1024 * 1024;
 
@@ -39,17 +2265,12 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
         MANAGER_OUTPUT_LIMIT,
         timeout,
     )
-    .map_err(|error| format!("model service is unavailable: {error}"))
-}
-
-fn manager_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
+    .map_err(|error| {
+        t_args(
+            "agent-manager-unavailable",
+            &[("error", error.to_string().into())],
+        )
+    })
 }
 
 #[derive(Clone)]
@@ -59,143 +2280,52 @@ struct HostedFieldBuffers {
     model: Arc<Mutex<String>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
+#[derive(Clone)]
+struct LimitFieldBuffers {
+    output: Arc<Mutex<String>>,
+    runtime: Arc<Mutex<String>>,
+    deadline: Arc<Mutex<String>>,
 }
 
-impl HardwareFit {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Excellent => "Excellent fit",
-            Self::Good => "Good fit",
-            Self::Tight => "Will run, with limits",
-            Self::Unsupported => "Not enough memory",
-        }
+fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
+    let text = buffer
+        .lock()
+        .map_or_else(|_| "0".into(), |value| value.trim().to_owned());
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.parse().unwrap_or(0))
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareRecommendation {
-    pub fit: HardwareFit,
-    pub memory_gib: u16,
-    pub accelerator: String,
-    pub accelerator_memory_gib: Option<u16>,
-    pub free_storage_gib: Option<u16>,
-    pub reason: String,
+/// The fit's label, as the hardware card shows it.
+fn fit_label(fit: HardwareFit) -> String {
+    t(match fit {
+        HardwareFit::Excellent => "agent-fit-excellent",
+        HardwareFit::Good => "agent-fit-good",
+        HardwareFit::Tight => "agent-fit-tight",
+        HardwareFit::Unsupported => "agent-fit-unsupported",
+    })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelPackage {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub source: String,
-    pub revision: String,
-    pub license: String,
-    pub license_url: String,
-    pub download_bytes: u64,
-    pub installed_bytes: u64,
-    /// Signed capability reported by the local-model manager for this exact
-    /// revision. It is not inferred from a model name.
-    #[serde(default)]
-    pub vision: bool,
-    /// Signed biometric capability for a distinct local face runtime.  A
-    /// general image-analysis model must not gain this capability implicitly.
-    #[serde(default)]
-    pub face_recognition: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        /// Exact loopback endpoint published by the supervised model service.
-        /// A missing endpoint is never substituted with a guessed port.
-        #[serde(default)]
-        endpoint: Option<LocalModelEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelEndpoint {
-    pub url: String,
-    pub model_id: String,
-}
-
-impl LocalModelPhase {
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Downloading { .. } | Self::Installing { .. })
-    }
-
-    fn status(&self) -> &'static str {
-        match self {
-            Self::Downloading { .. } => "Downloading",
-            Self::Installing { .. } => "Installing",
-            Self::Ready { running: true, .. } => "Running",
-            Self::Ready { running: false, .. } => "Ready",
-            Self::Error { .. } => "Needs attention",
-        }
+/// The card title naming what an in-process model does for the person.
+fn capability_title(package: &LocalModelPackage) -> String {
+    if package.segmentation {
+        t("agent-inprocess-segmentation-title")
+    } else {
+        package.name.clone()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstalledLocalModel {
-    pub package: LocalModelPackage,
-    pub phase: LocalModelPhase,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-
-impl AcceleratorSetupState {
-    pub(crate) fn blocks_model_setup(&self) -> bool {
-        !matches!(self, Self::Active)
-    }
-
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Queued | Self::Staging)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcceleratorSetup {
-    pub boot_pack_id: String,
-    pub status: AcceleratorSetupState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelSnapshot {
-    pub hardware: HardwareRecommendation,
-    pub recommendation: Option<LocalModelPackage>,
-    #[serde(default)]
-    pub models: Vec<InstalledLocalModel>,
-    #[serde(default)]
-    pub accelerator_setup: Option<AcceleratorSetup>,
+/// The phase's status line.
+fn phase_status(phase: &LocalModelPhase) -> String {
+    t(match phase {
+        LocalModelPhase::Downloading { .. } => "agent-status-downloading",
+        LocalModelPhase::Installing { .. } => "agent-status-installing",
+        LocalModelPhase::Ready { running: true, .. } => "agent-status-running",
+        LocalModelPhase::Ready { running: false, .. } => "agent-status-ready",
+        LocalModelPhase::Error { .. } => "agent-status-attention",
+    })
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
@@ -231,7 +2361,7 @@ impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(manager_diagnostic(&output.stderr));
+            return Err(output.stderr_diagnostic());
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))
@@ -275,17 +2405,6 @@ impl LocalModelControl for ModelManagerCli {
     }
 }
 
-/// Read the manager's current, signed inventory for the resource tree and
-/// effect-time validation.  This performs no mutation and deliberately keeps
-/// manager implementation details out of `actions.rs`.
-///
-/// # Errors
-///
-/// Returns the local manager's unavailable or malformed-snapshot error.
-pub fn live_snapshot() -> Result<LocalModelSnapshot, String> {
-    LocalModelControl::snapshot(&ModelManagerCli)
-}
-
 fn fallback_snapshot() -> LocalModelSnapshot {
     let memory_gib = std::fs::read_to_string("/proc/meminfo")
         .ok()
@@ -301,37 +2420,26 @@ fn fallback_snapshot() -> LocalModelSnapshot {
         .and_then(|kib| u16::try_from(kib / 1024 / 1024).ok())
         .unwrap_or(8);
     let (fit, reason) = if memory_gib >= 32 {
-        (
-            HardwareFit::Excellent,
-            "Your memory can keep a larger local model responsive while other apps are open.",
-        )
+        (HardwareFit::Excellent, t("agent-reason-excellent"))
     } else if memory_gib >= 16 {
-        (
-            HardwareFit::Good,
-            "Balanced for everyday tool use and this device's available system memory.",
-        )
+        (HardwareFit::Good, t("agent-reason-good"))
     } else if memory_gib >= 8 {
-        (
-            HardwareFit::Tight,
-            "A compact model leaves room for the desktop and workspace apps.",
-        )
+        (HardwareFit::Tight, t("agent-reason-tight"))
     } else {
-        (
-            HardwareFit::Unsupported,
-            "This device does not report enough memory for reliable local inference.",
-        )
+        (HardwareFit::Unsupported, t("agent-reason-unsupported"))
     };
     LocalModelSnapshot {
         hardware: HardwareRecommendation {
             fit,
             memory_gib,
-            accelerator: "Checked by the model service at install".into(),
+            accelerator: t("agent-accel-checked"),
             accelerator_memory_gib: None,
             free_storage_gib: None,
-            reason: reason.into(),
+            reason,
         },
         recommendation: None,
         models: Vec::new(),
+        in_process: Vec::new(),
         accelerator_setup: None,
     }
 }
@@ -357,13 +2465,13 @@ fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
     }
 }
 
-fn action_label(action: ModelAction) -> &'static str {
-    match action {
-        ModelAction::Start => "Start",
-        ModelAction::Stop => "Stop",
-        ModelAction::Remove => "Remove…",
-        ModelAction::Retry => "Retry install",
-    }
+fn action_label(action: ModelAction) -> String {
+    t(match action {
+        ModelAction::Start => "agent-action-start",
+        ModelAction::Stop => "agent-action-stop",
+        ModelAction::Remove => "agent-action-remove",
+        ModelAction::Retry => "agent-action-retry",
+    })
 }
 
 fn action_slug(action: ModelAction) -> &'static str {
@@ -375,22 +2483,13 @@ fn action_slug(action: ModelAction) -> &'static str {
     }
 }
 
-pub(crate) fn model_key(id: &str, action: ModelAction) -> String {
-    let token = id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("agent_models.local.{token}.{}", action_slug(action))
-}
-
 fn byte_size(bytes: u64) -> String {
-    format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    // In-process models are a few hundred megabytes; "0.2 GiB" says little.
+    if bytes < 1_073_741_824 {
+        format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+    } else {
+        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    }
 }
 
 fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
@@ -407,46 +2506,15 @@ fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
     }
 }
 
-fn provider_action_button(
-    resources: &tilo_actions::Resource,
-    id: &str,
-    label: &str,
-    profile_id: Option<&str>,
-    action_id: &str,
-) -> Button {
-    let button = Button::new(id, label, None);
-    match crate::actions::agent_provider_binding(resources, profile_id, action_id) {
-        Some(binding) => button.on_action(binding),
-        None => button.with_enabled(false),
-    }
-}
-
-fn sync_local_profile(models: &[InstalledLocalModel]) {
-    let mut config = ProviderConfig::load();
-    let existing = config
-        .profiles
-        .iter()
-        .position(ProviderProfile::is_local_vllm_candidate);
-    let Some(profile) = synced_local_profile(
-        existing.and_then(|index| config.profiles.get(index).cloned()),
-        models,
-    ) else {
-        return;
-    };
-    let changed = existing.and_then(|index| config.profiles.get(index)) != Some(&profile);
-    if changed {
-        config.upsert(profile);
-        let _ = config.save();
-    }
-}
-
 fn synced_local_profile(
     existing: Option<ProviderProfile>,
     models: &[InstalledLocalModel],
 ) -> Option<ProviderProfile> {
     let ready = models
         .iter()
-        .filter(|model| matches!(model.phase, LocalModelPhase::Ready { .. }))
+        .filter(|model| {
+            !model.package.in_process && matches!(model.phase, LocalModelPhase::Ready { .. })
+        })
         .collect::<Vec<_>>();
     if ready.is_empty() {
         return None;
@@ -475,7 +2543,16 @@ fn synced_local_profile(
         .map(|model| ModelDescriptor {
             id: model.package.id.clone(),
             label: model.package.name.clone(),
-            context_window: None,
+            context_window: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.context_window),
+            request_limits: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.request_limits.clone()),
             revision: Some(model.package.revision.clone()),
             vision: model.package.vision,
             face_recognition: model.package.face_recognition,
@@ -496,866 +2573,41 @@ fn synced_local_profile(
     Some(profile)
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the independent lifecycle, confirmation, and rebuild flags model concurrent manager state"
-)]
-pub struct AgentModelsPane {
-    control: Arc<dyn LocalModelControl>,
-    snapshot: LocalModelSnapshot,
-    manager_available: bool,
-    sync_provider_profile: bool,
-    confirmation: Option<String>,
-    remove_confirmation: Option<String>,
-    notice: Option<String>,
-    last_poll: Instant,
-    needs_seed: bool,
-    structure_dirty: bool,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    /// API keys are deliberately process-local masked-input buffers. They are
-    /// not Automerge text, never enter the settings document, and are erased
-    /// as soon as the gateway accepts or rejects submission.
-    provider_key_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
-    provider_field_buffers: Arc<Mutex<HashMap<String, HostedFieldBuffers>>>,
-    provider_notice: ui::LocalState<Option<String>>,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-}
-
-impl AgentModelsPane {
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self
-    }
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
+impl PaneModel for AgentModelsModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
     }
 
-    pub fn new() -> Self {
-        let mut pane = Self::with_control(Arc::new(ModelManagerCli));
-        pane.sync_provider_profile = true;
-        sync_local_profile(&pane.snapshot.models);
-        pane
-    }
-
-    pub fn with_control(control: Arc<dyn LocalModelControl>) -> Self {
-        let (snapshot, manager_available, notice) = match control.snapshot() {
-            Ok(snapshot) => (snapshot, true, None),
-            Err(error) => (
-                fallback_snapshot(),
-                false,
-                Some(format!(
-                    "The local model service is unavailable ({error}). Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle."
-                )),
-            ),
-        };
-        Self {
-            control,
-            snapshot,
-            manager_available,
-            sync_provider_profile: false,
-            confirmation: None,
-            remove_confirmation: None,
-            notice,
-            last_poll: ui::time::now(),
-            needs_seed: true,
-            structure_dirty: false,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
-            provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
-            provider_notice: ui::LocalState::new(None),
-            composed: None,
-            rect: Rect::ZERO,
+    fn poll(&mut self) -> bool {
+        if self.providers.refresh() {
+            self.read_keys();
         }
-    }
-
-    fn refresh(&mut self) {
-        match self.control.snapshot() {
-            Ok(snapshot) => {
-                if self.sync_provider_profile {
-                    sync_local_profile(&snapshot.models);
-                }
-                self.snapshot = snapshot;
-                self.manager_available = true;
-                self.notice = None;
-            }
-            Err(error) => {
-                self.manager_available = false;
-                self.notice = Some(format!("Could not refresh local models: {error}"));
+        let polled = self.vertex.as_mut().map(VertexSetup::poll);
+        match polled {
+            None | Some(Polled::Nothing) => {}
+            Some(Polled::Changed) => self.changed = true,
+            Some(Polled::SignedInAgain) => {
+                self.vertex = None;
+                self.read_keys();
+                self.notice = Some(t("agent-vertex-signed-in"));
             }
         }
-        self.last_poll = ui::time::now();
-        self.structure_dirty = true;
-    }
-
-    fn operation_is_running(&self, operation: &crate::actions::AgentModelOperation) -> bool {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::AGENT_MODEL_OPERATION_TYPE,
-            operation,
-        );
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: active } if active == token
-        )
-    }
-
-    fn operation_finished(
-        &self,
-        operation: &crate::actions::AgentModelOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::AGENT_MODEL_OPERATION_TYPE,
-            operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: active } if active == token
-        ) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-
-    fn is_busy(&self) -> bool {
-        self.snapshot
-            .models
-            .iter()
-            .any(|model| model.phase.is_transient())
-            || self
-                .snapshot
-                .accelerator_setup
-                .as_ref()
-                .is_some_and(|setup| setup.status.is_transient())
-    }
-
-    fn accelerator_card(&self) -> Option<El> {
-        let setup = self.snapshot.accelerator_setup.as_ref()?;
-        let mut body = vec![value_row("Signed hardware match", &setup.boot_pack_id)];
-        let status = match &setup.status {
-            AcceleratorSetupState::Available => {
-                body.push(caption(
-                    "Tilo found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
-                ));
-                body.push(Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-accelerator-setup",
-                            "Set up accelerator",
-                            Some(ACCELERATOR_SETUP_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
-                "Ready to set up"
-            }
-            AcceleratorSetupState::Queued => {
-                body.push(Box::new(
-                    ProgressBar::indeterminate().with_label("Preparing accelerator support"),
-                ));
-                body.push(caption(
-                    "The request is queued. You can leave Settings while Tilo verifies and stages the signed system image.",
-                ));
-                "Queued"
-            }
-            AcceleratorSetupState::Staging => {
-                body.push(Box::new(
-                    ProgressBar::indeterminate().with_label("Staging accelerator support"),
-                ));
-                body.push(caption(
-                    "Tilo is building the next boot deployment. The current desktop keeps running normally.",
-                ));
-                "Staging"
-            }
-            AcceleratorSetupState::RestartRequired => {
-                body.push(caption(
-                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; Tilo will verify the booted deployment before calling it active.",
-                ));
-                "Restart required"
-            }
-            AcceleratorSetupState::Active => {
-                body.push(caption(
-                    "The signed accelerator stack is active and local model setup can use it.",
-                ));
-                "Active"
-            }
-            AcceleratorSetupState::Error { message } => {
-                body.push(caption(message));
-                body.push(caption(
-                    "Nothing was installed into the running system. Retry rechecks this device against the signed hardware policy.",
-                ));
-                body.push(Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-accelerator-retry",
-                            "Retry accelerator setup",
-                            Some(ACCELERATOR_SETUP_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
-                "Needs attention"
-            }
-        };
-        Some(card_with_action(
-            "Accelerator support",
-            Box::new(Text::new(status).with_size(12.0)),
-            rows(body),
-        ))
-    }
-
-    fn recommendation_card(&self) -> El {
-        let hardware = &self.snapshot.hardware;
-        let mut body = vec![
-            value_row("Hardware fit", hardware.fit.label()),
-            value_row("System memory", &format!("{} GiB", hardware.memory_gib)),
-            value_row("Accelerator", &hardware.accelerator),
-        ];
-        if let Some(vram) = hardware.accelerator_memory_gib {
-            body.push(value_row("Accelerator memory", &format!("{vram} GiB")));
-        }
-        if let Some(storage) = hardware.free_storage_gib {
-            body.push(value_row("Storage available", &format!("{storage} GiB")));
-        }
-        body.push(caption(&hardware.reason));
-        let Some(package) = &self.snapshot.recommendation else {
-            body.push(value_row(
-                "Recommended model",
-                "Waiting for signed model catalog",
-            ));
-            body.push(caption(
-                "Setup stays disabled until the local model service reports a verified, immutable model release.",
-            ));
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("agent-models-setup-unavailable", "Set up unavailable", None)
-                            .with_enabled(false),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
-            return card_with_action(
-                "Recommended for this device",
-                Box::new(Text::new("Service unavailable").with_size(12.0)),
-                rows(body),
-            );
-        };
-        body.extend([
-            value_row("Recommended model", &package.name),
-            caption(&package.description),
-        ]);
-        if self.confirmation.as_deref() == Some(&package.id) {
-            body.extend([
-                value_row("Download", &byte_size(package.download_bytes)),
-                value_row("Storage after install", &byte_size(package.installed_bytes)),
-                value_row("Source", &package.source),
-                value_row("Pinned revision", &package.revision),
-                value_row("License", &package.license),
-                caption(&format!(
-                    "By continuing, you accept the model license at {}. Tilo downloads the pinned snapshot once and keeps inference on this device.",
-                    package.license_url
-                )),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-confirm-install",
-                            "Accept license & download",
-                            Some(CONFIRM_KEY),
-                        )))
-                        .push(Box::new(Button::new(
-                            "agent-models-cancel-install",
-                            "Cancel",
-                            Some(CANCEL_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ),
-            ]);
-        } else {
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "agent-models-setup-local",
-                            "Set up on this device",
-                            Some(SETUP_KEY),
-                        )
-                        .with_enabled(
-                            self.manager_available
-                                && hardware.fit != HardwareFit::Unsupported
-                                && self
-                                    .snapshot
-                                    .accelerator_setup
-                                    .as_ref()
-                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                        ),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
-        }
-        card_with_action(
-            "Recommended for this device",
-            Box::new(Text::new(hardware.fit.label()).with_size(12.0)),
-            rows(body),
-        )
-    }
-
-    fn model_card(&self, model: &InstalledLocalModel) -> El {
-        let mut body = vec![
-            value_row("Status", model.phase.status()),
-            value_row("Storage", &byte_size(model.package.installed_bytes)),
-            value_row("License", &model.package.license),
-        ];
-        match &model.phase {
-            LocalModelPhase::Downloading {
-                downloaded_bytes,
-                total_bytes,
-            } => {
-                body.push(Box::new(
-                    ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
-                        .with_label(format!("Downloading {}", model.package.name)),
-                ));
-                body.push(caption(&format!(
-                    "{} of {} downloaded · safe to leave this page",
-                    byte_size(*downloaded_bytes),
-                    byte_size(*total_bytes)
-                )));
-            }
-            LocalModelPhase::Installing { percent, message } => {
-                body.push(Box::new(match percent {
-                    Some(_) => ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
-                        .with_label(format!("Installing {}", model.package.name)),
-                    None => ProgressBar::indeterminate()
-                        .with_label(format!("Installing {}", model.package.name)),
-                }));
-                body.push(caption(message));
-            }
-            LocalModelPhase::Error { message } => {
-                body.push(caption(message));
-                body.push(caption(
-                    "Retry resumes verified files where possible. Remove clears this model's local snapshot.",
-                ));
-            }
-            LocalModelPhase::Ready { running: true, .. } => body.push(caption(
-                "Available to agents through the local Tilo gateway. Workspace permissions still apply to every task.",
-            )),
-            LocalModelPhase::Ready { running: false, .. } => body.push(caption(
-                "Installed and verified. Start it when you want agents to use it; stopped models consume no accelerator memory.",
-            )),
-        }
-        let actions = available_actions(&model.phase);
-        if !actions.is_empty() {
-            let mut row = Row::new();
-            for action in actions {
-                let label = if action == ModelAction::Remove
-                    && self.remove_confirmation.as_deref() == Some(&model.package.id)
-                {
-                    "Confirm remove"
-                } else {
-                    action_label(action)
-                };
-                row = row.push(Box::new(Button::new(
-                    &format!(
-                        "agent-models-{}-{}",
-                        action_slug(action),
-                        model_key(&model.package.id, action)
-                    ),
-                    label,
-                    Some(&model_key(&model.package.id, action)),
-                )));
-            }
-            body.push(Box::new(row.push(Box::new(Spacer::new()))));
-        }
-        card_with_action(
-            &model.package.name,
-            Box::new(Text::new(model.phase.status()).with_size(12.0)),
-            rows(body),
-        )
-    }
-
-    fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
-        let mut buffers = self
-            .provider_key_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        buffers
-            .entry(profile_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(String::new())))
-            .clone()
-    }
-
-    fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
-        let mut buffers = self
-            .provider_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        buffers
-            .entry(profile.id.clone())
-            .or_insert_with(|| HostedFieldBuffers {
-                label: Arc::new(Mutex::new(profile.label.clone())),
-                endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
-                model: Arc::new(Mutex::new(
-                    profile.default_model.clone().unwrap_or_default(),
-                )),
-            })
-            .clone()
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the hosted-provider editor keeps each credential and endpoint control together"
-    )]
-    fn hosted_profiles(&self) -> El {
-        let config = ProviderConfig::load();
-        let action_resources = crate::actions::agent_provider_action_resources();
-        let mut body: Vec<El> = vec![caption(
-            "Hosted and compatible endpoints are personal to this device. Credentials remain references in the system vault.",
-        )];
-        body.push(Box::new(
-            Row::new()
-                .push(Box::new(provider_action_button(
-                    &action_resources,
-                    "agent-models-add-anthropic",
-                    "Add Anthropic",
-                    None,
-                    "add-anthropic",
-                )))
-                .push(hgap(8.0))
-                .push(Box::new(provider_action_button(
-                    &action_resources,
-                    "agent-models-add-openai",
-                    "Add compatible API",
-                    None,
-                    "add-openai-compatible",
-                )))
-                .push(Box::new(Spacer::new())),
-        ));
-        for profile in config
-            .profiles
-            .iter()
-            .filter(|profile| profile.location != EndpointLocation::ThisDevice)
-        {
-            body.push(value_row(profile.display_label(), profile.location.label()));
-            let profile_id = profile.id.clone();
-            let fields = self.field_buffers(profile);
-            let label = fields
-                .label
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            let endpoint = fields
-                .endpoint
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            let model = fields
-                .model
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-label-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.label))
-                    .with_initial_value(&label)
-                    .with_placeholder("Provider name"),
-            ));
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-url-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.endpoint))
-                    .with_initial_value(&endpoint)
-                    .with_placeholder("https://provider.example/v1"),
-            ));
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-model-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.model))
-                    .with_initial_value(&model)
-                    .with_placeholder("Model ID"),
-            ));
-            let save_id = profile_id.clone();
-            let save_fields = fields.clone();
-            let save_notice = self.provider_notice.clone();
-            let alternate_protocol = match profile.protocol {
-                ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
-                ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
-            };
-            let alternate_protocol_label = format!("Use {}", alternate_protocol.label());
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-save-provider-{profile_id}"),
-                            "Save details",
-                            None,
-                        )
-                        .on_effect(move || {
-                            let label = save_fields
-                                .label
-                                .lock()
-                                .map(|value| value.clone())
-                                .unwrap_or_default();
-                            let endpoint = save_fields
-                                .endpoint
-                                .lock()
-                                .map(|value| value.clone())
-                                .unwrap_or_default();
-                            let model = save_fields
-                                .model
-                                .lock()
-                                .map(|value| value.clone())
-                                .unwrap_or_default();
-                            let mut config = ProviderConfig::load();
-                            let result = if let Some(profile) = config
-                                .profiles
-                                .iter_mut()
-                                .find(|profile| profile.id == save_id)
-                            {
-                                profile.label = label;
-                                profile.endpoint = endpoint;
-                                if !model.trim().is_empty() {
-                                    if !profile.models.iter().any(|candidate| candidate.id == model)
-                                    {
-                                        profile.models.push(ModelDescriptor::new(model.clone()));
-                                    }
-                                    profile.default_model = Some(model);
-                                }
-                                config.save().map_err(|error| error.to_string())
-                            } else {
-                                Err("Provider is no longer available.".into())
-                            };
-                            save_notice.set(Some(match result {
-                                Ok(()) => "Provider details saved.".into(),
-                                Err(error) => format!("Provider details were not saved: {error}"),
-                            }));
-                        }),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(provider_action_button(
-                        &action_resources,
-                        &format!("agent-models-protocol-{profile_id}"),
-                        &alternate_protocol_label,
-                        Some(&profile_id),
-                        "set-protocol",
-                    )))
-                    .push(hgap(8.0))
-                    .push(Box::new(provider_action_button(
-                        &action_resources,
-                        &format!("agent-models-enabled-{profile_id}"),
-                        if profile.enabled { "Disable" } else { "Enable" },
-                        Some(&profile_id),
-                        if profile.enabled { "disable" } else { "enable" },
-                    )))
-                    .push(hgap(8.0))
-                    .push(Box::new(provider_action_button(
-                        &action_resources,
-                        &format!("agent-models-remove-provider-{profile_id}"),
-                        "Remove provider",
-                        Some(&profile_id),
-                        "remove",
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
-            body.push(value_row("Protocol", profile.protocol.label()));
-            let buffer = self.key_buffer(&profile_id);
-            let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
-            let set_id = profile_id.clone();
-            let set_buffer = Arc::clone(&buffer);
-            let set_notice = self.provider_notice.clone();
-            let remove_id = profile_id.clone();
-            let remove_notice = self.provider_notice.clone();
-            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        TextInput::local()
-                            .with_id(&format!("agent-models-api-key-{profile_id}"))
-                            .with_external_buffer(buffer)
-                            .with_initial_value(&initial)
-                            .with_secret(true)
-                            .with_placeholder("API key (stored in Tilo vault)"),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-set-api-key-{profile_id}"),
-                            if configured {
-                                "Replace key"
-                            } else {
-                                "Save key"
-                            },
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut key = set_buffer
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let value = std::mem::take(&mut *key);
-                            let result = tilo_model_gateway::set_api_key(&set_id, value);
-                            key.zeroize();
-                            drop(key);
-                            set_notice.set(Some(match result {
-                                Ok(()) => "API key saved in the Tilo vault.".into(),
-                                Err(error) => format!("API key was not saved: {error}"),
-                            }));
-                        }),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-remove-api-key-{profile_id}"),
-                            "Remove key",
-                            None,
-                        )
-                        .on_effect(move || {
-                            let result = tilo_model_gateway::remove_api_key(&remove_id);
-                            remove_notice.set(Some(match result {
-                                Ok(()) => "API key removed from the Tilo vault.".into(),
-                                Err(error) => format!("API key was not removed: {error}"),
-                            }));
-                        }),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
-            body.push(caption(if configured {
-                "API key is stored in the Tilo vault."
-            } else {
-                "No API key stored."
-            }));
-            if profile.default_model.is_some() {
-                body.push(Box::new(provider_action_button(
-                    &action_resources,
-                    &format!("agent-models-default-{profile_id}"),
-                    if config.default_profile.as_deref() == Some(&profile.id) {
-                        "Default for new tasks"
-                    } else {
-                        "Use by default"
-                    },
-                    Some(&profile_id),
-                    "set-default",
-                )));
-            }
-        }
-        for issue in config.validation_errors() {
-            body.push(caption(&format!(
-                "Provider configuration: {}",
-                issue.message
-            )));
-        }
-        card("Hosted and compatible providers", rows(body))
-    }
-
-    fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards = vec![card(
-            "Private by design",
-            rows(vec![
-                caption(
-                    "Models configured here supply inference only. They do not grant an agent access to a workspace, app, file, message, or device.",
-                ),
-                value_row("Local inference", "Loopback-only Tilo model gateway"),
-                value_row("Downloads", "Explicit, pinned, and visible here"),
-            ]),
-        )];
-        if !self.manager_available {
-            cards.push(card(
-                "Local model service unavailable",
-                caption(
-                    "Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
-                ),
-            ));
-            cards.push(self.hosted_profiles());
-            return crate::widgets::cards(cards);
-        }
-        if let Some(notice) = &self.notice {
-            cards.push(card("Local model service", caption(notice)));
-        }
-        if let Some(accelerator) = self.accelerator_card() {
-            cards.push(accelerator);
-        }
-        cards.push(self.recommendation_card());
-        if self.snapshot.models.is_empty() {
-            cards.push(card(
-                "Models on this device",
-                caption(
-                    "No local models are installed. Setup shows the download, storage, source, revision, and license before anything changes.",
-                ),
-            ));
-        } else {
-            for model in &self.snapshot.models {
-                cards.push(self.model_card(model));
-            }
-        }
-        cards.push(self.hosted_profiles());
-        crate::widgets::cards(cards)
-    }
-
-    fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.needs_seed {
-            return;
-        }
-        for key in [SETUP_KEY, CONFIRM_KEY, CANCEL_KEY, ACCELERATOR_SETUP_KEY] {
-            let _ = state.put(root, key, false);
-        }
-        for model in &self.snapshot.models {
-            for action in available_actions(&model.phase) {
-                let _ = state.put(root, model_key(&model.package.id, action), false);
-            }
-        }
-        self.needs_seed = false;
-    }
-
-    fn run_model_action(&mut self, model: &InstalledLocalModel, action: ModelAction) {
-        let operation = match action {
-            ModelAction::Start => crate::actions::AgentModelOperation::Start {
-                id: model.package.id.clone(),
-            },
-            ModelAction::Stop => crate::actions::AgentModelOperation::Stop {
-                id: model.package.id.clone(),
-            },
-            ModelAction::Retry => crate::actions::AgentModelOperation::Retry {
-                id: model.package.id.clone(),
-                revision: model.package.revision.clone(),
-            },
-            ModelAction::Remove => crate::actions::AgentModelOperation::Remove {
-                id: model.package.id.clone(),
-            },
-        };
-        let result = match action {
-            ModelAction::Start => self.control.start(&model.package.id),
-            ModelAction::Stop => self.control.stop(&model.package.id),
-            ModelAction::Retry => self.control.install(&model.package),
-            ModelAction::Remove => {
-                if self.remove_confirmation.as_deref() != Some(&model.package.id)
-                    && !self.operation_is_running(&operation)
-                {
-                    self.remove_confirmation = Some(model.package.id.clone());
-                    self.notice = Some(format!(
-                        "Remove {}? This deletes its {} local snapshot. Tasks and workspace data are unchanged.",
-                        model.package.name,
-                        byte_size(model.package.installed_bytes)
-                    ));
-                    self.structure_dirty = true;
-                    return;
-                }
-                self.remove_confirmation = None;
-                self.control.remove(&model.package.id)
-            }
-        };
-        if let Err(error) = result {
-            self.operation_finished(
-                &operation,
-                Err(format!("{} failed: {error}", action_label(action))),
-            );
-            self.notice = Some(format!("{} failed: {error}", action_label(action)));
-            self.structure_dirty = true;
-        } else {
+        if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
-            self.operation_finished(
-                &operation,
-                Ok(format!(
-                    "{} request accepted by the local model manager",
-                    action_label(action)
-                )),
-            );
         }
+        std::mem::take(&mut self.changed)
     }
 
-    fn sync_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if take_bool(state, root, ACCELERATOR_SETUP_KEY) {
-            let operation = crate::actions::AgentModelOperation::StageAccelerator;
-            match self.control.stage_accelerator() {
-                Ok(()) => {
-                    self.refresh();
-                    self.operation_finished(
-                        &operation,
-                        Ok("Accelerator setup request accepted by the local model manager".into()),
-                    );
-                }
-                Err(error) => {
-                    self.operation_finished(
-                        &operation,
-                        Err(format!("Accelerator setup could not start: {error}")),
-                    );
-                    self.notice = Some(format!("Accelerator setup could not start: {error}"));
-                    self.structure_dirty = true;
-                }
-            }
-        }
-        if take_bool(state, root, SETUP_KEY)
-            && let Some(package) = &self.snapshot.recommendation
-        {
-            self.confirmation = Some(package.id.clone());
-            self.structure_dirty = true;
-        }
-        if take_bool(state, root, CANCEL_KEY) {
-            self.confirmation = None;
-            self.structure_dirty = true;
-        }
-        if take_bool(state, root, CONFIRM_KEY)
-            && let Some(package) = self.snapshot.recommendation.clone()
-            && (self.confirmation.as_deref() == Some(package.id.as_str())
-                || self.operation_is_running(&crate::actions::AgentModelOperation::Install {
-                    id: package.id.clone(),
-                    revision: package.revision.clone(),
-                }))
-        {
-            self.confirmation = None;
-            let operation = crate::actions::AgentModelOperation::Install {
-                id: package.id.clone(),
-                revision: package.revision.clone(),
-            };
-            match self.control.install(&package) {
-                Ok(()) => {
-                    self.refresh();
-                    self.operation_finished(
-                        &operation,
-                        Ok("Model installation request accepted by the local model manager".into()),
-                    );
-                }
-                Err(error) => {
-                    self.operation_finished(
-                        &operation,
-                        Err(format!("Installation could not start: {error}")),
-                    );
-                    self.notice = Some(format!("Installation could not start: {error}"));
-                    self.structure_dirty = true;
-                }
-            }
-        }
-        let models = self.snapshot.models.clone();
-        for model in &models {
-            for action in available_actions(&model.phase) {
-                let key = model_key(&model.package.id, action);
-                if take_bool(state, root, &key) {
-                    self.run_model_action(model, action);
-                }
-            }
-        }
+    fn name(&self) -> &'static str {
+        "AgentModelsPane"
+    }
+
+    fn busy(&self) -> bool {
+        self.is_busy() || self.vertex.as_ref().is_some_and(VertexSetup::waiting)
     }
 }
 
-impl Default for AgentModelsPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for AgentModelsPane {
+impl Drop for AgentModelsModel {
     fn drop(&mut self) {
         if let Ok(buffers) = self.provider_key_buffers.lock() {
             for buffer in buffers.values() {
@@ -1367,181 +2619,61 @@ impl Drop for AgentModelsPane {
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AgentModelsPane::new())
-}
+/// The model manager a screenshot and the crate's tests show: a good fit,
+/// one recommended model, nothing installed. Every request succeeds.
+struct SampleManager;
 
-impl Widget for AgentModelsPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        if let Some(notice) = self.provider_notice.get() {
-            self.provider_notice.set(None);
-            self.notice = Some(notice);
-            self.structure_dirty = true;
-        }
-        self.seed(&mut state, &root);
-        if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
-            self.command_state.get()
-        {
-            self.command_state.set(None);
-            let key = match operation {
-                crate::actions::AgentModelOperation::StageAccelerator => {
-                    ACCELERATOR_SETUP_KEY.into()
-                }
-                crate::actions::AgentModelOperation::Install { .. } => CONFIRM_KEY.into(),
-                crate::actions::AgentModelOperation::Start { id } => {
-                    model_key(&id, ModelAction::Start)
-                }
-                crate::actions::AgentModelOperation::Stop { id } => {
-                    model_key(&id, ModelAction::Stop)
-                }
-                crate::actions::AgentModelOperation::Retry { id, .. } => {
-                    model_key(&id, ModelAction::Retry)
-                }
-                crate::actions::AgentModelOperation::Remove { id } => {
-                    model_key(&id, ModelAction::Remove)
-                }
-            };
-            let _ = state.put(&root, key, true);
-        }
-        self.sync_actions(&mut state, &root);
-        if let Some(composed) = &mut self.composed {
-            composed.sync(&mut state, &root);
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
+impl LocalModelControl for SampleManager {
+    fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+        Ok(LocalModelSnapshot {
+            hardware: HardwareRecommendation {
+                fit: HardwareFit::Good,
+                memory_gib: 32,
+                accelerator: "GPU with 16 GiB".into(),
+                accelerator_memory_gib: Some(16),
+                free_storage_gib: Some(120),
+                reason: t("agent-reason-good"),
+            },
+            recommendation: Some(LocalModelPackage {
+                id: "sample/helpful-7b".into(),
+                name: "Helpful 7B".into(),
+                description: "A capable assistant model for this device".into(),
+                source: "huggingface.co/sample/helpful-7b".into(),
+                revision: "0123456789abcdef".into(),
+                license: "Apache 2.0".into(),
+                license_url: "https://www.apache.org/licenses/LICENSE-2.0".into(),
+                download_bytes: 5_368_709_120,
+                installed_bytes: 10_737_418_240,
+                vision: false,
+                face_recognition: false,
+                in_process: false,
+                segmentation: false,
+            }),
+            models: Vec::new(),
+            in_process: Vec::new(),
+            accelerator_setup: None,
+        })
     }
-
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
-        if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
-            self.refresh();
-            return true;
-        }
-        self.is_busy()
+    fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+        Ok(())
     }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+    fn start(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
+    fn stop(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
+    fn remove(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
+    fn stage_accelerator(&self) -> Result<(), String> {
+        Ok(())
     }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|composed| composed.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|composed| composed.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn name(&self) -> &'static str {
-        "AgentModelsPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|composed| composed.take_structure_dirty())
-    }
-}
-
-fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
-    let pressed = matches!(
-        state.get(root, key),
-        Ok(Some((Value::Scalar(value), _)))
-            if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-    );
-    if pressed {
-        let _ = state.put(root, key, false);
-    }
-    pressed
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
 
     use super::*;
@@ -1559,7 +2691,190 @@ mod tests {
             installed_bytes: 10_737_418_240,
             vision: false,
             face_recognition: false,
+            in_process: false,
+            segmentation: false,
         }
+    }
+
+    fn subject_package() -> LocalModelPackage {
+        LocalModelPackage {
+            id: "u2net-subject".into(),
+            name: "Subject selection (U²-Net)".into(),
+            description: "Finds the main subject of a photo".into(),
+            source: "https://artifacts.example.test/u2net.onnx".into(),
+            revision: "8d10f".into(),
+            license: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.test/LICENSE".into(),
+            download_bytes: 175_997_641,
+            installed_bytes: 175_997_641,
+            vision: false,
+            face_recognition: false,
+            in_process: true,
+            segmentation: true,
+        }
+    }
+
+    fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
+        LocalModelSnapshot {
+            in_process: vec![InProcessLocalModel {
+                package: subject_package(),
+                phase,
+            }],
+            ..snapshot(None)
+        }
+    }
+
+    fn rendered_names(model: &AgentModelsModel) -> Vec<String> {
+        let composition = model.build_composition();
+        let mut nodes = Vec::new();
+        collect_accessibility(composition.as_ref(), &mut nodes);
+        nodes.into_iter().filter_map(|node| node.name).collect()
+    }
+
+    /// An in-process model has its own card with the recommendation's
+    /// licence confirmation, a link opens it at that confirmation without
+    /// downloading anything, and the install action is itself the
+    /// acceptance of the revision it was offered with.
+    #[test]
+    fn in_process_models_are_set_up_with_the_same_confirmation() {
+        // Case `setup_confirms_before_install`.
+        {
+            let control = mock(with_subject(None));
+            let model = model_over(control.clone());
+            // The recommendation's and the subject model's own.
+            assert_eq!(
+                rendered_names(&model)
+                    .iter()
+                    .filter(|name| *name == "Set up on this device")
+                    .count(),
+                2
+            );
+            model.reviewing_local.set(Some("u2net-subject".into()));
+            assert!(
+                rendered_names(&model)
+                    .iter()
+                    .any(|name| name == "Accept license & download")
+            );
+            assert!(control.calls.lock().unwrap().is_empty());
+            model
+                .manager_work(&AgentModelsEffect::InstallModel {
+                    model: "u2net-subject".into(),
+                    revision: "8d10f".into(),
+                })
+                .unwrap()
+                .run(control.as_ref())
+                .unwrap();
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["install:u2net-subject@8d10f"]
+            );
+            assert!(
+                model
+                    .manager_work(&AgentModelsEffect::InstallModel {
+                        model: "u2net-subject".into(),
+                        revision: "stale".into(),
+                    })
+                    .is_err(),
+                "the acceptance holds only for the revision it was offered with"
+            );
+        }
+
+        // Case `a_link_reveals_the_card_at_its_confirmation`.
+        {
+            let control = mock(with_subject(None));
+            let mut model = model_over(control.clone());
+            model.reveal("u2net-subject").unwrap();
+            assert_eq!(
+                model.reviewing_local.with(Clone::clone).as_deref(),
+                Some("u2net-subject")
+            );
+            assert_eq!(model.revealed.as_deref(), Some("u2net-subject"));
+            assert!(control.calls.lock().unwrap().is_empty());
+            assert!(model.reveal("no-such-model").is_err());
+        }
+
+        // Case `each_model_is_a_row_with_its_install`.
+        {
+            let model = model_over(mock(with_subject(None)));
+            let area = AgentModelsArea {
+                cx: model.cx.clone(),
+                model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
+                read: crate::device_read::DeviceRead::default(),
+            };
+            let published = area
+                .rows()
+                .into_iter()
+                .find(|row| row.id() == "settings.agent-model:u2net-subject")
+                .expect("the in-process model is a row")
+                .into_resource();
+            assert!(
+                published
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "install-model")
+            );
+            assert!(
+                !published
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-model")
+            );
+        }
+    }
+
+    /// A ready in-process model offers only Remove, a destructive action the
+    /// host confirms, and never joins the local chat profile.
+    #[test]
+    fn ready_in_process_models_offer_only_a_confirmed_remove() {
+        let ready = LocalModelPhase::Ready {
+            running: false,
+            endpoint: None,
+        };
+        let control = mock(with_subject(Some(ready.clone())));
+        let model = model_over(control.clone());
+        let names = rendered_names(&model);
+        assert!(!names.iter().any(|name| name == "Start"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| *name == "Set up on this device")
+                .count(),
+            1,
+            "only the recommendation still offers setup"
+        );
+        let remove = SettingsEffect::from(AgentModelsEffect::RemoveModel {
+            model: "u2net-subject".into(),
+        })
+        .bound();
+        assert_eq!(
+            remove.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            model
+                .manager_work(&AgentModelsEffect::StartModel {
+                    model: "u2net-subject".into(),
+                })
+                .is_err(),
+            "an in-process model is never started"
+        );
+        model
+            .manager_work(&AgentModelsEffect::RemoveModel {
+                model: "u2net-subject".into(),
+            })
+            .unwrap()
+            .run(control.as_ref())
+            .unwrap();
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["remove:u2net-subject"]
+        );
+
+        let installed = vec![InstalledLocalModel {
+            package: subject_package(),
+            phase: ready,
+        }];
+        assert!(synced_local_profile(None, &installed).is_none());
     }
 
     fn snapshot(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
@@ -1568,7 +2883,7 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 24,
-                accelerator: "GPU · 12 GiB".into(),
+                accelerator: "GPU with 12 GiB".into(),
                 accelerator_memory_gib: Some(12),
                 free_storage_gib: Some(80),
                 reason: "Balanced for this device".into(),
@@ -1577,6 +2892,7 @@ mod tests {
             models: phase
                 .map(|phase| vec![InstalledLocalModel { package, phase }])
                 .unwrap_or_default(),
+            in_process: Vec::new(),
             accelerator_setup: None,
         }
     }
@@ -1624,213 +2940,562 @@ mod tests {
         }
     }
 
-    /// No fabricated recommendations, license-confirmed installs, bounded progress and confirmed removal.
+    /// A hosted provider whose key this device's vault lacks says so and
+    /// offers to take one; once the vault holds it, it says it is stored.
     #[test]
-    fn model_catalog_install_and_removal_are_honest_and_confirmed() {
-        // Case `unavailable_manager_never_fabricates_a_catalog_recommendation`.
-        {
-            let fallback = fallback_snapshot();
-            assert!(fallback.recommendation.is_none());
+    fn a_hosted_provider_without_a_key_here_asks_for_one() {
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.change_providers(AgentModelsEffect::AddProvider {
+            protocol: "anthropic".into(),
+        })
+        .unwrap();
+        let profile = pane.providers.get().config.profiles[0].clone();
+        pane.keys.insert(profile.id.clone(), Ok(false));
+        assert!(pane.needs_key(&profile));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Needs a key on this device"),
+            "{text:#?}"
+        );
 
-            let control = Arc::new(MockControl {
-                snapshot: Mutex::new(fallback),
-                calls: Mutex::new(Vec::new()),
-            });
-            let pane = AgentModelsPane::with_control(control);
-            let composition = pane.build_composition();
-            let mut nodes = Vec::new();
-            collect_accessibility(composition.as_ref(), &mut nodes);
-            let setup = nodes
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Set up unavailable"))
-                .expect("disabled setup remains understandable to assistive technology");
-            assert!(setup.state.disabled);
+        pane.keys.insert(profile.id.clone(), Ok(true));
+        assert!(!pane.needs_key(&profile));
+        let save = SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
+            provider: profile.id,
+            key: None,
+        })
+        .bound_asking(&["key"]);
+        assert!(save.params().iter().any(|param| param.name == "key"));
+    }
+
+    /// Google Vertex AI is added only once signed in, with the project,
+    /// location and model chosen; it shows its sign-in rather than a key,
+    /// and removing it forgets its own grant and no other.
+    #[test]
+    fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
+        use account_custody::TokenSet;
+        use account_custody::cloud_projects::CloudProject;
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        let grant = |refresh: &str| TokenSet {
+            access_token: "access".into(),
+            scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
+            refresh_token: refresh.into(),
+            expires_in: 3600,
+            obtained_at: 0,
+        };
+        let mail = accounts::AccountId::new("ada@example.com");
+        pane.custodian
+            .seal_oauth(&mail, &grant("mail-refresh"))
+            .unwrap();
+
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        let add = |project: &str| AgentModelsEffect::SetVertexProvider {
+            provider: None,
+            project: project.into(),
+            location: None,
+            model: None,
+        };
+        assert_eq!(
+            pane.change_providers(add("tilo-509618")),
+            Err(t("agent-vertex-sign-in-first")),
+            "nothing is saved before the sign-in"
+        );
+        pane.custodian
+            .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
+            .unwrap();
+        pane.vertex
+            .as_mut()
+            .unwrap()
+            .signed_in_for_test(vec![CloudProject {
+                id: "tilo-509618".into(),
+                name: "Tilo".into(),
+            }]);
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Tilo (tilo-509618)"),
+            "{text:#?}"
+        );
+        assert_eq!(
+            pane.change_providers(add("Not A Project")),
+            Err(t("agent-vertex-project-invalid"))
+        );
+        assert!(pane.providers.get().config.profiles.is_empty());
+
+        pane.change_providers(add("tilo-509618")).unwrap();
+        assert!(pane.vertex.is_none(), "the setup ends once saved");
+        let stored = pane.cx.settings::<AgentProviders>().get().config;
+        let profile = &stored.profiles[0];
+        assert_eq!(profile.id, id, "the grant was sealed for this provider");
+        assert!(profile.signs_in_with_google());
+        assert!(profile.credential.is_none());
+        assert_eq!(
+            profile.endpoint,
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.sign_in.as_ref().unwrap().billing_project.as_deref(),
+            Some("tilo-509618")
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-4-argon")
+        );
+        assert!(stored.validation_errors().is_empty());
+
+        shows_its_sign_in_and_forgets_only_its_grant(&mut pane, &id, &mail);
+    }
+
+    fn shows_its_sign_in_and_forgets_only_its_grant(
+        pane: &mut AgentModelsModel,
+        id: &str,
+        mail: &accounts::AccountId,
+    ) {
+        use account_custody::GrantState;
+        let id = id.to_string();
+        pane.keys.insert(id.clone(), Ok(false));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
+        assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
+        pane.keys.insert(id.clone(), Ok(true));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Signed in with Google on this device."),
+            "{text:#?}"
+        );
+
+        pane.change_providers(AgentModelsEffect::SetVertexProvider {
+            provider: Some(id.clone()),
+            project: "other-project".into(),
+            location: Some("europe-west4".into()),
+            model: Some("gemini-2.5-pro".into()),
+        })
+        .unwrap();
+        let profile = pane.cx.settings::<AgentProviders>().get().config.profiles[0].clone();
+        assert_eq!(
+            profile.endpoint,
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/other-project/locations/europe-west4/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-2.5-pro")
+        );
+        assert_eq!(
+            profile.sign_in.unwrap().billing_project.as_deref(),
+            Some("other-project")
+        );
+
+        pane.change_providers(AgentModelsEffect::RemoveProvider {
+            provider: id.clone(),
+        })
+        .unwrap();
+        assert!(pane.providers.get().config.profiles.is_empty());
+        assert_eq!(
+            pane.custodian
+                .oauth_grant_state(&agent_vertex::grant_id(&id))
+                .unwrap(),
+            GrantState::Missing
+        );
+        assert_eq!(
+            pane.custodian.oauth_grant_state(mail).unwrap(),
+            GrantState::Usable,
+            "Mail's grant of the same person is untouched"
+        );
+    }
+
+    /// Cancelling the setup of a provider being added leaves no grant.
+    #[test]
+    fn cancelling_a_vertex_setup_forgets_its_grant() {
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        pane.custodian
+            .seal_oauth(
+                &agent_vertex::grant_id(&id),
+                &account_custody::TokenSet {
+                    access_token: "a".into(),
+                    scope: None,
+                    refresh_token: "r".into(),
+                    expires_in: 3600,
+                    obtained_at: 0,
+                },
+            )
+            .unwrap();
+        pane.cancel_vertex();
+        assert!(pane.vertex.is_none());
+        assert!(!agent_vertex::signed_in(&pane.custodian, &id));
+    }
+
+    fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut model = AgentModelsModel::new(cx, control);
+        model.follow_local_profile = false;
+        model
+    }
+
+    fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
+        Arc::new(MockControl {
+            snapshot: Mutex::new(snapshot),
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// No fabricated recommendations; installs are of the reported
+    /// package, and progress is bounded and readable.
+    #[test]
+    fn the_catalog_is_honest_and_installs_what_it_reported() {
+        let fallback = fallback_snapshot();
+        assert!(fallback.recommendation.is_none());
+        let pane = model_over(mock(fallback));
+        let composition = pane.build_composition();
+        let mut nodes = Vec::new();
+        collect_accessibility(composition.as_ref(), &mut nodes);
+        let setup = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Set up unavailable"))
+            .expect("disabled setup remains understandable to assistive technology");
+        assert!(setup.state.disabled);
+
+        let control = mock(snapshot(None));
+        let pane = model_over(control.clone());
+        let work = pane
+            .manager_work(&AgentModelsEffect::InstallModel {
+                model: "test/model".into(),
+                revision: "0123456789abcdef".into(),
+            })
+            .unwrap();
+        work.run(control.as_ref()).unwrap();
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["install:test/model@0123456789abcdef"]
+        );
+        assert!(
+            pane.manager_work(&AgentModelsEffect::InstallModel {
+                model: "test/model".into(),
+                revision: "stale".into(),
+            })
+            .is_err(),
+            "only the reported revision is installed"
+        );
+
+        let phase = LocalModelPhase::Downloading {
+            downloaded_bytes: 3,
+            total_bytes: 4,
+        };
+        assert_eq!(phase_progress(&phase), Some(0.75));
+        let progress = ProgressBar::new(phase_progress(&phase).unwrap()).with_label("Download");
+        let access = Widget::accessibility(&progress).expect("labelled progress is accessible");
+        assert_eq!(access.value.as_deref(), Some("75%"));
+    }
+
+    /// Only the controls a model's phase allows reach the manager.
+    #[test]
+    fn local_model_lifecycle_exposes_only_safe_controls() {
+        assert_eq!(
+            available_actions(&LocalModelPhase::Ready {
+                running: false,
+                endpoint: None
+            }),
+            [ModelAction::Start, ModelAction::Remove]
+        );
+        assert_eq!(
+            available_actions(&LocalModelPhase::Ready {
+                running: true,
+                endpoint: None
+            }),
+            [ModelAction::Stop, ModelAction::Remove]
+        );
+        assert!(
+            available_actions(&LocalModelPhase::Downloading {
+                downloaded_bytes: 4,
+                total_bytes: 10,
+            })
+            .is_empty()
+        );
+        let control = mock(LocalModelSnapshot {
+            accelerator_setup: Some(AcceleratorSetup {
+                boot_pack_id: "gpu-stack".into(),
+                status: AcceleratorSetupState::Available,
+            }),
+            ..snapshot(Some(LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            }))
+        });
+        let pane = model_over(control.clone());
+        for effect in [
+            AgentModelsEffect::StartModel {
+                model: "test/model".into(),
+            },
+            AgentModelsEffect::RemoveModel {
+                model: "test/model".into(),
+            },
+            AgentModelsEffect::SetUpAccelerator,
+        ] {
+            pane.manager_work(&effect)
+                .unwrap()
+                .run(control.as_ref())
+                .unwrap();
         }
+        assert!(
+            pane.manager_work(&AgentModelsEffect::StopModel {
+                model: "test/model".into()
+            })
+            .is_err(),
+            "a stopped model is not stopped again"
+        );
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["start:test/model", "remove:test/model", "stage-accelerator"]
+        );
+    }
 
-        // Case `install_requires_visible_license_confirmation`.
-        {
-            let control = Arc::new(MockControl {
-                snapshot: Mutex::new(snapshot(None)),
-                calls: Mutex::new(Vec::new()),
-            });
-            let mut pane = AgentModelsPane::with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+    /// The local profile follows the manager's ready endpoint, not a fixed
+    /// port.
+    #[test]
+    fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
+        let mut package = package();
+        package.vision = true;
+        package.face_recognition = true;
+        let model_id = package.id.clone();
+        let models = vec![InstalledLocalModel {
+            package,
+            phase: LocalModelPhase::Ready {
+                running: true,
+                endpoint: Some(agent_provider_config::local::LocalEndpoint {
+                    url: "http://127.0.0.1:43127/v1".into(),
+                    model_id,
+                }),
+            },
+        }];
+        let profile = synced_local_profile(None, &models).expect("ready local profile");
+        assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
+        assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+        assert_eq!(
+            profile.models[0].revision.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert!(profile.models[0].vision);
+        assert!(profile.models[0].face_recognition);
+        assert!(profile.enabled);
+        let mut configured = profile;
+        configured.models[0].context_window = Some(262_144);
+        configured.models[0].request_limits = Some(ModelRequestLimits {
+            max_output_tokens: 512,
+            runtime_context_tokens: Some(4096),
+            plan_timeout_ms: Some(120_000),
+        });
+        let refreshed = synced_local_profile(Some(configured.clone()), &models).unwrap();
+        assert_eq!(
+            refreshed.models[0].request_limits,
+            configured.models[0].request_limits
+        );
+        assert_eq!(refreshed.models[0].context_window, Some(262_144));
+    }
 
-            let _ = doc.put(&root, SETUP_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(pane.confirmation.as_deref(), Some("test/model"));
-            assert!(control.calls.lock().unwrap().is_empty());
-
-            let _ = doc.put(&root, CONFIRM_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                control.calls.lock().unwrap().as_slice(),
-                ["install:test/model@0123456789abcdef"]
+    #[test]
+    fn model_request_limits_use_the_published_settings_effects() {
+        use ui::framework::testing::TestApp;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        profile.models = vec![
+            ModelDescriptor::new("test-model"),
+            ModelDescriptor::new("test_model"),
+        ];
+        profile.models[0].context_window = Some(262_144);
+        let profile_id = profile.id.clone();
+        ProviderConfig {
+            profiles: vec![profile],
+            default_profile: None,
+        }
+        .save_at(&path)
+        .unwrap();
+        let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        app.surface_mut::<SettingsApp>()
+            .attach_host(PaneCx::in_file(path.clone()), None);
+        app.surface_mut::<SettingsApp>()
+            .agent_models()
+            .model()
+            .borrow_mut()
+            .follow_local_profile = false;
+        let open = crate::categories::Category::AgentModels;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
+        app.settle();
+        let resource = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test-model")
+        );
+        app.call_on(
+            &resource,
+            "set-model-request-limits",
+            serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096,"plan_timeout_ms":120_000}),
+        )
+        .unwrap();
+        app.settle();
+        let value = app
+            .call_on(
+                &resource,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["request_limits"]["max_output_tokens"], 512);
+        assert_eq!(value["request_limits"]["plan_timeout_ms"], 120_000);
+        assert_eq!(value["plan_timeout_ceiling_ms"], 120_000);
+        assert_eq!(value["caller_may_request_shorter_deadline"], true);
+        assert_eq!(value["source_context_tokens"], 262_144);
+        assert_eq!(value["runtime_context_attested"], false);
+        assert_eq!(value["prompt_fit_proven"], false);
+        let other = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test_model")
+        );
+        let other_value = app
+            .call_on(
+                &other,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(other_value["request_limits"].is_null());
+        assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
+        let saved = fs::read(&path).unwrap();
+        for invalid in [
+            serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":900_001}),
+            serde_json::json!({"plan_timeout_ms":120_000}),
+            serde_json::json!({"model":"absent-model","max_output_tokens":512}),
+        ] {
+            assert!(
+                app.call_on(&resource, "set-model-request-limits", invalid)
+                    .is_err()
             );
+            assert_eq!(fs::read(&path).unwrap(), saved);
         }
+        app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
+            .unwrap();
+        assert!(
+            ProviderConfig::load_at(&path).profiles[0].models[0]
+                .request_limits
+                .is_none()
+        );
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
 
-        // Case `progress_is_bounded_and_machine_readable`.
-        {
-            let phase = LocalModelPhase::Downloading {
-                downloaded_bytes: 3,
-                total_bytes: 4,
-            };
-            assert_eq!(phase_progress(&phase), Some(0.75));
-            let progress = ProgressBar::new(phase_progress(&phase).unwrap()).with_label("Download");
-            let access = Widget::accessibility(&progress).expect("labelled progress is accessible");
-            assert_eq!(access.value.as_deref(), Some("75%"));
-        }
+    /// Providers are the person's settings: added, renamed, made default
+    /// and removed through effects, which refuse a provider that is gone.
+    #[test]
+    fn providers_are_the_persons_settings() {
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.change_providers(AgentModelsEffect::AddProvider {
+            protocol: "anthropic".into(),
+        })
+        .unwrap();
+        let id = pane.providers.get().config.profiles[0].id.clone();
+        pane.change_providers(AgentModelsEffect::SetProviderDetails {
+            provider: id.clone(),
+            label: "Work".into(),
+            endpoint: "https://api.example.test".into(),
+            model: Some("big-model".into()),
+        })
+        .unwrap();
+        pane.change_providers(AgentModelsEffect::SetDefaultProvider {
+            provider: id.clone(),
+        })
+        .unwrap();
+        let stored = pane.cx.settings::<AgentProviders>().get().config;
+        assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
+        assert_eq!(stored.profiles[0].label, "Work");
+        assert!(
+            pane.change_providers(AgentModelsEffect::SetProviderEnabled {
+                provider: "gone".into(),
+                on: true,
+            })
+            .is_err()
+        );
+    }
 
-        // Case `remove_is_confirmed_before_backend_mutation`.
-        {
-            let control = Arc::new(MockControl {
-                snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
-                    running: false,
-                    endpoint: None,
-                }))),
-                calls: Mutex::new(Vec::new()),
-            });
-            let mut pane = AgentModelsPane::with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let key = model_key("test/model", ModelAction::Remove);
-
-            let _ = doc.put(&root, &key, true);
-            pane.sync(&mut doc, &root);
-            assert!(control.calls.lock().unwrap().is_empty());
-            assert_eq!(pane.remove_confirmation.as_deref(), Some("test/model"));
-
-            let _ = doc.put(&root, &key, true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                control.calls.lock().unwrap().as_slice(),
-                ["remove:test/model"]
-            );
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
         }
     }
 
-    /// Terminal receipts, safe lifecycle controls, separate accelerator setup and the manager endpoint.
+    /// The warm-up asks the manager off the UI thread once; the model is
+    /// built from that answer, and nothing is asked again once it is.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn local_model_lifecycle_exposes_only_safe_controls() {
-        // Case `local_start_reports_a_terminal_receipt_only_for_its_matching_operation`.
-        {
-            let control = Arc::new(MockControl {
-                snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
-                    running: false,
-                    endpoint: None,
-                }))),
-                calls: Mutex::new(Vec::new()),
-            });
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let mut pane =
-                AgentModelsPane::with_control(control.clone()).with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let operation = crate::actions::AgentModelOperation::Start {
-                id: "test/model".into(),
-            };
-            status.set(crate::actions::LocalOperationStatus::Running {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::AGENT_MODEL_OPERATION_TYPE,
-                    &operation,
-                ),
-            });
-            let _ = doc.put(&root, model_key("test/model", ModelAction::Start), true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                control.calls.lock().unwrap().as_slice(),
-                ["start:test/model"]
-            );
-            assert!(matches!(
-                status.get(),
-                crate::actions::LocalOperationStatus::Succeeded { .. }
-            ));
-        }
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = AgentModelsArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let installed = area.model().borrow().snapshot.recommendation.clone();
+        assert!(area.is_open());
+        assert_eq!(
+            installed.map(|package| package.id),
+            SampleManager
+                .snapshot()
+                .unwrap()
+                .recommendation
+                .map(|package| package.id),
+            "the model shows what the read asked"
+        );
+        assert!(!area.start_read(), "a built model is not read again");
+    }
 
-        // Case `lifecycle_exposes_only_safe_controls`.
-        {
-            assert_eq!(
-                available_actions(&LocalModelPhase::Ready {
-                    running: false,
-                    endpoint: None
-                }),
-                [ModelAction::Start, ModelAction::Remove]
-            );
-            assert_eq!(
-                available_actions(&LocalModelPhase::Ready {
-                    running: true,
-                    endpoint: None
-                }),
-                [ModelAction::Stop, ModelAction::Remove]
-            );
-            assert!(
-                available_actions(&LocalModelPhase::Downloading {
-                    downloaded_bytes: 4,
-                    total_bytes: 10,
-                })
-                .is_empty()
-            );
-        }
-
-        // Case `accelerator_setup_is_separate_from_model_lifecycle`.
-        {
-            let control = Arc::new(MockControl {
-                snapshot: Mutex::new(LocalModelSnapshot {
-                    accelerator_setup: Some(AcceleratorSetup {
-                        boot_pack_id: "gpu-stack".into(),
-                        status: AcceleratorSetupState::Available,
-                    }),
-                    ..snapshot(None)
-                }),
-                calls: Mutex::new(Vec::new()),
-            });
-            let mut pane = AgentModelsPane::with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-
-            let _ = doc.put(&root, ACCELERATOR_SETUP_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                control.calls.lock().unwrap().as_slice(),
-                ["stage-accelerator"]
-            );
-        }
-
-        // Case `local_profile_uses_the_ready_manager_endpoint_not_port_8000`.
-        {
-            let mut package = package();
-            package.vision = true;
-            package.face_recognition = true;
-            let model_id = package.id.clone();
-            let models = vec![InstalledLocalModel {
-                package,
-                phase: LocalModelPhase::Ready {
-                    running: true,
-                    endpoint: Some(LocalModelEndpoint {
-                        url: "http://127.0.0.1:43127/v1".into(),
-                        model_id,
-                    }),
-                },
-            }];
-            let profile = synced_local_profile(None, &models).expect("ready local profile");
-            assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
-            assert_eq!(profile.default_model.as_deref(), Some("test/model"));
-            assert_eq!(
-                profile.models[0].revision.as_deref(),
-                Some("0123456789abcdef")
-            );
-            assert!(profile.models[0].vision);
-            assert!(profile.models[0].face_recognition);
-            assert!(profile.enabled);
-        }
+    /// What the read asked is what the model shows: the manager's answer,
+    /// or why it could not answer.
+    #[test]
+    fn a_model_shows_what_its_read_asked() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = mock(snapshot(None));
+        let read = AgentModelsRead::of(control.as_ref(), Vec::new());
+        let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
+        assert!(model.manager_available);
+        assert_eq!(
+            model
+                .snapshot
+                .recommendation
+                .as_ref()
+                .map(|package| package.id.clone()),
+            Some(package().id)
+        );
+        let down = AgentModelsRead {
+            snapshot: Err("the manager is not running".into()),
+            keys: HashMap::new(),
+        };
+        let model = AgentModelsModel::from_read(cx, control, down);
+        assert!(!model.manager_available);
+        assert_eq!(
+            model.notice,
+            Some(t_args(
+                "agent-notice-service-down",
+                &[("error", "the manager is not running".into())]
+            )),
+            "the person is told the manager is down"
+        );
     }
 }

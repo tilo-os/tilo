@@ -69,7 +69,6 @@ paths = ["portal::open_uri", "portal::send_open_uri", "portal::open_uri_with", "
 
 [uses.notifications]
 crates = ["tilo-notify"]
-features = ["ui/notifications"]
 paths = ["ui::notify", "tilo_notify"]
 
 [uses."media.decode"]
@@ -106,7 +105,6 @@ paths = ["ui::speech"]
 crates = ["spellcheck"]
 
 [uses.webview]
-features = ["ui/webview", "ui/webview-wpe"]
 paths = ["ui::webview"]
 
 [uses.threads]

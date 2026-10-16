@@ -64,3 +64,38 @@ callback. The compositor's tests reach it through `wgpu::Device::as_hal` to
 prove it survives a reset. It is a per-device flag that only that method sets,
 so it is inert in every other build; the change is `DeviceShared::simulated_loss`
 and an early return in `Device::wait` (`src/vulkan/device.rs`).
+
+## Vulkan presentation damage
+
+`vulkan::Surface::set_next_present_damage` supplies bounded framebuffer
+rectangles for one native swapchain presentation. The adapter enables
+`VK_KHR_incremental_present` only when the physical device supports it. The
+setter accepts only configured, single-layer surfaces with identity transform
+and 1–128 positive rectangles inside the framebuffer extent. Unsupported or
+invalid hints clear previous hints and preserve ordinary full presentation.
+
+The native present path consumes the hint once, including on present failure,
+and chains `VkPresentRegionsKHR` alongside existing display timing. Queue,
+semaphore and swapchain image ownership remain unchanged. The caller must
+cover every pixel changed since the previous successful presentation; it must
+still initialize every acquired image. The toolkit retains its full blit into
+each acquired swapchain image and uses full presentation after redraw, resize,
+skipped frames or effects without bounded coverage.
+
+This follows the optional hint contract in the
+[Vulkan specification](https://docs.vulkan.org/refpages/latest/refpages/source/VkPresentRegionKHR.html).
+The change is in `src/vulkan/{adapter,mod,swapchain/native}.rs`. Pixel coverage
+and fallback tests exercise the toolkit's hint conversion; native WSI transport
+and Yoga typing latency still require verification.
+
+## IEEE-safe Metal shaders
+
+`metal::Device::load_shader` compiles naga's MSL with `MTLMathMode::Safe`
+(`fastMathEnabled = NO` before macOS 15/iOS 18) instead of Metal's default
+fast math. Fast math lets the compiler reassociate floating-point
+expressions, which undoes Vello's translation-stable area coverage
+(`vendor/PATCHES.md`): on an Apple M1 a damage-region redraw differed from a
+full render of the same scene by one channel step at a few edge pixels, so
+partially redrawn frames drifted from fresh ones. With safe math the two agree
+pixel for pixel. Passthrough MSL keeps the options its author compiles with.
+The change is in `src/metal/device.rs`.

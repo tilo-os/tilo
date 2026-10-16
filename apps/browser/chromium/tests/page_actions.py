@@ -40,12 +40,22 @@ document.querySelector('select').addEventListener('change', e => document.getEle
 </script>'''
 
 
+AGENT = b'''<!doctype html><title>Agent</title>
+<h1>Agent fixture</h1>
+<button id="add" onclick="setTimeout(() => { const p = document.createElement('p'); p.textContent = 'added later'; document.body.append(p); }, 1000)">Add later</button>
+<button id="log" onclick="console.log('clicked', 7); fetch('/data.json').then(r => r.text()); setTimeout(() => { throw new Error('boom'); }, 0)">Log</button>
+<form id="away" action="https://elsewhere.test/collect" method="get"><label>Query <input name="q"></label><button>Send away</button></form>
+<label>Pin <input name="pin" type="password"></label>
+'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
-        body = FORM if path == '/form' else f'<title>{path}</title><p>{path}</p>'.encode()
+        body = FORM if path == '/form' else AGENT if path == '/agent' else b'{"ok":true}' if path == '/data.json' \
+            else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Type', 'application/json' if path == '/data.json' else 'text/html')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -112,7 +122,9 @@ class PageActions(unittest.TestCase):
         email = self.ref(outline, 'textbox "Email"')
         self.assertEqual(email, self.ref(self.outline(), 'textbox "Email"'), 'refs are stable across reads')
         password = self.ref(outline, 'textbox "Password"')
-        self.ok('fill', element=password, text='hunter2')
+        refused = self.page('fill', element=password, text='hunter2')
+        self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+        self.ok('fill', element=password, text='hunter2', secret=True)
         again = self.outline()
         self.assertIn('value=<7 characters hidden>', again)
         self.assertNotIn('hunter2', again)
@@ -167,6 +179,62 @@ class PageActions(unittest.TestCase):
         self.assertIn('text "/next"', self.outline())
         idle = self.ok('press', key='Tab', ctrl=False, shift=False, alt=False, meta=False)
         self.assertFalse(idle['navigated'], idle)
+
+
+    def test_changes_report_only_what_appeared_after_the_page_settles(self):
+        self.h.navigate(self.url + '/agent')
+        add = self.ref(self.outline(), 'button "Add later"')
+        self.ok('click', element=add)
+        # The page adds its line a second after the click; settling waits for it.
+        settled = self.ok('settle', quiet_ms=1500, timeout_ms=8000)
+        self.assertTrue(settled['data']['settled'], settled)
+        self.assertGreater(settled['data']['mutations'], 0, settled)
+        changed = self.ok('changes')
+        self.assertEqual(changed['outline'], '+ - text "added later"', changed)
+        self.assertEqual(self.ok('changes')['message'], 'Nothing changed')
+
+    def test_element_at_names_what_a_click_there_would_hit(self):
+        self.h.navigate(self.url + '/agent')
+        add = self.ref(self.outline(), 'button "Add later"')
+        x, y = self.main_world("(r => [r.x + r.width / 2, r.y + r.height / 2])(document.getElementById('add').getBoundingClientRect())")
+        hit = self.ok('at', x=x, y=y)
+        self.assertEqual((hit['data']['ref'], hit['data']['interactive']), (add, True), hit)
+        empty = self.ok('at', x=990, y=790)
+        self.assertFalse(empty['data']['interactive'], empty)
+
+    def test_console_and_network_reach_the_agent_and_not_the_page(self):
+        self.h.navigate(self.url + '/agent')
+        log = self.ref(self.outline(), 'button "Log"')
+        self.ok('click', element=log)
+        self.ok('settle', quiet_ms=300, timeout_ms=5000)
+        console = self.ok('console', since=0)['data']
+        texts = [entry['text'] for entry in console['entries']]
+        self.assertIn('clicked 7', texts, console)
+        self.assertTrue(any('boom' in entry['text'] and entry.get('uncaught') for entry in console['entries']), console)
+        self.assertEqual(console['provenance'], 'web-content')
+        network = self.ok('network', since=0)['data']
+        data = [entry for entry in network['entries'] if entry['url'].endswith('/data.json')]
+        self.assertEqual(len(data), 1, network)
+        self.assertEqual((data[0]['status'], data[0]['state']), (200, 'done'), data)
+        self.assertNotIn('headers', data[0])
+        self.assertEqual(self.ok('console', since=console['next'])['data']['entries'], [], 'nothing new since')
+        self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
+
+    def test_secrets_and_cross_site_submissions_need_explicit_consent(self):
+        self.h.navigate(self.url + '/agent')
+        outline = self.outline()
+        pin = self.ref(outline, 'textbox "Pin"')
+        self.assertEqual(self.page('fill', element=pin, text='1234')['code'], 'secret_field')
+        self.ok('fill', element=pin, text='1234', secret=True)
+        query = self.ref(outline, 'textbox "Query"')
+        for action, fields in (('submit', {}), ('click', {})):
+            target = query if action == 'submit' else self.ref(outline, 'button "Send away"')
+            refused = self.page(action, element=target, **fields)
+            self.assertFalse(refused['ok'], (action, refused))
+            self.assertEqual((refused['ok'], refused['code']), (False, 'cross_origin_submit'), refused)
+            self.assertIn('elsewhere.test', refused['message'])
+        entered = self.page('press', element=query, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
+        self.assertEqual(entered['code'], 'cross_origin_submit', entered)
 
 
 if __name__ == '__main__':

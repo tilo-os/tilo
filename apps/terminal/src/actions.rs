@@ -1,98 +1,32 @@
-//! Resource + action-model status for the terminal.
+//! The terminal's actions and effects.
 //!
-//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
-//! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`tilo_actions::Action`) — a serializable value that
-//! deterministically changes the shared Automerge document, so undo and
-//! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. PTY input is therefore exported as an effect on the live terminal
-//! resource, without fabricating document actions or a saved-session model.
+//! A terminal session is a record ([`Terminal`](crate::resource::Terminal)):
+//! where the session runs, the relay session it re-attaches to and the pane
+//! collaborators' presence is scoped to. What the process prints stays on
+//! the device that runs it: the emulator's own screen, never the record's.
 //!
-//! ## Everything that changes the world is external
-//!
-//! The terminal is a projection of an external process: a real shell running
-//! behind a PTY. Spawning that shell, sending keystrokes to its stdin, running
-//! commands, and the emulator parsing the bytes it prints back are all **OS /
-//! driver** side effects. A keystroke travels straight to the shell — the
-//! production `Widget::handle_event` keyboard path maps the key to bytes and
-//! hands them to [`write_input`](crate::TerminalWidget::write_input), which owns
-//! only the PTY writer and takes **no** `AutoCommit`; it can no more mutate the
-//! shared document than the shell process can. By the recipe's rule none of this
-//! is an action, and all of it stays as-is.
-//!
-//! ## The shared document is the live screen, not authored records
-//!
-//! What lives in the Automerge document is exactly the emulator's projection of
-//! the running program's output, seeded by
-//! `init_crdt` and filled by
-//! [`feed`](crate::TerminalWidget::feed) / the PTY-drain `pump`:
-//!
-//! - `terminal_grid` and `terminal_grid_alt` — the main and alternate screen
-//!   buffers, a `List` of line `Map`s each holding a `Text` and packed `attrs`;
-//! - `cursor` — the cursor's `x` / `y`;
-//! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
-//! - `terminal_images` — content hashes and cell placements for terminal
-//!   graphics; immutable bytes live in the app's content store;
-//! - `terminal_title` — the OSC 0/2 window title the program set;
-//! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
-//!   caret is whose), not user data.
-//!
-//! Every one of these is written by the terminal emulator *from the process's
-//! output stream*, never by a user editing a document. It is mirrored into the
-//! CRDT for one reason: so a collaborator invited to the pane sees the same live
-//! screen. The CRDT already replicates that projection and the compositor renders
-//! it; there is no user-authored edit to attribute, order, or undo, so
-//! re-encoding a byte of program output as an `Action` would be meaningless — the
-//! recipe's rule is *does a **user** operation mutate the shared document*, and
-//! here the mutations are the transcript of an external process.
-//!
-//! ## No profiles, themes, sessions or split layouts
-//!
-//! The one thing that *would* be an action — a durable, user-authored record such
-//! as a saved profile, a colour theme, a named session, or a persisted split
-//! layout — the terminal simply does not have: it writes none of these to the
-//! document (or anywhere else). Colours come from the OS-controlled `Theme` passed
-//! to `draw`; there is no per-app settings map, no saved-sessions collection. The
-//! generic `ui::persist` autosave in `main.rs` snapshots the whole document, but
-//! that document *is* the transient screen above — it is the toolkit's screen
-//! persistence, identical in every app, not a terminal-specific record model.
-//!
-//! ## Presentation is never an action
-//!
-//! The scrollback offset, the current text selection, local find-in-scrollback
-//! query/matches, whether the context menu is
-//! open, and the viewport are per-peer view state held on the widget. The recipe
-//! names "the current selection, an overlay being open" as presentation that must
-//! *never* be an action.
-//!
-//! ## Consequence
-//!
-//! The terminal publishes its live session with send/interrupt/clear effects;
-//! [`take_committed_action`](ui::undo::CommittedActions::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch, and `main.rs` registers no action decoder).
-//! The bounded resource tree still exposes the live session, its transcript and
-//! visible OSC links to search, agents and invocation history. Those operations
-//! are typed effects/views: they drive the PTY, clipboard, viewport or URL
-//! opener, but never pretend transient process state is a durable document edit.
-//! The tests below prove each half of this split on the real production path.
+//! Keystrokes are not actions: they travel straight to the process's stdin
+//! and change no document. Driving the process from the palette, an agent
+//! or a script — send text, run a command, interrupt it, paste — is an
+//! effect on the live session, and so is reading what it shows. Presentation
+//! (the scrollback offset, the selection, the find bar, the context menu) is
+//! view state of the widget.
 
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-    use tilo_automerge::ApplyIncoming;
 
-    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
+    use automerge::AutoCommit;
     use portable_pty::{MasterPty, PtySize};
     use std::sync::mpsc::Receiver;
-    use taffy::{NodeId, TaffyTree};
-    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
+    use winit::event::WindowEvent;
 
     use ui::widget::Widget;
 
     use crate::TerminalWidget;
+    use crate::resource::TerminalEffect;
+    use ui::tilo_resource::Effect as _;
 
     /// A PTY master with no process behind it: writes are dropped, reads return
     /// EOF. Enough for the emulator to seed its grid and accept input.
@@ -162,144 +96,16 @@ mod tests {
         out
     }
 
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
-    /// A character keypress through the real winit event path (the same trick the
-    /// widget's own tests use for winit's `pub(crate)` `KeyEventExtra`). Real
-    /// winit delivers the committed `text` alongside a character key, which the
-    /// terminal encodes into the PTY bytes.
-    fn char_event(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::char_key;
 
     /// Pump one event through the production `Widget::handle_event`.
     fn send(widget: &mut TerminalWidget, doc: &mut AutoCommit, ev: &WindowEvent) {
-        let taffy = TaffyTree::<()>::new();
-        let mut handled = false;
-        let mut focus = None;
-        widget.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: doc,
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new().doc(doc).send(widget, ev);
     }
 
-    /// Read the concatenated text of every line in a grid `List`.
-    fn grid_text(doc: &AutoCommit, key: &str) -> String {
-        let grid = match doc.get(&ROOT, key).unwrap() {
-            Some((Value::Object(ObjType::List), id)) => id,
-            other => panic!("root[\"{key}\"] must be an Automerge List, got {other:?}"),
-        };
-        let mut out = String::new();
-        for i in 0..doc.length(&grid) {
-            let line = doc.get(&grid, i).unwrap().unwrap().1;
-            let text = doc.get(&line, "text").unwrap().unwrap().1;
-            out.push_str(&doc.text(&text).unwrap());
-        }
-        out
-    }
-
-    /// The shared document is only the screen projection, keystrokes reach the shell, and output replicates byte-identically.
+    /// Keystrokes reach the shell and change no document.
     #[test]
-    fn document_is_the_replicated_screen_projection_and_keys_go_to_the_shell() {
-        // Case `document_holds_only_the_live_screen_projection`.
-        // The shared document is exactly the emulator's screen projection — the two
-        // grid buffers, the cursor, the OSC hyperlink map and the presence pane id —
-        // seeded by the real `init_crdt`. There is no user-authored record
-        // collection anywhere: no profiles, themes, sessions, split layouts, snippets
-        // or settings map. So there is nothing structural for an action to mutate;
-        // every key present is written from the running program's output, not by a
-        // user editing a document.
-        {
-            let (mut widget, _rx) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-
-            // Exactly the live-screen keys the emulator seeds — nothing structural.
-            let mut root_keys: Vec<String> = doc.keys(&ROOT).collect();
-            root_keys.sort();
-            assert_eq!(
-                root_keys,
-                vec![
-                    "cursor".to_string(),
-                    "terminal_grid".to_string(),
-                    "terminal_grid_alt".to_string(),
-                    "terminal_images".to_string(),
-                    "terminal_links".to_string(),
-                    "terminal_pane_id".to_string(),
-                ],
-                "the document holds only the emulator's live-screen projection: {root_keys:?}",
-            );
-
-            // Both grids are screen buffers; cursor is a coord map; links is the OSC 8
-            // map — every key is process output, never an authored record.
-            for (key, want) in [
-                ("terminal_grid", ObjType::List),
-                ("terminal_grid_alt", ObjType::List),
-                ("cursor", ObjType::Map),
-                ("terminal_links", ObjType::Map),
-            ] {
-                match doc.get(&ROOT, key).unwrap() {
-                    Some((Value::Object(got), _)) if got == want => {}
-                    other => panic!("root[\"{key}\"] must be a {want:?}, got {other:?}"),
-                }
-            }
-
-            // No durable, user-authored record collection exists to hang an action
-            // off — proving this isn't a "saved profiles / sessions are actions" case.
-            for forbidden in [
-                "profiles",
-                "profile",
-                "themes",
-                "theme",
-                "sessions",
-                "session",
-                "layouts",
-                "splits",
-                "snippets",
-                "favourites",
-                "favorites",
-                "settings",
-                "prefs",
-                "bookmarks",
-            ] {
-                assert!(
-                    doc.get(&ROOT, forbidden).unwrap().is_none(),
-                    "document must not carry a `{forbidden}` record collection",
-                );
-            }
-        }
-
+    fn keys_go_to_the_shell_not_the_document() {
         // Case `keystrokes_go_to_the_shell_not_the_document`.
         // A keystroke is **external**: driven through the production
         // `Widget::handle_event`, the character reaches the shell's stdin (arrives on
@@ -310,15 +116,12 @@ mod tests {
             let (mut widget, write_rx) = build_test_widget();
             let mut doc = AutoCommit::new();
 
-            // Seed the screen projection once (the real path), then settle — after
-            // this `init_crdt` is doc-idempotent, so any later change is the keystroke.
-            widget.init_crdt(&mut doc, &ROOT);
             doc.commit();
             let heads_before = doc.get_heads();
             let _ = drain_writes(&write_rx); // ignore anything queued during seeding
 
             // Press 'a' through the production keyboard path.
-            send(&mut widget, &mut doc, &char_event("a"));
+            send(&mut widget, &mut doc, &char_key("a"));
             doc.commit();
 
             assert_eq!(
@@ -332,445 +135,172 @@ mod tests {
                 "the keystroke was delivered to the shell's stdin",
             );
         }
+    }
 
-        // Case `pty_output_projects_into_the_grid_and_replicates_byte_identically`.
-        // The collaboration guarantee the toolkit's CRDT already provides for the
-        // screen projection — the same one an action executor would give, and the
-        // reason no action is needed: the *external* program's output, fed through
-        // the production `feed`, fills `terminal_grid`, and an independent replica
-        // that merges the change converges **byte-identically** (same head hashes,
-        // not merely the same visible text).
-        {
-            let (mut widget, _rx) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-            doc.commit();
-
-            let base = doc.save();
-            let mut peer = AutoCommit::load(&base).unwrap();
+    /// The terminal's effects: every one that reaches the process or the
+    /// clipboard asks for confirmation from the palette, an agent or a script.
+    #[test]
+    fn effects_that_reach_the_process_or_clipboard_ask_for_confirmation() {
+        use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
+        let specs = TerminalEffect::specs();
+        assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
+        for spec in &specs {
+            let reads = matches!(
+                spec.id.as_str(),
+                "history-top"
+                    | "history-live"
+                    | "inspect-session"
+                    | "read-screen"
+                    | "inspect-editor"
+            );
             assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "precondition: replicas share a base"
+                spec.contract.confirmation == ConfirmationPolicy::Confirm,
+                !reads,
+                "`{}` confirmation",
+                spec.id
             );
-
-            // The shell prints "hello" — an external side effect the emulator projects
-            // into the grid. `feed` is the exact path the live PTY-drain `pump` runs.
-            widget.feed(&mut doc, &ROOT, b"hello");
-            doc.commit();
-            assert!(
-                grid_text(&doc, "terminal_grid").contains("hello"),
-                "the program's output landed in the screen buffer",
+            let views = matches!(
+                spec.id.as_str(),
+                "history-top"
+                    | "inspect-session"
+                    | "read-screen"
+                    | "inspect-editor"
+                    | "history-live"
+                    | "copy-visible"
+                    | "copy-selection"
+                    | "select-all"
+                    | "open-link"
             );
-
-            // Merge into the peer: byte-identical convergence, for free, no action.
-            peer.merge_incoming(&mut doc).unwrap();
             assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "byte-identical convergence after merge"
-            );
-            assert!(
-                grid_text(&peer, "terminal_grid").contains("hello"),
-                "the collaborator sees the same live screen",
+                spec.contract.kind == ActionKind::Read,
+                views,
+                "`{}` permission",
+                spec.id
             );
         }
     }
 
-    /// Exported terminal effects: no document undo boundary, bounded commands and payloads, and only public web links.
+    /// Reviewed input may not smuggle control sequences or reach the PTY
+    /// when refused.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn exported_effects_are_bounded_and_carry_no_document_undo() {
-        // Case `exports_terminal_effects_without_document_actions`.
-        // The live session exports PTY effects, but none creates a document undo
-        // boundary.
-        {
-            let (mut widget, _rx) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-
-            // Real event/output path: program prints, user types, user clicks.
-            widget.feed(&mut doc, &ROOT, b"hello");
-            send(&mut widget, &mut doc, &char_event("x"));
-            send(&mut widget, &mut doc, &left_press());
-
-            let resources = ui::resources::resources(&widget, &doc);
-            assert_eq!(resources.len(), 1, "one terminal-session root");
-            let terminal = &resources[0];
-            assert_eq!(terminal.kind, "terminal.session");
-            let ids: Vec<_> = terminal
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            assert_eq!(
-                ids,
-                vec![
-                    "send",
-                    "run",
-                    "interrupt",
-                    "clear",
-                    "paste",
-                    "paste-primary"
-                ]
-            );
+    fn reviewed_input_is_bounded() {
+        let (mut widget, writes) = build_test_widget();
+        for text in [
+            String::new(),
+            "x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1),
+            "one\ntwo".into(),
+            "one\rtwo".into(),
+            "one\x1b[31m".into(),
+        ] {
             assert!(
-                terminal
-                    .actions
-                    .iter()
-                    .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
-            );
-            assert!(
-                ui::undo::take_committed_action(&mut widget).is_none(),
-                "no action is dispatched, so no action-host undo boundary is recorded",
-            );
-            assert!(
-                terminal.actions.iter().all(|action| {
-                    matches!(
-                        action.contract.confirmation,
-                        ui::tilo_actions::ConfirmationPolicy::Confirm
-                    ) && matches!(
-                        action.contract.risk,
-                        ui::tilo_actions::RiskLevel::Privileged
-                    ) && matches!(
-                        action.contract.retry,
-                        ui::tilo_actions::RetryPolicy::AtMostOnce
-                    )
-                }),
-                "palette and agents must explicitly confirm every operation that can affect a live shell"
-            );
-            let transcript = terminal
-                .children
-                .iter()
-                .find(|resource| resource.kind == "terminal.transcript")
-                .expect("session owns a canonical transcript resource");
-            assert_eq!(
-                transcript
-                    .actions
-                    .iter()
-                    .map(|action| action.id.as_str())
-                    .collect::<Vec<_>>(),
-                vec![
-                    "history-top",
-                    "history-live",
-                    "copy-visible",
-                    "copy-selection",
-                    "select-all"
-                ]
-            );
-            assert!(
-                transcript
-                    .actions
-                    .iter()
-                    .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
-                    .all(|action| {
-                        action.contract.confirmation
-                            == ui::tilo_actions::ConfirmationPolicy::Confirm
-                            && action.contract.risk == ui::tilo_actions::RiskLevel::Privileged
-                            && action.contract.retry == ui::tilo_actions::RetryPolicy::AtMostOnce
-                    }),
-                "clipboard and selection-publication effects retain explicit admission contracts"
+                widget.perform(TerminalEffect::Send { text }).is_err(),
+                "unreviewable text must be refused"
             );
         }
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "a refused input never writes a partial PTY sequence"
+        );
+    }
 
-        // Case `run_command_is_bounded_and_presses_enter_exactly_once`.
-        {
-            let (mut widget, writes) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            let payload = serde_json::to_vec("printf resource-run").expect("serialize command");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.run",
-                        &payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .expect("invoke run command")
-            );
-            assert_eq!(drain_writes(&writes), b"printf resource-run\r".to_vec());
-
-            let blank = serde_json::to_vec("  ").expect("serialize blank command");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.run",
-                        &blank
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .is_err()
-            );
-
-            // A reviewed `run` action must be exactly one command. Newlines or
-            // escape bytes would turn the promised single trailing Enter into an
-            // arbitrary sequence of shell submissions/control operations.
-            for dangerous in ["printf first\nprintf second", "printf x\x1b[200~"] {
-                let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
-                assert!(
-                    Widget::start_operation(
-                        &mut widget,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            ui::tilo_actions::OperationKind::Effect,
-                            "terminal.run",
-                            &payload
-                        ),
-                        &mut doc,
-                        &ROOT
-                    )
-                    .map(|started| started.is_some())
-                    .is_err(),
-                    "unsafe multi-effect command must be rejected: {dangerous:?}"
-                );
-            }
-            assert!(
-                drain_writes(&writes).is_empty(),
-                "a rejected reviewed command must not write a partial PTY sequence"
-            );
-        }
-
-        // Case `resource_send_refuses_empty_or_unreviewably_large_payloads`.
-        {
-            let (mut widget, writes) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            let root = ROOT;
-            let empty = serde_json::to_vec("").expect("serialize empty string");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.send",
-                        &empty
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .map(|started| started.is_some())
-                .is_err()
-            );
-            let too_large =
-                serde_json::to_vec(&"x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1))
-                    .expect("serialize large command");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.send",
-                        &too_large
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .map(|started| started.is_some())
-                .is_err()
-            );
-            assert!(
-                writes.try_recv().is_err(),
-                "rejected input never reaches the PTY"
-            );
-
-            for dangerous in ["one\ntwo", "one\rtwo", "one\x1b[31m"] {
-                let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
-                assert!(
-                    Widget::start_operation(
-                        &mut widget,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            ui::tilo_actions::OperationKind::Effect,
-                            "terminal.send",
-                            &payload
-                        ),
-                        &mut doc,
-                        &root
-                    )
-                    .map(|started| started.is_some())
-                    .is_err(),
-                    "send text must not smuggle a terminal control sequence: {dangerous:?}"
-                );
-            }
-        }
-
-        // Case `only_public_web_osc_links_are_exported_to_agents`.
-        {
-            let (mut widget, _writes) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-            widget.feed(
-                &mut doc,
-                &ROOT,
-                b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
+    /// Only public web links the process printed are offered as rows.
+    #[test]
+    fn only_public_web_osc_links_are_offered_to_agents() {
+        let (mut widget, _writes) = build_test_widget();
+        widget.feed(
+            b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
               \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
               \x1b]8;;https://example.test/docs\x1b\\public\x1b]8;;\x1b\\",
-            );
-            widget.sync(&mut doc, &ROOT);
-
-            let transcript = ui::resources::resources(&widget, &doc)
-                .into_iter()
-                .next()
-                .expect("session resource")
-                .children
-                .into_iter()
-                .find(|resource| resource.kind == "terminal.transcript")
-                .expect("transcript resource");
-            assert_eq!(
-                transcript.children.len(),
-                1,
-                "local and credential-bearing process links are not agent resources"
-            );
-            assert_eq!(transcript.children[0].label, "https://example.test/docs");
-            assert!(
-                !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
-                    && !crate::inner::is_public_web_link("https://token@example.test/private")
-                    && !crate::inner::is_public_web_link("https://example.test/?access_token=no"),
-                "the directory rejects local paths, credentials, and query-bearing targets"
-            );
-        }
+        );
+        let rows: Vec<_> = widget
+            .link_rows()
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "local and credential-bearing links are not rows"
+        );
+        assert_eq!(rows[0].label, "https://example.test/docs");
+        assert!(
+            !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
+                && !crate::inner::is_public_web_link("https://token@example.test/private")
+                && !crate::inner::is_public_web_link("https://example.test/?access_token=no"),
+            "local paths, credentials and query-bearing targets are not public links"
+        );
     }
 
-    /// A failed or poisoned PTY writer fails the operation, publishes disconnected, and never reports completion.
+    /// A failed or poisoned PTY writer fails the effect, and the process's
+    /// input is no longer offered.
     #[test]
     fn pty_write_failures_disconnect_and_never_report_completion() {
-        // Case `resource_operations_fail_and_publish_disconnected_after_a_pty_write_error`.
-        {
-            struct FailingWriter;
-            impl Write for FailingWriter {
-                fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-                    Err(std::io::Error::other("injected PTY write failure"))
-                }
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Err(std::io::Error::other("injected PTY flush failure"))
-                }
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected PTY write failure"))
             }
-
-            let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-                Arc::new(Mutex::new(Box::new(FailingWriter)));
-            let (_out_tx, out_rx) = std::sync::mpsc::channel();
-            let mut widget = TerminalWidget::new(
-                writer,
-                Arc::new(Mutex::new(Box::new(MockMaster))),
-                out_rx,
-                tilo_content::ContentStore::memory(),
-            );
-            let mut doc = AutoCommit::new();
-            let payload = serde_json::to_vec("printf should-not-run").expect("serialize command");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.send",
-                        &payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .is_err()
-            );
-            assert!(widget.is_disconnected());
-            assert!(
-                Widget::accessibility(&widget)
-                    .and_then(|node| node.description)
-                    .is_some_and(|description| description.contains("Terminal input failed"))
-            );
-            assert!(
-                ui::resources::resources(&widget, &doc)
-                    .into_iter()
-                    .all(|resource| {
-                        resource.actions.iter().all(|action| {
-                            matches!(
-                                action.contract.availability,
-                                ui::tilo_actions::Availability::Unavailable { .. }
-                            )
-                        })
-                    })
-            );
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected PTY flush failure"))
+            }
         }
 
-        // Case `poisoned_pty_writer_never_reports_a_completed_control_effect`.
-        {
-            let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-                Arc::new(Mutex::new(Box::new(std::io::sink())));
-            let poison = Arc::clone(&writer);
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _guard = poison.lock().expect("writer lock before injected panic");
-                panic!("inject poisoned PTY writer");
-            }));
-            let (_out_tx, out_rx) = std::sync::mpsc::channel();
-            let mut widget = TerminalWidget::new(
-                writer,
-                Arc::new(Mutex::new(Box::new(MockMaster))),
-                out_rx,
-                tilo_content::ContentStore::memory(),
-            );
-            let mut doc = AutoCommit::new();
-            let payload = serde_json::to_vec("interrupt").expect("serialize control");
-            assert!(
-                Widget::start_operation(
-                    &mut widget,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.control",
-                        &payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .is_err()
-            );
-            assert!(widget.is_disconnected());
-        }
-    }
-
-    /// A live session that printed a titled prompt with a public OSC 8 link,
-    /// projected into the document through the real emulator path.
-    fn live_session() -> (TerminalWidget, AutoCommit) {
-        let (mut widget, _writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.init_crdt(&mut doc, &ROOT);
-        widget.feed(
-            &mut doc,
-            &ROOT,
-            b"\x1b]2;build\x07$ make\r\nsee \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\\r\n",
+        let (_out_tx, out_rx) = std::sync::mpsc::channel();
+        let mut widget = TerminalWidget::new(
+            Arc::new(Mutex::new(Box::new(FailingWriter))),
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            out_rx,
+            tilo_content::ContentStore::memory(),
         );
-        widget.sync(&mut doc, &ROOT);
-        doc.commit();
-        (widget, doc)
-    }
+        assert!(
+            widget
+                .perform(TerminalEffect::Send {
+                    text: "printf should-not-run".into()
+                })
+                .is_err()
+        );
+        assert!(widget.is_disconnected());
+        assert!(
+            Widget::accessibility(&widget)
+                .and_then(|node| node.description)
+                .is_some_and(|description| description.contains("Terminal input failed"))
+        );
+        let unavailable: Vec<_> = widget
+            .effect_statuses()
+            .into_iter()
+            .map(|status| format!("{status:?}"))
+            .collect();
+        for id in ["send", "interrupt", "clear", "paste", "paste-primary"] {
+            assert!(
+                unavailable
+                    .iter()
+                    .any(|status| status.contains(&format!("\"{id}\""))),
+                "`{id}` is unavailable once the process's input failed: {unavailable:?}"
+            );
+        }
+        // Moving the session elsewhere is what an ended session is for.
+        assert!(
+            !unavailable
+                .iter()
+                .any(|status| status.contains("\"open-in\"")),
+            "{unavailable:?}"
+        );
 
-    // The terminal publishes only effects and views, so the sweep checks the
-    // surface is non-empty and protocol-valid with an empty registry.
-    ui::action_contract_tests! {
-        seed: live_session().1,
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&live_session().0, doc),
-        palette: [
-            "Send text",
-            "Run command",
-            "Interrupt process",
-            "Clear screen",
-            "Copy visible output",
-        ],
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(std::io::sink())));
+        let poison = Arc::clone(&writer);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poison.lock().expect("writer lock before injected panic");
+            panic!("inject poisoned PTY writer");
+        }));
+        let (_out_tx, out_rx) = std::sync::mpsc::channel();
+        let mut widget = TerminalWidget::new(
+            writer,
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            out_rx,
+            tilo_content::ContentStore::memory(),
+        );
+        assert!(widget.perform(TerminalEffect::Interrupt).is_err());
+        assert!(widget.is_disconnected());
     }
 }

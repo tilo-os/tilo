@@ -7,55 +7,17 @@
 use serde_json::{Map, Value};
 
 use super::device_fabric::PersonalFabricAction;
+use tilo_lock::MutexRecover as _;
 
-/// Independently switchable continuity data planes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContinuityCapability {
-    Clipboard,
-    Notifications,
-    WifiSettings,
-    Media,
-    DisplayInput,
-    FileTransfer,
-    RealtimeSessions,
-    TypedGamepad,
-    AppContinuations,
-}
-
-impl ContinuityCapability {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Clipboard => "clipboard",
-            Self::Notifications => "notification",
-            Self::WifiSettings => "Wi-Fi/settings",
-            Self::Media => "media",
-            Self::DisplayInput => "display/input",
-            Self::FileTransfer => "file-transfer",
-            Self::RealtimeSessions => "realtime-session",
-            Self::TypedGamepad => "typed-gamepad",
-            Self::AppContinuations => "app-continuation",
-        }
-    }
-}
+pub use settings_store::continuity_privacy::ContinuityCapability;
 
 /// An immutable, typed view of the committed device-local policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "privacy capabilities are independent opt-in switches"
-)]
 pub struct ContinuityPolicySnapshot {
     enabled: bool,
-    clipboard: bool,
-    notifications: bool,
-    wifi_settings: bool,
-    media: bool,
-    display_input: bool,
-    file_transfer: bool,
-    realtime_sessions: bool,
-    typed_gamepad: bool,
-    app_continuations: bool,
+    automatic_display_input: bool,
+    /// Each capability's own switch, one bit per [`ContinuityCapability`].
+    allowed: u16,
 }
 
 impl ContinuityPolicySnapshot {
@@ -68,21 +30,34 @@ impl ContinuityPolicySnapshot {
         let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
         Self {
             enabled: flag("enabled"),
-            clipboard: flag("clipboard"),
-            notifications: flag("notifications"),
-            wifi_settings: flag("wifi_settings"),
-            media: flag("media"),
-            display_input: flag("display_input"),
-            file_transfer: flag("file_transfer"),
-            realtime_sessions: flag("realtime_sessions"),
-            typed_gamepad: flag("typed_gamepad"),
-            app_continuations: flag("app_continuations"),
+            automatic_display_input: flag("automatic_display_input"),
+            allowed: ContinuityCapability::ALL
+                .into_iter()
+                .filter(|capability| flag(capability.key()))
+                .fold(0, |allowed, capability| allowed | bit(capability)),
         }
     }
 
+    /// The committed policy, without reading the settings document once the
+    /// session follows its live settings ([`follow`]): then it is one atomic
+    /// load unless the settings changed, so the compositor's loop and a check
+    /// per fabric message may ask. Before that (startup, tools, tests that
+    /// install no live settings) it reads the document as it always did.
     #[must_use]
-    pub fn load() -> Self {
+    pub fn current() -> Self {
+        FOLLOWED.current(Self::load)
+    }
+
+    /// Read and parse the settings document: a file read when no host source
+    /// is installed. Never on the compositor's loop; see [`Self::current`].
+    fn load() -> Self {
         Self::from_document(&settings_store::load())
+    }
+
+    /// Automatic leases require a separate literal device-local opt-in.
+    #[must_use]
+    pub const fn automatic_display_input(self) -> bool {
+        self.automatic_display_input
     }
 
     #[must_use]
@@ -92,18 +67,7 @@ impl ContinuityPolicySnapshot {
 
     #[must_use]
     pub const fn permits(self, capability: ContinuityCapability) -> bool {
-        self.enabled
-            && match capability {
-                ContinuityCapability::Clipboard => self.clipboard,
-                ContinuityCapability::Notifications => self.notifications,
-                ContinuityCapability::WifiSettings => self.wifi_settings,
-                ContinuityCapability::Media => self.media,
-                ContinuityCapability::DisplayInput => self.display_input,
-                ContinuityCapability::FileTransfer => self.file_transfer,
-                ContinuityCapability::RealtimeSessions => self.realtime_sessions,
-                ContinuityCapability::TypedGamepad => self.typed_gamepad,
-                ContinuityCapability::AppContinuations => self.app_continuations,
-            }
+        self.enabled && self.allowed & bit(capability) != 0
     }
 
     /// Whether applying `self` must tear down live state for a capability
@@ -114,10 +78,14 @@ impl ContinuityPolicySnapshot {
     }
 
     /// Classify every fabric action at one exhaustive boundary. Adding a new
-    /// wire action therefore requires an explicit privacy decision.
+    /// wire action therefore requires an explicit privacy decision. `None`
+    /// is device administration between the person's enrolled devices,
+    /// which no optional continuity switch turns off.
     #[must_use]
-    pub const fn capability_for_action(action: &PersonalFabricAction) -> ContinuityCapability {
-        match action {
+    pub const fn capability_for_action(
+        action: &PersonalFabricAction,
+    ) -> Option<ContinuityCapability> {
+        Some(match action {
             PersonalFabricAction::ResumeMedia { .. }
             | PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
@@ -153,16 +121,21 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffAccepted { .. }
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
-            PersonalFabricAction::DisplayMirrorRequest { .. }
-            | PersonalFabricAction::DisplayMirrorDecision { .. }
-            | PersonalFabricAction::DisplayMirrorStop { .. }
-            | PersonalFabricAction::SetDisplayPlacement { .. }
+            | PersonalFabricAction::BluetoothHandoffCancel { .. }
+            // A media handoff's local file travels on the transfer lane.
+            | PersonalFabricAction::NearbyTransferOffer {
+                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                ..
+            } => ContinuityCapability::Media,
+            PersonalFabricAction::SetDisplayPlacement { .. }
+            | PersonalFabricAction::SetDisplayPlacementChecked { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
             | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
-            | PersonalFabricAction::Input { .. } => ContinuityCapability::DisplayInput,
+            | PersonalFabricAction::Input { .. }
+            | PersonalFabricAction::SpatialInputProtocol { .. }
+            | PersonalFabricAction::SpatialInputSequenced { .. } => ContinuityCapability::DisplayInput,
             PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -188,12 +161,111 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
+            // A legacy app keeps running on the device that hosts it; the
+            // person's other devices show it through a stream of its window.
+            PersonalFabricAction::WindowViews { .. } => ContinuityCapability::AppContinuations,
+            // Waking a sleeping device is administration of the person's own
+            // machines, available like presence itself.
+            PersonalFabricAction::WakeDevice { .. }
+            | PersonalFabricAction::WakeReport { .. }
+            | PersonalFabricAction::WakeProbe { .. }
+            | PersonalFabricAction::WakeProbeReply { .. } => return None,
+        })
+    }
+
+    /// Whether `action` may be processed now. Transfer continuations carry
+    /// no kind, so they pass while either transfer switch is on; the transfer
+    /// state machine then enforces the switch of the transfer's own kind.
+    #[must_use]
+    pub const fn permits_action(self, action: &PersonalFabricAction) -> bool {
+        if matches!(
+            action,
+            PersonalFabricAction::NearbyTransferReady { .. }
+                | PersonalFabricAction::NearbyTransferCancel { .. }
+                | PersonalFabricAction::NearbyTransferRestart { .. }
+                | PersonalFabricAction::NearbyTransferResult { .. }
+        ) {
+            return self.permits(ContinuityCapability::FileTransfer)
+                || self.permits(ContinuityCapability::Media);
+        }
+        match Self::capability_for_action(action) {
+            Some(capability) => self.permits(capability),
+            None => true,
+        }
+    }
+}
+
+/// `capability`'s bit in [`ContinuityPolicySnapshot::allowed`].
+const fn bit(capability: ContinuityCapability) -> u16 {
+    1 << capability as u16
+}
+
+/// The policy in a live settings document, parsed once per settings
+/// generation — for a per-tick reader that must not read the file.
+pub struct ContinuityPolicyCache {
+    settings: settings_store::live::LiveSettings,
+    seen: u64,
+    policy: ContinuityPolicySnapshot,
+}
+
+impl ContinuityPolicyCache {
+    #[must_use]
+    pub fn new(settings: &settings_store::live::LiveSettings) -> Self {
+        let snapshot = settings.snapshot();
+        Self {
+            settings: settings.clone(),
+            seen: snapshot.generation,
+            policy: ContinuityPolicySnapshot::from_document(&snapshot.document),
         }
     }
 
-    #[must_use]
-    pub const fn permits_action(self, action: &PersonalFabricAction) -> bool {
-        self.permits(Self::capability_for_action(action))
+    /// The current policy: one atomic load unless the settings changed.
+    pub fn current(&mut self) -> ContinuityPolicySnapshot {
+        if self.settings.generation() != self.seen {
+            let snapshot = self.settings.snapshot();
+            self.seen = snapshot.generation;
+            self.policy = ContinuityPolicySnapshot::from_document(&snapshot.document);
+        }
+        self.policy
+    }
+}
+
+/// The live settings the whole process reads its policy from, once the
+/// session follows them.
+static FOLLOWED: FollowedPolicy = FollowedPolicy::new();
+
+/// Read the continuity policy from `settings` from now on: every
+/// [`ContinuityPolicySnapshot::current`] (fabric message checks on the
+/// compositor's loop, broker requests, Quick Settings actions) then parses
+/// it once per settings generation instead of reading the document on each
+/// call. The settings watch behind `settings` is what invalidates it.
+pub fn follow(settings: &settings_store::live::LiveSettings) {
+    FOLLOWED.follow(settings);
+}
+
+/// A policy cache that may not be followed yet.
+struct FollowedPolicy(std::sync::Mutex<Option<ContinuityPolicyCache>>);
+
+impl FollowedPolicy {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    fn follow(&self, settings: &settings_store::live::LiveSettings) {
+        *self.0.lock_recover() = Some(ContinuityPolicyCache::new(settings));
+    }
+
+    /// The followed policy, or `unfollowed()` while nothing is followed.
+    fn current(
+        &self,
+        unfollowed: impl FnOnce() -> ContinuityPolicySnapshot,
+    ) -> ContinuityPolicySnapshot {
+        let followed = self
+            .0
+            .lock_recover()
+            .as_mut()
+            .map(ContinuityPolicyCache::current);
+        followed.unwrap_or_else(unfollowed)
     }
 }
 
@@ -202,8 +274,99 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Fabric messages check the policy on the compositor's loop, one check
+    /// per message. Once followed, those checks never read the settings
+    /// document; a change still reaches them through the settings watch.
+    #[test]
+    fn a_followed_policy_is_read_without_the_settings_document() {
+        use settings_store::SettingsSource as _;
+        let followed = FollowedPolicy::new();
+        let reads = std::cell::Cell::new(0_usize);
+        let unfollowed = || {
+            reads.set(reads.get().saturating_add(1));
+            ContinuityPolicySnapshot::default()
+        };
+        let _ = followed.current(unfollowed);
+        assert_eq!(reads.get(), 1, "unfollowed, the document is read");
+
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        followed.follow(&settings);
+        for _ in 0..1000 {
+            assert!(
+                !followed
+                    .current(unfollowed)
+                    .permits(ContinuityCapability::FileTransfer)
+            );
+        }
+        assert_eq!(reads.get(), 1, "followed, a check reads no document");
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "file_transfer": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(
+            followed
+                .current(unfollowed)
+                .permits(ContinuityCapability::FileTransfer),
+            "the settings watch carries a change to the next check"
+        );
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn the_cached_policy_follows_each_settings_generation() {
+        use settings_store::SettingsSource as _;
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        let mut cache = ContinuityPolicyCache::new(&settings);
+        assert!(!cache.current().permits(ContinuityCapability::TypedGamepad));
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "typed_gamepad": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(cache.current().permits(ContinuityCapability::TypedGamepad));
+    }
+
     fn document(value: &Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn automatic_display_input_requires_a_literal_separate_opt_in() {
+        for value in [
+            json!(null),
+            json!(false),
+            json!(1),
+            json!("true"),
+            json!({}),
+        ] {
+            let policy = ContinuityPolicySnapshot::from_document(&document(
+                &json!({"continuity": {"enabled":true, "display_input":true, "automatic_display_input":value}}),
+            ));
+            assert!(!policy.automatic_display_input());
+        }
+        let absent = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"enabled":true,"display_input":true}}),
+        ));
+        assert!(!absent.automatic_display_input());
+        let explicit = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"automatic_display_input":true}}),
+        ));
+        assert!(explicit.automatic_display_input());
+        assert!(
+            !explicit.permits(ContinuityCapability::DisplayInput),
+            "the separate choice cannot enable its master capability"
+        );
     }
 
     #[test]
@@ -366,15 +529,23 @@ mod tests {
         for clock in [&clock_probe, &clock_report] {
             assert_eq!(
                 ContinuityPolicySnapshot::capability_for_action(clock),
-                ContinuityCapability::Media
+                Some(ContinuityCapability::Media)
             );
         }
         for health in [&health_probe, &health_report] {
             assert_eq!(
                 ContinuityPolicySnapshot::capability_for_action(health),
-                ContinuityCapability::DisplayInput
+                Some(ContinuityCapability::DisplayInput)
             );
         }
+
+        // Waking one of the person's devices needs no optional switch.
+        let wake = PersonalFabricAction::WakeDevice {
+            target: crate::shell::personal_continuity::DeviceId::new("desk").unwrap(),
+        };
+        assert_eq!(ContinuityPolicySnapshot::capability_for_action(&wake), None);
+        assert!(policy(false, false).permits_action(&wake));
+        assert!(ContinuityPolicySnapshot::default().permits_action(&wake));
 
         let media_only = policy(true, false);
         assert!(media_only.permits_action(&clock_probe));
@@ -387,5 +558,50 @@ mod tests {
         assert!(!display_only.permits_action(&clock_report));
         assert!(display_only.permits_action(&health_probe));
         assert!(display_only.permits_action(&health_report));
+    }
+
+    #[test]
+    fn the_transfer_lane_answers_to_the_switch_of_each_transfer_kind() {
+        use crate::shell::nearby_transfer::TransferKind;
+
+        let offer = |kind| PersonalFabricAction::NearbyTransferOffer {
+            transfer_id: [1; 16],
+            name: "film.mkv".into(),
+            kind,
+            total_bytes: 4,
+            content_hash: [2; 32],
+        };
+        let media_offer = offer(TransferKind::MediaHandoff);
+        let file_offer = offer(TransferKind::File);
+        let ready = PersonalFabricAction::NearbyTransferReady {
+            request_id: [3; 16],
+            transfer_id: [1; 16],
+            committed_offset: 0,
+            prefix_hash: [4; 32],
+        };
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&media_offer),
+            Some(ContinuityCapability::Media)
+        );
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&file_offer),
+            Some(ContinuityCapability::FileTransfer)
+        );
+
+        let media_only = policy(true, false);
+        assert!(media_only.permits_action(&media_offer));
+        assert!(!media_only.permits_action(&file_offer));
+        assert!(media_only.permits_action(&ready));
+
+        let file_only = ContinuityPolicySnapshot::from_document(&document(&json!({
+            "continuity": {"enabled": true, "file_transfer": true}
+        })));
+        assert!(!file_only.permits_action(&media_offer));
+        assert!(file_only.permits_action(&file_offer));
+        assert!(file_only.permits_action(&ready));
+
+        let neither = policy(false, true);
+        assert!(!neither.permits_action(&media_offer));
+        assert!(!neither.permits_action(&ready));
     }
 }

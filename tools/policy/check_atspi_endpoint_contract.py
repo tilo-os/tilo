@@ -21,6 +21,55 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def function_body(source: str, name: str) -> str | None:
+    """Extract a named Rust body for this source-shape contract (not a parser)."""
+    declaration = re.search(rf"\bfn\s+{re.escape(name)}\s*\([^{{}}]*\)[^{{}}]*\{{", source)
+    if declaration is None:
+        return None
+    start = declaration.end()
+    depth = 1
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index]
+    return None
+
+
+def adapter_registration_errors(source: str) -> list[str]:
+    """Follow the shared factory, including both primary and detached views."""
+    if "fn create_accessibility_adapter(" not in source:
+        if "accesskit_winit::Adapter::with_event_loop_proxy" in source:
+            return []  # The original inline native runner.
+        return ["missing shared AT-SPI adapter registration before showing windows"]
+    errors = []
+    factory = function_body(source, "create_accessibility_adapter") or ""
+    if not re.search(r"type\s+PrimaryA11yAdapter\s*=\s*accesskit_winit::Adapter\s*;", source) or not re.search(
+        r"Some\(PrimaryA11yAdapter::with_event_loop_proxy\(\s*event_loop,\s*window,\s*proxy,?\s*\)\)", factory
+    ):
+        errors.append("shared AT-SPI factory must return the reviewed native adapter")
+    for name, binding in (
+        ("resumed", r"self\.a11y_adapter"),
+        ("create_native_floating_window", r"let\s+a11y_adapter"),
+    ):
+        body = function_body(source, name) or ""
+        # Require retention of the actual result, not an unrelated/dropped call.
+        registration = re.search(
+            binding + r"\s*=\s*create_accessibility_adapter\(\s*event_loop,\s*&window,\s*self\.a11y_proxy\.clone\(\),?\s*\)\s*;",
+            body,
+        )
+        creation = body.find("event_loop.create_window(")
+        if creation < 0:
+            creation_match = re.search(r"event_loop\s*\.create_window\(", body)
+            creation = creation_match.start() if creation_match else -1
+        shown = body.find("window.set_visible(true);", max(creation, 0))
+        if registration is None or not (0 <= creation < registration.start() < shown):
+            errors.append(f"{name}: shared AT-SPI adapter must be retained after creation and before showing the new window")
+    return errors
+
+
 def audit(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     app_root = root / "apps"
@@ -47,7 +96,7 @@ def audit(root: Path = ROOT) -> list[str]:
 
     cargo = (root / "crates/sdk/ui-core/Cargo.toml").read_text(encoding="utf-8")
     adapter = re.search(
-        # Upstream 0.34.0, or the vendored fork of it that the winit facade uses.
+        # Upstream 0.34.0, or the vendored fork of it built on tilo-winit.
         r'^accesskit_winit\s*=\s*(?:"0\.34\.0"|\{\s*version\s*=\s*"0\.34\.0"[^}\n]*\}'
         r'|\{\s*package\s*=\s*"tilo-accesskit-winit"\s*,\s*version\s*=\s*"0\.34\.0"\s*,'
         r'\s*path\s*=\s*"\.\./\.\./\.\./vendor/accesskit_winit"[^}\n]*\})',
@@ -74,8 +123,10 @@ def audit(root: Path = ROOT) -> list[str]:
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()
     )
+    errors.extend(
+        f"crates/sdk/ui-core/src/app.rs: {error}" for error in adapter_registration_errors(app)
+    )
     for needle, purpose in (
-        ("accesskit_winit::Adapter::with_event_loop_proxy", "adapter registration before showing windows"),
         ("self.app.dispatch_a11y_action(req.target_node, &action)", "AT action routing"),
         ("self.a11y_adapter = None;", "provider teardown before window teardown"),
     ):
@@ -125,7 +176,7 @@ def audit(root: Path = ROOT) -> list[str]:
     for app, expected in {
         "file-explorer": {"root": "Files activity", "action": "View options"},
         "photos": {"root": "Photos", "action": "Library"},
-        "settings": {"root": "Personal Settings", "action": "Accessibility"},
+        "settings": {"root": "Settings", "action": "Accessibility"},
     }.items():
         manifest = root / "apps" / app / "tilo-app.toml"
         with manifest.open("rb") as source:

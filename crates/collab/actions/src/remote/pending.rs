@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 type Continuation<T> = Box<dyn FnOnce(Option<T>) + Send>;
 /// Whether whoever a continuation hands the answer to still wants it.
@@ -34,11 +35,76 @@ enum State<T> {
 struct Slot<T> {
     state: Mutex<State<T>>,
     settled: Condvar,
+    /// Wakes [`Completer::abandoned`] when the receiving end goes away.
+    abandon: Arc<AbandonSignal>,
+}
+
+/// Where the receiving end of a [`Pending`] reports that it went away.
+///
+/// It is shared by the slot and the [`Pending`] that reads it, but holds no
+/// reference to the slot itself: the producer decides abandonment by the
+/// slot's strong count, which a wake-up must not inflate.
+#[derive(Default)]
+struct AbandonSignal {
+    wake: Mutex<AbandonWake>,
+}
+
+#[derive(Default)]
+struct AbandonWake {
+    /// The task waiting in [`Completer::abandoned`].
+    waker: Option<Waker>,
+    /// The signal of the answer this one forwards to through
+    /// [`Pending::map`]: dropping the mapped answer may abandon that one.
+    upstream: Option<Arc<AbandonSignal>>,
+}
+
+impl AbandonSignal {
+    fn register(&self, waker: &Waker) {
+        let mut wake = self.wake.lock_recover();
+        if !wake
+            .waker
+            .as_ref()
+            .is_some_and(|current| current.will_wake(waker))
+        {
+            wake.waker = Some(waker.clone());
+        }
+    }
+
+    fn forward_to(&self, upstream: Arc<Self>) {
+        self.wake.lock_recover().upstream = Some(upstream);
+    }
+
+    /// Wake whoever waits on this answer's abandonment, and on every answer
+    /// it forwards to. The waiter re-checks, so a wake that turns out not
+    /// to abandon anything is harmless.
+    fn wake(&self) {
+        let (waker, upstream) = {
+            let wake = self.wake.lock_recover();
+            (wake.waker.clone(), wake.upstream.clone())
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        if let Some(upstream) = upstream {
+            upstream.wake();
+        }
+    }
+}
+
+/// Held by a [`Pending`] after its slot: dropping the `Pending` first
+/// releases the slot, then wakes the producer, which then observes the
+/// lower strong count.
+struct AbandonOnDrop(Arc<AbandonSignal>);
+
+impl Drop for AbandonOnDrop {
+    fn drop(&mut self) {
+        self.0.wake();
+    }
 }
 
 impl<T> Slot<T> {
     fn settle(&self, value: Option<T>) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Waiting {
                 then: Some(then), ..
@@ -66,7 +132,7 @@ impl<T> Slot<T> {
         if Arc::strong_count(slot) > own {
             return false;
         }
-        let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = slot.state.lock_recover();
         match &*state {
             State::Waiting {
                 then: Some(_),
@@ -86,12 +152,16 @@ pub struct Completer<T> {
 
 /// The receiving end: an answer that may not exist yet.
 pub struct Pending<T> {
+    // Field order matters: `slot` drops before `_abandon` wakes the
+    // producer, so the producer sees the slot released.
     slot: Arc<Slot<T>>,
+    _abandon: AbandonOnDrop,
 }
 
 /// A connected [`Completer`] and [`Pending`].
 #[must_use]
 pub fn pending<T>() -> (Completer<T>, Pending<T>) {
+    let abandon = Arc::new(AbandonSignal::default());
     let slot = Arc::new(Slot {
         state: Mutex::new(State::Waiting {
             waker: None,
@@ -99,12 +169,16 @@ pub fn pending<T>() -> (Completer<T>, Pending<T>) {
             interest: None,
         }),
         settled: Condvar::new(),
+        abandon: Arc::clone(&abandon),
     });
     (
         Completer {
             slot: Some(Arc::clone(&slot)),
         },
-        Pending { slot },
+        Pending {
+            slot,
+            _abandon: AbandonOnDrop(abandon),
+        },
     )
 }
 
@@ -117,6 +191,17 @@ impl<T> Completer<T> {
         self.slot
             .as_ref()
             .is_none_or(|slot| Slot::abandoned(slot, 1))
+    }
+
+    /// Resolves once nobody can observe the answer any more — what
+    /// [`Self::is_abandoned`] reports, as a future, so work behind the
+    /// answer can stop the moment its asker goes away instead of checking
+    /// on a timer. Runtime-agnostic: dropping the [`Pending`] (or, through
+    /// [`Pending::map`], the mapped answer) wakes it. An answer handed to a
+    /// plain [`Pending::then`] continuation is always wanted, so this never
+    /// resolves for it.
+    pub fn abandoned(&self) -> Abandoned<'_, T> {
+        Abandoned { completer: self }
     }
 
     /// Deliver the answer. A continuation attached with
@@ -136,6 +221,33 @@ impl<T> Drop for Completer<T> {
     }
 }
 
+/// [`Completer::abandoned`]: resolves once the answer is unobservable.
+#[must_use = "a future does nothing unless awaited"]
+pub struct Abandoned<'a, T> {
+    completer: &'a Completer<T>,
+}
+
+impl<T> Future for Abandoned<'_, T> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let Some(slot) = self.completer.slot.as_ref() else {
+            return Poll::Ready(());
+        };
+        if Slot::abandoned(slot, 1) {
+            return Poll::Ready(());
+        }
+        slot.abandon.register(context.waker());
+        // The receiving end may have gone between the check and the
+        // registration; it woke nobody then, so look again.
+        if Slot::abandoned(slot, 1) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 /// What [`Pending::poll_ready`] found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PendingPoll<T> {
@@ -149,21 +261,20 @@ impl<T> Pending<T> {
     /// An answer that is already known.
     #[must_use]
     pub fn ready(value: T) -> Self {
+        let abandon = Arc::new(AbandonSignal::default());
         Self {
             slot: Arc::new(Slot {
                 state: Mutex::new(State::Done(Some(value))),
                 settled: Condvar::new(),
+                abandon: Arc::clone(&abandon),
             }),
+            _abandon: AbandonOnDrop(abandon),
         }
     }
 
     /// Take the answer if it has arrived, without waiting.
     pub fn poll_ready(&mut self) -> PendingPoll<T> {
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Done(Some(value)) => PendingPoll::Ready(value),
             State::Done(None) | State::Taken => PendingPoll::Abandoned,
@@ -183,11 +294,7 @@ impl<T> Pending<T> {
     /// `Ok(None)` if the producer abandoned the answer.
     pub fn wait_timeout(mut self, timeout: Duration) -> Result<Option<T>, Self> {
         let deadline = Instant::now().checked_add(timeout);
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         loop {
             if !matches!(*state, State::Waiting { .. }) {
                 drop(state);
@@ -219,11 +326,7 @@ impl<T> Pending<T> {
     }
 
     fn then_while(self, then: impl FnOnce(Option<T>) + Send + 'static, interest: Option<Interest>) {
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Waiting { waker, .. } => {
                 *state = State::Waiting {
@@ -249,6 +352,12 @@ impl<T: Send + 'static> Pending<T> {
     #[must_use]
     pub fn map<U: Send + 'static>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Pending<U> {
         let (completer, mapped) = pending();
+        // Dropping the mapped answer wakes whoever waits on this one's
+        // abandonment, which `wanted` then reports.
+        mapped
+            .slot
+            .abandon
+            .forward_to(Arc::clone(&self.slot.abandon));
         let far_end = completer.slot.as_ref().map(Arc::downgrade);
         // Upgrading adds one reference to the completer's own.
         let wanted = move || {
@@ -275,11 +384,7 @@ impl<T> Future for Pending<T> {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<T>> {
         let this = self.get_mut();
-        let mut state = this
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = this.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Done(value) => Poll::Ready(value),
             State::Taken => Poll::Ready(None),
@@ -309,6 +414,114 @@ mod tests {
         dropping_a_mapped_answer_abandons_the_original();
         waiting_across_threads_sees_the_answer_or_times_out();
         a_ready_answer_resolves_as_a_future_without_a_runtime();
+    }
+
+    /// Counts how often a producer waiting on abandonment is woken.
+    struct CountingWaker(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl CountingWaker {
+        fn woken(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// The producer of an answer learns that its asker went away the moment
+    /// it does, as a wake-up rather than by checking again later: dropping
+    /// the answer, or the answer mapped from it, wakes
+    /// [`Completer::abandoned`]; an answer a plain continuation took stays
+    /// wanted. No runtime is involved.
+    #[test]
+    fn dropping_the_asker_wakes_a_producer_waiting_on_abandonment() {
+        let counter = Arc::new(CountingWaker(std::sync::atomic::AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+
+        let (completer, answer) = pending::<u8>();
+        let mut abandoned = std::pin::pin!(completer.abandoned());
+        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(counter.woken(), 0, "nothing happened yet");
+        drop(answer);
+        assert_eq!(counter.woken(), 1, "dropping the answer wakes its producer");
+        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
+
+        let (completer, answer) = pending::<u8>();
+        let mapped = answer.map(|value| value.saturating_add(1));
+        let mut abandoned = std::pin::pin!(completer.abandoned());
+        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
+        let before = counter.woken();
+        drop(mapped);
+        assert!(
+            counter.woken() > before,
+            "dropping the mapped answer wakes the original producer"
+        );
+        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
+
+        let (completer, answer) = pending::<u8>();
+        answer.then(|_| {});
+        let mut abandoned = std::pin::pin!(completer.abandoned());
+        assert_eq!(
+            abandoned.as_mut().poll(&mut context),
+            Poll::Pending,
+            "a plain continuation always wants the answer"
+        );
+
+        let (completer, answer) = pending::<u8>();
+        drop(answer);
+        let mut abandoned = std::pin::pin!(completer.abandoned());
+        assert_eq!(
+            abandoned.as_mut().poll(&mut context),
+            Poll::Ready(()),
+            "an answer dropped before anyone waited is already abandoned"
+        );
+    }
+
+    /// A producer on another thread wakes as soon as the asker drops the
+    /// answer, with nothing polling in between.
+    #[test]
+    fn a_producer_on_another_thread_wakes_when_the_asker_drops_the_answer() {
+        let (completer, answer) = pending::<u8>();
+        let (parked, ready) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            struct Unpark(std::thread::Thread);
+            impl std::task::Wake for Unpark {
+                fn wake(self: Arc<Self>) {
+                    self.0.unpark();
+                }
+            }
+            let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+            let mut context = Context::from_waker(&waker);
+            let mut abandoned = std::pin::pin!(completer.abandoned());
+            let mut announced = false;
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                if abandoned.as_mut().poll(&mut context).is_ready() {
+                    return true;
+                }
+                if !announced {
+                    parked.send(()).expect("announce parking");
+                    announced = true;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                std::thread::park_timeout(remaining);
+            }
+        });
+        ready
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the producer waits");
+        drop(answer);
+        assert!(
+            producer.join().expect("producer thread"),
+            "the producer saw its asker go away"
+        );
     }
 
     #[allow(

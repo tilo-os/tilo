@@ -57,6 +57,17 @@ pub struct FanoutState {
     peer_id_counter: AtomicU64,
     capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
     local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
+    certified_people: Mutex<Vec<std::sync::Weak<CertifiedPeopleSubscription>>>,
+}
+
+/// Host-local observer of complete, owner-certified room membership. This is
+/// intentionally separate from ordinary app Context fanout: only the broker's
+/// native membership refresh can publish it.
+pub type CertifiedPeopleSink =
+    Arc<dyn Fn(String, Vec<ui::collaboration::Collaborator>) + Send + Sync>;
+
+pub struct CertifiedPeopleSubscription {
+    sink: CertifiedPeopleSink,
 }
 
 /// A subscriber inside the shell process, addressed by room — how the
@@ -111,6 +122,7 @@ impl FanoutState {
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
+            certified_people: Mutex::new(Vec::new()),
         }
     }
 
@@ -139,6 +151,38 @@ impl FanoutState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn subscribe_certified_people(
+        &self,
+        sink: CertifiedPeopleSink,
+    ) -> Arc<CertifiedPeopleSubscription> {
+        let subscription = Arc::new(CertifiedPeopleSubscription { sink });
+        let state = self.capnp_state();
+        if let Ok(mut observers) = self.certified_people.lock() {
+            observers.push(Arc::downgrade(&subscription));
+            if let Some(state) = state {
+                for (room, people) in state.certified_people_for_shell() {
+                    (subscription.sink)(room, people);
+                }
+            }
+        }
+        subscription
+    }
+
+    pub(crate) fn publish_certified_people(&self, room: &str) {
+        let people = self
+            .capnp_state()
+            .map_or_else(Vec::new, |state| state.certified_people_in_room(room));
+        if let Ok(mut observers) = self.certified_people.lock() {
+            observers.retain(|observer| {
+                let Some(observer) = observer.upgrade() else {
+                    return false;
+                };
+                (observer.sink)(room.to_owned(), people.clone());
+                true
+            });
+        }
     }
 
     /// Mint the next typed connection id, reserving zero for the broker root
@@ -191,6 +235,11 @@ impl FanoutState {
     /// fanout. The broker releases its journal before this method detaches it,
     /// and a replacement can never be cleared by the old thread's guard.
     pub(crate) fn shutdown_capnp(&self, state: &Arc<CapnpBrokerState>) {
+        let certified_rooms = state
+            .certified_people_for_shell()
+            .into_iter()
+            .map(|(room, _)| room)
+            .collect::<Vec<_>>();
         self.request_shutdown();
         state.stop();
         let mut guard = match self.capnp.lock() {
@@ -205,6 +254,17 @@ impl FanoutState {
         }
         match self.local_subs.lock() {
             Ok(mut subscribers) => subscribers.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        match self.certified_people.lock() {
+            Ok(mut observers) => {
+                for observer in observers.iter().filter_map(std::sync::Weak::upgrade) {
+                    for room in &certified_rooms {
+                        (observer.sink)(room.clone(), Vec::new());
+                    }
+                }
+                observers.clear();
+            }
             Err(poisoned) => poisoned.into_inner().clear(),
         }
     }
@@ -224,6 +284,13 @@ impl FanoutState {
             .ok()
             .and_then(|g| g.clone())
             .filter(|state| state.is_accepting())
+    }
+
+    /// Ask the local apps holding records in `cluster_id` to publish their
+    /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        self.capnp_state()
+            .map_or(0, |state| state.request_room_snapshots(cluster_id))
     }
 
     /// Deliver `event` to every typed or in-process subscriber addressed by
@@ -300,7 +367,73 @@ pub struct AppActionBroker {
     state: Arc<CapnpBrokerState>,
 }
 
+/// Session-owned broker discovery, without retaining its mutex/journal/process graph.
+/// Pending desktop launch chrome upgrades only while performing an admitted request.
+#[derive(Clone)]
+pub struct WeakAppActionBroker(Arc<dyn BrokerDiscovery>);
+
+// Desktop discovery does not expose the server's mutex-bearing graph. The
+// session owns that graph; this concrete discovery implementation owns only Weak.
+trait BrokerDiscovery: Send + Sync {
+    fn current(&self) -> Result<AppActionBroker, String>;
+}
+struct WeakBrokerDiscovery(std::sync::Weak<CapnpBrokerState>);
+impl BrokerDiscovery for WeakBrokerDiscovery {
+    fn current(&self) -> Result<AppActionBroker, String> {
+        let state = self
+            .0
+            .upgrade()
+            .ok_or("native app opening broker retired")?;
+        state.while_live_fenced(|_| Ok(()))?;
+        Ok(AppActionBroker { state })
+    }
+}
+
+impl WeakAppActionBroker {
+    /// Acquire a temporary facade only while the owning session still accepts work.
+    ///
+    /// # Errors
+    /// The session has dropped or stopped its actual broker.
+    pub fn upgrade(&self) -> Result<AppActionBroker, String> {
+        self.0.current()
+    }
+}
+
 impl AppActionBroker {
+    /// Exact current owner-backed agent identity while the session is live.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        self.state
+            .while_live(|state| Ok(state.certified_agent_identity(room, actor)))
+            .ok()
+            .flatten()
+    }
+
+    /// Retain discovery without extending the owning session's lifetime.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakAppActionBroker {
+        WeakAppActionBroker(Arc::new(WeakBrokerDiscovery(Arc::downgrade(&self.state))))
+    }
+    /// Invoke one closed native workspace-membership command as the retained
+    /// certified person. The owner still rechecks current Admin authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker, published action, or caller custody
+    /// is unavailable.
+    pub fn change_workspace_membership(
+        &self,
+        room: &str,
+        command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+        self.state
+            .while_live(|state| state.invoke_workspace_membership(room, command, certificate))
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.
@@ -346,6 +479,49 @@ impl AppActionBroker {
             })
     }
 
+    /// A local action door bound to an already-issued signed room admission and
+    /// one host-issued execution. No device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable/currently invalid admission, a missing registered
+    /// policy clock, or any mismatch with the transport-owned caller.
+    pub fn certified_local_action_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state.certified_local_action_host(caller, presentation)
+    }
+
+    /// [`Self::certified_local_action_host`] handed to agent `agent` by the
+    /// person's own device; see
+    /// [`CapnpBrokerState::certified_local_agent_host`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::certified_local_action_host`].
+    pub fn certified_local_agent_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state
+            .certified_local_agent_host(caller, presentation, agent)
+    }
+
+    /// Reuse the checked signed person-room admission for native owner checks.
+    /// # Errors
+    /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
+    pub fn certified_person_context(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<crate::services::CertifiedPersonContext, String> {
+        self.state.certified_person_context(caller, presentation)
+    }
+
     /// Reusable native broker attachment for an ordinary standalone peer.
     ///
     /// # Errors
@@ -362,6 +538,22 @@ impl AppActionBroker {
         self.state
             .while_live(|state| Ok(state.published_surfaces()))
             .unwrap_or_default()
+    }
+
+    /// Read one current advertised action without cloning the whole inventory.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(
+        crate::collab_broker_capnp::PublishedSurface,
+        crate::collab_broker_capnp::PublishedAction,
+    )> {
+        self.state
+            .while_live(|state| Ok(state.published_action(route, resource, action)))
+            .ok()
+            .flatten()
     }
 
     /// Generation of the retained published-surface source.  Palette query
@@ -381,6 +573,23 @@ impl AppActionBroker {
         self.state
             .while_live(|state| Ok(state.action_directory_roots()))
             .unwrap_or_default()
+    }
+
+    /// Current certified checkout of an attested local native task. This is
+    /// inert provenance for the owner state door, never an invocation grant.
+    #[must_use]
+    pub fn native_checkout(
+        &self,
+        app: &str,
+        room: &str,
+        instance: u64,
+        pid: u32,
+        start: u64,
+    ) -> Option<crate::collab_broker_capnp::ActionDirectoryRoot> {
+        self.state
+            .while_live(|state| Ok(state.native_checkout(app, room, instance, pid, start)))
+            .ok()
+            .flatten()
     }
 
     /// Fetch one deterministic, bounded page of inert directory routes.
@@ -474,6 +683,13 @@ impl AppActionBroker {
         self.state.take_finished_shortcut_runs()
     }
 
+    /// Whether a finished shortcut run is waiting to be taken, without
+    /// taking it: a frame can ask every tick.
+    #[must_use]
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.state.has_finished_shortcut_runs()
+    }
+
     /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
@@ -545,6 +761,22 @@ impl AppActionBroker {
     #[must_use]
     pub fn statuses_generation(&self) -> u64 {
         self.state.invocations_generation()
+    }
+
+    /// Sees every invocation status change after this call — what
+    /// [`Self::statuses_generation`] counts — so a waiter can sleep until
+    /// one happens instead of polling for it.
+    #[must_use]
+    pub fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.invocation_changes()
+    }
+
+    /// Sees every published-surface change after this call — what
+    /// [`Self::surfaces_generation`] counts — so a waiter for a listing of
+    /// these actions can sleep until one happens.
+    #[must_use]
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.surface_changes()
     }
 
     /// One invocation's current status, only when `actor` owns it.
@@ -722,11 +954,6 @@ impl BrokerHandle {
         usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
     }
 
-    /// Every typed connection joins a channel as part of setup.
-    pub fn announced_peer_count(&self) -> usize {
-        self.peer_count()
-    }
-
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
     /// skips one peer id, for the Iroh bridge. No "reach everyone"
     /// form exists — see [`FanoutState::fanout_to_route`].
@@ -758,6 +985,26 @@ impl BrokerHandle {
     /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
         self.fanout.subscribe_rooms(rooms, sink)
+    }
+
+    /// Observe complete native room membership after broker admission. The
+    /// callback never receives ordinary application Context fanout.
+    pub fn observe_certified_people(
+        &self,
+        sink: CertifiedPeopleSink,
+    ) -> Arc<CertifiedPeopleSubscription> {
+        self.fanout.subscribe_certified_people(sink)
+    }
+
+    /// Exact current owner-backed agent identity for a native participant.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        self.fanout
+            .capnp_state()?
+            .certified_agent_identity(room, actor)
     }
 
     /// The bound Cap'n Proto socket.
@@ -821,28 +1068,12 @@ impl BrokerHandle {
             ch.register_channel_state(artifact, state);
         }
     }
-
-    /// Audit-log entries for one artifact.
-    pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.channels
-            .lock()
-            .map(|g| g.audit.for_artifact(artifact))
-            .unwrap_or_default()
-    }
-
-    /// Structured redaction records for one artifact, independent of
-    /// `audit_for` so the compliance surface skips filtering drops.
-    pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.channels
-            .lock()
-            .map(|g| g.redactions.for_artifact(artifact))
-            .unwrap_or_default()
-    }
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
-        self.fanout.request_shutdown();
+        // Quit first so a wake from request_stop sees the flag and exits.
         self.capnp_quit.store(true, Ordering::Relaxed);
+        self.fanout.request_shutdown();
         if let Some(thread) = self.capnp_thread.take() {
             join_owned_thread(thread, self.capnp_identity);
         }
@@ -985,4 +1216,23 @@ pub fn spawn_native_peer_with_services(
         Arc::new(Mutex::new(BrokerChannels::default())),
         Arc::new(FanoutState::new()),
     )
+}
+
+#[cfg(test)]
+mod weak_facade_tests {
+    use super::*;
+
+    #[test]
+    fn weak_native_discovery_does_not_retain_broker_or_accept_after_stop() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let weak = broker.downgrade();
+        assert_eq!(Arc::strong_count(&broker.state), 1);
+        let temporary = weak.upgrade().unwrap();
+        assert_eq!(Arc::strong_count(&broker.state), 2);
+        drop(temporary);
+        broker.state.stop();
+        assert!(weak.upgrade().is_err());
+        drop(broker);
+        assert!(weak.upgrade().is_err());
+    }
 }

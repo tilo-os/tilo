@@ -16,6 +16,8 @@ use zbus::interface;
 use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalEmitter;
 
+use super::reply::{Ended, ensure};
+
 /// Resource that must be torn down when a request or session ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LifecycleResource {
@@ -50,6 +52,8 @@ struct ManagedEntry {
 pub struct PortalLifecycle {
     requests: Arc<Mutex<HashMap<String, ManagedEntry>>>,
     sessions: Arc<Mutex<HashMap<String, ManagedEntry>>>,
+    /// Poked when a session ends, so clipboard revocation does not poll.
+    pub(crate) wake: crate::idle_wake::IdleWake,
 }
 
 impl PortalLifecycle {
@@ -121,14 +125,22 @@ impl PortalLifecycle {
 
     /// Remove a session only when the authenticated frontend still owns it.
     pub fn close_session(&self, path: &str, owner: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, Some(owner))
+        let closed = close(&self.sessions, path, Some(owner));
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     /// Finish a session from the compositor/backend (for example, output
     /// loss). The caller should use `close_session_object` to also emit the
     /// mandated `Session.Closed` signal.
     pub fn finish_session(&self, path: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, None)
+        let closed = close(&self.sessions, path, None);
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     pub fn has_session(&self, path: &str, owner: &str, app_id: &str) -> bool {
@@ -145,7 +157,11 @@ impl PortalLifecycle {
     /// resource belonging to the departed authenticated frontend.
     pub fn close_owner(&self, owner: &str) -> Vec<LifecycleEntry> {
         let mut released = close_matching(&self.requests, owner);
-        released.extend(close_matching(&self.sessions, owner));
+        let sessions = close_matching(&self.sessions, owner);
+        if !sessions.is_empty() {
+            self.wake.poke();
+        }
+        released.extend(sessions);
         released
     }
 
@@ -178,28 +194,10 @@ impl PortalLifecycle {
             .executor()
             .spawn(
                 async move {
-                    let Ok(proxy) = zbus::fdo::DBusProxy::new(&task_connection).await else {
+                    let Ok(mut gone) = disconnected_peers(&task_connection).await else {
                         return;
                     };
-                    let Ok(mut events) = proxy.receive_name_owner_changed().await else {
-                        return;
-                    };
-                    while let Some(event) = events.next().await {
-                        let Ok(args) = event.args() else {
-                            continue;
-                        };
-                        if !args.name().as_str().starts_with(':')
-                            || args.new_owner().as_ref().is_some()
-                        {
-                            continue;
-                        }
-                        let Some(owner) = args
-                            .old_owner()
-                            .as_ref()
-                            .map(|owner| owner.as_str().to_owned())
-                        else {
-                            continue;
-                        };
+                    while let Some(owner) = gone.next().await {
                         lifecycle
                             .close_owner_objects(&task_connection, &owner)
                             .await;
@@ -235,6 +233,27 @@ impl PortalLifecycle {
             return Err(error);
         }
         Ok(true)
+    }
+
+    /// Run `body` while a request object is exported at `path`. A failed
+    /// registration ends the call as failed without running `body`; the
+    /// object is removed however `body` ends, so no early return can strand
+    /// it on the bus.
+    pub async fn with_request<T>(
+        &self,
+        connection: &zbus::Connection,
+        path: &str,
+        entry: LifecycleEntry,
+        cleanup: impl Fn(&LifecycleEntry) + Send + Sync + 'static,
+        body: impl Future<Output = Result<T, Ended>>,
+    ) -> Result<T, Ended> {
+        let registered = self
+            .register_request(connection, path, entry, cleanup)
+            .await;
+        ensure(matches!(registered, Ok(true)))?;
+        let outcome = body.await;
+        self.complete_request_object(connection, path).await;
+        outcome
     }
 
     /// Export a session object at `path` and arrange for cleanup on Close.
@@ -288,6 +307,28 @@ impl PortalLifecycle {
             .remove::<SessionObject, _>(path)
             .await;
     }
+}
+
+/// The unique bus names (`:1.42`) of connections as they close. A unique
+/// name losing its owner is the only ownership change that proves a peer
+/// exited; well-known names changing hands are left out.
+///
+/// # Errors
+///
+/// Fails when the bus does not answer the `NameOwnerChanged` subscription,
+/// as on a p2p connection with no bus daemon.
+pub(crate) async fn disconnected_peers(
+    connection: &zbus::Connection,
+) -> zbus::Result<impl futures_util::Stream<Item = String> + use<>> {
+    let proxy = zbus::fdo::DBusProxy::new(connection).await?;
+    let changes = proxy.receive_name_owner_changed().await?;
+    Ok(changes.filter_map(|change| {
+        let gone = change.args().ok().and_then(|args| {
+            let name = args.name().as_str();
+            (name.starts_with(':') && args.new_owner().is_none()).then(|| name.to_owned())
+        });
+        std::future::ready(gone)
+    }))
 }
 
 fn insert(map: &Mutex<HashMap<String, ManagedEntry>>, path: String, entry: ManagedEntry) -> bool {

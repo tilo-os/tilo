@@ -9,15 +9,14 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 
 /// Loaded per thread on first use; a host's manager is joined, never replaced.
 /// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "mail-search-placeholder",
-);
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES);
 
-/// Load the catalogue on this thread if it is not loaded yet.
-pub fn ensure() {
-    CATALOG.ensure();
+/// Mail's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+/// The catalogue, which every host mounting Mail loads before its view.
+pub fn catalog() -> &'static EmbeddedCatalog {
+    &CATALOG
 }
 
 /// Resolve a Mail string key.
@@ -40,32 +39,25 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn catalogue_resolves_every_used_key_and_keeps_interpolated_sentences() {
         // Phase `every_key_the_app_uses_resolves_to_a_real_string`.
         {
             // A key that resolves to itself is a key with no catalogue entry — the
             // failure mode that ships an untranslatable literal to a screen.
             for key in [
-                "mail-search-placeholder",
                 "mail-setup-heading-add",
                 "mail-setup-heading-edit",
-                "mail-setup-subtitle-add",
                 "mail-setup-label-display-name",
                 "mail-setup-label-email",
                 "mail-setup-label-username",
                 "mail-setup-label-password",
                 "mail-setup-label-imap-host",
                 "mail-setup-label-smtp-host",
-                "mail-setup-label-port",
                 "mail-setup-label-sign-in",
                 "mail-setup-auth-password",
                 "mail-setup-auth-oauth",
                 "mail-setup-tls",
-                "mail-setup-hint-verified",
+                "mail-setup-advanced",
                 "mail-setup-save",
                 "mail-setup-cancel",
                 "mail-setup-remove",
@@ -75,16 +67,13 @@ mod tests {
                 "mail-compose-label-subject",
                 "mail-compose-placeholder-to",
                 "mail-compose-cc-bcc",
-                "mail-compose-attach",
                 "mail-compose-send",
                 "mail-compose-save-draft",
                 "mail-compose-discard",
-                "mail-compose-prompt-attach",
                 "mail-compose-prompt-link",
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
                 "mail-setup-oauth-provider-fallback",
-                "mail-setup-oauth-note-available",
                 "mail-setup-oauth-note-unavailable",
             ] {
                 let s = t(key);

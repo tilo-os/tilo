@@ -33,7 +33,7 @@ pub struct UnsavedEntry {
     pub schema_version: u16,
     /// Stable key: the record id when the node has one, else `ino-<n>`.
     pub key: String,
-    pub record_id: Option<collab_types::FileRecordId>,
+    pub record_id: Option<fs_protocol::FileRecordId>,
     /// Workspace path when the bytes were staged (diagnostic and fallback
     /// location for recovery when the record is gone).
     pub path: Option<String>,
@@ -110,8 +110,38 @@ impl UnsavedStore {
     pub fn stage(&self, entry: &UnsavedEntry, bytes: &[u8]) -> io::Result<()> {
         let (bytes_path, entry_path) = self.paths(&entry.key)?;
         let json = serde_json::to_vec_pretty(entry).map_err(io::Error::other)?;
-        atomic_file::write_private(&bytes_path, bytes)?;
-        atomic_file::write_private(&entry_path, &json)?;
+        tilo_files::native::atomic::write_private(&bytes_path, bytes)?;
+        tilo_files::native::atomic::write_private(&entry_path, &json)?;
+        Ok(())
+    }
+
+    /// [`Self::stage`] of the bytes of the file at `source`, which must not
+    /// change while this runs. The file is copied file to file (the kernel
+    /// shares extents where it can), never read into memory whole.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stage`], and an error when the copy does not match
+    /// `entry`'s length.
+    pub fn stage_file(&self, entry: &UnsavedEntry, source: &Path) -> io::Result<()> {
+        let (bytes_path, entry_path) = self.paths(&entry.key)?;
+        let json = serde_json::to_vec_pretty(entry).map_err(io::Error::other)?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".staging-")
+            .tempfile_in(&self.dir)?;
+        let copied = io::copy(&mut std::fs::File::open(source)?, temporary.as_file_mut())?;
+        if copied != entry.byte_len {
+            return Err(io::Error::other(format!(
+                "{} changed while it was staged",
+                source.display()
+            )));
+        }
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(&bytes_path)
+            .map_err(|error| error.error)?;
+        tilo_files::native::atomic::sync_directory(&self.dir)?;
+        tilo_files::native::atomic::write_private(&entry_path, &json)?;
         Ok(())
     }
 
@@ -129,7 +159,7 @@ impl UnsavedStore {
                 Err(error) => return Err(error),
             }
         }
-        atomic_file::sync_directory(&self.dir)
+        tilo_files::native::atomic::sync_directory(&self.dir)
     }
 
     /// Whether an entry exists for `key`.
@@ -191,7 +221,7 @@ impl UnsavedEntry {
     #[must_use]
     pub fn describe(
         key: String,
-        record_id: Option<collab_types::FileRecordId>,
+        record_id: Option<fs_protocol::FileRecordId>,
         path: Option<String>,
         base_hash: Option<iroh_blobs::Hash>,
         bytes: &[u8],
@@ -211,11 +241,64 @@ impl UnsavedEntry {
         }
     }
 
+    /// [`Self::describe`] of the bytes of the file at `file`, read in
+    /// bounded memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read.
+    pub fn describe_file(
+        key: String,
+        record_id: Option<fs_protocol::FileRecordId>,
+        path: Option<String>,
+        base_hash: Option<iroh_blobs::Hash>,
+        file: &Path,
+        staged_at_ms: u64,
+        error: Option<String>,
+    ) -> io::Result<Self> {
+        let (digest, byte_len) = file_digest(file)?;
+        Ok(Self {
+            schema_version: ENTRY_SCHEMA_VERSION,
+            key,
+            record_id,
+            path,
+            base_hash: base_hash.map(|hash| hash.to_hex()),
+            byte_len,
+            blake3: digest.to_hex().to_string(),
+            staged_at_ms,
+            error,
+        })
+    }
+
     /// The base hash, parsed.
     #[must_use]
     pub fn base(&self) -> Option<iroh_blobs::Hash> {
         self.base_hash.as_deref().and_then(|hex| hex.parse().ok())
     }
+}
+
+/// The blake3 hash and length of the file at `path`, read in bounded memory.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) fn file_digest(path: &Path) -> io::Result<(blake3::Hash, u64)> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0_u8; 1 << 20];
+    let mut len = 0_u64;
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        hasher.update(buf.get(..n).unwrap_or_default());
+        len = len.saturating_add(n as u64);
+    }
+    Ok((hasher.finalize(), len))
 }
 
 #[cfg(test)]
@@ -262,5 +345,45 @@ mod tests {
             assert!(store.stage(&entry("../x", b""), b"").is_err());
             assert!(store.remove("a/b").is_err());
         }
+    }
+
+    #[test]
+    fn a_staged_file_round_trips_like_staged_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
+        let source = dir.path().join("stage-file");
+        let bytes: Vec<u8> = (0..3_000_000_u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&source, &bytes).unwrap();
+        let described = UnsavedEntry::describe_file(
+            "k3".into(),
+            None,
+            Some("/big".into()),
+            None,
+            &source,
+            7,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            described,
+            UnsavedEntry::describe(
+                "k3".into(),
+                None,
+                Some("/big".into()),
+                None,
+                &bytes,
+                7,
+                None
+            ),
+            "a file is described exactly as its bytes are"
+        );
+        store.stage_file(&described, &source).unwrap();
+        let (loaded, damaged) = store.load_all();
+        assert!(damaged.is_empty());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].bytes, bytes);
+        // A source that changed since it was described is refused.
+        std::fs::write(&source, b"shorter").unwrap();
+        assert!(store.stage_file(&described, &source).is_err());
     }
 }

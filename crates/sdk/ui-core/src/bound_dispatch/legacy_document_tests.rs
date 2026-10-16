@@ -1,10 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "controlled regression assertions"
-)]
 use super::legacy_document::*;
 use super::*;
 use crate::widget::{AppModel, ModelPath};
@@ -44,11 +37,13 @@ impl Action for SetValue {
 #[derive(Clone)]
 pub(crate) struct Probe {
     pub(crate) children: Rc<RefCell<Vec<Box<dyn Widget>>>>,
-    commit: Rc<Cell<bool>>,
+    /// An ordinary completion this owner reports outside its action host.
+    completion: Rc<RefCell<Option<Vec<ChangeHash>>>>,
     model_passes: Rc<Cell<(usize, usize)>>,
     pub(crate) eager: Rc<Cell<bool>>,
     pub(crate) declarations: Rc<Cell<usize>>,
     pub(crate) starts: Rc<Cell<usize>>,
+    targets: Rc<RefCell<Vec<crate::host_operation::OperationTarget>>>,
     pub(crate) polls: Rc<Cell<usize>>,
     pub(crate) ready: Rc<Cell<bool>>,
     pub(crate) invocation: Rc<Cell<Option<tilo_actions::InvocationId>>>,
@@ -64,11 +59,12 @@ impl Probe {
     pub(crate) fn new() -> Self {
         Self {
             children: Rc::default(),
-            commit: Rc::default(),
+            completion: Rc::default(),
             model_passes: Rc::default(),
             eager: Rc::new(Cell::new(true)),
             declarations: Rc::new(Cell::new(1)),
             starts: Rc::default(),
+            targets: Rc::default(),
             polls: Rc::default(),
             ready: Rc::default(),
             invocation: Rc::default(),
@@ -114,17 +110,10 @@ impl Widget for Probe {
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::undo::UndoPoints
+        dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "Controlled owner"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "Controlled owner");
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for child in self.children.borrow().iter() {
             visitor(child.as_ref());
@@ -139,11 +128,11 @@ impl Widget for Probe {
         }
         Ok(())
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u, s + 1));
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u + 1, s));
         false
@@ -154,10 +143,10 @@ impl Widget for Probe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             kind,
             type_id,
@@ -171,6 +160,9 @@ impl Widget for Probe {
         }
         if doc.get(ROOT, "owner").unwrap().unwrap().0.as_u64() != Some(self.expected_owner.get()) {
             return Err("wrong owner at start".into());
+        }
+        if let Some(target) = op.target() {
+            self.targets.borrow_mut().push(target.clone());
         }
         self.starts.set(self.starts.get() + 1);
         self.invocation.set(Some(invocation));
@@ -210,15 +202,6 @@ impl Widget for Probe {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
-    }
-}
-
-impl crate::undo::UndoPoints for Probe {
-    fn needs_commit(&self) -> bool {
-        self.commit.get()
-    }
-    fn on_commit(&mut self) {
-        self.commit.set(false);
     }
 }
 
@@ -269,7 +252,8 @@ impl crate::history_mode::capability::DocumentHistory for Probe {
 
 impl crate::undo::CommittedActions for Probe {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.borrow_mut().take_committed()
+        let committed = self.actions.borrow_mut().take_committed();
+        committed.or_else(|| self.completion.borrow_mut().take())
     }
 }
 crate::testing::test_app_widget!(
@@ -325,9 +309,6 @@ impl Fixture {
             probe,
         }
     }
-    pub(crate) fn _temp_path_for_test(&self) -> std::path::PathBuf {
-        self._temp.path().join("profile")
-    }
     pub(crate) fn into_closed_profile(self) -> (tempfile::TempDir, RecordCheckout) {
         (self._temp, self.checkout)
     }
@@ -377,33 +358,24 @@ fn invoke(
             broker_admitted: false,
             ambient: None,
         },
+        None,
     )
 }
 
 #[test]
 fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     };
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 3600;
+    let expiry = crate::time::try_unix_now().unwrap() + 3600;
     let time = Arc::new(AtomicU64::new(expiry - 1));
     let clock = time.clone();
-    let authority = PermissionContext::from_capabilities(
-        Actor::person(None, "fixture-user"),
-        vec![
-            CapOverride::grant(
-                Subject::person("fixture-user"),
-                Scope::App("so.tilo.controlled".into()),
-                Verb::Write,
-            )
-            .with_expiry(expiry),
-        ],
+    let authority = crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root().app("so.tilo.controlled"),
+        crate::permissions::policy::KindSet::ALL,
+        Some(expiry),
     )
     .with_policy_time_sampler(Arc::new(move || Ok(clock.load(Ordering::Acquire))));
     let mut fixture = Fixture::new(811);
@@ -697,22 +669,21 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
     let before = f.snapshot();
     let mut transport = LocalTransport::new();
     let registry = registry();
-    let denied = PermissionContext::from_capabilities(Actor::person(None, "fixture-user"), vec![]);
+    let denied = crate::permissions::PermissionContext::stranger("fixture-user");
     assert!(invoke(&mut f.tile, &f.target, &registry, &mut transport, &denied).is_err());
-    let grant = |actor: &str, expiry: Expiry, verb: Verb| {
-        let mut cap = CapOverride::new(
-            Subject::Principal(Principal::Person(actor.into())),
-            Scope::App("so.tilo.controlled".into()),
-            Effect::Grant,
-            verb,
-        );
-        cap.expiry = expiry;
-        PermissionContext::from_capabilities(Actor::person(None, actor), vec![cap]).at_unix_time(1)
+    let grant = |actor: &str, until: Option<u64>, kinds: KindSet| {
+        PermissionContext::granted(
+            actor,
+            &TreePath::root().app("so.tilo.controlled"),
+            kinds,
+            until,
+        )
+        .at_unix_time(1)
     };
     for authority in [
-        grant("fixture-user", Expiry::AtUnix(2), Verb::Write),
-        grant("other-user", Expiry::Never, Verb::Write),
-        grant("fixture-user", Expiry::Never, Verb::Read),
+        grant("fixture-user", Some(2), KindSet::ALL),
+        grant("other-user", None, KindSet::ALL),
+        grant("fixture-user", None, KindSet::READ),
     ] {
         assert!(
             invoke(
@@ -726,17 +697,17 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
         );
     }
     // A weak operation permission never weakens the mandatory Document write.
-    f.probe.spec.borrow_mut().contract.permission = tilo_actions::PermissionRequirement::None;
+    f.probe.spec.borrow_mut().contract.kind = tilo_actions::ActionKind::Read;
     assert!(invoke(&mut f.tile, &f.target, &registry, &mut transport, &denied).is_err());
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.permission = tilo_actions::PermissionRequirement::Admin;
+    f.probe.spec.borrow_mut().contract.kind = ActionKind::Outside;
     assert!(
         invoke(
             &mut f.tile,
             &f.target,
             &registry,
             &mut transport,
-            &grant("fixture-user", Expiry::Never, Verb::Write)
+            &grant("fixture-user", None, KindSet::READ_UNDOABLE)
         )
         .is_err()
     );
@@ -792,7 +763,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                     actor,
                     broker_admitted: broker,
                     ambient: None
-                }
+                },
+                None
             )
             .is_err()
         );
@@ -815,7 +787,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                 actor: "fixture-user",
                 broker_admitted: false,
                 ambient: None
-            }
+            },
+            None
         )
         .is_err()
     );
@@ -1063,10 +1036,13 @@ fn legacy_status_preserves_real_pending_owned_action_until_ordinary_owner_comple
         assert!(map.legacy_status(node, &binding.author).is_some());
     }
     assert_eq!(snapshot(), before);
+    // The owner completes at the current frontier: it reports its boundary
+    // with no further write of its own.
     let mut committer = Probe::new();
-    committer.commit.set(true);
+    let completion = committer.completion.clone();
     binding
         .with_record_frame(&mut AutoCommit::new(), false, |doc, _| {
+            *completion.borrow_mut() = Some(doc.get_heads());
             binding.drain_widget_actions(&mut committer, doc)
         })
         .unwrap()
@@ -1101,20 +1077,24 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
     f.checkout = checkout;
     f.target.owner = f.tile.history_owner().unwrap();
     let principal = Subject::Principal(Principal::Person("fixture-user".into()));
-    let app = CapOverride::new(
-        principal.clone(),
-        Scope::App("so.tilo.controlled".into()),
-        Effect::Grant,
-        Verb::Write,
-    );
     let file = CapOverride::new(
         principal,
         Scope::FsPath(path.to_string_lossy().into_owned()),
         Effect::Grant,
-        Verb::Write,
+        Access::Write,
     );
-    let authority =
-        |grants| PermissionContext::from_capabilities(Actor::person(None, "fixture-user"), grants);
+    let authority = |file: Option<CapOverride>| {
+        let app = PermissionContext::granted(
+            "fixture-user",
+            &TreePath::root().app("so.tilo.controlled"),
+            KindSet::ALL,
+            None,
+        );
+        match file {
+            Some(file) => app.granting(file),
+            None => app,
+        }
+    };
     let before = f.snapshot();
     let mut transport = LocalTransport::new();
     assert!(
@@ -1123,7 +1103,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app.clone()])
+            &authority(None)
         )
         .is_err()
     );
@@ -1135,7 +1115,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app.clone(), file])
+            &authority(Some(file.clone()))
         )
         .unwrap()
         .changed
@@ -1148,7 +1128,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app])
+            &authority(None)
         )
         .is_err()
     );
@@ -1167,7 +1147,7 @@ fn legacy_route_headless_two_real_owners_capture_and_model_ticks_do_not_duplicat
     let mut state = crate::State::new();
     state.doc.put(ROOT, "outer-only", 17).unwrap();
     state.commit_action(None, None);
-    let mut driver = crate::headless::Driver::new(state, Box::new(root), (700, 400));
+    let mut driver = crate::headless::FrameHarness::new(state, Box::new(root), (700, 400));
     driver
         .action_registry_mut()
         .register::<SetValue>("controlled.legacy");
@@ -1279,4 +1259,65 @@ pub(crate) fn independent_batch_fixture(
         b,
         Column::new().push(Box::new(first)).push(Box::new(second)),
     )
+}
+
+#[test]
+fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallback() {
+    let room = uuid::Uuid::new_v4().to_string();
+    let mut first = Fixture::in_room(951, &room);
+    let mut second = Fixture::in_room(952, &room);
+    let first_route = first.store.route(&first.checkout).unwrap();
+    let second_route = second.store.route(&second.checkout).unwrap();
+    assert_eq!(first_route.app_id, second_route.app_id);
+    assert_ne!(first_route.record, second_route.record);
+    let first_target = first.target.clone();
+    let second_target = second.target.clone();
+    let mut root = Column::new()
+        .push(Box::new(first.take_tile()))
+        .push(Box::new(second.take_tile()));
+    let encoded = EncodedAction {
+        type_id: "controlled.effect".into(),
+        payload: b"null".to_vec(),
+    };
+    let mut outer = AutoCommit::new();
+    for target in [&first_target, &second_target] {
+        invoke_legacy_effect(
+            &mut root,
+            target,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            &encoded,
+            &mut outer,
+            None,
+        )
+        .unwrap();
+    }
+    let captured_first = first.probe.targets.borrow();
+    let captured_second = second.probe.targets.borrow();
+    assert_eq!(captured_first.len(), 1);
+    assert_eq!(captured_second.len(), 1);
+    assert_eq!(captured_first[0].route(), &first_route);
+    assert_eq!(captured_second[0].route(), &second_route);
+    assert_eq!(captured_first[0].address(), &first_target.address);
+    assert_eq!(captured_second[0].address(), &second_target.address);
+    drop(captured_first);
+    drop(captured_second);
+    crate::component_lifecycle::close_components(&mut root);
+    assert!(
+        invoke_legacy_effect(
+            &mut root,
+            &first_target,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            &encoded,
+            &mut outer,
+            None,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        first.probe.targets.borrow().len(),
+        1,
+        "retired owner supplies no routing facts"
+    );
 }

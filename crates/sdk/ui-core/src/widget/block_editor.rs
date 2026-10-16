@@ -5,11 +5,11 @@
 //! No demotion once a block is a heading. Promotion only fires on an
 //! *empty* paragraph, matching the slash-menu convention.
 
+use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use taffy::style_helpers::length;
@@ -24,15 +24,16 @@ use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::{clipboard_copy, clipboard_paste};
+use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::SlashMenu;
-use crate::widget::{Button, SearchField};
+use crate::widget::{Button, SearchField, TextInput};
 use crate::widget::{EventCtx, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
@@ -102,30 +103,70 @@ fn colours_code(kind: TokenKind) -> bool {
     )
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
-)]
-fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
+/// What one line of a code run is highlighted from: the run's language and
+/// every line up to and including it, since a line's colours depend on the
+/// parse state the lines above it leave (an open string or comment).
+struct SyntaxKeys(rustc_hash::FxHasher);
+
+impl SyntaxKeys {
+    fn new(language: &str) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        std::hash::Hasher::write(&mut hasher, language.as_bytes());
+        std::hash::Hasher::write_usize(&mut hasher, language.len());
+        Self(hasher)
+    }
+
+    fn line_key(&mut self, line: &str) -> u64 {
+        std::hash::Hasher::write(&mut self.0, line.as_bytes());
+        std::hash::Hasher::write_usize(&mut self.0, line.len());
+        std::hash::Hasher::finish(&self.0)
+    }
+}
+
+/// Colour each fenced code run by its grammar, and clear the colours of
+/// every other block. A run is highlighted again only when its language or
+/// one of its lines changed since its colours were derived: each line keeps
+/// the key it was coloured under, so an unchanged frame parses nothing.
+/// Returns how many lines were highlighted.
+fn refresh_syntax_colors(blocks: &mut [Block]) -> usize {
+    let mut highlighted = 0usize;
     let mut index = 0usize;
-    while index < blocks.len() {
-        let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
-            block.line.set_transient_colors(Vec::new());
+    while let Some(block) = blocks.get(index) {
+        let BlockKind::CodeBlock { lang } = &block.kind else {
+            if let Some(block) = blocks.get_mut(index) {
+                block.line.set_transient_colors(Vec::new());
+            }
             index = index.saturating_add(1);
             continue;
         };
-        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
-        while index < blocks.len()
-            && languages.get(index).and_then(Option::as_deref) == Some(language)
-            && blocks[start].same_code_group(&blocks[index])
+        let mut end = start.saturating_add(1);
+        while blocks
+            .get(end)
+            .is_some_and(|next| block.same_code_group(next))
         {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
+            end = end.saturating_add(1);
+        }
+        index = end;
+        let language = lang.as_deref().unwrap_or_default();
+        let Some(run) = blocks.get(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(language);
+        if run
+            .iter()
+            .all(|line| line.line.transient_colors_key() == Some(keys.line_key(line.text())))
+        {
+            continue;
+        }
+        let language = language.to_owned();
+        let Some(run) = blocks.get_mut(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(&language);
+        let mut state = SyntaxHighlighter::for_token_or_plain(&language).start();
+        for block in run {
+            let key = keys.line_key(block.text());
             let colors = state
                 .highlight_line(block.text())
                 .into_iter()
@@ -135,10 +176,11 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
                     kind: span.kind,
                 })
                 .collect();
-            block.line.set_transient_colors(colors);
-            index = index.saturating_add(1);
+            block.line.set_keyed_transient_colors(key, colors);
+            highlighted = highlighted.saturating_add(1);
         }
     }
+    highlighted
 }
 
 /// Each `CodeBlock` stores one authored source line. It may wrap visually;
@@ -176,27 +218,29 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
-    /// Unscaled type size of a block's line — steps of the shared
-    /// [`TypeScale`](crate::tokens::TypeScale), so a page's body, headings
-    /// and code use the same ladder as every other surface: body `lg`
-    /// (16), H1 `x3l` (32, twice the body), H2 `x2l` (24), H3+ `xl` (20),
-    /// code `base` (14). The accessibility text scale is applied where
-    /// this is consumed (`RichTextLine`, the prefix painters). Before the
-    /// 2026-09-17 review the headings were 28 / 22 / 18 — off every step.
-    pub fn font_size(&self) -> f32 {
-        let scale = crate::tokens::TypeScale::default();
+    /// The role a block's line is set in, so a page's body, headings and
+    /// code use the same ladder as every other surface: body `Body`, H1
+    /// `LargeTitle`, H2 `Title`, H3+ `Heading`, code and tables `Code`.
+    pub fn text_role(&self) -> TextRole {
         match self {
             BlockKind::Paragraph
             | BlockKind::Quote
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Divider => scale.lg,
-            BlockKind::Heading(1) => scale.x3l,
-            BlockKind::Heading(2) => scale.x2l,
-            BlockKind::Heading(_) => scale.xl,
-            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => scale.base,
+            | BlockKind::Divider => TextRole::Body,
+            BlockKind::Heading(1) => TextRole::LargeTitle,
+            BlockKind::Heading(2) => TextRole::Title,
+            BlockKind::Heading(_) => TextRole::Heading,
+            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => TextRole::Code,
         }
+    }
+
+    /// Unscaled type size of a block's line: its role's 1× size. The
+    /// accessibility text scale and the document zoom are applied where this
+    /// is consumed (`RichTextLine`, the prefix painters).
+    pub(crate) fn font_size(&self) -> f32 {
+        crate::tokens::typography::stock().size(self.text_role())
     }
 
     pub fn supports_indent(&self) -> bool {
@@ -459,14 +503,6 @@ pub struct TransclusionPreview {
     pub excerpt: String,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag tracks an independent, orthogonal piece of transient \
-              widget state (focus, paint-dirty, taffy-structure-dirty, \
-              edit-in-flight, commit-pending, doc-structure-dirty); merging \
-              them into a bitflags/enum would not change behavior and this \
-              struct is private to the module"
-)]
 struct ImageAttachment {
     source: String,
     editing: bool,
@@ -485,11 +521,9 @@ impl ImageAttachment {
             source: source.into(),
             editing: false,
             node: None,
-            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit", None)
-                .with_size(112.0, 32.0)
+            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
                 .on_view(move || edit_command.set(Some(true))),
-            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done", None)
-                .with_size(88.0, 32.0)
+            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
                 .on_view(move || done_command.set(Some(false))),
             command,
         }
@@ -516,6 +550,8 @@ pub struct BlockEditor {
     focused: Option<usize>,
     /// Decoupled from `focused` so the index survives blur/refocus.
     is_focused: bool,
+    /// Escape releases the next Tab to the host; editing or refocusing resumes nesting.
+    tab_navigation: bool,
     caret_paint_suppressed: bool,
     rect: Rect,
     /// Current accessibility text scale, retained for prefix and gutter
@@ -523,6 +559,11 @@ pub struct BlockEditor {
     text_scale: f64,
     /// Drag-handle geometry captured from the active theme.
     handle: HandleMetrics,
+    /// The text inset of the block lines: where a paragraph's text starts
+    /// inside its line rect, and so the editor's one content edge.
+    text_pad: f64,
+    /// Text sizes are the document's own, not grown with the text scale.
+    content_sized: bool,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -558,12 +599,41 @@ pub struct BlockEditor {
     font_scale: f32,
     #[cfg(test)]
     painted_blocks: usize,
+    /// Code lines syntax-highlighted, for tests that a frame derives
+    /// colours only for what changed.
+    #[cfg(test)]
+    highlighted_lines: usize,
+    /// Formula previews whose source text was joined, for tests that a
+    /// frame derives it only for what it paints.
+    #[cfg(test)]
+    formula_sources: usize,
     dirty: bool,
+    paint_damage: crate::widget::paint_damage::PaintDamage,
+    /// Where each line this draw painted past its own rect (a correction
+    /// chip floats above or below its field), by block id.
+    line_overhang: HashMap<String, Rect>,
+    /// [`Self::line_overhang`] as the last drawn frame painted it.
+    drawn_overhang: HashMap<String, Rect>,
+    /// Where each visual table's focused cell painted in the last draw,
+    /// by block id.
+    table_focus_paint: HashMap<String, Rect>,
+    /// [`Self::table_focus_paint`] as the last drawn frame painted it.
+    drawn_table_focus: HashMap<String, Rect>,
+    /// A table cell's text changed since the last layout: the table's line
+    /// measures again, as its rows may have grown or shrunk.
+    table_relayout: bool,
+    /// Blocks came, went or changed their kind, depth or fence since the
+    /// last layout: their lines are prepared and the stack measured again
+    /// ([`Self::restack`]). No widget comes or goes with a block, so the
+    /// host relayouts rather than rebuilding its tree.
+    restack: bool,
     /// Which blocks the person may have changed since the owning model last
     /// asked ([`Self::take_edit_scope`]).
     edit_scope: EditScope,
-    /// Set when the block list grows/shrinks; drained by
-    /// `take_structure_dirty` so the host rebuilds taffy.
+    /// Set when the editor's widgets or layout nodes change (an image's
+    /// button, the find bar, a new document); drained by
+    /// `take_structure_dirty` so the host rebuilds taffy. A change to the
+    /// block list alone is a [`Self::restack`].
     structure_dirty: bool,
     edit_pending: bool,
     /// Structural text replacement must flush as one host undo boundary even
@@ -582,6 +652,9 @@ pub struct BlockEditor {
     /// Canonical document-level selection. Per-line selections are only its
     /// painted representation; clipboard and replacement semantics read this.
     document_selection: Option<DocumentSelection>,
+    /// Exact membership retained after a structural batch command. Text alone
+    /// cannot distinguish an included empty last block from a column-zero end.
+    retained_block_selection: Option<RetainedBlockSelection>,
     slash_menu: SlashMenu,
     /// Byte offset where `/` was typed, so `/<filter>` can be spliced
     /// back out on commit.
@@ -604,6 +677,10 @@ pub struct BlockEditor {
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
     pending_external_link_opens: Vec<String>,
+    /// Images pasted into the editor, for its host to store and place after
+    /// the caret: the editor holds text, and an image becomes a block once
+    /// the host keeps its bytes with the document.
+    pasted_images: Vec<ImagePasteRequest>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -616,16 +693,16 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
+    /// Edge-scroll timing of the handle drag, shared with every other
+    /// reorder gesture ([`crate::reorder`]): the pointer near the editor's
+    /// top or bottom edge asks the host to scroll.
+    block_drag_scroll: crate::reorder::ReorderController<usize>,
     /// Host clip in window coordinates, including the visible editor gutter.
     /// Tooltip discovery runs independently of paint clipping.
     tooltip_viewport: Option<Rect>,
     /// `Some`: backed by this Automerge block-Map list, bound per-line
     /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
-    /// Set by split/merge/delete so the next `sync` mirrors structure
-    /// into the doc, preserving block `Text` identity. Distinct from
-    /// `structure_dirty` (which drives taffy).
-    doc_structure_dirty: bool,
     local_author: Option<String>,
     /// Anchor of a keyboard cross-block selection, latched on the first
     /// `Ctrl+Shift+Arrow` and held across extends. Cleared by any
@@ -638,19 +715,26 @@ pub struct BlockEditor {
     /// fenced block. Source remains an ordinary CRDT-backed code line.
     formula_preview_rects: Vec<Option<Rect>>,
     table_preview_rects: Vec<Option<Rect>>,
-    table_editors: HashMap<String, crate::widget::table::Table>,
+    table_editors: HashMap<String, crate::widget::block_editor_table::DocumentTable>,
     table_mode_controls: HashMap<String, TableModeControl>,
+    /// Each block's accessibility row as the last frame built it, by
+    /// position ([`Self::access_rows`]).
+    access_rows: std::cell::RefCell<Vec<Option<AccessRow>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
     /// Retain decoded dimensions even if the bounded image cache evicts pixels.
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
     image_attachments: HashMap<String, ImageAttachment>,
+    /// Height of the host's visible document area, which bounds an image
+    /// preview (see [`Self::set_viewport_height`]).
+    viewport_height: Option<f64>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
     preferred_formula_mode: crate::math::FormulaMode,
-    action_interception: bool,
     /// Canonical binding stays read-only even after its last block is removed.
     canonical_existing: bool,
     /// An empty canonical list has a local paragraph until the first effective edit.
@@ -664,6 +748,17 @@ pub struct BlockEditor {
     /// Shared, document-local find UI. It is an absolute overlay so opening it
     /// never reflows authored content or creates an undo boundary.
     find_field: SearchField,
+    replace_field: TextInput,
+    replace_button: Button,
+    replace_all_button: Button,
+    replace_all_node: Option<NodeId>,
+    replace_all_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    find_snapshot: Vec<BlockContent>,
+    replace_node: Option<NodeId>,
+    replace_button_node: Option<NodeId>,
+    replace_enabled: bool,
+    replace_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    find_target: Option<FindReplaceTarget>,
     find_node: Option<NodeId>,
     find_visible: bool,
     find_matches: Vec<FindMatch>,
@@ -676,6 +771,12 @@ pub struct BlockEditor {
     presence_key: Option<present::PresenceKeyFn>,
 }
 
+/// Structural command membership, invalidated until a local editing gesture.
+enum RetainedBlockSelection {
+    Active(Vec<String>),
+    Refused,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FindMatch {
     block: usize,
@@ -683,28 +784,56 @@ struct FindMatch {
     end: usize,
 }
 
+/// A captured find match. Canonical hosts validate this snapshot before writing.
+#[derive(Clone, Debug)]
+pub struct FindReplaceTarget {
+    pub block: BlockContent,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+/// One search snapshot, with byte ranges into its blocks.
+#[derive(Clone, Debug)]
+pub struct FindReplaceBatch {
+    pub blocks: Vec<BlockContent>,
+    pub matches: Vec<(usize, std::ops::Range<usize>)>,
+    pub replacement: String,
+}
+
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const CODE_HEADER_HEIGHT: f64 = 28.0;
+/// How far a code run's ground reaches above its first line's header and
+/// below its last line: 4 px stays inside the inter-block gap, never
+/// overlapping a neighbour.
+const CODE_PAD_Y: f64 = 4.0;
 const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
 const FORMULA_VISUAL_MIN_HEIGHT: f32 = 132.0;
 const FORMULA_HEADER_HEIGHT: f64 = 28.0;
 const FORMULA_SOURCE_HEIGHT: f64 = 24.0;
 const FORMULA_PREVIEW_GAP: f64 = 6.0;
 const TABLE_ROW_HEIGHT: f64 = 34.0;
-const TRANSCLUSION_MIN_HEIGHT: f32 = 104.0;
+const TRANSCLUSION_MIN_HEIGHT: f32 = 76.0;
 
 impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
     pub fn new() -> Self {
         crate::i18n::I18nManager::register_widget_messages();
+        let replace_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let requested = replace_requested.clone();
+        let replace_all_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let all_requested = replace_all_requested.clone();
         let mut s = Self {
             blocks: Vec::new(),
             focused: None,
             is_focused: false,
+            tab_navigation: false,
             caret_paint_suppressed: false,
             rect: Rect::ZERO,
             text_scale: 1.0,
             handle: HandleMetrics::default(),
+            text_pad: 0.0,
+            content_sized: false,
+
             wrap_lines: false,
             compact_paragraph_spacing: false,
             content_node: None,
@@ -724,7 +853,18 @@ impl BlockEditor {
             font_scale: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
+            #[cfg(test)]
+            highlighted_lines: 0,
+            #[cfg(test)]
+            formula_sources: 0,
             dirty: true,
+            paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            line_overhang: HashMap::new(),
+            drawn_overhang: HashMap::new(),
+            table_focus_paint: HashMap::new(),
+            drawn_table_focus: HashMap::new(),
+            table_relayout: false,
+            restack: false,
             structure_dirty: true,
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
@@ -733,6 +873,7 @@ impl BlockEditor {
             cross_block_drag_start: None,
             cross_block_drag_touched: None,
             document_selection: None,
+            retained_block_selection: None,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             link_popover: LinkPopover::new(),
@@ -744,14 +885,15 @@ impl BlockEditor {
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
+            pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
             copied_code_start: None,
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
+            block_drag_scroll: crate::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
-            doc_structure_dirty: false,
             local_author: None,
             kbd_sel_anchor: None,
             empty_hint: DEFAULT_EMPTY_HINT.to_string(),
@@ -759,15 +901,18 @@ impl BlockEditor {
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
             table_mode_controls: HashMap::new(),
+            access_rows: std::cell::RefCell::new(Vec::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            access_row_builds: std::cell::Cell::new(0),
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
+            viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
             visual_formula_focus: None,
             preferred_formula_mode: crate::math::FormulaMode::Visual,
-            action_interception: false,
             canonical_existing: false,
             canonical_empty: false,
             interception_before: None,
@@ -776,6 +921,24 @@ impl BlockEditor {
                 .with_id("block-editor-find")
                 .with_placeholder("block-editor-find-placeholder")
                 .without_clear(),
+            replace_field: TextInput::local()
+                .with_id("block-editor-replacement")
+                .with_placeholder("block-editor-replace-placeholder"),
+            replace_button: Button::new("block-editor-replace", "block-editor-replace")
+                .control_size(crate::widget::ControlSize::Regular)
+                .on_click(move || requested.set(true)),
+            replace_all_button: Button::new("block-editor-replace-all", "block-editor-replace-all")
+                .control_size(crate::widget::ControlSize::Regular)
+                .tooltip("block-editor-replace-all-help")
+                .on_click(move || all_requested.set(true)),
+            replace_all_node: None,
+            replace_all_requested,
+            find_snapshot: Vec::new(),
+            replace_node: None,
+            replace_button_node: None,
+            replace_enabled: false,
+            replace_requested,
+            find_target: None,
             find_node: None,
             find_visible: false,
             find_matches: Vec::new(),
@@ -818,30 +981,34 @@ impl BlockEditor {
         self.tooltip_viewport = viewport;
     }
 
+    /// The height of the host's visible document area (a scrolling host's
+    /// viewport, not the editor's content extent). An image preview is
+    /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
+    /// picture leaves room to see and drag past it. Hosts refresh it before
+    /// layout; returns whether it changed, so a host can lay out again.
+    pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
+        let height = height.filter(|height| height.is_finite() && *height > 0.0);
+        let changed = self.viewport_height != height;
+        self.viewport_height = height;
+        changed
+    }
+
     pub fn empty_hint(&self) -> &str {
         &self.empty_hint
     }
 
-    /// Opt into action-owned editing. The host snapshots immediately before an
-    /// input event and dispatches the resulting semantic operations afterwards.
-    /// Existing consumers remain on the direct CRDT path unless they opt in.
-    pub fn set_action_interception(&mut self, enabled: bool) {
-        self.action_interception = enabled;
-        for block in &mut self.blocks {
-            block.line.set_direct_crdt_writes(!enabled);
-        }
-        if !enabled {
-            self.interception_before = None;
-        }
-    }
-
-    pub fn begin_action_intercept(&mut self) {
-        if self.action_interception {
+    /// Note the blocks as they are before an edit, unless an earlier edit the
+    /// owner has not taken yet is already noted.
+    fn begin_edit(&mut self) {
+        if self.interception_before.is_none() {
             self.interception_before = Some(self.block_snapshot());
         }
     }
 
-    pub fn take_intercepted_ops(&mut self) -> Vec<BlockEditOp> {
+    /// The user's edits since the owner last took them, as semantic block
+    /// operations for the owner to submit as actions. The editor never
+    /// writes the document itself.
+    pub fn take_edit_ops(&mut self) -> Vec<BlockEditOp> {
         let Some(before) = self.interception_before.take() else {
             return Vec::new();
         };
@@ -1075,12 +1242,17 @@ impl BlockEditor {
     }
 
     pub fn set_focus(&mut self, focused: bool) {
+        if focused != self.is_focused {
+            self.tab_navigation = false;
+        }
         if focused && self.read_only {
             return;
         }
         if self.find_visible {
             self.is_focused = focused;
-            self.find_field.set_focused(focused);
+            let replacement_focus = self.replace_enabled && self.replace_field.is_focused();
+            self.find_field.set_focused(focused && !replacement_focus);
+            self.replace_field.set_focus(focused && replacement_focus);
             for block in &mut self.blocks {
                 block.line.set_focus(false);
             }
@@ -1105,7 +1277,7 @@ impl BlockEditor {
                 table.blur_projection();
             }
         }
-        if !focused && self.block_drag.take().is_some() {
+        if !focused && self.take_block_drag().is_some() {
             self.dirty = true;
         }
         if focused == self.is_focused {
@@ -1155,12 +1327,12 @@ impl BlockEditor {
     fn block_paint_rect(&self, index: usize) -> Option<Rect> {
         let block = self.blocks.get(index)?;
         let mut rect = block.line.get_rect();
-        rect.x0 -= prefix_gutter_for(&block.kind) * self.text_scale;
+        rect.x0 = content_edge(
+            rect,
+            prefix_gutter_for(&block.kind) * self.text_scale,
+            block.line.text_inset(&self.layout_theme),
+        );
         rect.y0 -= code_header_height(&self.blocks, index, self.text_scale);
-        if matches!(block.kind, BlockKind::Quote) {
-            rect.y0 -= 4.0 * self.text_scale;
-            rect.y1 += 4.0 * self.text_scale;
-        }
         for preview in [
             &self.formula_preview_rects,
             &self.table_preview_rects,
@@ -1174,6 +1346,15 @@ impl BlockEditor {
             rect = rect.union(*preview);
         }
         Some(rect)
+    }
+
+    /// Everything the last draw painted: the editor's rect and what its
+    /// lines and tables' focused cells painted past it.
+    fn paint_extent(&self) -> Rect {
+        self.line_overhang
+            .values()
+            .chain(self.table_focus_paint.values())
+            .fold(self.rect, |extent, painted| extent.union(*painted))
     }
 
     /// For tests + notes-app persistence to seed blocks directly;
@@ -1198,6 +1379,15 @@ impl BlockEditor {
         self.edit_scope = EditScope::Anywhere;
     }
 
+    /// Blocks came, went or changed their kind, depth or fence: lay the
+    /// stack out again before the next frame. No widget comes or goes with a
+    /// block, so the host relayouts instead of rebuilding its tree, and the
+    /// editor's damage says what moved.
+    pub(super) fn restack(&mut self) {
+        self.restack = true;
+        self.dirty = true;
+    }
+
     /// For the notes app's markdown parser, which produces a richer
     /// representation (inline marks) than this widget's `from_markdown`.
     pub fn set_blocks(&mut self, blocks: Vec<Block>) {
@@ -1208,6 +1398,7 @@ impl BlockEditor {
         }
         self.focused = None;
         self.is_focused = false;
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
@@ -1218,7 +1409,6 @@ impl BlockEditor {
         self.visual_formulas.clear();
         self.visual_formula_focus = None;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
     }
 
@@ -1228,6 +1418,37 @@ impl BlockEditor {
     pub fn with_read_only(mut self, read_only: bool) -> Self {
         self.set_read_only(read_only);
         self
+    }
+
+    /// The handle gutter of a block document: the lane its drag handles
+    /// hang in, outside the text column, as wide as a handle and the gap to
+    /// the text. Zero when the editor shows no handles.
+    ///
+    /// A page that holds the editor keeps its one content gutter outside
+    /// this lane: it places the editor's rect on its gutter and lines its
+    /// title and metadata up with the text ([`Self::text_inset`] in from the
+    /// rect), so a hovered handle stands a full gutter clear of the sidebar
+    /// or window edge beside the page.
+    pub fn handle_gutter(&self, theme: &Theme) -> f64 {
+        if self.block_handles && !self.read_only {
+            let handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
+            handle.width + handle.gap
+        } else {
+            0.0
+        }
+    }
+
+    /// How far a paragraph's text starts inside the editor's rect: the
+    /// handle gutter (when shown) or the lines' own text inset, whichever
+    /// is wider. Every block kind starts at this edge, so a host lines a
+    /// title, a caption or a composer's controls up with it instead of
+    /// measuring a laid-out caret.
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        let line = self.blocks.first().map_or_else(
+            || RichTextLine::new().text_inset(theme),
+            |b| b.line.text_inset(theme),
+        );
+        line.max(self.handle_gutter(theme))
     }
 
     /// Show or hide the drag handle beside each block. A composer or a
@@ -1283,7 +1504,10 @@ impl BlockEditor {
             return;
         };
         let caret = block.line.cursor_pos().min(block.line.value().len());
-        let start = clamp_char_boundary(block.line.value(), caret.saturating_sub(bytes));
+        let start = block
+            .line
+            .value()
+            .floor_char_boundary(caret.saturating_sub(bytes));
         block.line.inner_mut().set_selection(start, caret);
         self.dirty = true;
     }
@@ -1310,8 +1534,8 @@ impl BlockEditor {
                 (at, at)
             });
         let (start, end) = (
-            clamp_char_boundary(&value, start),
-            clamp_char_boundary(&value, end.max(start)),
+            value.floor_char_boundary(start),
+            value.floor_char_boundary(end.max(start)),
         );
         let mut next = value;
         next.replace_range(start..end, &format!("{text}{after}"));
@@ -1420,22 +1644,6 @@ impl BlockEditor {
         self.local_author = author;
     }
 
-    /// If the doc list already has blocks, adopts them (discarding the
-    /// locally seeded ones); if empty, seeds it from the local blocks.
-    pub fn bind_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
-        self.canonical_existing = false;
-        self.canonical_empty = false;
-        let doc_len = state.length(&list);
-        if doc_len == 0 {
-            self.doc_structure_dirty = true;
-            self.reconcile_structure_to_doc(state, &list);
-            self.doc_structure_dirty = false;
-        } else {
-            self.rebuild_from_doc(state, &list, doc_len);
-        }
-        self.blocks_list = Some(list);
-    }
-
     /// Bind a canonical existing list without initializing its durable contents.
     /// # Errors
     /// Rejects malformed identities, kinds or Text objects before installing local state.
@@ -1525,7 +1733,6 @@ impl BlockEditor {
                 return Err(invalid("code group on a non-code block"));
             }
             block.line.set_local_author(self.local_author.clone());
-            block.line.set_direct_crdt_writes(false);
             block.line.bind_text(text.clone());
             block.line.adopt_bound_text(state)?;
             blocks.push(block);
@@ -1534,205 +1741,18 @@ impl BlockEditor {
         if blocks.is_empty() {
             let mut block = Block::paragraph("");
             block.line.set_local_author(self.local_author.clone());
-            block.line.set_direct_crdt_writes(false);
             blocks.push(block);
         }
         self.set_blocks(blocks);
-        self.set_action_interception(true);
         self.canonical_existing = true;
         self.canonical_empty = objects.is_empty();
         // Structural sync belongs to the action owner's projection. Looking
         // through a physical List here would silently undo its logical order.
         self.blocks_list = None;
         self.edit_pending = false;
-        self.doc_structure_dirty = false;
         self.interception_before = None;
         self.pending_semantic_ops.clear();
         Ok(())
-    }
-
-    /// Refresh an owner's ordered projection while retaining Text-bound carets
-    /// and selections on surviving blocks. No durable state is written.
-    /// # Errors
-    /// Refuses malformed records before replacing any retained editor state.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "focus and remapped positions are validated against the freshly installed projection"
-    )]
-    pub fn sync_existing_block_objects(
-        &mut self,
-        state: &mut AutoCommit,
-        objects: &[ObjId],
-    ) -> Result<(), crate::view::ThawError> {
-        let unchanged = objects.len() == self.blocks.len()
-            && objects.iter().zip(&self.blocks).all(|(object, block)| {
-                read_block_id(state, object).as_deref() == Some(block.id.as_str())
-                    && read_nesting(state, object).is_ok_and(|depth| depth == block.nesting)
-                    && read_code_group(state, object).is_ok_and(|group| group == block.code_group)
-                    && state
-                        .get(object, "kind")
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(value, _)| {
-                            value.as_str() == Some(kind_to_str(&block.kind).as_str())
-                        })
-                    && state
-                        .get(object, "text")
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(value, text)| {
-                            value == Value::Object(ObjType::Text)
-                                && block.line.bound_obj().as_ref() == Some(&text)
-                        })
-            });
-        if unchanged || (objects.is_empty() && self.canonical_empty) {
-            for block in &mut self.blocks {
-                block.line.sync(state, &automerge::ROOT);
-            }
-            self.blocks_list = None;
-            return Ok(());
-        }
-        // Validate the whole replacement before moving any retained widgets.
-        let mut projection = Self::new();
-        projection.set_local_author(self.local_author.clone());
-        projection.bind_existing_block_objects(state, objects)?;
-        let old_ids = self
-            .blocks
-            .iter()
-            .map(|block| block.id.clone())
-            .collect::<Vec<_>>();
-        let old_focus = self.focused;
-        let focused_id = self.focused.and_then(|index| old_ids.get(index)).cloned();
-        let mut retained = std::mem::take(&mut self.blocks)
-            .into_iter()
-            .map(|block| (block.id.clone(), block))
-            .collect::<HashMap<_, _>>();
-        for block in &mut projection.blocks {
-            if let Some(old) = retained.remove(&block.id) {
-                if old.kind == block.kind
-                    && old.code_group == block.code_group
-                    && old.nesting == block.nesting
-                    && old.line.bound_obj() == block.line.bound_obj()
-                {
-                    *block = old;
-                    block.line.sync(state, &automerge::ROOT);
-                } else {
-                    block.line.set_cursor_pos(old.line.cursor_pos());
-                    block.line.set_focus(old.line.is_focused());
-                }
-            }
-        }
-        self.blocks = projection.blocks;
-        self.focused = focused_id
-            .and_then(|id| self.blocks.iter().position(|block| block.id == id))
-            .or_else(|| old_focus.map(|index| index.min(self.blocks.len().saturating_sub(1))));
-        if self.is_focused
-            && let Some(index) = self.focused
-        {
-            self.blocks[index].line.set_focus(true);
-        }
-        let remap = |position: DocumentPosition| {
-            let id = old_ids.get(position.block)?;
-            let index = self.blocks.iter().position(|block| &block.id == id)?;
-            Some(DocumentPosition {
-                block: index,
-                byte: clamp_char_boundary(self.blocks[index].text(), position.byte),
-            })
-        };
-        self.document_selection = self.document_selection.and_then(|selection| {
-            Some(DocumentSelection {
-                anchor: remap(selection.anchor)?,
-                cursor: remap(selection.cursor)?,
-            })
-        });
-        self.cross_block_drag_start = None;
-        self.cross_block_drag_touched = None;
-        self.kbd_sel_anchor = None;
-        self.formula_preview_rects.clear();
-        self.table_preview_rects.clear();
-        self.formula_chrome.clear();
-        self.visual_formulas.clear();
-        self.visual_formula_focus = None;
-        self.canonical_existing = true;
-        self.canonical_empty = objects.is_empty();
-        self.blocks_list = None;
-        self.doc_structure_dirty = false;
-        self.structure_dirty = true;
-        self.dirty = true;
-        Ok(())
-    }
-
-    pub fn has_object_projection(&self) -> bool {
-        self.canonical_existing && self.blocks_list.is_none()
-    }
-
-    /// Preserves each existing block's `Text` object by identity
-    /// (Automerge list insert/delete keeps other elements' object ids
-    /// stable); text drifted by a local split/merge is reconciled with
-    /// a minimal splice.
-    fn reconcile_structure_to_doc(&mut self, state: &mut AutoCommit, list: &ObjId) {
-        let mut doc_idx = 0usize;
-        for block in &mut self.blocks {
-            let kind_str = kind_to_str(&block.kind);
-            let local_text = block.line.value().to_string();
-            if let Some(bound) = block.line.bound_obj() {
-                // Delete any doc blocks before the bound one — they
-                // were removed locally.
-                while doc_idx < state.length(list)
-                    && doc_text_obj(state, list, doc_idx).as_ref() != Some(&bound)
-                {
-                    let _ = state.delete(list, doc_idx);
-                }
-                if doc_idx < state.length(list) {
-                    let block_map = list_map(state, list, doc_idx);
-                    if let Some(bm) = block_map {
-                        let _ = state.put(&bm, "kind", kind_str.as_str());
-                        write_code_group(state, &bm, block.code_group.as_deref());
-                        write_nesting(state, &bm, block.nesting);
-                    }
-                    push_text_diff(state, &bound, &local_text);
-                    doc_idx = doc_idx.saturating_add(1);
-                } else {
-                    // Bound object vanished from the doc — re-insert. A
-                    // `None` here means the doc's `list` itself was
-                    // concurrently removed; leave the block unbound rather
-                    // than desync `doc_idx` from a write that never landed.
-                    if let Some(t) = insert_doc_block(
-                        state,
-                        list,
-                        doc_idx,
-                        &block.id,
-                        &kind_str,
-                        &local_text,
-                        block.code_group.as_deref(),
-                        block.nesting,
-                    ) {
-                        block.line.bind_text(t);
-                        doc_idx = doc_idx.saturating_add(1);
-                    }
-                }
-            } else {
-                // New block (e.g. the suffix of a split): insert a
-                // fresh doc block and bind it.
-                if let Some(t) = insert_doc_block(
-                    state,
-                    list,
-                    doc_idx,
-                    &block.id,
-                    &kind_str,
-                    &local_text,
-                    block.code_group.as_deref(),
-                    block.nesting,
-                ) {
-                    block.line.bind_text(t);
-                    doc_idx = doc_idx.saturating_add(1);
-                }
-            }
-        }
-        while state.length(list) > doc_idx {
-            let last_idx = state.length(list).saturating_sub(1);
-            let _ = state.delete(list, last_idx);
-        }
     }
 
     /// Preserves focus + caret across the rebuild so a remote edit
@@ -1741,7 +1761,7 @@ impl BlockEditor {
         clippy::indexing_slicing,
         reason = "the restored focus index is clamped to the non-empty rebuilt projection"
     )]
-    fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
+    fn rebuild_from_doc(&mut self, state: &AutoCommit, list: &ObjId, doc_len: usize) {
         let saved_focus = self.focused;
         let saved_id = self
             .focused
@@ -1751,7 +1771,7 @@ impl BlockEditor {
         let saved_table_caret = saved_table_cell
             .as_ref()
             .and_then(|(id, _, _)| self.table_editors.get(id))
-            .and_then(super::table::Table::projected_caret);
+            .and_then(super::block_editor_table::DocumentTable::projected_caret);
         let saved_caret = self
             .focused
             .and_then(|i| self.blocks.get(i))
@@ -1761,14 +1781,13 @@ impl BlockEditor {
         for i in 0..doc_len {
             let kind = kind_from_str(&read_block_kind(state, list, i));
             let mut b = block_for_kind(&kind);
-            b.id = read_or_migrate_block_id(state, list, i, &kind, !self.action_interception);
+            b.id = read_block_id_at(state, list, i, &kind);
             b.nesting = list_map(state, list, i)
                 .and_then(|map| read_nesting(state, &map).ok())
                 .unwrap_or(0);
             b.code_group = list_map(state, list, i)
                 .and_then(|map| read_code_group(state, &map).ok().flatten());
             b.line.set_local_author(self.local_author.clone());
-            b.line.set_direct_crdt_writes(!self.action_interception);
             if let Some(t) = doc_text_obj(state, list, i) {
                 b.line.bind_text(t);
                 b.line.sync(state, list);
@@ -1781,6 +1800,7 @@ impl BlockEditor {
         self.blocks = new_blocks;
         // Structural changes invalidate index-addressed endpoints. A fresh
         // local selection is safer than painting stale bytes on new blocks.
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
@@ -1817,25 +1837,29 @@ impl BlockEditor {
         }
     }
 
-    /// `RichTextLine::set_text` deliberately doesn't flip dirty (it's
-    /// not a user edit); tests use this to simulate one.
-    pub fn force_dirty_for_test(&mut self) {
-        self.edit_pending = true;
-        self.commit_pending = true;
-        self.dirty = true;
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-    }
-
     pub fn focused_index(&self) -> Option<usize> {
         self.focused
+    }
+
+    /// Whether the active source line or projected table cell owns an IME preedit.
+    pub fn is_composing(&self) -> bool {
+        (self.find_visible && (self.find_field.is_composing() || self.replace_field.is_composing()))
+            || self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| {
+                    block.line.inner().is_composing()
+                        || self.table_editors.get(&block.id).is_some_and(
+                            super::block_editor_table::DocumentTable::projected_is_composing,
+                        )
+                })
     }
 
     pub fn focused_table_cell(&self) -> Option<(String, usize, usize)> {
         self.blocks.iter().find_map(|block| {
             self.table_editors
                 .get(&block.id)
-                .and_then(super::table::Table::projected_focus)
+                .and_then(super::block_editor_table::DocumentTable::projected_focus)
                 .map(|(row, column)| (block.id.clone(), row, column))
         })
     }
@@ -1844,7 +1868,12 @@ impl BlockEditor {
     /// state. Hosts may call this for a window-level Find command even when a
     /// sibling field currently owns focus.
     pub fn open_find(&mut self) {
+        if self.is_composing() {
+            return;
+        }
         self.find_visible = true;
+        self.structure_dirty = true;
+        self.replace_field.set_focus(false);
         self.find_field.set_focused(true);
         self.find_field.select_all();
         for block in &mut self.blocks {
@@ -1856,6 +1885,11 @@ impl BlockEditor {
 
     fn close_find(&mut self) {
         self.find_visible = false;
+        self.structure_dirty = true;
+        self.replace_field.set_focus(false);
+        self.replace_requested.set(false);
+        self.replace_all_requested.set(false);
+        self.find_snapshot.clear();
         self.find_field.set_focused(false);
         if let Some(index) = self.focused
             && let Some(block) = self.blocks.get_mut(index)
@@ -1869,8 +1903,13 @@ impl BlockEditor {
         let query = self.find_field.value().to_string();
         self.find_matches.clear();
         self.find_active = None;
+        self.find_target = None;
+        self.find_snapshot.clear();
         if query.is_empty() {
             return;
+        }
+        if self.replace_enabled {
+            self.find_snapshot = self.blocks.iter().map(Block::content).collect();
         }
         self.clear_find_document_selection();
         for (block, item) in self.blocks.iter().enumerate() {
@@ -1902,11 +1941,18 @@ impl BlockEditor {
     }
 
     fn activate_find_match(&mut self, active: usize) {
+        let replacement_focus = self.replace_field.is_focused();
         let Some(found) = self.find_matches.get(active).copied() else {
             self.find_active = None;
             return;
         };
+        self.find_target = self.blocks.get(found.block).map(|block| FindReplaceTarget {
+            block: block.content(),
+            start_byte: found.start,
+            end_byte: found.end,
+        });
         self.clear_find_document_selection();
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.focus_block(found.block, CursorPlacement::Byte(found.end));
         if let Some(block) = self.blocks.get_mut(found.block) {
@@ -1915,7 +1961,7 @@ impl BlockEditor {
             // document range remains visibly selected.
             block.line.set_focus(false);
         }
-        self.find_field.set_focused(true);
+        self.focus_find_input(replacement_focus);
         self.find_active = Some(active);
         self.dirty = true;
     }
@@ -1948,12 +1994,104 @@ impl BlockEditor {
         self.activate_find_match(next);
     }
 
+    fn focus_find_input(&mut self, replacement: bool) {
+        self.find_field.set_focused(!replacement);
+        self.replace_field.set_focus(replacement);
+        for block in &mut self.blocks {
+            block.line.set_focus(false);
+        }
+        self.dirty = true;
+    }
+
+    /// Enable replacement only when a canonical host consumes its requests.
+    pub fn set_find_replace_enabled(&mut self, enabled: bool) {
+        self.replace_enabled = enabled;
+    }
+
+    pub fn take_find_replace_request(&mut self) -> bool {
+        self.replace_requested.replace(false)
+    }
+
+    /// The replacement payload keeps byte endpoints and original block identity.
+    pub fn find_replace_request(&self) -> Option<(FindReplaceTarget, String)> {
+        if !self.replace_enabled || !self.find_visible || self.read_only || self.is_composing() {
+            return None;
+        }
+        let target = self.find_target.as_ref()?;
+        let matched = target.block.text.get(target.start_byte..target.end_byte)?;
+        if matched.is_empty() || matched.to_lowercase() != self.find_field.value().to_lowercase() {
+            return None;
+        }
+        let replacement = self.replace_field.value();
+        if replacement.chars().any(|c| c.is_control() && c != '\t') {
+            return None;
+        }
+        Some((target.clone(), replacement.to_owned()))
+    }
+
+    pub fn take_find_replace_all_request(&mut self) -> bool {
+        self.replace_all_requested.replace(false)
+    }
+
+    pub fn can_replace_all(&self) -> bool {
+        self.replace_enabled
+            && self.find_visible
+            && !self.read_only
+            && !self.is_composing()
+            && !self.find_matches.is_empty()
+            && self.find_matches.len() <= 10_000
+            // Match the canonical action's aggregate text budget before enabling
+            // a control whose payload the host would necessarily refuse.
+            && self.replace_field.value().chars().count().checked_mul(self.find_matches.len())
+                .is_some_and(|total| total <= 1_000_000)
+            && !self
+                .replace_field
+                .value()
+                .chars()
+                .any(|c| c.is_control() && c != '\t')
+    }
+
+    /// Clone the snapshot only when a canonical host consumes the action.
+    pub fn find_replace_all_request(&self) -> Option<FindReplaceBatch> {
+        self.can_replace_all().then(|| FindReplaceBatch {
+            blocks: self.find_snapshot.clone(),
+            matches: self
+                .find_matches
+                .iter()
+                .map(|item| (item.block, item.start..item.end))
+                .collect(),
+            replacement: self.replace_field.value().to_owned(),
+        })
+    }
+
+    pub fn finish_find_replace_all(&mut self) {
+        let replacement_focus = self.replace_field.is_focused();
+        self.refresh_find_matches(true);
+        self.focus_find_input(replacement_focus);
+    }
+
+    /// Move beyond inserted text, refresh matches, and retain overlay focus.
+    pub fn finish_find_replace(&mut self, target: &FindReplaceTarget, replacement_len: usize) {
+        let replacement_focus = self.replace_field.is_focused();
+        if let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.id == target.block.id)
+        {
+            self.focus_block(
+                index,
+                CursorPlacement::Byte(target.start_byte.saturating_add(replacement_len)),
+            );
+        }
+        self.refresh_find_matches(true);
+        self.focus_find_input(replacement_focus);
+    }
+
     fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         use winit::event::MouseButton;
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -1986,12 +2124,36 @@ impl BlockEditor {
         } = event
         {
             match logical_key {
-                Key::Named(NamedKey::Escape) => {
+                Key::Named(NamedKey::Tab) if self.replace_enabled && !self.is_composing() => {
+                    let replacement_focus = !self.replace_field.is_focused();
+                    self.focus_find_input(replacement_focus);
+                    *ctx.handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter)
+                    if self.replace_enabled
+                        && self.replace_field.is_focused()
+                        && !self.is_composing() =>
+                {
+                    if ctx.modifiers.state().shift_key()
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()
+                    {
+                        if self.can_replace_all() {
+                            self.replace_all_requested.set(true);
+                        }
+                    } else {
+                        self.replace_requested.set(true);
+                    }
+                    *ctx.handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) if !self.is_composing() => {
                     self.close_find();
                     *ctx.handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter | NamedKey::F3) => {
+                Key::Named(NamedKey::Enter | NamedKey::F3) if !self.is_composing() => {
                     self.step_find(ctx.modifiers.state().shift_key());
                     *ctx.handled = true;
                     return true;
@@ -2006,6 +2168,17 @@ impl BlockEditor {
             ..
         } = event
         {
+            if self.is_composing() {
+                let input_rect = if self.replace_field.is_focused() {
+                    self.replace_field.get_rect()
+                } else {
+                    self.find_field.get_rect()
+                };
+                if !input_rect.contains(self.last_mouse_pos) {
+                    *ctx.handled = true;
+                    return true;
+                }
+            }
             if self.find_previous_rect.contains(self.last_mouse_pos) {
                 self.step_find(true);
                 *ctx.handled = true;
@@ -2021,8 +2194,27 @@ impl BlockEditor {
                 *ctx.handled = true;
                 return true;
             }
+            if self.replace_enabled
+                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos))
+            {
+                self.focus_find_input(true);
+            } else if self.find_field.get_rect().contains(self.last_mouse_pos) {
+                self.focus_find_input(false);
+            }
             let controls = self.find_previous_rect.union(self.find_close_rect);
-            if !self.find_field.get_rect().contains(self.last_mouse_pos)
+            if !(self.replace_enabled
+                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos)))
+                && !self.find_field.get_rect().contains(self.last_mouse_pos)
                 && !controls.contains(self.last_mouse_pos)
             {
                 self.close_find();
@@ -2030,6 +2222,30 @@ impl BlockEditor {
             }
         }
 
+        if self.replace_enabled {
+            self.replace_button
+                .set_enabled(self.find_replace_request().is_some());
+            if let Some(node) = self.replace_button_node {
+                self.replace_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            if self.replace_field.is_focused() {
+                if let Some(node) = self.replace_node {
+                    self.replace_field
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                }
+                if self.replace_field.take_dirty().is_some() {
+                    self.dirty = true;
+                }
+                *ctx.handled = true;
+                return true;
+            }
+        }
         if let Some(node) = self.find_node {
             self.find_field
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -2057,6 +2273,14 @@ impl BlockEditor {
         }
         self.find_field
             .draw(scene, transform, text_renderer, theme, presence);
+        if self.replace_enabled {
+            self.replace_field
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.replace_button
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.replace_all_button
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
 
         let controls = self
             .find_previous_rect
@@ -2148,6 +2372,8 @@ impl BlockEditor {
     }
 
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
+        self.retained_block_selection = None;
+        self.tab_navigation = false;
         for table in self.table_editors.values_mut() {
             table.blur_projection();
         }
@@ -2172,7 +2398,12 @@ impl BlockEditor {
             let table = self
                 .table_editors
                 .entry(block.id.clone())
-                .or_insert_with(|| crate::widget::table::Table::new(format!("table-{}", block.id)));
+                .or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!(
+                        "table-{}",
+                        block.id
+                    ))
+                });
             table.project_cells(&rows);
             table.focus_projected_cell(row, column);
             for block in &mut self.blocks {
@@ -2214,7 +2445,7 @@ impl BlockEditor {
         let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
-        let split = clamp_char_boundary(&text, split);
+        let split = text.floor_char_boundary(split);
         let (prefix, suffix) = text.split_at(split);
         let prefix_marks = marks_before(block.line.marks(), split);
         let suffix_marks = marks_after(block.line.marks(), split);
@@ -2236,9 +2467,7 @@ impl BlockEditor {
         suffix_block.set_indent(block.indent());
         let next_idx = idx.saturating_add(1);
         self.blocks.insert(next_idx, suffix_block);
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         self.focus_block(next_idx, CursorPlacement::Start);
     }
 
@@ -2262,13 +2491,19 @@ impl BlockEditor {
         };
         let join_at = prev_text.len();
         let merged = format!("{prev_text}{cur_text}");
+        let mut marks = self.blocks[prev_idx].line.marks().to_vec();
+        marks.extend(self.blocks[idx].line.marks().iter().map(|span| {
+            MarkSpan::new(
+                span.range.start.saturating_add(join_at)..span.range.end.saturating_add(join_at),
+                span.mark.clone(),
+            )
+        }));
         if let Some(b) = self.blocks.get_mut(prev_idx) {
             b.line.set_text(&merged);
+            b.line.set_marks(marks);
         }
         self.blocks.remove(idx);
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         self.focus_block(prev_idx, CursorPlacement::Byte(join_at));
     }
 
@@ -2284,17 +2519,12 @@ impl BlockEditor {
                 b.line.set_focus(self.is_focused);
             }
             self.focused = Some(0);
-            self.structure_dirty = true;
-            self.doc_structure_dirty = true;
-            self.doc_structure_dirty = true;
-            self.dirty = true;
+            self.restack();
             return;
         }
         let target = idx.saturating_sub(1);
         self.blocks.remove(idx);
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         let target = target.min(self.blocks.len().saturating_sub(1));
         self.focus_block(target, CursorPlacement::End);
     }
@@ -2478,19 +2708,15 @@ impl BlockEditor {
         } else {
             b.nesting = 0;
         }
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-        self.dirty = true;
+        self.restack();
         // Dividers aren't focusable — push focus to the next block (or a
         // fresh trailing paragraph) so the user can keep typing.
         if is_divider && self.focused == Some(idx) {
             let next_idx = idx.saturating_add(1);
-            if next_idx < self.blocks.len() {
-                self.focus_block(next_idx, CursorPlacement::Start);
-            } else {
+            if next_idx >= self.blocks.len() {
                 self.blocks.push(Block::paragraph(""));
-                self.focus_block(next_idx, CursorPlacement::Start);
             }
+            self.focus_block(next_idx, CursorPlacement::Start);
         }
         true
     }
@@ -2517,40 +2743,144 @@ impl BlockEditor {
     /// depths. Clamp the entire operation rather than flattening deep children.
     pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
         let (idx, last) = self.fenced_code_run(idx).unwrap_or((idx, idx));
-        let Some(parent) = self.blocks.get(idx) else {
-            return false;
+        self.indent_blocks(idx..self.list_subtree_end(last), delta)
+    }
+
+    /// Selected roots and their descendants, including entire code
+    /// fences. A selection ending at column zero does not include that block.
+    pub fn selected_block_range(&self) -> Option<std::ops::Range<usize>> {
+        if let Some(retained) = &self.retained_block_selection {
+            let RetainedBlockSelection::Active(ids) = retained else {
+                return None;
+            };
+            let start = self
+                .blocks
+                .iter()
+                .position(|block| Some(&block.id) == ids.first())?;
+            let end = start.checked_add(ids.len())?;
+            if !self
+                .blocks
+                .get(start..end)?
+                .iter()
+                .map(|block| &block.id)
+                .eq(ids)
+            {
+                return None;
+            }
+            let mut root = start;
+            while root < end {
+                let group = self.movable_group(root);
+                if group.start != root || group.end > end {
+                    return None;
+                }
+                root = group.end;
+            }
+            return Some(start..end);
+        }
+        let Some(selection) = self.document_selection else {
+            return self.focused.and_then(|index| self.block_group_range(index));
         };
-        if !parent.kind.supports_indent() && parent.indent() == 0 {
-            let can_join_outline = idx
-                .checked_sub(1)
-                .and_then(|idx| self.blocks.get(idx))
-                .is_some_and(|previous| previous.indent() > 0 || previous.kind.supports_indent());
-            if !can_join_outline {
-                return false;
+        let (first, last) = selection.ordered();
+        let last = if last.byte == 0 && last.block > first.block {
+            last.block.saturating_sub(1)
+        } else {
+            last.block
+        };
+        let start = self
+            .fenced_code_run(first.block)
+            .map_or(first.block, |(start, _)| start);
+        let last = self.fenced_code_run(last).map_or(last, |(_, end)| end);
+        // Walk selected roots, skipping each expanded subtree. Extending only
+        // the last selected child's subtree would leave its siblings behind
+        // even when their parent is also selected.
+        let mut end = start;
+        while end <= last && end < self.blocks.len() {
+            let row = self.fenced_code_run(end).map_or(end, |(_, end)| end);
+            end = self.list_subtree_end(row);
+        }
+        self.blocks.get(start..end)?;
+        Some(start..end)
+    }
+
+    /// One block's complete authored fence and outline descendants.
+    pub fn block_group_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        self.blocks.get(index)?;
+        Some(self.movable_group(index))
+    }
+
+    /// Plan a selected sibling batch's move past its adjacent sibling subtree.
+    /// Returns the source rows and the insertion boundary in the current order.
+    /// A move never implicitly changes a root's parent or splits a code fence.
+    pub fn selected_block_move(&self, up: bool) -> Option<(std::ops::Range<usize>, usize)> {
+        let range = self.selected_block_range()?;
+        let depth = self.blocks.get(range.start)?.indent();
+        let mut root = range.start;
+        while root < range.end {
+            if self.blocks.get(root)?.indent() != depth {
+                return None;
+            }
+            root = self.movable_group(root).end;
+        }
+        if root != range.end {
+            return None;
+        }
+        let mut adjacent = if up {
+            range.start.checked_sub(1)?
+        } else {
+            range.end
+        };
+        if up {
+            while self.blocks.get(adjacent)?.indent() > depth {
+                adjacent = adjacent.checked_sub(1)?;
             }
         }
-        let depth = parent.indent();
-        let end = self.list_subtree_end(last);
-        let Some(subtree) = self.blocks.get(idx..end) else {
+        if self.blocks.get(adjacent)?.indent() != depth {
+            return None;
+        }
+        let neighbor = self.movable_group(adjacent);
+        let boundary = if up { neighbor.start } else { neighbor.end };
+        Some((range, boundary))
+    }
+
+    fn try_indent_selection(&mut self, delta: i8) -> bool {
+        self.selected_block_range()
+            .is_some_and(|range| self.indent_blocks(range, delta))
+    }
+
+    fn indent_blocks(&mut self, range: std::ops::Range<usize>, delta: i8) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let Some(parent) = self.blocks.get(range.start) else {
             return false;
         };
-        let deepest = subtree.iter().map(Block::indent).max().unwrap_or(depth);
-        let minimum_shift = i8::try_from(depth).unwrap_or(i8::MAX).saturating_neg();
+        // Prose can nest under preceding prose as well as lists. Preserve the
+        // established first-list-item indentation, but never orphan first prose.
+        if !parent.kind.supports_indent() && parent.indent() == 0 && range.start == 0 {
+            return false;
+        }
+        let Some(subtree) = self.blocks.get(range.clone()) else {
+            return false;
+        };
+        let shallowest = subtree.iter().map(Block::indent).min().unwrap_or(0);
+        let deepest = subtree.iter().map(Block::indent).max().unwrap_or(0);
+        let minimum_shift = i8::try_from(shallowest).unwrap_or(i8::MAX).saturating_neg();
         let maximum_shift =
             i8::try_from(MAX_LIST_INDENT.saturating_sub(deepest)).unwrap_or(i8::MAX);
         let shift = delta.max(minimum_shift).min(maximum_shift);
         if shift == 0 {
             return false;
         }
-        let Some(subtree) = self.blocks.get_mut(idx..end) else {
+        let Some(subtree) = self.blocks.get_mut(range) else {
             return false;
         };
         for block in subtree {
             block.set_indent(clamp_indent(block.indent(), shift));
         }
-        self.structure_dirty = true;
-        self.doc_structure_dirty = true;
-        self.dirty = true;
+        // Backspace is normally classified as local typing. An outdent may
+        // touch arbitrarily many descendants, all of which must be committed.
+        self.note_edit_anywhere();
+        self.restack();
         self.edit_pending = true;
         self.commit_pending = true;
         true
@@ -2568,13 +2898,11 @@ impl BlockEditor {
             }
             let line_rect = b.line.get_rect();
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
-            let cy = first_row_center(line_rect, b.kind.font_size(), self.text_scale);
-            let cx = line_rect.x0 - gutter + gutter / 2.0;
-            let r = Rect::new(
-                cx - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cy - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cx + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cy + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
+            let r = checklist_box(
+                line_rect,
+                gutter,
+                b.line.text_inset(&self.layout_theme),
+                self.text_scale,
             );
             // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
@@ -2662,7 +2990,6 @@ impl BlockEditor {
             }
         }
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.dirty = true;
     }
@@ -2689,7 +3016,6 @@ impl BlockEditor {
         {
             block.line.set_text("");
         }
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.edit_pending = true;
         self.dirty = true;
@@ -2741,14 +3067,26 @@ impl BlockEditor {
         })
     }
 
-    /// Reserved target just left of an editable block, inside the gutter the
-    /// host leaves there (Notes: 32 px), so it never narrows text or steals
-    /// list/checkbox clicks. Geometry from [`HandleMetrics`]: a `width`
-    /// column ending `gap` before the block's leading edge, `height` tall at
-    /// 1× and growing with the text scale like the line beside it. The rect
-    /// is also the hit target, so it grows to the pointer minimum where the
-    /// block itself is that tall — never taller than the block, or two
-    /// single-line paragraphs would share one handle.
+    /// The padding the editor adds before its lines for the handle gutter:
+    /// the gutter less the lines' own text inset, so the text starts
+    /// [`Self::handle_gutter`] in from the editor's rect. Zero when handles
+    /// are hidden.
+    fn handle_column(&self) -> f64 {
+        if self.block_handles && !self.read_only {
+            (self.handle.width + self.handle.gap - self.text_pad).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Reserved target in the handle gutter just left of an editable block,
+    /// so it never narrows text or steals list/checkbox clicks. Geometry
+    /// from [`HandleMetrics`]: a `width` column ending `gap` before the
+    /// block's leading edge, `height` tall at 1× and growing with the text
+    /// scale like the line beside it. The rect is also the hit target, so it
+    /// grows to the pointer minimum where the block itself is that tall —
+    /// never taller than the block, or two single-line paragraphs would
+    /// share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         if !self.block_handles || self.read_only {
             return None;
@@ -2881,11 +3219,582 @@ impl BlockEditor {
                 .set_focus(self.is_focused && self.focused == Some(index));
         }
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.edit_pending = true;
         self.dirty = true;
         true
+    }
+
+    /// [`Widget::accessibility_shared`], with `control` added to every
+    /// block's row. Each row is the one of the last frame while nothing it
+    /// is built from changed ([`Self::access_rows`]), so a keystroke builds
+    /// the row of the block it typed into, not the document's.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
+    )]
+    pub fn accessibility_shared_with(
+        &self,
+        control: Option<&RowControl<'_>>,
+    ) -> Option<crate::a11y::SharedAccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<AccessNode> = self
+            .formula_chrome
+            .iter()
+            .enumerate()
+            .filter_map(|(start, chrome)| {
+                let chrome = chrome.as_ref()?;
+                let syntax = match chrome.descriptor.syntax {
+                    crate::math::FormulaSyntax::Tex => "TeX",
+                    crate::math::FormulaSyntax::Typst => "Typst",
+                };
+                let source = self
+                    .blocks
+                    .get(start..=chrome.end)?
+                    .iter()
+                    .map(Block::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(
+                    AccessNode::new(Role::Group)
+                        .with_name(format!("{syntax} formula"))
+                        .with_hashed_key(format!("notes.formula:{}", self.blocks.get(start)?.id))
+                        .with_value(source)
+                        .with_children(vec![
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Source editor")
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                )),
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Visual editor")
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                )),
+                        ]),
+                )
+            })
+            .collect();
+        children.extend(
+            self.code_copy_hits
+                .iter()
+                .filter_map(|(bounds, start, end)| {
+                    let run = self.blocks.get(*start..=*end)?;
+                    let language = run.first().and_then(|block| match &block.kind {
+                        BlockKind::CodeBlock { lang } => lang.as_deref(),
+                        _ => None,
+                    });
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(language.map_or_else(
+                                || "Copy code".to_string(),
+                                |lang| format!("Copy {lang} code"),
+                            ))
+                            .with_action_target(self.code_copy_run_target(*start, *end)?)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState::new().focusable(true)),
+                    )
+                }),
+        );
+        if self.find_visible {
+            if let Some(search) = self.find_field.accessibility() {
+                children.push(
+                    search
+                        .with_name(crate::i18n!("block-editor-find-placeholder"))
+                        .with_action_target("notes.find:query"),
+                );
+            }
+            if self.replace_enabled {
+                if let Some(field) = self.replace_field.accessibility() {
+                    children.push(
+                        field
+                            .with_name(crate::i18n!("block-editor-replace-placeholder"))
+                            .with_action_target("notes.find:replacement"),
+                    );
+                }
+                if let Some(button) = self.replace_all_button.accessibility() {
+                    children.push(
+                        button
+                            .with_action_target("notes.find:replace-all")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!self.can_replace_all()),
+                            ),
+                    );
+                }
+                if let Some(button) = self.replace_button.accessibility() {
+                    children.push(
+                        button.with_action_target("notes.find:replace").with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(self.find_replace_request().is_none()),
+                        ),
+                    );
+                }
+            }
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-previous"))
+                    .with_action_target("notes.find:previous")
+                    .with_bounds(self.find_previous_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-next"))
+                    .with_action_target("notes.find:next")
+                    .with_bounds(self.find_next_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-close"))
+                    .with_action_target("notes.find:close")
+                    .with_bounds(self.find_close_rect)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        let mut children: Vec<std::sync::Arc<AccessNode>> =
+            children.into_iter().map(std::sync::Arc::new).collect();
+        children.extend(self.access_rows(control));
+        if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
+            fn namespace_targets(node: &mut AccessNode) {
+                if let Some(target) = node.action_target.take() {
+                    node.action_target = Some(format!("notes.slash-menu:{target}"));
+                }
+                for child in &mut node.children {
+                    namespace_targets(child);
+                }
+            }
+            namespace_targets(&mut menu);
+            menu.semantic_key = Some("notes.slash-menu".into());
+            menu.bounds = Some(self.slash_menu.get_rect().into());
+            children.push(std::sync::Arc::new(menu));
+        }
+        Some(crate::a11y::SharedAccessNode {
+            node: AccessNode::new(Role::Document)
+                .with_description(
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
+                )
+                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true)),
+            children,
+        })
+    }
+
+    /// Every block's row of the accessibility tree, in order. A row whose
+    /// block has no table, image or embedded note is the very row of the
+    /// last frame while everything it is built from is the same
+    /// ([`AccessRowInputs`]); only the others are built. Debug builds build
+    /// the kept rows too and prove them equal, as the App proves a tree it
+    /// did not walk.
+    fn access_rows(
+        &self,
+        control: Option<&RowControl<'_>>,
+    ) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
+        let total = self.blocks.len();
+        let selected_blocks = self
+            .retained_block_selection
+            .as_ref()
+            .and_then(|_| self.selected_block_range());
+        // Every block's controls carry the same labels: look each up once,
+        // not once per block per frame.
+        let labels = AccessRowContext {
+            change_type: crate::i18n!("block-editor-change-type"),
+            text: crate::i18n::I18nManager::lookup("widget-block-text", None),
+            indent: crate::i18n::I18nManager::lookup("widget-block-indent", None),
+            outdent: crate::i18n::I18nManager::lookup("widget-block-outdent", None),
+            revision: crate::i18n::I18nManager::revision(),
+            control,
+        };
+        let mut kept = self.access_rows.borrow_mut();
+        kept.resize_with(total, || None);
+        self.blocks
+            .iter()
+            .zip(kept.iter_mut())
+            .enumerate()
+            .map(|(index, (block, slot))| {
+                let selected = selected_blocks
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&index));
+                let inputs = self.access_row_inputs(index, block, total, selected, &labels);
+                let plain = self.access_row_is_plain(block);
+                if plain
+                    && let Some(row) = slot.as_ref().filter(|row| row.inputs == inputs)
+                    && self.kept_access_row_holds(row, index, block, &inputs, &labels)
+                {
+                    return row.node.clone();
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                self.access_row_builds
+                    .set(self.access_row_builds.get().wrapping_add(1));
+                let node = std::sync::Arc::new(self.access_row(index, block, &inputs, &labels));
+                match slot {
+                    Some(row) if plain => {
+                        row.inputs.update(inputs);
+                        row.node = node.clone();
+                    }
+                    _ => {
+                        *slot = plain.then(|| AccessRow {
+                            inputs: inputs.into_owned(),
+                            node: node.clone(),
+                        });
+                    }
+                }
+                node
+            })
+            .collect()
+    }
+
+    /// The block rows [`Self::access_rows`] built rather than kept, since
+    /// the editor was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_row_builds_for_test(&self) -> usize {
+        self.access_row_builds.get()
+    }
+
+    /// Whether `block`'s row is built from its [`AccessRowInputs`] alone:
+    /// no table, image or embedded note, whose parts read the editor's
+    /// controls, previews and geometry for them.
+    fn access_row_is_plain(&self, block: &Block) -> bool {
+        !matches!(block.kind, BlockKind::Table { .. })
+            && !self.image_attachments.contains_key(&block.id)
+            && transclusion_target(block).is_none()
+            && standalone_markdown_image(block.text()).is_none()
+    }
+
+    /// Whether the row kept for `block` is the row it would build now.
+    /// Release builds trust its inputs; debug builds build it and compare,
+    /// failing a test outright where they differ and rebuilding it (and
+    /// logging) in any other debug build, so a row is never stale where it
+    /// can be seen.
+    fn kept_access_row_holds(
+        &self,
+        row: &AccessRow,
+        index: usize,
+        block: &Block,
+        inputs: &AccessRowInputs<'_>,
+        labels: &AccessRowContext<'_>,
+    ) -> bool {
+        if !cfg!(debug_assertions) {
+            return true;
+        }
+        let fresh = self.access_row(index, block, inputs, labels);
+        let holds = fresh == *row.node;
+        assert!(
+            holds || !cfg!(any(test, feature = "test-support")),
+            "block {} changed its accessibility row with nothing it is kept by changing: kept {:?}, built {fresh:?}",
+            block.id,
+            row.node,
+        );
+        if !holds {
+            tracing::error!(
+                block = %block.id,
+                "a block changed its accessibility row with nothing it is kept by changing"
+            );
+        }
+        holds
+    }
+
+    /// What block `index`'s row is built from.
+    fn access_row_inputs<'a>(
+        &self,
+        index: usize,
+        block: &'a Block,
+        total: usize,
+        selected: bool,
+        labels: &AccessRowContext<'_>,
+    ) -> AccessRowInputs<'a> {
+        let line = block.line.get_rect();
+        AccessRowInputs {
+            id: std::borrow::Cow::Borrowed(&block.id),
+            kind: std::borrow::Cow::Borrowed(&block.kind),
+            text: std::borrow::Cow::Borrowed(block.text()),
+            marks: std::borrow::Cow::Borrowed(block.line.marks()),
+            line_state: block.line.accessibility_state(),
+            indent: block.indent(),
+            line,
+            controls: self.block_drag_handle_rect(index).unwrap_or(line),
+            position: index.saturating_add(1),
+            total,
+            selected,
+            up_disabled: self.neighboring_group(index, true).is_none(),
+            down_disabled: self.neighboring_group(index, false).is_none(),
+            indent_disabled: self
+                .blocks
+                .get(self.movable_group(index))
+                .is_some_and(|group| group.iter().any(|block| block.indent() >= MAX_LIST_INDENT)),
+            labels: labels.revision,
+            control: labels.control.map(|control| control.key),
+        }
+    }
+
+    /// Block `index`'s row of the accessibility tree: a group holding its
+    /// text, its controls and its parts (a table, an image, an embedded
+    /// note, its links), built from `inputs` and, for those parts, the
+    /// editor's state for them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one block's row and every part it can hold, emitted in reading order"
+    )]
+    fn access_row(
+        &self,
+        index: usize,
+        block: &Block,
+        inputs: &AccessRowInputs<'_>,
+        labels: &AccessRowContext<'_>,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let AccessRowInputs {
+            indent,
+            line,
+            controls: bounds,
+            position,
+            total,
+            selected,
+            up_disabled,
+            down_disabled,
+            indent_disabled,
+            ..
+        } = *inputs;
+        let mut block_children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Move block up")
+                .with_action_target(Self::block_move_target(&block.id, "up"))
+                .with_bounds(bounds)
+                .with_state(
+                    AccessState::new()
+                        .focusable(!up_disabled)
+                        .disabled(up_disabled),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Move block down")
+                .with_action_target(Self::block_move_target(&block.id, "down"))
+                .with_bounds(bounds)
+                .with_state(
+                    AccessState::new()
+                        .focusable(!down_disabled)
+                        .disabled(down_disabled),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name(labels.change_type.clone())
+                .with_action_target(format!("notes.block-type:{}", block.id))
+                .with_bounds(bounds)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        if block.kind.is_editable()
+            && line.height() > 0.0
+            && let Some(text) = block.line.accessibility()
+        {
+            block_children.insert(
+                0,
+                text.with_name(labels.text.clone())
+                    .with_action_target(format!("notes.block-text:{}", block.id))
+                    .with_bounds(line),
+            );
+        }
+        for (direction, label, disabled) in [
+            ("in", &labels.indent, indent_disabled),
+            ("out", &labels.outdent, indent == 0),
+        ] {
+            block_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(label.clone())
+                    .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
+                    .with_bounds(bounds)
+                    .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
+            );
+        }
+        if let Some(target) = transclusion_target(block) {
+            let name = self
+                .transclusion_previews
+                .get(&target)
+                .map_or("embedded note", |preview| preview.title.as_str());
+            let card_bounds = self
+                .transclusion_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .map_or(line, |(rect, _)| rect);
+            block_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Open embedded note: {name}"))
+                    .with_description("Live preview of a linked note")
+                    .with_action_target(transclusion_action_target(target))
+                    .with_bounds(card_bounds)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        if matches!(block.kind, BlockKind::Table { .. }) {
+            if let Some(control) = self.table_mode_controls.get(&block.id)
+                && let Some(mut button) = control.button.accessibility()
+            {
+                button = button
+                    .with_bounds(control.button.get_rect())
+                    .with_action_target(format!("notes.table-mode:{}", block.id));
+                block_children.push(button);
+                for (prefix, button) in [
+                    ("notes.table-add-row", &control.add_row),
+                    ("notes.table-add-column", &control.add_column),
+                ] {
+                    if let Some(node) = button.accessibility() {
+                        block_children.push(
+                            node.with_bounds(button.get_rect())
+                                .with_action_target(format!("{prefix}:{}", block.id)),
+                        );
+                    }
+                }
+            }
+            let table_bounds = self
+                .table_preview_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .unwrap_or(line);
+            let headers = markdown_table_data_rows(block.text())
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let rows = markdown_table_data_rows(block.text())
+                .into_iter()
+                .enumerate()
+                .map(|(row_index, row)| {
+                    let cells = row
+                        .into_iter()
+                        .enumerate()
+                        .map(|(column_index, value)| {
+                            let target =
+                                format!("notes.table-cell:{}:{row_index}:{column_index}", block.id);
+                            let mut input = AccessNode::new(Role::MultilineTextInput)
+                                .with_name(decode_table_cell(
+                                    headers.get(column_index).copied().unwrap_or(""),
+                                ))
+                                .with_value(decode_table_cell(value))
+                                .with_action_target(target)
+                                .with_state(AccessState::new().focusable(true));
+                            if let Some(rect) = self
+                                .table_editors
+                                .get(&block.id)
+                                .and_then(|table| table.projected_rect(row_index, column_index))
+                            {
+                                input = input.with_bounds(rect);
+                            }
+                            AccessNode::new(Role::Cell)
+                                .with_name(if row_index == 0 {
+                                    format!("Column {}", column_index.saturating_add(1))
+                                } else {
+                                    format!(
+                                        "Cell {}, {}",
+                                        row_index,
+                                        column_index.saturating_add(1)
+                                    )
+                                })
+                                .with_description(decode_table_cell(
+                                    headers.get(column_index).copied().unwrap_or(""),
+                                ))
+                                .with_value(decode_table_cell(value))
+                                .with_children(vec![input])
+                        })
+                        .collect();
+                    AccessNode::new(Role::Row)
+                        .with_name(if row_index == 0 {
+                            "Header row".to_string()
+                        } else {
+                            format!("Row {row_index}")
+                        })
+                        .with_children(cells)
+                })
+                .collect();
+            block_children.push(
+                AccessNode::new(Role::Table)
+                    .with_name("Markdown table")
+                    .with_value(block.text())
+                    .with_bounds(table_bounds)
+                    .with_children(rows),
+            );
+        }
+        if let Some(image) = self.image_attachments.get(&block.id) {
+            if let Some(button) = image.button().accessibility() {
+                block_children.push(
+                    button
+                        .with_bounds(image.button().get_rect())
+                        .with_action_target(format!(
+                            "notes.image-{}:{}",
+                            if image.editing { "done" } else { "edit" },
+                            block.id
+                        )),
+                );
+            }
+            if image.editing {
+                block_children.push(
+                    AccessNode::new(Role::MultilineTextInput)
+                        .with_name(crate::i18n!("notes-image-source"))
+                        .with_value(block.text())
+                        .with_action_target(format!("notes.image-source:{}", block.id))
+                        .with_bounds(line)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(block.line.is_focused()),
+                        ),
+                );
+            }
+        }
+        if let Some((alt, destination)) = self
+            .image_attachments
+            .get(&block.id)
+            .and_then(|image| standalone_markdown_image(&image.source))
+            .or_else(|| standalone_markdown_image(block.text()))
+        {
+            let bounds = self
+                .image_preview_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .unwrap_or(line);
+            block_children.push(
+                AccessNode::new(Role::Image)
+                    .with_name(if alt.is_empty() { "Image" } else { alt })
+                    .with_description(destination)
+                    .with_bounds(bounds),
+            );
+        }
+        for span in block.line.marks() {
+            let (name, target) = match &span.mark {
+                Mark::Link(id) if !id.is_nil() => {
+                    ("Open linked note".to_string(), page_link_action_target(*id))
+                }
+                Mark::ExternalLink(url) => (
+                    "Open external link".to_string(),
+                    external_link_action_target(url),
+                ),
+                _ => continue,
+            };
+            block_children.push(
+                AccessNode::new(Role::Link)
+                    .with_name(name)
+                    .with_value(block.text().get(span.range.clone()).unwrap_or_default())
+                    .with_action_target(target)
+                    .with_bounds(line)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        if let Some(control) = labels.control {
+            block_children.push((control.build)(&block.id, line));
+        }
+        let level = usize::from(indent).saturating_add(1);
+        let group = AccessNode::new(Role::Group)
+            .with_name(format!(
+                "{} block {position}",
+                accessible_kind_name(&block.kind)
+            ))
+            .with_semantic_key(format!("notes.block:{}", block.id))
+            .with_state(AccessState::new().selected(selected))
+            .with_hashed_key(format!("notes.block:group:{}", block.id))
+            .with_position(position, total)
+            .with_level(level)
+            .with_bounds(line)
+            .with_children(block_children);
+        // Also in words, which every screen reader reads: the platform
+        // bridge does not carry a group's level.
+        if level > 1 {
+            group.with_description(format!("Level {level}"))
+        } else {
+            group
+        }
     }
 
     fn block_move_target(block_id: &str, direction: &str) -> String {
@@ -2911,11 +3820,11 @@ impl BlockEditor {
         let Some(target_index) = self.neighboring_group(source, up) else {
             return false;
         };
-        self.begin_action_intercept();
+        self.begin_edit();
         if !self.move_block_to(source, target_index) {
             return false;
         }
-        let ops = self.take_intercepted_ops();
+        let ops = self.take_edit_ops();
         self.pending_semantic_ops.extend(ops);
         true
     }
@@ -2928,9 +3837,9 @@ impl BlockEditor {
             let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
                 return false;
             };
-            self.begin_action_intercept();
+            self.begin_edit();
             let changed = self.edit_table_structure(index, row, column, command);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
@@ -2941,9 +3850,9 @@ impl BlockEditor {
                 .map(|result| (index, result))
         }) {
             if let Some((row, column, value)) = result {
-                self.begin_action_intercept();
+                self.begin_edit();
                 self.apply_table_cell_edit(index, row, column, &value);
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
             }
             self.dirty = true;
@@ -2957,26 +3866,25 @@ impl BlockEditor {
             self.dirty = true;
             return true;
         }
-        if self.document_selection.is_none()
-            && let Some(index) = self.focused
-            && let Some(block) = self.blocks.get(index)
-            && self
-                .image_attachments
+        // A preview's source is the clipboard candidate, not a live text
+        // selection until a replacement actually succeeds.
+        let image_selection = self.focused.and_then(|index| {
+            let block = self.blocks.get(index)?;
+            self.image_attachments
                 .get(&block.id)
-                .is_some_and(|image| !image.editing)
-        {
-            self.document_selection = Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: 0,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: block.text().len(),
-                },
-            });
-        }
-        let selection = self.document_selection.or_else(|| {
+                .filter(|image| !image.editing)
+                .map(|_| DocumentSelection {
+                    anchor: DocumentPosition {
+                        block: index,
+                        byte: 0,
+                    },
+                    cursor: DocumentPosition {
+                        block: index,
+                        byte: block.text().len(),
+                    },
+                })
+        });
+        let selection = self.document_selection.or(image_selection).or_else(|| {
             let index = self.focused?;
             let line = &self.blocks.get(index)?.line;
             let (start, end) = line
@@ -2999,6 +3907,9 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
+        if command == "paste" && self.paste_image() {
+            return true;
+        }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
             let Some(value) = clipboard_paste() else {
@@ -3008,22 +3919,24 @@ impl BlockEditor {
         } else {
             String::new()
         };
-        if command != "copy" {
-            self.begin_action_intercept();
-        }
         let prior = self.document_selection;
         self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut")
-            && let Some(text) = self.selected_text()
-        {
-            clipboard_copy(&text);
+        if matches!(command, "copy" | "cut") {
+            let accepted = self
+                .selected_text()
+                .is_some_and(|text| clipboard_copy_accepted(&text));
+            if command == "cut" && !accepted {
+                self.document_selection = prior;
+                return true;
+            }
         }
         if command == "copy" {
             self.document_selection = prior;
         } else {
+            self.begin_edit();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
         }
         self.dirty = true;
@@ -3067,18 +3980,35 @@ impl BlockEditor {
         true
     }
 
-    fn draw_block_drag_affordance(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// Paint the drag handle of the block holding the caret, the hovered one
+    /// and the dragged one. Returns where each handle painted.
+    fn draw_block_drag_affordance(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Vec<Rect> {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
-        for index in 0..self.blocks.len() {
+        let mut painted = Vec::new();
+        // At most three blocks show a handle: the dragged one, the caret's and
+        // the hovered one. Only those are measured.
+        let mut shown = [
+            self.block_drag.map(|drag| drag.source),
+            self.focused.filter(|_| self.is_focused),
+            hovered,
+        ];
+        shown.sort_unstable();
+        let mut previous = None;
+        for index in shown.into_iter().flatten() {
+            if previous.replace(index) == Some(index) {
+                continue;
+            }
             let Some(handle) = self.block_drag_handle_rect(index) else {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
-            let contains_caret = self.is_focused && self.focused == Some(index);
-            if !active && !contains_caret && hovered != Some(index) {
-                continue;
-            }
+            painted.push(handle);
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
             let scale = self.text_scale;
@@ -3089,7 +4019,10 @@ impl BlockEditor {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5].with_alpha_factor(if active { 0.22 } else { 0.12 }),
+                    tokens
+                        .colors
+                        .text_primary
+                        .with_alpha_factor(if active { 0.22 } else { 0.12 }),
                     None,
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
@@ -3106,6 +4039,40 @@ impl BlockEditor {
                 }
             }
         }
+        painted
+    }
+
+    /// Where the drag handle the pointer's block shows was painted, if any:
+    /// it follows the pointer, not the text, so a host that copies a scroll
+    /// of the text repaints it where it is and where it was.
+    pub fn hover_handle(&self) -> Option<Rect> {
+        if self.block_drag.is_some() {
+            return None;
+        }
+        self.hovered_block()
+            .and_then(|index| self.block_drag_handle_rect(index))
+    }
+
+    /// Everything the last draw may have painted for where the pointer is
+    /// rather than where the text is: the hovered block's drag handle, the
+    /// copy chrome of each code run (lit under the pointer), each table's
+    /// add-row and add-column controls (shown under it) and each image's
+    /// button (shown under it). The text moves under a resting pointer, so a
+    /// host that copies a scroll of the text repaints these where they are
+    /// and where they were.
+    pub fn pointer_chrome(&self) -> Vec<Rect> {
+        let mut chrome: Vec<Rect> = self.hover_handle().into_iter().collect();
+        chrome.extend(self.code_copy_hits.iter().map(|(rect, _, _)| *rect));
+        for control in self.table_mode_controls.values() {
+            chrome.extend([control.add_row.get_rect(), control.add_column.get_rect()]);
+        }
+        chrome.extend(
+            self.image_attachments
+                .values()
+                .map(|image| image.button().get_rect()),
+        );
+        chrome.retain(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+        chrome
     }
 
     fn hovered_block(&self) -> Option<usize> {
@@ -3177,6 +4144,51 @@ impl BlockEditor {
         true
     }
 
+    /// End the handle drag, whatever ends it.
+    fn take_block_drag(&mut self) -> Option<BlockDrag> {
+        self.block_drag_scroll.cancel();
+        self.block_drag.take()
+    }
+
+    /// Whether a block is being dragged by its handle (past the click
+    /// threshold). Such a drag near the edge of the editor's visible area
+    /// needs [`Self::tick_block_drag`] every frame.
+    pub fn block_drag_active(&self) -> bool {
+        self.block_drag.is_some_and(|drag| drag.active)
+    }
+
+    /// How far the host should scroll its document, in logical pixels
+    /// (positive is down), for the `elapsed` since the last tick: nonzero
+    /// while the pointer of an active block drag is in the edge band of
+    /// `viewport`, faster the closer to the edge. The editor does not own
+    /// its scrolling; the host scrolls, lays the editor out again and the
+    /// drop target follows the pointer ([`Self::retarget_block_drag`] runs
+    /// with that layout).
+    pub fn tick_block_drag(&mut self, viewport: Rect, elapsed: crate::time::Duration) -> f64 {
+        if !self.block_drag_active() {
+            return 0.0;
+        }
+        self.block_drag_scroll
+            .tick(viewport, elapsed, crate::time::now())
+            .scroll_delta
+    }
+
+    /// Point the active drag's drop target at the block under the pointer,
+    /// now that the blocks have moved under it (the host scrolled).
+    pub fn retarget_block_drag(&mut self) {
+        let y = self.last_mouse_pos.y;
+        let Some(mut drag) = self.block_drag.filter(|drag| drag.active) else {
+            return;
+        };
+        if let Some(target) = self.block_at_y(y)
+            && target != drag.target
+        {
+            drag.target = target;
+            self.block_drag = Some(drag);
+            self.dirty = true;
+        }
+    }
+
     /// Complete or cancel a handle drag before normal text routing sees its
     /// terminal event. A cancelled drag never changed the projection; a drop
     /// is immediately captured by the semantic action bridge.
@@ -3193,7 +4205,7 @@ impl BlockEditor {
             }
         );
         if (escape || matches!(event, WindowEvent::Focused(false)))
-            && self.block_drag.take().is_some()
+            && self.take_block_drag().is_some()
         {
             *ctx.handled = true;
             self.dirty = true;
@@ -3207,7 +4219,7 @@ impl BlockEditor {
                 ..
             }
         );
-        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
+        let Some(drag) = released.then(|| self.take_block_drag()).flatten() else {
             return false;
         };
         if drag.active {
@@ -3259,8 +4271,7 @@ impl BlockEditor {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         for (index, block) in self.blocks.iter().enumerate() {
             if let Some(image) = self.image_attachments.get_mut(&block.id) {
@@ -3341,7 +4352,28 @@ impl BlockEditor {
             }
             let control = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
             if control && let Key::Character(key) = logical_key {
-                if matches!(key.as_str(), "c" | "x" | "v") {
+                if key == "c" {
+                    // Browser cut first copies to its event clipboard. Copying
+                    // a preview must not expose a replacement text selection.
+                    clipboard_copy(self.blocks[index].text());
+                    *ctx.handled = true;
+                    return true;
+                }
+                if matches!(key.as_str(), "x" | "v") {
+                    let cutting = key == "x";
+                    if cutting && !clipboard_copy_accepted(self.blocks[index].text()) {
+                        *ctx.handled = true;
+                        return true;
+                    }
+                    let replacement = if cutting {
+                        String::new()
+                    } else {
+                        let Some(text) = clipboard_paste() else {
+                            *ctx.handled = true;
+                            return true;
+                        };
+                        text
+                    };
                     let end = self.blocks[index].text().len();
                     self.select_document_range(
                         DocumentPosition {
@@ -3353,7 +4385,7 @@ impl BlockEditor {
                             byte: end,
                         },
                     );
-                    self.handle_document_selection_ctrl_key(logical_key);
+                    self.replace_document_selection(&replacement);
                     *ctx.handled = true;
                     return true;
                 }
@@ -3520,6 +4552,123 @@ impl BlockEditor {
         self.pending_external_link_opens.pop()
     }
 
+    /// Images for legacy hosts which insert after the caret. Canonical hosts
+    /// use [`Self::take_image_paste_requests`] to replace the captured selection.
+    pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        self.take_image_paste_requests()
+            .into_iter()
+            .map(|request| request.image)
+            .collect()
+    }
+
+    /// Drain image intents without changing text. The host validates the image
+    /// and applies asset storage and the captured replacement in one action.
+    pub fn take_image_paste_requests(&mut self) -> Vec<ImagePasteRequest> {
+        std::mem::take(&mut self.pasted_images)
+    }
+
+    fn image_paste_target(&self) -> Option<ImagePasteTarget> {
+        let index = self.focused?;
+        let block = self.blocks.get(index)?;
+        let preview = self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing);
+        let selection = self
+            .document_selection
+            .filter(|selection| selection.anchor != selection.cursor)
+            .map(DocumentSelection::ordered)
+            .or_else(|| {
+                let (start, end) = if preview {
+                    (0, block.text().len())
+                } else {
+                    block.line.selection_range()?
+                };
+                (start != end).then_some((
+                    DocumentPosition {
+                        block: index,
+                        byte: start,
+                    },
+                    DocumentPosition {
+                        block: index,
+                        byte: end,
+                    },
+                ))
+            });
+        let Some((start, mut end)) = selection else {
+            return Some(ImagePasteTarget::After(block.id.clone()));
+        };
+        if end.byte == 0 && end.block > start.block {
+            end.block = end.block.saturating_sub(1);
+            end.byte = self.blocks.get(end.block)?.text().len();
+        }
+        let selected = self.blocks.get(start.block..=end.block)?;
+        Some(ImagePasteTarget::Replace {
+            blocks: selected.iter().map(Block::content).collect(),
+            start_byte: start.byte,
+            end_byte: end.byte,
+        })
+    }
+
+    /// Queue an image intent in prose without deleting any selected content.
+    fn paste_image(&mut self) -> bool {
+        if self.read_only || self.is_composing() {
+            return false;
+        }
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(image) = crate::clipboard_paste_image() else {
+            return false;
+        };
+        let Some(target) = self.image_paste_target() else {
+            return false;
+        };
+        self.pasted_images.push(ImagePasteRequest { image, target });
+        self.dirty = true;
+        true
+    }
+
+    /// Ctrl+V (Cmd+V) with an image on the clipboard.
+    fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::Key;
+
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        if !self.is_focused
+            || !command
+            || mods.alt_key()
+            || !key.eq_ignore_ascii_case("v")
+            || !self.paste_image()
+        {
+            return false;
+        }
+        *ctx.handled = true;
+        true
+    }
+
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
         if self.fenced_code_run(start) != Some((start, end)) {
             return false;
@@ -3611,9 +4760,17 @@ impl BlockEditor {
         Some((start, end))
     }
 
-    fn refresh_live_link_hits(&mut self, theme: &Theme) {
+    /// The links of the blocks this frame `painted`: a link off screen has
+    /// no geometry anyone can point at, and its line's shaped positions may
+    /// be from an earlier frame.
+    fn refresh_live_link_hits(&mut self, theme: &Theme, painted: &[bool]) {
         self.live_link_hits.clear();
-        for block in &self.blocks {
+        for (block, _) in self
+            .blocks
+            .iter()
+            .zip(painted)
+            .filter(|(_, painted)| **painted)
+        {
             let line = &block.line;
             for span in line.marks() {
                 let target = match &span.mark {
@@ -3671,6 +4828,29 @@ impl BlockEditor {
         self.edit_pending = true;
     }
 
+    /// Where the caret is in the document, for a host that keeps it in
+    /// view while editing: the focused block's caret, never an open
+    /// overlay's field (the slash menu, a link popover, find), whose own
+    /// rect says nothing about where the person is writing.
+    pub fn document_caret_rect(&self) -> Option<Rect> {
+        let block = self.blocks.get(self.focused?)?;
+        if self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing)
+        {
+            return None;
+        }
+        if let Some(rect) = self
+            .table_editors
+            .get(&block.id)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
+        {
+            return Some(rect);
+        }
+        Widget::ime_cursor_rect(&block.line)
+    }
+
     /// So the host can avoid stealing focus from the popover.
     pub fn slash_menu_visible(&self) -> bool {
         self.slash_menu.is_visible()
@@ -3679,13 +4859,6 @@ impl BlockEditor {
     #[doc(hidden)]
     pub fn slash_menu(&self) -> &SlashMenu {
         &self.slash_menu
-    }
-
-    /// Used by the integration test that pre-positions the menu rather
-    /// than driving the `/` keystroke through the full event chain.
-    #[doc(hidden)]
-    pub fn slash_menu_mut(&mut self) -> &mut SlashMenu {
-        &mut self.slash_menu
     }
 
     /// Mirrors what the `/` keystroke does internally.
@@ -3709,7 +4882,7 @@ impl BlockEditor {
     #[doc(hidden)]
     pub fn slash_menu_handle_key_for_test(&mut self, event: &WindowEvent) -> bool {
         let consumed = self.slash_menu.handle_key(event);
-        if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+        if let Some(new_kind) = self.slash_menu.take_selection() {
             self.commit_slash_selection(new_kind);
         }
         if !self.slash_menu.is_visible() {
@@ -3720,6 +4893,7 @@ impl BlockEditor {
 
     /// No-op for non-Checklist kinds.
     pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
+        self.begin_edit();
         let b = self.blocks.get_mut(idx)?;
         if let BlockKind::Checklist { indent, done } = &b.kind {
             let new_done = !*done;
@@ -3742,6 +4916,26 @@ impl BlockEditor {
 pub struct DocumentPosition {
     pub block: usize,
     pub byte: usize,
+}
+
+/// A clipboard image and its original target. Capturing the intent never edits
+/// the document; hosts must validate bytes before applying a replacement.
+#[derive(Debug, Clone)]
+pub struct ImagePasteRequest {
+    pub image: crate::clipboard::ClipboardImage,
+    pub target: ImagePasteTarget,
+}
+
+/// Stable IDs and source snapshots prevent a delayed paste from deleting a
+/// different selection or text inserted by a collaborator.
+#[derive(Debug, Clone)]
+pub enum ImagePasteTarget {
+    After(String),
+    Replace {
+        blocks: Vec<BlockContent>,
+        start_byte: usize,
+        end_byte: usize,
+    },
 }
 
 /// Direction-preserving document selection. [`Self::ordered`] provides its
@@ -3787,14 +4981,6 @@ fn heading_markdown_prefix(text: &str) -> Option<(u8, usize)> {
 
 fn is_heading_prefix(s: &str) -> bool {
     heading_markdown_prefix(s).is_some_and(|(_, len)| len == s.len())
-}
-
-fn clamp_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b > 0 && !text.is_char_boundary(b) {
-        b = b.saturating_sub(1);
-    }
-    b
 }
 
 #[expect(
@@ -3937,7 +5123,9 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
     {
         start = start.saturating_add(1);
     }
-    start = clamp_char_boundary(before, start).min(clamp_char_boundary(after, start));
+    start = before
+        .floor_char_boundary(start)
+        .min(after.floor_char_boundary(start));
     let mut old_end = before.len();
     let mut new_end = after.len();
     while old_end > start
@@ -3948,24 +5136,13 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
         old_end = old_end.saturating_sub(1);
         new_end = new_end.saturating_sub(1);
     }
-    old_end = ceil_char_boundary(before, old_end);
-    new_end = ceil_char_boundary(after, new_end);
+    old_end = before.ceil_char_boundary(old_end);
+    new_end = after.ceil_char_boundary(new_end);
     (
         start,
         old_end,
         after.get(start..new_end).unwrap_or_default().to_string(),
     )
-}
-
-/// Rounds a byte offset *up* to the next char boundary — the mirror of
-/// [`clamp_char_boundary`]'s round-down. Used where growing a matched
-/// region (rather than shrinking it) is what keeps a replacement exact.
-fn ceil_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b < text.len() && !text.is_char_boundary(b) {
-        b = b.saturating_add(1);
-    }
-    b
 }
 
 /// Two spaces per indent level (Notion/Obsidian style, not GFM's four);
@@ -4030,11 +5207,10 @@ fn push_indent(out: &mut String, indent: u8) {
 /// `CodeBlock` reserves gutter for its left-edge bar, drawn in `draw`.
 pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
     match kind {
-        BlockKind::Bullet { .. } => 20.0,
-        // Wide enough for a two-digit ordinal ("12.") without colliding
-        // with the text column.
-        BlockKind::Numbered { .. } => 28.0,
-        BlockKind::Checklist { .. } => 24.0,
+        // Every list kind sets its text in one column, so bullets, numbers
+        // and checkboxes mixed in a document line up: wide enough for a
+        // two-digit ordinal ("12.") without colliding with the text.
+        BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. } => 28.0,
         BlockKind::CodeBlock { .. } => 12.0,
         BlockKind::Quote => 16.0,
         _ => 0.0,
@@ -4046,9 +5222,9 @@ pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 /// Geometry of the block drag handle, resolved from `theme.tokens` in
 /// `build_layout` (the `Metrics::BASE` / `Spacing::BASE` values until then).
 ///
-/// The handle lives in the gutter the host leaves left of the text (Notes
-/// reserves 32 px), so its **width** and the gap to the text are `ui_scale`
-/// metrics that stay inside that gutter; its **height** and the dot cluster
+/// The handle lives in the editor's handle gutter, left of the text column,
+/// so its **width** and the gap to the text are `ui_scale` metrics that make
+/// up that gutter; its **height** and the dot cluster
 /// follow the accessibility text scale like the line beside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HandleMetrics {
@@ -4228,6 +5404,119 @@ struct TablePreviewLayout {
     cell_heights: Vec<Vec<f64>>,
 }
 
+/// One block's row of the editor's accessibility tree as the last frame
+/// built it, and what it was built from.
+struct AccessRow {
+    inputs: AccessRowInputs<'static>,
+    node: std::sync::Arc<crate::a11y::AccessNode>,
+}
+
+/// Everything a plain block's accessibility row is built from
+/// ([`BlockEditor::access_row_is_plain`]): while these are the same, so is
+/// the row. Compared in order, the geometry a scroll moves first and the
+/// text last.
+#[derive(Debug, PartialEq)]
+struct AccessRowInputs<'a> {
+    line: Rect,
+    /// Where its controls are: its drag handle, or its line without one.
+    controls: Rect,
+    position: usize,
+    total: usize,
+    selected: bool,
+    up_disabled: bool,
+    down_disabled: bool,
+    indent_disabled: bool,
+    indent: u8,
+    /// The revision of the translations its labels were looked up in.
+    labels: u64,
+    /// The key of the control its host adds to it ([`RowControl`]).
+    control: Option<u64>,
+    /// The text node's state and selection.
+    line_state: crate::widget::text_input::TextAccessibilityState,
+    kind: std::borrow::Cow<'a, BlockKind>,
+    id: std::borrow::Cow<'a, str>,
+    text: std::borrow::Cow<'a, str>,
+    /// Its links.
+    marks: std::borrow::Cow<'a, [MarkSpan]>,
+}
+
+impl AccessRowInputs<'_> {
+    fn into_owned(self) -> AccessRowInputs<'static> {
+        use std::borrow::Cow;
+        AccessRowInputs {
+            id: Cow::Owned(self.id.into_owned()),
+            kind: Cow::Owned(self.kind.into_owned()),
+            text: Cow::Owned(self.text.into_owned()),
+            marks: Cow::Owned(self.marks.into_owned()),
+            line_state: self.line_state,
+            indent: self.indent,
+            line: self.line,
+            controls: self.controls,
+            position: self.position,
+            total: self.total,
+            selected: self.selected,
+            up_disabled: self.up_disabled,
+            down_disabled: self.down_disabled,
+            indent_disabled: self.indent_disabled,
+            labels: self.labels,
+            control: self.control,
+        }
+    }
+}
+
+impl AccessRowInputs<'static> {
+    /// Become `inputs`, keeping the id, kind, text and marks already held
+    /// where they are the same: a row a scroll moved copies no text.
+    fn update(&mut self, inputs: AccessRowInputs<'_>) {
+        use std::borrow::Cow;
+        if self.id != inputs.id {
+            self.id = Cow::Owned(inputs.id.into_owned());
+        }
+        if self.kind != inputs.kind {
+            self.kind = Cow::Owned(inputs.kind.into_owned());
+        }
+        if self.text != inputs.text {
+            self.text = Cow::Owned(inputs.text.into_owned());
+        }
+        if self.marks != inputs.marks {
+            self.marks = Cow::Owned(inputs.marks.into_owned());
+        }
+        self.line_state = inputs.line_state;
+        self.indent = inputs.indent;
+        self.line = inputs.line;
+        self.controls = inputs.controls;
+        self.position = inputs.position;
+        self.total = inputs.total;
+        self.selected = inputs.selected;
+        self.up_disabled = inputs.up_disabled;
+        self.down_disabled = inputs.down_disabled;
+        self.indent_disabled = inputs.indent_disabled;
+        self.labels = inputs.labels;
+        self.control = inputs.control;
+    }
+}
+
+/// What every block row of one frame shares: its controls' labels, looked
+/// up once a frame, and the control a host adds to each row.
+struct AccessRowContext<'a> {
+    change_type: String,
+    text: String,
+    indent: String,
+    outdent: String,
+    revision: u64,
+    control: Option<&'a RowControl<'a>>,
+}
+
+/// A control a host adds to every block's accessibility row (a rich-text
+/// surface's Duplicate button), built with the row and kept with it.
+pub struct RowControl<'a> {
+    /// Everything the control is built from but the block's id and its
+    /// row's bounds: a kept row keeps its control while this is the same.
+    pub key: u64,
+    /// The control of the block with this id, whose row has these bounds.
+    pub build: &'a dyn Fn(&str, Rect) -> crate::a11y::AccessNode,
+}
+
 struct TableModeControl {
     button: crate::widget::Button,
     requested: std::rc::Rc<std::cell::Cell<bool>>,
@@ -4248,21 +5537,17 @@ impl TableModeControl {
             } else {
                 "table-edit-visual"
             },
-            None,
         )
         .on_click(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
-            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row", None)
+            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
                 .on_click(move || row_request.set(Some(true)));
-        let add_column = crate::widget::Button::new(
-            &format!("notes.table-add-column:{id}"),
-            "table-add-column",
-            None,
-        )
-        .on_click(move || column_request.set(Some(false)));
+        let add_column =
+            crate::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
+                .on_click(move || column_request.set(Some(false)));
         Self {
             button,
             requested,
@@ -4627,7 +5912,7 @@ fn draw_formula_preview(
             "Type a formula above to preview it",
             12.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+            transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
             None,
         );
         return;
@@ -4671,7 +5956,7 @@ fn draw_formula_preview(
             &message,
             11.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 6.0, rect.y1 - 15.0),
+            transform.pre_translate((rect.x0 + 6.0, rect.y1 - 15.0).into()),
             None,
         );
     }
@@ -4703,11 +5988,8 @@ fn draw_formula_chrome(
         syntax,
         11.0,
         colors.text_primary,
-        translated(
-            transform,
-            chrome.syntax_badge.x0 + 7.0,
-            chrome.syntax_badge.y0 + 5.0,
-        ),
+        transform
+            .pre_translate((chrome.syntax_badge.x0 + 7.0, chrome.syntax_badge.y0 + 5.0).into()),
         None,
     );
     for (rect, label, selected) in [
@@ -4727,7 +6009,7 @@ fn draw_formula_chrome(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5].with_alpha_factor(0.20),
+                colors.text_primary.with_alpha_factor(0.20),
                 None,
                 &shape,
             );
@@ -4741,7 +6023,7 @@ fn draw_formula_chrome(
             } else {
                 colors.text_dim
             },
-            translated(transform, rect.x0 + 7.0, rect.y0 + 5.0),
+            transform.pre_translate((rect.x0 + 7.0, rect.y0 + 5.0).into()),
             None,
         );
     }
@@ -4803,7 +6085,7 @@ fn draw_visual_formula_editor(
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.25),
+                theme.tokens.colors.intent.selection_tint,
                 None,
                 &band,
             );
@@ -4831,7 +6113,7 @@ fn draw_visual_formula_editor(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.you,
             None,
             &caret,
         );
@@ -4901,8 +6183,9 @@ fn handle_visual_formula_key(
                 false
             }
             "x" | "X" => {
-                if let Some(value) = editor.selected_linear() {
-                    clipboard_copy(&value);
+                if let Some(value) = editor.selected_linear()
+                    && clipboard_copy_accepted(&value)
+                {
                     editor.delete_selection();
                     return true;
                 }
@@ -5164,17 +6447,10 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
-/// Read a persisted UUID, assigning a deterministic UUID to old block maps
-/// that predate the action bridge.  The migration deliberately derives only
-/// from replicated content and position, never an actor id or wall clock, so
-/// every replica upgrading the same legacy document writes the same value.
-fn read_or_migrate_block_id(
-    state: &mut AutoCommit,
-    list: &ObjId,
-    index: usize,
-    kind: &BlockKind,
-    persist: bool,
-) -> String {
+/// A block's persisted UUID, or the deterministic UUID a block map without
+/// one is known by: derived only from replicated content and position, so
+/// every replica reads the same value. The owner's action persists it.
+fn read_block_id_at(state: &AutoCommit, list: &ObjId, index: usize, kind: &BlockKind) -> String {
     let Some(map) = list_map(state, list, index) else {
         return Uuid::new_v4().to_string();
     };
@@ -5184,11 +6460,7 @@ fn read_or_migrate_block_id(
     let text = doc_text_obj(state, list, index)
         .and_then(|text| state.text(&text).ok())
         .unwrap_or_default();
-    let id = legacy_block_id(list, index, &kind_to_str(kind), &text);
-    if persist {
-        let _ = state.put(&map, "id", id.as_str());
-    }
-    id
+    legacy_block_id(list, index, &kind_to_str(kind), &text)
 }
 
 /// Deterministic stable ID for a legacy block map that has no persisted `id`.
@@ -5226,32 +6498,6 @@ fn deterministic_block_uuid(seed: &str) -> Uuid {
     Uuid::from_u128(raw)
 }
 
-/// Returns `None` if `list` was concurrently removed from the document —
-/// the only way `insert_object`/`put_object` can fail here — leaving the
-/// caller's local block unbound rather than panicking on a legitimate CRDT
-/// race.
-fn insert_doc_block(
-    state: &mut AutoCommit,
-    list: &ObjId,
-    index: usize,
-    id: &str,
-    kind: &str,
-    text: &str,
-    code_group: Option<&str>,
-    nesting: u8,
-) -> Option<ObjId> {
-    let block = state.insert_object(list, index, ObjType::Map).ok()?;
-    let _ = state.put(&block, "id", id);
-    let _ = state.put(&block, "kind", kind);
-    write_code_group(state, &block, code_group);
-    write_nesting(state, &block, nesting);
-    let text_id = state.put_object(&block, "text", ObjType::Text).ok()?;
-    if !text.is_empty() {
-        let _ = state.splice_text(&text_id, 0, 0, text);
-    }
-    Some(text_id)
-}
-
 fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::ThawError> {
     let invalid = || crate::view::ThawError::State("invalid or conflicted block nesting".into());
     match state
@@ -5266,14 +6512,6 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
             .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
         _ => Err(invalid()),
-    }
-}
-
-fn write_nesting(state: &mut AutoCommit, map: &ObjId, depth: u8) {
-    if depth == 0 {
-        let _ = state.delete(map, "nesting");
-    } else {
-        let _ = state.put(map, "nesting", u64::from(depth));
     }
 }
 
@@ -5295,57 +6533,6 @@ fn read_code_group(
         }
         _ => Err(invalid()),
     }
-}
-
-fn write_code_group(state: &mut AutoCommit, map: &ObjId, group: Option<&str>) {
-    match group {
-        Some(group) => {
-            let _ = state.put(map, "code_group", group);
-        }
-        None => {
-            let _ = state.delete(map, "code_group");
-        }
-    }
-}
-
-/// A single minimal splice, since the structural ops that call this
-/// produce one contiguous change.
-fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
-    let cur = state.text(text_obj).unwrap_or_default();
-    if cur == local {
-        return;
-    }
-    let (at_byte, inserted, removed) = crate::widget::rich_text_line::diff_splice(&cur, local);
-    let at_byte = at_byte.min(cur.len()).min(local.len());
-    let raw_removed_end = at_byte.saturating_add(removed).min(cur.len());
-    let raw_inserted_end = at_byte.saturating_add(inserted).min(local.len());
-
-    // `diff_splice` compares raw bytes, so none of `at_byte`,
-    // `raw_removed_end` or `raw_inserted_end` is guaranteed to land on a
-    // UTF-8 char boundary in `cur`/`local`. Bytes before `at_byte` are
-    // byte-identical between the two strings (that's their shared
-    // prefix), and likewise for the bytes from each raw end to the end
-    // of its string (their shared suffix) — so moving the start earlier,
-    // or an end later, by the same byte count in both strings never
-    // changes what the resulting splice produces, only how many
-    // already-identical bytes it needlessly re-touches. Without this, a
-    // diff that happens to split a multi-byte character (e.g. between
-    // "café" and "cafe\u{301}") would panic on the slice below.
-    let start = clamp_char_boundary(&cur, at_byte);
-    let removed_end = ceil_char_boundary(&cur, raw_removed_end);
-    let shift = removed_end.saturating_sub(raw_removed_end);
-    let inserted_end = raw_inserted_end.saturating_add(shift).min(local.len());
-
-    let (Some(prefix), Some(removed_slice), Some(inserted_str)) = (
-        cur.get(..start),
-        cur.get(start..removed_end),
-        local.get(start..inserted_end),
-    ) else {
-        return;
-    };
-    let char_at = prefix.chars().count();
-    let removed_chars = isize::try_from(removed_slice.chars().count()).unwrap_or(isize::MAX);
-    let _ = state.splice_text(text_obj, char_at, removed_chars, inserted_str);
 }
 
 /// Marks entirely (or partly) before `boundary`, clipped to it — the
@@ -5405,6 +6592,7 @@ impl BlockEditor {
     /// Set and paint a document range using UTF-8 byte offsets. Positions are
     /// clamped to existing block/character boundaries.
     pub fn select_document_range(&mut self, anchor: DocumentPosition, cursor: DocumentPosition) {
+        self.retained_block_selection = None;
         if self.blocks.is_empty() {
             return;
         }
@@ -5413,19 +6601,72 @@ impl BlockEditor {
         let Some(anchor_byte) = self
             .blocks
             .get(anchor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), anchor.byte))
+            .map(|b| b.line.value().floor_char_boundary(anchor.byte))
         else {
             return;
         };
         let Some(cursor_byte) = self
             .blocks
             .get(cursor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), cursor.byte))
+            .map(|b| b.line.value().floor_char_boundary(cursor.byte))
         else {
             return;
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+    }
+
+    /// Retain the exact batch after a structural command, including empty rows.
+    /// Missing or interleaved IDs refuse restoration instead of selecting peers.
+    pub fn retain_block_selection(&mut self, ids: Vec<String>, reverse: bool) {
+        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids.clone()));
+        let Some(range) = self.selected_block_range() else {
+            self.reconcile_block_selection();
+            return;
+        };
+        let start = DocumentPosition {
+            block: range.start,
+            byte: 0,
+        };
+        let last = range.end.saturating_sub(1);
+        let end = DocumentPosition {
+            block: last,
+            byte: self.blocks[last].text().len(),
+        };
+        let (anchor, cursor) = if reverse { (end, start) } else { (start, end) };
+        self.select_document_range(anchor, cursor);
+        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids));
+    }
+
+    /// Peer structural edits must not turn the old batch into a text selection
+    /// that silently includes new content. Keep a refused marker until the next
+    /// explicit caret/selection gesture, so a pending command cannot fall back
+    /// to moving just the caret's block.
+    fn reconcile_block_selection(&mut self) {
+        if self.retained_block_selection.is_some() && self.selected_block_range().is_none() {
+            self.clear_document_selection();
+            // Presentation may already have discarded the old drag bounds.
+            // Collapse every retained line's paint, including nonfocused rows.
+            for block in &mut self.blocks {
+                if block.line.selection_range().is_some() {
+                    let cursor = block.line.cursor_pos();
+                    block.line.inner_mut().set_selection(cursor, cursor);
+                }
+            }
+            self.retained_block_selection = Some(RetainedBlockSelection::Refused);
+        }
+    }
+
+    /// Clear selection and its keyboard/drag anchors without changing text.
+    pub fn clear_document_selection(&mut self) {
+        self.clear_cross_block_selection();
+        self.cross_block_drag_start = None;
+        self.kbd_sel_anchor = None;
+        if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) {
+            let cursor = block.line.cursor_pos();
+            block.line.inner_mut().set_selection(cursor, cursor);
+        }
+        self.dirty = true;
     }
 
     /// Plain-text serialization uses a newline for every crossed block
@@ -5446,12 +6687,12 @@ impl BlockEditor {
             };
             let text = block.line.value();
             let from = if block_idx == start.block {
-                clamp_char_boundary(text, start.byte)
+                text.floor_char_boundary(start.byte)
             } else {
                 0
             };
             let to = if block_idx == end.block {
-                clamp_char_boundary(text, end.byte)
+                text.floor_char_boundary(end.byte)
             } else {
                 text.len()
             };
@@ -5468,6 +6709,7 @@ impl BlockEditor {
     /// mutations happen in this call, so the host commits one Automerge undo
     /// boundary for the originating key/IME event.
     pub fn replace_document_selection(&mut self, replacement: &str) -> bool {
+        self.begin_edit();
         let Some(selection) = self.document_selection else {
             return false;
         };
@@ -5493,8 +6735,8 @@ impl BlockEditor {
         ) else {
             return false;
         };
-        let start_byte = clamp_char_boundary(&start_text, start.byte);
-        let end_byte = clamp_char_boundary(&end_text, end.byte);
+        let start_byte = start_text.floor_char_boundary(start.byte);
+        let end_byte = end_text.floor_char_boundary(end.byte);
         let prefix_marks = self
             .blocks
             .get(start.block)
@@ -5545,12 +6787,12 @@ impl BlockEditor {
             self.insert_replacement_tail(start.block, &first_kind, &inserted, suffix, suffix_marks)
         };
 
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
         self.kbd_sel_anchor = None;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.edit_pending = true;
         self.commit_pending = true;
         self.dirty = true;
@@ -5663,6 +6905,9 @@ impl BlockEditor {
                     if let Some(position) = collapse {
                         self.clear_cross_block_selection();
                         self.focus_block(position.block, CursorPlacement::Byte(position.byte));
+                        if *logical_key == Key::Named(NamedKey::Escape) {
+                            self.tab_navigation = true;
+                        }
                         return true;
                     }
                 }
@@ -5725,10 +6970,13 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
+                if self
+                    .selected_text()
+                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
+                {
+                    self.replace_document_selection("");
                 }
-                Some(self.replace_document_selection(""))
+                Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
                 Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
@@ -5771,6 +7019,7 @@ impl BlockEditor {
         end_block: usize,
         end_byte: usize,
     ) {
+        self.retained_block_selection = None;
         self.document_selection =
             ((start_block, start_byte) != (end_block, end_byte)).then_some(DocumentSelection {
                 anchor: DocumentPosition {
@@ -5865,6 +7114,7 @@ impl BlockEditor {
     /// Called on the next fresh click so the new selection doesn't OR
     /// with the old one.
     fn clear_cross_block_selection(&mut self) {
+        self.retained_block_selection = None;
         self.document_selection = None;
         if let Some((lo, hi)) = self.cross_block_drag_touched.take() {
             for i in lo..=hi {
@@ -5875,25 +7125,6 @@ impl BlockEditor {
             }
         }
     }
-}
-
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "text layout accepts f32 widths; these values are finite viewport-sized geometry, so f64 precision beyond f32 subpixels is immaterial"
-)]
-fn text_layout_width(width: f64) -> f32 {
-    width as f32
 }
 
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
@@ -5921,6 +7152,53 @@ struct BlockDrawCtx<'a> {
     image_previews: &'a [Option<Rect>],
     image_attachments: &'a HashMap<String, ImageAttachment>,
     image_store: Option<&'a crate::ImageStore>,
+    /// While `Some`, a table draws each cell's text (each row's card, when
+    /// its cells stack) into a scene of its own here, with where it paints,
+    /// instead of into `scene`: the editor damages a cell, not the table.
+    table_cells: Option<Vec<(Rect, Scene)>>,
+    /// While [`Self::table_cells`] collects, a Markdown table edited as text
+    /// paints its source line here: a key in the source damages the line
+    /// and the cells it changed, not the table.
+    table_source: Option<Scene>,
+    /// While set, the first block of a code run paints the run's ground into
+    /// [`Self::code_ground`] with its bounds, instead of into `scene`: a key
+    /// in that line damages the line, not the run.
+    collect_code_ground: bool,
+    code_ground: Option<(Rect, Scene)>,
+}
+
+impl BlockDrawCtx<'_> {
+    /// Run `draw` into a scene of its own when collecting table cells.
+    fn table_cell(&mut self, painted: Rect, draw: impl FnOnce(&mut Self)) {
+        if self.table_cells.is_none() {
+            draw(self);
+            return;
+        }
+        let outer = std::mem::take(self.scene);
+        draw(self);
+        let drawn = std::mem::replace(self.scene, outer);
+        if let Some(cells) = self.table_cells.as_mut() {
+            cells.push((painted, drawn));
+        }
+    }
+}
+
+/// A tracked table block's paint, split where a change can be damaged on
+/// its own: [`BlockEditor::draw`] makes each a part.
+struct TableParts {
+    /// Its source line, when the table is edited as Markdown text.
+    source: Option<Scene>,
+    /// Its frame, header band and grid.
+    ground: Scene,
+    /// Each cell's text (each row's card, when the cells stack), with where
+    /// it paints.
+    cells: Vec<(Rect, Scene)>,
+    /// The focused cell's editor.
+    focus: Scene,
+    /// The mode and add row/column buttons above it.
+    controls: Scene,
+    /// Where the controls stand.
+    controls_paint: Option<Rect>,
 }
 
 /// Formula-run state threaded through [`draw_block`]'s `CodeBlock` arm —
@@ -5956,51 +7234,56 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         for (row_index, row) in layout.rows.iter().enumerate() {
             let height = layout.row_heights.get(row_index).copied().unwrap_or(0.0);
             let card = Rect::new(rect.x0, row_y, rect.x1, row_y + height - 8.0 * scale);
-            let shape = vello::kurbo::RoundedRect::from_rect(card, 6.0 * scale);
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                ctx.theme.tokens.colors.surfaces.raised,
-                None,
-                &shape,
-            );
-            ctx.scene.stroke(
-                &vello::kurbo::Stroke::new(scale),
-                ctx.transform,
-                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
-                None,
-                &shape,
-            );
-            let mut y = row_y + 8.0 * scale;
-            for (column, value) in row.iter().enumerate() {
-                let x = rect.x0 + layout.padding_x;
-                let width = Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
-                if let Some(label) = labels.get(column) {
+            // A row is one card: its stroke reaches half a hairline past it.
+            ctx.table_cell(card.inflate(scale, scale), |ctx| {
+                let shape = vello::kurbo::RoundedRect::from_rect(card, 6.0 * scale);
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ctx.theme.tokens.colors.surfaces.raised,
+                    None,
+                    &shape,
+                );
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(scale),
+                    ctx.transform,
+                    crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
+                    None,
+                    &shape,
+                );
+                let mut y = row_y + 8.0 * scale;
+                for (column, value) in row.iter().enumerate() {
+                    let x = rect.x0 + layout.padding_x;
+                    let width =
+                        Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
+                    if let Some(label) = labels.get(column) {
+                        ctx.text_renderer.draw_style(
+                            ctx.scene,
+                            label,
+                            ctx.theme.tokens.colors.text_primary,
+                            ctx.transform.pre_translate((x, y).into()),
+                            width,
+                            &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
+                        );
+                    }
+                    let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
                     ctx.text_renderer.draw_style(
                         ctx.scene,
-                        label,
+                        value,
                         ctx.theme.tokens.colors.text_primary,
-                        translated(ctx.transform, x, y),
+                        ctx.transform
+                            .pre_translate((x, y + label_height + 4.0 * scale).into()),
                         width,
-                        &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
+                        &TextStyle::new(14.0),
                     );
+                    y += layout
+                        .cell_heights
+                        .get(row_index)
+                        .and_then(|heights| heights.get(column))
+                        .copied()
+                        .unwrap_or(0.0);
                 }
-                let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
-                ctx.text_renderer.draw_style(
-                    ctx.scene,
-                    value,
-                    ctx.theme.tokens.colors.text_primary,
-                    translated(ctx.transform, x, y + label_height + 4.0 * scale),
-                    width,
-                    &TextStyle::new(14.0),
-                );
-                y += layout
-                    .cell_heights
-                    .get(row_index)
-                    .and_then(|heights| heights.get(column))
-                    .copied()
-                    .unwrap_or(0.0);
-            }
+            });
             row_y += height;
         }
         return;
@@ -6057,23 +7340,39 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let mut row_y = table_rect.y0;
     for (row_index, (row, height)) in layout.rows.iter().zip(&layout.row_heights).enumerate() {
         for (column_index, value) in row.iter().enumerate() {
-            let x = table_rect.x0 + column_width * column_index as f64 + layout.padding_x;
+            let left = table_rect.x0 + column_width * column_index as f64;
+            let x = left + layout.padding_x;
             let y = row_y + 8.0 * scale;
-            ctx.text_renderer.draw_style(
-                ctx.scene,
-                value,
-                ctx.theme.tokens.colors.text_primary,
-                translated(ctx.transform, x, y),
-                Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
-                &TextStyle::new(14.0).with_weight(if row_index == 0 {
-                    crate::text_render::TextWeight::Bold
-                } else {
-                    crate::text_render::TextWeight::Regular
-                }),
-            );
+            let cell = Rect::new(left, row_y, left + column_width, row_y + height);
+            ctx.table_cell(cell, |ctx| {
+                ctx.text_renderer.draw_style(
+                    ctx.scene,
+                    value,
+                    ctx.theme.tokens.colors.text_primary,
+                    ctx.transform.pre_translate((x, y).into()),
+                    Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
+                    &TextStyle::new(14.0).with_weight(if row_index == 0 {
+                        crate::text_render::TextWeight::Bold
+                    } else {
+                        crate::text_render::TextWeight::Regular
+                    }),
+                );
+            });
         }
         row_y += height;
     }
+}
+
+/// The share of the host's visible height an image preview may take at
+/// most, aspect kept: a large picture never fills the editor.
+pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
+
+/// The largest rect of the picture's aspect inside `rect`, centred.
+fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
+    let ratio =
+        (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
+    let size = (f64::from(width) * ratio, f64::from(height) * ratio);
+    Rect::from_center_size(rect.center(), size)
 }
 
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
@@ -6085,7 +7384,13 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
     let scale = f64::from(ctx.theme.text_scale);
     let radius = 8.0 * scale;
-    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
+    let image = ctx.image_store.and_then(|store| store.get(destination));
+    // A preview capped to the viewport is narrower than the column: the
+    // plate hugs the picture rather than letterboxing it.
+    let plate = image.as_ref().map_or(rect, |image| {
+        fitted_image_rect(rect, (image.width, image.height))
+    });
+    let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
@@ -6093,13 +7398,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         None,
         &shape,
     );
-    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
-        let ratio = (rect.width() / f64::from(image.width).max(1.0))
-            .min(rect.height() / f64::from(image.height).max(1.0));
-        let width = f64::from(image.width) * ratio;
-        let height = f64::from(image.height) * ratio;
-        let fitted = Rect::from_center_size(rect.center(), (width, height));
-        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, fitted, &image, 0.0);
+    if let Some(image) = image {
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -6135,12 +7435,9 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene,
         label,
         ctx.theme.tokens.colors.text_primary,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 18.0 * scale,
-        ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 18.0 * scale).into()),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
         &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
     ctx.text_renderer.draw_text(
@@ -6148,12 +7445,9 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         destination,
         13.0,
         ctx.theme.tokens.colors.text_dim,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 42.0 * scale,
-        ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
 
@@ -6178,9 +7472,10 @@ fn draw_block(
     let scale = f64::from(ctx.theme.text_scale);
     let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.indent()) * scale;
     let gutter = prefix_gutter_for(&b.kind) * scale;
-    let prefix_x0 = line_rect.x0 - gutter;
-    let row_x0 = prefix_x0 - indent_px;
-    let _ = row_x0;
+    let pad = b.line.text_inset(ctx.theme);
+    // Every block starts at the one content edge, where a paragraph's text
+    // starts: a prefix glyph's box, a quote's or a code block's ground.
+    let prefix_x0 = content_edge(line_rect, gutter, pad);
 
     match &b.kind {
         BlockKind::Paragraph => {
@@ -6198,46 +7493,47 @@ fn draw_block(
         }
         BlockKind::Heading(_) => {}
         BlockKind::Quote => {
-            let background = Rect::new(
-                line_rect.x0 - gutter,
-                line_rect.y0 - 4.0 * scale,
-                line_rect.x1,
-                line_rect.y1 + 4.0 * scale,
+            // A quote is a quiet rule at the content edge and the quoted
+            // words in secondary ink: no ground, no bright bar.
+            let rule_w = f64::from(ctx.theme.tokens.spacing.s1) / 2.0;
+            let rule = vello::kurbo::RoundedRect::from_rect(
+                Rect::new(prefix_x0, line_rect.y0, prefix_x0 + rule_w, line_rect.y1),
+                rule_w / 2.0,
             );
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ctx.theme.tokens.colors.surfaces.raised,
-                None,
-                &background,
-            );
-            let rule = Rect::new(
-                background.x0,
-                background.y0,
-                background.x0 + 3.0 * scale,
-                background.y1,
-            );
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                ctx.theme.tokens.colors.accent[5],
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.content),
                 None,
                 &rule,
             );
+            let mut quiet = ctx.theme.clone();
+            quiet.text_primary = quiet.text_dim;
+            quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
+            b.line.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                &quiet,
+                ctx.presence,
+            );
+            return;
         }
+
         BlockKind::Bullet { .. } => {
-            draw_bullet_prefix(line_rect, prefix_x0, gutter, ctx);
+            draw_bullet_prefix(line_rect, prefix_x0, ctx);
             let _ = indent_px;
         }
         BlockKind::Numbered { .. } => {
-            draw_numbered_prefix(idx, line_rect, prefix_x0, b.kind.font_size(), ctx);
+            let text_rect = Rect::new(line_rect.x0 + pad, line_rect.y0, line_rect.x1, line_rect.y1);
+            draw_numbered_prefix(idx, text_rect, prefix_x0, b.kind.font_size(), ctx);
             let _ = indent_px;
         }
         BlockKind::Checklist { done, .. } => {
-            draw_checklist_prefix(*done, line_rect, prefix_x0, gutter, ctx);
+            draw_checklist_prefix(*done, checklist_box(line_rect, gutter, pad, scale), ctx);
         }
         BlockKind::CodeBlock { .. } => {
-            draw_code_block_prefix(idx, line_rect, gutter, ctx, formulas);
+            draw_code_block_prefix(idx, line_rect, line_rect.x0 - prefix_x0, ctx, formulas);
             // A block's own line is skipped while its visual formula
             // editor stands in for it — the raw TeX/Typst source
             // behind that editor is still there, just not painted.
@@ -6256,6 +7552,7 @@ fn draw_block(
         }
         BlockKind::Table { visual } => {
             if !visual {
+                let outer = ctx.table_cells.is_some().then(|| std::mem::take(ctx.scene));
                 b.line.draw(
                     ctx.scene,
                     ctx.transform,
@@ -6263,6 +7560,9 @@ fn draw_block(
                     ctx.theme,
                     ctx.presence,
                 );
+                if let Some(outer) = outer {
+                    ctx.table_source = Some(std::mem::replace(ctx.scene, outer));
+                }
             }
             if let Some(Some(preview)) = ctx.table_previews.get(idx).copied() {
                 draw_markdown_table(ctx, preview, b.text());
@@ -6290,6 +7590,33 @@ fn draw_block(
         ctx.theme,
         ctx.presence,
     );
+}
+
+/// Whether [`draw_block`] paints the line of every block of `kind`, the
+/// line whose caret the editor can paint as a part of its own: not a code
+/// line (a visual formula stands in for it), a table (its cells take the
+/// caret) or a rule (no line).
+fn always_draws_its_line(kind: &BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::Paragraph
+            | BlockKind::Heading(_)
+            | BlockKind::Quote
+            | BlockKind::Bullet { .. }
+            | BlockKind::Numbered { .. }
+            | BlockKind::Checklist { .. }
+    )
+}
+
+/// Whether a change to a block of `kind` can be damaged where the block
+/// paints: its row of the editor, the whole ground of the run a code block
+/// starts, a table's cells. Not a formula, whose preview and visual editor
+/// reach past its source lines.
+fn damages_where_it_paints(kind: &BlockKind) -> bool {
+    match kind {
+        BlockKind::CodeBlock { .. } => formula_descriptor(kind).is_none(),
+        _ => true,
+    }
 }
 
 fn transclusion_target(block: &Block) -> Option<PageId> {
@@ -6325,8 +7652,10 @@ fn draw_transclusion_card(
     preview: Option<&TransclusionPreview>,
 ) {
     let tokens = &theme.tokens;
-    let card =
-        vello::kurbo::RoundedRect::from_rect(rect.inflate(-1.0, -1.0), f64::from(tokens.radii.md));
+    let card = vello::kurbo::RoundedRect::from_rect(
+        rect.inflate(-1.0, -1.0),
+        f64::from(tokens.radii.control),
+    );
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -6345,36 +7674,61 @@ fn draw_transclusion_card(
         ("Unavailable note", "The referenced note was removed."),
         |p| (p.title.as_str(), p.excerpt.as_str()),
     );
-    let trim = |value: &str, limit: usize| {
-        let mut out = value.chars().take(limit).collect::<String>();
-        if value.chars().nth(limit).is_some() {
-            out.push('…');
-        }
-        out
-    };
-    text_renderer.draw_text(
-        scene,
-        &trim(title, 72),
-        15.0,
-        tokens.colors.text_primary,
-        translated(transform, rect.x0 + 16.0, rect.y0 + 16.0),
-        None,
+    // An embedded note is an object you open: a note glyph and its title on
+    // the first line with a trailing chevron (the whole card opens it), its
+    // excerpt as the secondary line. No "Embedded note · Open" chain.
+    let pad = f64::from(tokens.spacing.s4);
+    let gap = f64::from(tokens.spacing.s2);
+    let icon_side = f64::from(tokens.metrics.icon_sm * theme.text_scale);
+    let title_style = theme.text(crate::tokens::TextRole::Subheading);
+    let excerpt_style = theme.text(crate::tokens::TextRole::Body);
+    let ink = tokens.colors.on_surface(tokens.colors.surfaces.raised);
+    let (_, title_h) = text_renderer.measure_style("Ag", None, &title_style);
+    let title_h = f64::from(title_h);
+    let title_y = rect.y0 + pad;
+    let chevron_x = rect.x1 - pad - icon_side;
+    let icon_rect = Rect::new(
+        rect.x0 + pad,
+        title_y + (title_h - icon_side) / 2.0,
+        rect.x0 + pad + icon_side,
+        title_y + (title_h + icon_side) / 2.0,
     );
-    text_renderer.draw_text(
+    crate::icons::draw_icon(
         scene,
-        &trim(excerpt, 128),
-        13.0,
-        tokens.colors.text_dim,
-        translated(transform, rect.x0 + 16.0, rect.y0 + 45.0),
-        None,
+        transform,
+        icon_rect,
+        crate::icons::Icon::FileText,
+        ink.ink_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-    text_renderer.draw_text(
+    crate::icons::draw_icon(
         scene,
-        "Embedded note · Open",
-        12.0,
-        theme.accent_primary,
-        translated(transform, rect.x0 + 16.0, rect.y1 - 24.0),
+        transform,
+        Rect::new(chevron_x, icon_rect.y0, chevron_x + icon_side, icon_rect.y1),
+        crate::icons::Icon::ChevronRight,
+        ink.ink_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    let title_x = icon_rect.x1 + gap;
+    let title_w = (chevron_x - gap - title_x).max(1.0);
+    let title = text_renderer.elide_to_width_style(title, title_w as f32, &title_style);
+    text_renderer.draw_style(
+        scene,
+        &title,
+        ink.ink,
+        transform.pre_translate((title_x, title_y).into()),
         None,
+        &title_style,
+    );
+    let excerpt_w = (rect.x1 - pad - title_x).max(1.0);
+    let excerpt = text_renderer.elide_to_width_style(excerpt, excerpt_w as f32, &excerpt_style);
+    text_renderer.draw_style(
+        scene,
+        &excerpt,
+        ink.ink_dim,
+        transform.pre_translate((title_x, title_y + title_h + f64::from(tokens.spacing.s1)).into()),
+        None,
+        &excerpt_style,
     );
 }
 
@@ -6384,10 +7738,12 @@ fn first_row_center(rect: Rect, size: f32, scale: f64) -> f64 {
 }
 
 /// A filled disc, not a "•" glyph, reads the same across fonts.
-fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, gutter: f64, ctx: &mut BlockDrawCtx<'_>) {
-    let cy = first_row_center(line_rect, 16.0, f64::from(ctx.theme.text_scale));
-    let cx = prefix_x0 + gutter / 2.0;
-    let radius = 3.0 * f64::from(ctx.theme.text_scale);
+fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, ctx: &mut BlockDrawCtx<'_>) {
+    let scale = f64::from(ctx.theme.text_scale);
+    let cy = first_row_center(line_rect, 16.0, scale);
+    // The disc sits in the same leading glyph box as a checklist's box.
+    let cx = prefix_x0 + CHECKBOX_SIZE_PX * scale / 2.0;
+    let radius = 3.0 * scale;
     let circle = vello::kurbo::Circle::new((cx, cy), radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
@@ -6422,7 +7778,7 @@ fn draw_numbered_prefix(
         &label,
         font_size,
         ctx.theme.tokens.colors.text_primary,
-        translated(ctx.transform, origin.x, origin.y),
+        ctx.transform.pre_translate((origin.x, origin.y).into()),
         None,
     );
 }
@@ -6448,61 +7804,32 @@ fn numbered_prefix_origin(
     )
 }
 
-fn draw_checklist_prefix(
-    done: bool,
-    line_rect: Rect,
-    prefix_x0: f64,
-    gutter: f64,
-    ctx: &mut BlockDrawCtx<'_>,
-) {
-    let scale = f64::from(ctx.theme.text_scale);
-    let cy = first_row_center(line_rect, 16.0, scale);
-    let cx = prefix_x0 + gutter / 2.0;
-    let box_rect = Rect::new(
-        cx - CHECKBOX_SIZE_PX * scale / 2.0,
-        cy - CHECKBOX_SIZE_PX * scale / 2.0,
-        cx + CHECKBOX_SIZE_PX * scale / 2.0,
-        cy + CHECKBOX_SIZE_PX * scale / 2.0,
+fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
+    // The toolkit's checkbox face: the inverted fill with its tick when
+    // done, the raised box with its derived edge when not. A checklist item
+    // is the same control as every other checkbox.
+    crate::widget::Checkbox::paint(
+        ctx.scene,
+        ctx.transform,
+        ctx.theme,
+        &crate::widget::CheckboxFace::new(box_rect, done),
     );
-    let shape = vello::kurbo::RoundedRect::from_rect(box_rect, 3.0 * scale);
-    if done {
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.accent[5],
-            None,
-            &shape,
-        );
-        // Two lines from lower-left through center to upper-right.
-        let mut path = vello::kurbo::BezPath::new();
-        let pad = CHECKBOX_SIZE_PX * scale * 0.22;
-        path.move_to((
-            box_rect.x0 + pad,
-            box_rect.y0 + CHECKBOX_SIZE_PX * scale * 0.55,
-        ));
-        path.line_to((
-            box_rect.x0 + CHECKBOX_SIZE_PX * scale * 0.42,
-            box_rect.y1 - pad,
-        ));
-        path.line_to((box_rect.x1 - pad, box_rect.y0 + pad));
-        ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(2.0 * scale),
-            ctx.transform,
-            ctx.theme.tokens.colors.text_primary,
-            None,
-            &path,
-        );
-    } else {
-        // An unchecked box is an outline on the page: derived against the
-        // editor surface at the panel-edge strength so it reads as a control.
-        ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(1.5 * scale),
-            ctx.transform,
-            ctx.theme.tokens.colors.text_dim,
-            None,
-            &shape,
-        );
-    }
+}
+
+/// The editor's one content edge for a block whose line rect is `line` and
+/// whose prefix gutter is `gutter`: where a paragraph's text starts. Prefix
+/// glyphs, quote and code grounds, embeds, tables and images all start here.
+fn content_edge(line: Rect, gutter: f64, pad: f64) -> f64 {
+    line.x0 - gutter + pad
+}
+
+/// A checklist item's box: the leading glyph box at the content edge, on
+/// the first row's centre line. Paint and hit-testing share it.
+fn checklist_box(line: Rect, gutter: f64, pad: f64, scale: f64) -> Rect {
+    let side = CHECKBOX_SIZE_PX * scale;
+    let x0 = content_edge(line, gutter, pad);
+    let cy = first_row_center(line, 16.0, scale);
+    Rect::new(x0, cy - side / 2.0, x0 + side, cy + side / 2.0)
 }
 
 /// Paint background + accent bar ONCE per contiguous run of code blocks,
@@ -6514,8 +7841,6 @@ fn draw_code_block_prefix(
     ctx: &mut BlockDrawCtx<'_>,
     formulas: &FormulaDrawCtx<'_>,
 ) {
-    // 4px: stays inside the inter-block gap, never overlaps neighbours.
-    const CODE_PAD_Y: f64 = 4.0;
     // A run breaks whenever the language changes, not just at the
     // code/non-code boundary — two adjacent fences in different
     // languages get their own background rather than merging into one.
@@ -6560,7 +7885,9 @@ fn draw_code_block_prefix(
             |rect| rect.y1,
         )
         + CODE_PAD_Y;
+    // `gutter` is the distance from the content edge to the line rect.
     let bg_rect = Rect::new(line_rect.x0 - gutter, top, line_rect.x1, bottom);
+    let outer = ctx.collect_code_ground.then(|| std::mem::take(ctx.scene));
     let shape = vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
@@ -6573,10 +7900,14 @@ fn draw_code_block_prefix(
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
-        ctx.theme.tokens.colors.accent[5],
+        ctx.theme.tokens.colors.intent.inverted,
         None,
         &bar,
     );
+    if let Some(outer) = outer {
+        let ground = std::mem::replace(ctx.scene, outer);
+        ctx.code_ground = Some((bg_rect, ground));
+    }
 }
 
 /// Draws a code block's paired formula preview/chrome, if this block
@@ -6699,16 +8030,11 @@ impl Widget for BlockStackLeaf {
         self.editor().is_some_and(Widget::layout_needs_measure)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    /// Its size is the editor's stack, so it can change only when the editor
+    /// reports a change (a leaf would otherwise always claim one).
+    fn is_layout_dirty(&self) -> bool {
+        self.editor()
+            .is_some_and(|editor| editor.is_layout_dirty() || editor.layout_needs_measure())
     }
 
     fn name(&self) -> &'static str {
@@ -6744,6 +8070,186 @@ impl BlockEditor {
         }
     }
 
+    /// Prepare every block's line for layout and its place in the stack
+    /// (margins, minimums, fixed rows) under `theme`: what a tree rebuild
+    /// does for the blocks, and all a block that came, went or changed its
+    /// kind needs ([`Self::restack`]).
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        reason = "one index-aligned pass prepares each block's line and stack box with finite pixel dimensions"
+    )]
+    fn prepare_blocks(&mut self, theme: &Theme) {
+        self.restack = false;
+        self.refresh_image_attachments();
+        self.refresh_image_dimensions();
+        self.table_editors.retain(|id, _| {
+            self.blocks.iter().any(|block| {
+                block.id == *id && matches!(block.kind, BlockKind::Table { visual: true })
+            })
+        });
+        self.table_mode_controls.retain(|id, _| {
+            self.blocks
+                .iter()
+                .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
+        });
+        self.refresh_layout_theme(theme);
+        // Lines within one authored fence stay together; distinct adjacent
+        // fences need space outside both painted backgrounds.
+        let is_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
+            .collect();
+        let is_paragraph: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| matches!(block.kind, BlockKind::Paragraph))
+            .collect();
+        let continues_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                index
+                    .checked_sub(1)
+                    .is_some_and(|previous| self.blocks[previous].same_code_group(block))
+            })
+            .collect();
+        let is_formula_end = compute_is_formula_end(&self.blocks);
+        let code_headers: Vec<f64> = (0..self.blocks.len())
+            .map(|index| code_header_height(&self.blocks, index, self.text_scale))
+            .collect();
+        self.stack_boxes.clear();
+        let embeds: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                transclusion_target(block).is_some()
+                    || standalone_markdown_image(block.text()).is_some()
+            })
+            .collect();
+        let max_image_height = self.viewport_height.map(|height| {
+            crate::num::u32_of_i64(crate::num::i64_of_f64(
+                (height * IMAGE_VIEWPORT_FRACTION).round(),
+            ))
+        });
+        for (i, b) in self.blocks.iter_mut().enumerate() {
+            let image = self.image_attachments.get(&b.id);
+            let image_preview = image
+                .and_then(|image| standalone_markdown_image(&image.source))
+                .map(|(_, source)| self.image_dimensions.get(source).copied());
+            b.line.set_image_preview(match image_preview {
+                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
+                    dimensions,
+                    editing: image.is_some_and(|image| image.editing),
+                    max_height: max_image_height,
+                },
+                None => super::rich_text_line::ImagePreview::Absent,
+            });
+            b.line.set_table_preview(match b.kind {
+                BlockKind::Table { visual } => Some(visual),
+                _ => None,
+            });
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded on-screen block inset"
+            )]
+            b.line.set_layout_inset(
+                (prefix_gutter_for(&b.kind) * self.text_scale) as f32
+                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale,
+            );
+            b.line.set_wrap(
+                (self.wrap_lines
+                    || image_preview.is_some()
+                    || matches!(b.kind, BlockKind::Table { visual: false }))
+                    && formula_descriptor(&b.kind).is_none()
+                    && !matches!(b.kind, BlockKind::Table { visual: true }),
+            );
+            // A document paragraph already receives spacing from the block
+            // stack. TextInput's normal multiline field padding would add
+            // another 8 px above and below every line, making consecutive
+            // prose read like separate form fields. Keep that padding for
+            // richer controls and use the text line-height for compact prose.
+            b.line.set_compact_wrapped(
+                self.compact_paragraph_spacing && matches!(b.kind, BlockKind::Paragraph),
+            );
+            let header_height = code_headers[i] as f32;
+            b.line.set_layout_header_height(header_height);
+            b.line.prepare_layout(&self.layout_theme);
+            let row_height = b.line.row_height(theme.text_scale);
+            let mut stack_box = StackBox {
+                margin_top: 0.0,
+                fixed: (!b.line.measures_height()).then_some(row_height),
+                min: row_height,
+            };
+            if header_height > 0.0 {
+                let height = (b.kind.font_size() * theme.text_scale * 1.5)
+                    .max(20.0 * theme.text_scale)
+                    + header_height;
+                if !self.wrap_lines {
+                    stack_box.fixed = Some(height);
+                }
+                stack_box.min = height;
+            }
+            // Per-block top margin (not a uniform gap) so it can be zeroed
+            // for soft-break continuations, the first block, and consecutive
+            // code lines (one contiguous fenced unit).
+            let continues_code_block = continues_code[i];
+            let adjacent_fences =
+                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
+            let compact_paragraph_pair = self.compact_paragraph_spacing
+                && is_paragraph[i]
+                && i.checked_sub(1)
+                    .is_some_and(|previous| is_paragraph[previous]);
+            // An embed (an embedded note, an image) is an object in the
+            // flow: it stands a group gap from the text on either side.
+            let around_embed = embeds.get(i).copied().unwrap_or(false)
+                || i.checked_sub(1)
+                    .and_then(|previous| embeds.get(previous).copied())
+                    .unwrap_or(false);
+            stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
+                0.0
+            } else if adjacent_fences || around_embed {
+                theme.tokens.spacing.s4 * theme.text_scale
+            } else if compact_paragraph_pair {
+                theme.tokens.spacing.s1 * theme.text_scale
+            } else {
+                theme.tokens.spacing.s2 * theme.text_scale
+            };
+            if is_formula_end.get(i).copied().unwrap_or(false) {
+                stack_box.min = if formula_descriptor(&b.kind)
+                    .is_some_and(|descriptor| descriptor.mode == crate::math::FormulaMode::Visual)
+                {
+                    FORMULA_VISUAL_MIN_HEIGHT
+                } else {
+                    FORMULA_BLOCK_MIN_HEIGHT
+                };
+            }
+            if transclusion_target(b).is_some() {
+                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+            }
+            self.stack_boxes.push(stack_box);
+        }
+        // The lines' text inset is known once each line has its wrap mode.
+        self.text_pad = self
+            .blocks
+            .first()
+            .map_or(0.0, |block| block.line.text_inset(theme));
+    }
+
+    /// Prepare the blocks again after a [`Self::restack`], under the theme
+    /// the last tree build laid them out with, and forget the stack so the
+    /// next layout measures it.
+    fn settle_restack(&mut self) {
+        if self.restack {
+            let theme = std::sync::Arc::clone(&self.layout_theme);
+            self.prepare_blocks(&theme);
+            self.stack.width = None;
+        }
+    }
+
     /// Measure the block stack. A query without a definite width asks for an
     /// intrinsic size: answer it from the last stack rather than reshaping
     /// every paragraph at a width it will never be painted at.
@@ -6753,6 +8259,7 @@ impl BlockEditor {
         available: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
+        self.settle_restack();
         let definite = known.width.or(match available.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             _ => None,
@@ -6805,6 +8312,12 @@ impl BlockEditor {
         for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
             // A line the editor made since (a split, a paste) takes the
             // editor's body size too.
+            // The kind's role sets the line's weight and leading (a heading
+            // is semibold at its role's leading), its size the document's.
+            let role = block.kind.text_role();
+            if block.line.inner().text_role() != role {
+                block.line.set_text_role(role);
+            }
             block.line.set_size(block.kind.font_size() * font_scale);
             let content = match (
                 block.line.stacked_height(width),
@@ -6870,129 +8383,67 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    crate::provides!(
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = crate::doc::document_ref(state, path);
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.
             return;
         };
 
-        // Action-owned hosts (Calendar today) must never let the widget write
-        // straight to Automerge.  Their host has already dispatched the exact
-        // semantic operation before this frame's sync. We only bind fresh text
-        // objects and adopt remote structural changes here.
-        if self.action_interception {
-            let doc_len = state.length(&list);
-            if self.canonical_existing && doc_len == 0 {
-                if !self.canonical_empty {
-                    self.rebuild_from_doc(state, &list, 0);
-                    self.canonical_empty = true;
-                }
-                return;
+        // The owner dispatches each edit before this frame's sync; here the
+        // editor only binds fresh text objects and adopts structural changes.
+        let doc_len = state.length(&list);
+        if self.canonical_existing && doc_len == 0 {
+            if !self.canonical_empty {
+                self.rebuild_from_doc(state, &list, 0);
+                self.canonical_empty = true;
             }
-            self.canonical_empty = false;
-            if doc_len != self.blocks.len() {
-                self.rebuild_from_doc(state, &list, doc_len);
-                return;
-            }
-            let drifted = (0..doc_len).any(|i| {
-                let Some(block) = self.blocks.get(i) else {
-                    return true;
-                };
-                let Some(map) = list_map(state, &list, i) else {
-                    return true;
-                };
-                let id = read_block_id(state, &map);
-                let kind = read_block_kind(state, &list, i);
-                let text = doc_text_obj(state, &list, i)
-                    .and_then(|text| state.text(&text).ok())
-                    .unwrap_or_default();
-                id.as_deref() != Some(block.id.as_str())
-                    || kind != kind_to_str(&block.kind)
-                    || !read_nesting(state, &map).is_ok_and(|depth| depth == block.nesting)
-                    || !read_code_group(state, &map).is_ok_and(|group| group == block.code_group)
-                    || text != block.text()
-            });
-            if drifted {
-                self.rebuild_from_doc(state, &list, doc_len);
-                return;
-            }
-            for (i, block) in self.blocks.iter_mut().enumerate() {
-                let kind = kind_from_str(&read_block_kind(state, &list, i));
-                block.id = read_or_migrate_block_id(state, &list, i, &kind, false);
-                if block.line.bound_obj().is_none()
-                    && let Some(text) = doc_text_obj(state, &list, i)
-                {
-                    block.line.bind_text(text);
-                }
-            }
-            self.doc_structure_dirty = false;
             return;
         }
-
-        if self.doc_structure_dirty {
-            self.reconcile_structure_to_doc(state, &list);
-            self.doc_structure_dirty = false;
-        }
-
-        // A different block count now means a remote peer changed the
-        // structure — adopt it.
-        let doc_len = state.length(&list);
+        self.canonical_empty = false;
         if doc_len != self.blocks.len() {
             self.rebuild_from_doc(state, &list, doc_len);
             return;
         }
-
-        // Same structure: refresh kind + text (RichTextLine::sync pulls
-        // bound text without disturbing the local caret).
+        let drifted = (0..doc_len).any(|i| {
+            let Some(block) = self.blocks.get(i) else {
+                return true;
+            };
+            let Some(map) = list_map(state, &list, i) else {
+                return true;
+            };
+            let id = read_block_id(state, &map);
+            let kind = read_block_kind(state, &list, i);
+            let text = doc_text_obj(state, &list, i)
+                .and_then(|text| state.text(&text).ok())
+                .unwrap_or_default();
+            id.as_deref() != Some(block.id.as_str())
+                || kind != kind_to_str(&block.kind)
+                || !read_nesting(state, &map).is_ok_and(|depth| depth == block.nesting)
+                || !read_code_group(state, &map).is_ok_and(|group| group == block.code_group)
+                || text != block.text()
+        });
+        if drifted {
+            self.rebuild_from_doc(state, &list, doc_len);
+            return;
+        }
         for (i, block) in self.blocks.iter_mut().enumerate() {
-            let k = kind_from_str(&read_block_kind(state, &list, i));
-            block.id = read_or_migrate_block_id(state, &list, i, &k, true);
-            let nesting = list_map(state, &list, i)
-                .and_then(|map| read_nesting(state, &map).ok())
-                .unwrap_or(0);
-            if block.nesting != nesting {
-                block.nesting = nesting;
-                self.structure_dirty = true;
-            }
-            let group = list_map(state, &list, i)
-                .and_then(|map| read_code_group(state, &map).ok().flatten());
-            if block.code_group != group {
-                block.code_group = group;
-                self.structure_dirty = true;
-            }
-            if block.kind != k {
-                block.line = std::mem::take(&mut block.line).with_size(k.font_size());
-                block
-                    .line
-                    .set_mono(matches!(k, BlockKind::CodeBlock { .. }));
-                block
-                    .line
-                    .set_inline_formatting(!matches!(k, BlockKind::CodeBlock { .. }));
-                block.kind = k;
-                self.structure_dirty = true;
-            }
+            let kind = kind_from_str(&read_block_kind(state, &list, i));
+            block.id = read_block_id_at(state, &list, i, &kind);
             if block.line.bound_obj().is_none()
-                && let Some(t) = doc_text_obj(state, &list, i)
+                && let Some(text) = doc_text_obj(state, &list, i)
             {
-                block.line.bind_text(t);
+                block.line.bind_text(text);
             }
-            block.line.set_local_author(self.local_author.clone());
-            block.line.sync(state, &list);
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
+    #[allow(
         clippy::cast_possible_truncation,
-        reason = "the five-pass widget contract builds one index-aligned layout projection with finite pixel dimensions"
+        reason = "the five-pass widget contract builds the editor's layout nodes in one pass with finite pixel dimensions"
     )]
     fn build_layout(
         &mut self,
@@ -7000,138 +8451,16 @@ impl Widget for BlockEditor {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let unit;
+        let theme = if self.content_sized {
+            unit = theme.at_unit_text_scale();
+            &unit
+        } else {
+            theme
+        };
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
-        self.refresh_image_attachments();
-        self.refresh_image_dimensions();
-        self.table_editors.retain(|id, _| {
-            self.blocks.iter().any(|block| {
-                block.id == *id && matches!(block.kind, BlockKind::Table { visual: true })
-            })
-        });
-        self.table_mode_controls.retain(|id, _| {
-            self.blocks
-                .iter()
-                .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
-        });
-        self.refresh_layout_theme(theme);
-        // Lines within one authored fence stay together; distinct adjacent
-        // fences need space outside both painted backgrounds.
-        let is_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
-            .collect();
-        let is_paragraph: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|block| matches!(block.kind, BlockKind::Paragraph))
-            .collect();
-        let continues_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                index
-                    .checked_sub(1)
-                    .is_some_and(|previous| self.blocks[previous].same_code_group(block))
-            })
-            .collect();
-        let is_formula_end = compute_is_formula_end(&self.blocks);
-        let code_headers: Vec<f64> = (0..self.blocks.len())
-            .map(|index| code_header_height(&self.blocks, index, self.text_scale))
-            .collect();
-        self.stack_boxes.clear();
-        for (i, b) in self.blocks.iter_mut().enumerate() {
-            let image = self.image_attachments.get(&b.id);
-            let image_preview = image
-                .and_then(|image| standalone_markdown_image(&image.source))
-                .map(|(_, source)| self.image_dimensions.get(source).copied());
-            b.line.set_image_preview(match image_preview {
-                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
-                    dimensions,
-                    editing: image.is_some_and(|image| image.editing),
-                },
-                None => super::rich_text_line::ImagePreview::Absent,
-            });
-            b.line.set_table_preview(match b.kind {
-                BlockKind::Table { visual } => Some(visual),
-                _ => None,
-            });
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded on-screen block inset"
-            )]
-            b.line.set_layout_inset(
-                (prefix_gutter_for(&b.kind) * self.text_scale) as f32
-                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale,
-            );
-            b.line.set_wrap(
-                (self.wrap_lines
-                    || image_preview.is_some()
-                    || matches!(b.kind, BlockKind::Table { visual: false }))
-                    && formula_descriptor(&b.kind).is_none()
-                    && !matches!(b.kind, BlockKind::Table { visual: true }),
-            );
-            // A document paragraph already receives spacing from the block
-            // stack. TextInput's normal multiline field padding would add
-            // another 8 px above and below every line, making consecutive
-            // prose read like separate form fields. Keep that padding for
-            // richer controls and use the text line-height for compact prose.
-            b.line.set_compact_wrapped(
-                self.compact_paragraph_spacing && matches!(b.kind, BlockKind::Paragraph),
-            );
-            let header_height = code_headers[i] as f32;
-            b.line.set_layout_header_height(header_height);
-            b.line.prepare_layout(&self.layout_theme);
-            let row_height = b.line.row_height(theme.text_scale);
-            let mut stack_box = StackBox {
-                margin_top: 0.0,
-                fixed: (!b.line.measures_height()).then_some(row_height),
-                min: row_height,
-            };
-            if header_height > 0.0 {
-                let height = (b.kind.font_size() * theme.text_scale * 1.5)
-                    .max(20.0 * theme.text_scale)
-                    + header_height;
-                if !self.wrap_lines {
-                    stack_box.fixed = Some(height);
-                }
-                stack_box.min = height;
-            }
-            // Per-block top margin (not a uniform gap) so it can be zeroed
-            // for soft-break continuations, the first block, and consecutive
-            // code lines (one contiguous fenced unit).
-            let continues_code_block = continues_code[i];
-            let adjacent_fences =
-                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
-            let compact_paragraph_pair = self.compact_paragraph_spacing
-                && is_paragraph[i]
-                && i.checked_sub(1)
-                    .is_some_and(|previous| is_paragraph[previous]);
-            stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
-                0.0
-            } else if adjacent_fences {
-                theme.tokens.spacing.s4 * theme.text_scale
-            } else if compact_paragraph_pair {
-                theme.tokens.spacing.s1 * theme.text_scale
-            } else {
-                theme.tokens.spacing.s2 * theme.text_scale
-            };
-            if is_formula_end.get(i).copied().unwrap_or(false) {
-                stack_box.min = if formula_descriptor(&b.kind)
-                    .is_some_and(|descriptor| descriptor.mode == crate::math::FormulaMode::Visual)
-                {
-                    FORMULA_VISUAL_MIN_HEIGHT
-                } else {
-                    FORMULA_BLOCK_MIN_HEIGHT
-                };
-            }
-            if transclusion_target(b).is_some() {
-                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
-            }
-            self.stack_boxes.push(stack_box);
-        }
+        self.prepare_blocks(theme);
         // One measured leaf stands for the whole block stack. The editor
         // places its blocks itself from per-line cached heights, so an edit
         // re-measures only the lines it touched and the layout tree does not
@@ -7161,6 +8490,9 @@ impl Widget for BlockEditor {
         }
         let find_node = self.find_field.build_layout(taffy, theme, node_map);
         let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
+        if !self.find_visible {
+            find_style.display = taffy::Display::None;
+        }
         find_style.position = taffy::Position::Absolute;
         find_style.inset.top = length(8.0_f32 * theme.text_scale);
         find_style.inset.right = length(108.0_f32 * theme.text_scale);
@@ -7169,25 +8501,58 @@ impl Widget for BlockEditor {
         let _ = taffy.set_style(find_node, find_style);
         self.find_node = Some(find_node);
         layout_children.push(find_node);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                align_items: Some(taffy::AlignItems::Stretch),
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
+        if self.replace_enabled {
+            self.replace_button
+                .set_enabled(self.find_replace_request().is_some());
+            let field = self.replace_field.build_layout(taffy, theme, node_map);
+            let button = self.replace_button.build_layout(taffy, theme, node_map);
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            let all = self.replace_all_button.build_layout(taffy, theme, node_map);
+            for (node, top, right, width) in [
+                (field, 48.0_f32, 108.0_f32, 248.0_f32),
+                (button, 48.0_f32, 8.0_f32, 96.0_f32),
+                (all, 88.0_f32, 8.0_f32, 120.0_f32),
+            ] {
+                let mut style = taffy.style(node).cloned().unwrap_or_default();
+                if !self.find_visible {
+                    style.display = taffy::Display::None;
+                }
+                style.position = taffy::Position::Absolute;
+                style.inset.top = length(top * theme.text_scale);
+                style.inset.right = length(right * theme.text_scale);
+                style.size.width = length(width * theme.text_scale);
+                style.size.height = length(36.0_f32 * theme.text_scale);
+                let _ = taffy.set_style(node, style);
+                layout_children.push(node);
+            }
+            self.replace_node = Some(field);
+            self.replace_button_node = Some(button);
+            self.replace_all_node = Some(all);
+        }
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::Stretch),
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
             },
-            &layout_children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            // The drag handles stand in the editor's own leading column,
+            // so a host leaves no gutter for them and they are never
+            // clipped by the window edge at any text scale.
+            padding: taffy::Rect {
+                left: length(self.handle_column() as f32),
+                right: length(0.0_f32),
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &layout_children, node_map, self)
     }
 
     #[expect(
@@ -7197,13 +8562,10 @@ impl Widget for BlockEditor {
         reason = "the five-pass widget contract applies one index-aligned layout projection with finite pixel dimensions"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.table_relayout = false;
+        // A host that solved the tree without measuring the stack.
+        self.settle_restack();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(content) = self.content_node {
             let width = taffy.unrounded_layout(content).size.width;
@@ -7226,14 +8588,25 @@ impl Widget for BlockEditor {
             .collect();
         for (index, (b, block_rect)) in self.blocks.iter_mut().zip(block_rects).enumerate() {
             b.line.apply_layout_external(block_rect);
+            // Where this line's text starts: the content edge every box on
+            // the block (a table, an image, an embed) starts at too.
+            let pad = b.line.text_inset(&self.layout_theme);
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
             let indent_px =
                 f64::from(LIST_INDENT_STEP_PX) * f64::from(b.indent()) * self.text_scale;
+            // A formula's source line does not wrap, so it has no document
+            // inset of its own; move it in by that inset so its card and
+            // source start where a wrapping code block's do.
+            let edge_px = if self.wrap_lines && formula_descriptor(&b.kind).is_some() {
+                (super::text_input::ML_PAD_X - pad).max(0.0)
+            } else {
+                0.0
+            };
             let original = b.line.get_rect();
             let original = Rect::new(
-                original.x0 + indent_px,
+                original.x0 + indent_px + edge_px,
                 original.y0,
                 original.x1,
                 original.y1,
@@ -7246,13 +8619,13 @@ impl Widget for BlockEditor {
                 };
                 if let Some(slot) = self.table_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
-                        original.x0,
+                        original.x0 + pad,
                         source_bottom
                             + f64::from(table_toolbar_height(
                                 original.width() as f32,
                                 self.text_scale as f32,
                             )),
-                        original.x1,
+                        original.x1 - pad,
                         original.y1,
                     ));
                 }
@@ -7267,21 +8640,30 @@ impl Widget for BlockEditor {
             if let Some(target) = transclusion_target(b)
                 && let Some(slot) = self.transclusion_rects.get_mut(index)
             {
-                *slot = Some((original, target));
+                // The card's edge is the content edge, where text starts.
+                *slot = Some((
+                    Rect::new(
+                        original.x0 + pad,
+                        original.y0,
+                        original.x1 - pad,
+                        original.y1,
+                    ),
+                    target,
+                ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
                 let source_bottom =
                     (original.y0 + f64::from(b.line.image_source_height())).min(original.y1);
                 if let Some(slot) = self.image_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
-                        original.x0,
+                        original.x0 + pad,
                         source_bottom
                             + if image.editing {
                                 6.0 * self.text_scale
                             } else {
                                 0.0
                             },
-                        original.x1,
+                        original.x1 - pad,
                         original.y1,
                     ));
                 }
@@ -7319,7 +8701,7 @@ impl Widget for BlockEditor {
             if ends_formula {
                 let mode = descriptor.map_or(crate::math::FormulaMode::Source, |value| value.mode);
                 let preview = Rect::new(
-                    original.x0 + 12.0,
+                    original.x0 + pad + 12.0,
                     (if mode == crate::math::FormulaMode::Source {
                         source_bottom + FORMULA_PREVIEW_GAP
                     } else {
@@ -7351,6 +8733,16 @@ impl Widget for BlockEditor {
                     .map_or(new_origin.y, |viewport| viewport.y0),
             );
             self.find_field.apply_layout(taffy, find_node, find_origin);
+            if let Some(node) = self.replace_node {
+                self.replace_field.apply_layout(taffy, node, find_origin);
+            }
+            if let Some(node) = self.replace_button_node {
+                self.replace_button.apply_layout(taffy, node, find_origin);
+            }
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
+                    .apply_layout(taffy, node, find_origin);
+            }
             let field = self.find_field.get_rect();
             let size = 30.0 * self.text_scale;
             let gap = 3.0 * self.text_scale;
@@ -7391,6 +8783,28 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(test)]
+        let setup_probe = crate::profiling::frame_probe::span("block_setup");
+        let incoming = std::mem::take(scene);
+        let track_paragraphs = !self.blocks.is_empty()
+            && !self.has_open_popup()
+            && self.block_drag.is_none()
+            && self.document_selection.is_none()
+            && self.retained_block_selection.is_none()
+            && self.blocks.iter().all(|block| {
+                damages_where_it_paints(&block.kind) && block.line.selection_range().is_none()
+            });
+        let mut paragraph_parts = Vec::new();
+        let mut paragraph_scene = Scene::new();
+        self.line_overhang.clear();
+        self.table_focus_paint.clear();
+        let unit;
+        let theme = if self.content_sized {
+            unit = theme.at_unit_text_scale();
+            &unit
+        } else {
+            theme
+        };
         self.refresh_image_dimensions();
         let single_block = self.blocks.len() == 1;
         for block in &mut self.blocks {
@@ -7399,28 +8813,31 @@ impl Widget for BlockEditor {
             } else {
                 ""
             };
-            block.line.inner_mut().set_placeholder(hint);
+            if block.line.inner().placeholder() != hint {
+                block.line.inner_mut().set_placeholder(hint);
+            }
             // New lines (a split, a paste) take the editor's alignment too.
             if block.line.align() != self.text_align {
                 block.line.set_align(self.text_align);
             }
         }
 
-        self.draw_block_drag_affordance(scene, transform, theme);
+        let handles = self.draw_block_drag_affordance(scene, transform, theme);
+
+        // Syntax colours are derived per change, not per frame; an unchanged
+        // run keeps the colours it has.
+        let highlighted = refresh_syntax_colors(&mut self.blocks);
+        #[cfg(test)]
+        {
+            self.highlighted_lines = self.highlighted_lines.saturating_add(highlighted);
+        }
+        #[cfg(not(test))]
+        let _ = highlighted;
 
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
         let ordinals = numbered_ordinals(&self.blocks);
-        let code_languages: Vec<Option<String>> = self
-            .blocks
-            .iter()
-            .map(|block| match &block.kind {
-                BlockKind::CodeBlock { lang } => Some(lang.clone().unwrap_or_default()),
-                _ => None,
-            })
-            .collect();
-        apply_syntax_colors(&mut self.blocks, &code_languages);
         let mut run_start = 0;
         let code_runs = self
             .blocks
@@ -7436,58 +8853,6 @@ impl Widget for BlockEditor {
                 Some(run_start)
             })
             .collect::<Vec<_>>();
-        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
-        let mut formula_index = 0usize;
-        while formula_index < self.blocks.len() {
-            let Some(descriptor) = self
-                .blocks
-                .get(formula_index)
-                .and_then(|b| formula_descriptor(&b.kind))
-            else {
-                formula_index = formula_index.saturating_add(1);
-                continue;
-            };
-            let end = formula_run_end(&self.blocks, formula_index);
-            let source = self
-                .blocks
-                .get(formula_index..=end)
-                .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
-                .unwrap_or_default();
-            if let Some(slot) = formula_runs.get_mut(formula_index) {
-                *slot = Some(FormulaRunPreview {
-                    end,
-                    descriptor,
-                    source,
-                });
-            }
-            formula_index = end.saturating_add(1);
-        }
-
-        self.code_copy_hits.clear();
-        let mut code_index = 0usize;
-        while code_index < code_languages.len() {
-            let Some(Some(_)) = code_languages.get(code_index) else {
-                code_index = code_index.saturating_add(1);
-                continue;
-            };
-            let mut end = code_index;
-            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
-                end = end.saturating_add(1);
-            }
-            if formula_runs.get(code_index).is_none_or(Option::is_none)
-                && let Some(line) = line_rects.get(code_index)
-            {
-                let size = 22.0 * self.text_scale;
-                let rect = Rect::new(
-                    line.x1 - size - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
-                    line.x1 - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
-                );
-                self.code_copy_hits.push((rect, code_index, end));
-            }
-            code_index = end.saturating_add(1);
-        }
 
         let paint_rects: Vec<_> = (0..self.blocks.len())
             .map(|index| self.block_paint_rect(index))
@@ -7516,9 +8881,77 @@ impl Widget for BlockEditor {
                         .is_some_and(|group| group.contains(&index))
             })
             .collect();
+
+        // A run's ground, formula preview and copy chrome are painted by its
+        // first line, so only a run whose first line paints needs them: the
+        // rest of the document derives nothing this frame.
+        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
+        let mut formula_index = 0usize;
+        while formula_index < self.blocks.len() {
+            let Some(descriptor) = self
+                .blocks
+                .get(formula_index)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                formula_index = formula_index.saturating_add(1);
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, formula_index);
+            if painted.get(formula_index).copied().unwrap_or(false) {
+                let source = self
+                    .blocks
+                    .get(formula_index..=end)
+                    .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default();
+                #[cfg(test)]
+                {
+                    self.formula_sources = self.formula_sources.saturating_add(1);
+                }
+                if let Some(slot) = formula_runs.get_mut(formula_index) {
+                    *slot = Some(FormulaRunPreview {
+                        end,
+                        descriptor,
+                        source,
+                    });
+                }
+            }
+            formula_index = end.saturating_add(1);
+        }
+
+        self.code_copy_hits.clear();
+        let mut code_index = 0usize;
+        while code_index < code_runs.len() {
+            let Some(Some(_)) = code_runs.get(code_index) else {
+                code_index = code_index.saturating_add(1);
+                continue;
+            };
+            let mut end = code_index;
+            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
+                end = end.saturating_add(1);
+            }
+            if painted.get(code_index).copied().unwrap_or(false)
+                && formula_descriptor(&self.blocks[code_index].kind).is_none()
+                && let Some(line) = line_rects.get(code_index)
+            {
+                let size = 22.0 * self.text_scale;
+                let rect = Rect::new(
+                    line.x1 - size - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
+                    line.x1 - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
+                );
+                self.code_copy_hits.push((rect, code_index, end));
+            }
+            code_index = end.saturating_add(1);
+        }
+
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
+        let selected_blocks = self
+            .retained_block_selection
+            .as_ref()
+            .and_then(|_| self.selected_block_range());
         let mut ctx = BlockDrawCtx {
             scene,
             text_renderer,
@@ -7531,6 +8964,10 @@ impl Widget for BlockEditor {
             image_previews: self.image_preview_rects.as_slice(),
             image_attachments: &self.image_attachments,
             image_store: self.image_store.as_ref(),
+            table_cells: None,
+            table_source: None,
+            collect_code_ground: false,
+            code_ground: None,
         };
         let mut formulas = FormulaDrawCtx {
             runs: formula_runs.as_slice(),
@@ -7541,7 +8978,12 @@ impl Widget for BlockEditor {
             focus: self.visual_formula_focus,
         };
 
+        let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
+        #[cfg(test)]
+        drop(setup_probe);
+        #[cfg(test)]
+        let blocks_probe = crate::profiling::frame_probe::span("block_paint");
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             if !painted[idx] {
                 continue;
@@ -7554,9 +8996,32 @@ impl Widget for BlockEditor {
                 .as_ref()
                 .filter(|group| group.contains(&idx))
                 .map(|_| std::mem::take(ctx.scene));
-            b.line
-                .inner_mut()
-                .suppress_caret_paint(preceding.is_some() || self.caret_paint_suppressed);
+            if b.text().is_empty()
+                && selected_blocks
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&idx))
+            {
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ctx.theme.tokens.colors.intent.you.with_alpha_factor(0.35),
+                    None,
+                    &b.line.get_rect(),
+                );
+            }
+            // A tracked line paints its caret as a part of its own, so a caret
+            // that comes, goes or moves damages where it is and was, not the
+            // line (focus entering an empty paragraph, an arrow key).
+            let caret_apart = track_paragraphs
+                && preceding.is_none()
+                && !self.caret_paint_suppressed
+                && always_draws_its_line(&b.kind)
+                && !matches!(self.image_preview_rects.get(idx), Some(Some(_)))
+                && !matches!(self.transclusion_rects.get(idx), Some(Some(_)))
+                && b.line.inner().paints_shaped_caret();
+            b.line.inner_mut().suppress_caret_paint(
+                preceding.is_some() || self.caret_paint_suppressed || caret_apart,
+            );
             if let Some(Some((rect, id))) = self.transclusion_rects.get(idx) {
                 draw_transclusion_card(
                     ctx.scene,
@@ -7567,16 +9032,36 @@ impl Widget for BlockEditor {
                     self.transclusion_previews.get(id),
                 );
             } else {
+                // A table's cells become parts of their own.
+                ctx.table_cells =
+                    (track_paragraphs && matches!(b.kind, BlockKind::Table { .. })).then(Vec::new);
+                // A code run's ground too.
+                ctx.collect_code_ground = track_paragraphs;
                 draw_block(b, idx, &mut ctx, &mut formulas);
+                ctx.collect_code_ground = false;
             }
+            let code_ground = ctx.code_ground.take();
             b.line.inner_mut().suppress_caret_paint(false);
+            if let Some(overhang) = b.line.overhang() {
+                self.line_overhang.insert(b.id.clone(), overhang);
+            }
+            // A tracked table's ground (its frame and grid) so far; its source
+            // line, cells, focused cell and controls follow apart.
+            let source = ctx.table_source.take();
+            let mut table_parts = ctx.table_cells.take().map(|cells| TableParts {
+                source,
+                ground: std::mem::take(ctx.scene),
+                cells,
+                focus: Scene::new(),
+                controls: Scene::new(),
+                controls_paint: None,
+            });
             if matches!(b.kind, BlockKind::Table { visual: true })
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
             {
-                let table = self
-                    .table_editors
-                    .entry(b.id.clone())
-                    .or_insert_with(|| crate::widget::table::Table::new(format!("table-{}", b.id)));
+                let table = self.table_editors.entry(b.id.clone()).or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!("table-{}", b.id))
+                });
                 let rows: Vec<Vec<String>> = markdown_table_data_rows(b.text())
                     .into_iter()
                     .map(|row| row.into_iter().map(decode_table_cell).collect())
@@ -7598,7 +9083,13 @@ impl Widget for BlockEditor {
                         presence,
                         self.caret_paint_suppressed,
                     );
+                    if let Some(painted) = table.projected_focus_paint() {
+                        self.table_focus_paint.insert(b.id.clone(), painted);
+                    }
                 }
+            }
+            if let Some(parts) = table_parts.as_mut() {
+                parts.focus = std::mem::take(ctx.scene);
             }
             if let BlockKind::Table { visual } = b.kind
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
@@ -7658,6 +9149,136 @@ impl Widget for BlockEditor {
                         presence,
                     );
                 }
+                if let Some(parts) = table_parts.as_mut() {
+                    // Where the controls stand whether or not they show, and
+                    // the focus ring a button paints around itself.
+                    let reach = f64::from(theme.tokens.spacing.s2);
+                    parts.controls_paint = [&control.button, &control.add_row, &control.add_column]
+                        .into_iter()
+                        .map(|button| button.get_rect().inflate(reach, reach))
+                        .reduce(|all, rect| all.union(rect));
+                }
+            }
+            if let Some(parts) = table_parts.as_mut() {
+                parts.controls = std::mem::take(ctx.scene);
+            }
+            if let (Some(parts), Some(painted)) =
+                (table_parts, paint_rects.get(idx).copied().flatten())
+            {
+                // The table's frame where the block paints, across the
+                // editor; each cell where it is; the focused cell where it
+                // is and was; the controls where they stand.
+                let mut ground = vec![
+                    Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1)
+                        .union(b.line.get_rect()),
+                ];
+                ground.extend(self.line_overhang.get(&b.id).copied());
+                ground.extend(self.drawn_overhang.get(&b.id).copied());
+                if let Some(source) = parts.source {
+                    // The Markdown source line, and its correction chip
+                    // where it is and was.
+                    let line = b.line.get_rect();
+                    let mut damage = vec![line];
+                    damage.extend(self.line_overhang.get(&b.id).copied());
+                    damage.extend(self.drawn_overhang.get(&b.id).copied());
+                    paragraph_scene.append(&source, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:source", b.id),
+                        line,
+                        source,
+                        damage,
+                    ));
+                }
+                paragraph_scene.append(&parts.ground, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    b.id.clone(),
+                    painted,
+                    parts.ground,
+                    ground,
+                ));
+                for (index, (cell, scene)) in parts.cells.into_iter().enumerate() {
+                    paragraph_scene.append(&scene, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:cell:{index}", b.id),
+                        cell,
+                        scene,
+                        vec![cell],
+                    ));
+                }
+                let focus = [
+                    self.table_focus_paint.get(&b.id),
+                    self.drawn_table_focus.get(&b.id),
+                ]
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+                paragraph_scene.append(&parts.focus, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{}:focus", b.id),
+                    painted,
+                    parts.focus,
+                    focus,
+                ));
+                paragraph_scene.append(&parts.controls, None);
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{}:controls", b.id),
+                    painted,
+                    parts.controls,
+                    parts.controls_paint.into_iter().collect(),
+                ));
+            } else if track_paragraphs {
+                if let Some((ground, scene)) = code_ground {
+                    // The run's ground, across the editor where it stands.
+                    paragraph_scene.append(&scene, None);
+                    paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                        format!("{}:ground", b.id),
+                        ground,
+                        scene,
+                        vec![Rect::new(self.rect.x0, ground.y0, self.rect.x1, ground.y1)],
+                    ));
+                }
+                let drawn = std::mem::take(ctx.scene);
+                paragraph_scene.append(&drawn, None);
+                let rect = b.line.get_rect();
+                // A paragraph paints in its line; a heading, quote, list item
+                // or rule also in its prefix gutter, so it damages its row of
+                // the editor; a code line paints in its line over the run's
+                // ground, a part of its own. Then its correction chip where
+                // it is and was.
+                let row = match (&b.kind, paint_rects.get(idx).copied().flatten()) {
+                    (BlockKind::Paragraph | BlockKind::CodeBlock { .. }, _) | (_, None) => rect,
+                    (_, Some(painted)) => {
+                        Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1).union(rect)
+                    }
+                };
+                let mut damage = vec![row];
+                damage.extend(self.line_overhang.get(&b.id).copied());
+                damage.extend(self.drawn_overhang.get(&b.id).copied());
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    b.id.clone(),
+                    rect,
+                    drawn,
+                    damage,
+                ));
+                if caret_apart {
+                    let mut caret_scene = Scene::new();
+                    if let Some(caret) = b.line.inner_mut().draw_caret_apart(
+                        &mut caret_scene,
+                        ctx.transform,
+                        ctx.theme,
+                    ) {
+                        // Its antialiased edges reach the pixels beside it.
+                        let damage = vec![caret.inflate(1.0, 1.0)];
+                        paragraph_scene.append(&caret_scene, None);
+                        paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                            format!("{}:caret", b.id),
+                            caret,
+                            caret_scene,
+                            damage,
+                        ));
+                    }
+                }
             }
             if let Some(preceding) = preceding {
                 let preview = std::mem::replace(ctx.scene, preceding);
@@ -7670,19 +9291,20 @@ impl Widget for BlockEditor {
                     .text_renderer
                     .measure(b.text(), b.kind.font_size(), Some(line_rect.width() as f32))
                     .0;
-                let mut bounds = Rect::new(
-                    line_rect.x0 - 24.0,
-                    line_rect.y0 - 4.0,
-                    (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
-                    line_rect.y1 + 4.0,
-                );
-                if let Some(Some(painted)) = paint_rects.get(idx)
+                let bounds = if let Some(Some(painted)) = paint_rects.get(idx)
                     && (*painted != line_rect
                         || matches!(b.kind, BlockKind::Quote)
                         || transclusion_target(b).is_some())
                 {
-                    bounds = painted.inflate(4.0, 4.0);
-                }
+                    painted.inflate(4.0, 4.0)
+                } else {
+                    Rect::new(
+                        line_rect.x0 - 24.0,
+                        line_rect.y0 - 4.0,
+                        (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
+                        line_rect.y1 + 4.0,
+                    )
+                };
                 ctx.scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -7700,6 +9322,10 @@ impl Widget for BlockEditor {
                 }
             }
         }
+        #[cfg(test)]
+        drop(blocks_probe);
+        #[cfg(test)]
+        let suffix_probe = crate::profiling::frame_probe::span("block_suffix");
         if let (Some(_), Some((preview, bounds))) = (active_drag, dragged_scene) {
             // Clamp against the actual preview, not the full-width text row:
             // short paragraphs must still follow horizontal pointer movement.
@@ -7714,7 +9340,7 @@ impl Widget for BlockEditor {
                 0.0
             };
             let delta = drag_offset;
-            let ghost_transform = translated(ctx.transform, delta.x, delta.y);
+            let ghost_transform = ctx.transform.pre_translate((delta.x, delta.y).into());
             let card = vello::kurbo::RoundedRect::from_rect(bounds, 6.0);
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -7745,12 +9371,25 @@ impl Widget for BlockEditor {
             self.copied_code_start = None;
         }
         for (rect, start, end) in &self.code_copy_hits {
+            let Some((line, inset, run)) = self.blocks.get(*start).map(|block| {
+                (
+                    block.line.get_rect(),
+                    block.line.text_inset(ctx.theme),
+                    block.id.clone(),
+                )
+            }) else {
+                continue;
+            };
+            // Each run's chrome is a part of its own, which moves with the
+            // run: a paragraph that came above it repaints it where it was
+            // and is, not the editor.
+            let held = track_paragraphs.then(|| std::mem::take(ctx.scene));
             let dragging_this_group = dragged_group
                 .as_ref()
                 .is_some_and(|group| group.contains(start));
             let chrome_transform = if dragging_this_group {
                 let delta = drag_offset;
-                translated(ctx.transform, delta.x, delta.y)
+                ctx.transform.pre_translate((delta.x, delta.y).into())
             } else {
                 ctx.transform
             };
@@ -7775,18 +9414,14 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let language =
-                code_languages
-                    .get(*start)
-                    .and_then(Option::as_ref)
-                    .map_or(
-                        "Code",
-                        |value| if value.is_empty() { "Code" } else { value },
-                    );
-            let Some(line) = self.blocks.get(*start).map(|block| block.line.get_rect()) else {
-                continue;
+            let language = match self.blocks.get(*start).map(|block| &block.kind) {
+                Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
+                    lang.as_str()
+                }
+                _ => "Code",
             };
-            let left = line.x0 + 2.0 * self.text_scale;
+            // The language label starts where the code does.
+            let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
             let active = !dragging_this_group
                 && !self.caret_paint_suppressed
@@ -7837,6 +9472,19 @@ impl Widget for BlockEditor {
                     Some(available as f32),
                 );
             }
+            if let Some(held) = held {
+                let chrome = std::mem::replace(ctx.scene, held);
+                paragraph_scene.append(&chrome, None);
+                // The label and hint from where the code starts, the button
+                // at the run's corner.
+                let reach = 2.0 * self.text_scale;
+                paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                    format!("{run}:chrome"),
+                    *rect,
+                    chrome,
+                    vec![Rect::new(line.x0, rect.y0, rect.x1, rect.y1).inflate(reach, reach)],
+                ));
+            }
         }
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
@@ -7872,19 +9520,68 @@ impl Widget for BlockEditor {
         // The opaque drag preview can cover its destination. Keep the drop
         // marker above both the preview and its code/header chrome.
         if let Some(drag) = self.block_drag.filter(|drag| drag.active) {
-            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.accent[5], drag);
+            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.intent.you, drag);
         }
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
         // Link hit geometry depends on the shaped positions produced by this
         // frame's block draw. Refreshing it before that draw made first-frame
         // style, scale, and BiDi changes unclickable.
-        self.refresh_live_link_hits(theme);
+        #[cfg(test)]
+        let links_probe = crate::profiling::frame_probe::span("block_link_hits");
+        self.refresh_live_link_hits(theme, &painted);
+        #[cfg(test)]
+        drop(links_probe);
+        if let Some(prefix) = outside_prefix {
+            let suffix = std::mem::take(scene);
+            let mut complete = prefix.clone();
+            complete.append(&paragraph_scene, None);
+            complete.append(&suffix, None);
+            *scene = complete;
+            // The editor's top edge and width, not its height: a block that
+            // came or went grows or shrinks it, and each block is a part
+            // that says where it was and is.
+            let place = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0);
+            // The prefix is the drag handles, a part that moves with the
+            // caret's block: where they were and are.
+            let reach = f64::from(theme.tokens.spacing.s1);
+            let handle_damage: Vec<Rect> = handles
+                .iter()
+                .map(|handle| handle.inflate(reach, reach))
+                .collect();
+            paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                "drag-handles".into(),
+                handle_damage
+                    .iter()
+                    .copied()
+                    .reduce(|all, handle| all.union(handle))
+                    .unwrap_or_else(|| Rect::new(place.x0, place.y0, place.x1, place.y0 + 1.0)),
+                prefix,
+                handle_damage,
+            ));
+            self.paint_damage.record(
+                self.paint_extent(),
+                Some(crate::widget::paint_damage::PaintFrame::new(
+                    vec![place, presence.viewport.get().unwrap_or(place)],
+                    transform,
+                    theme,
+                    suffix,
+                    paragraph_parts,
+                )),
+            );
+        } else {
+            self.paint_damage.record(self.paint_extent(), None);
+        }
+        let own = std::mem::replace(scene, incoming);
+        scene.append(&own, None);
+        #[cfg(test)]
+        drop(suffix_probe);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.read_only {
             return;
         }
+        self.begin_edit();
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         let scope = match typing {
@@ -7925,6 +9622,11 @@ impl Widget for BlockEditor {
             .collect::<Vec<_>>();
         if self.find_visible {
             children.push(&self.find_field);
+            if self.replace_enabled {
+                children.push(&self.replace_field);
+                children.push(&self.replace_button);
+                children.push(&self.replace_all_button);
+            }
         }
         children
     }
@@ -7937,8 +9639,31 @@ impl Widget for BlockEditor {
             .collect::<Vec<_>>();
         if self.find_visible {
             children.push(&mut self.find_field);
+            if self.replace_enabled {
+                children.push(&mut self.replace_field);
+                children.push(&mut self.replace_button);
+                children.push(&mut self.replace_all_button);
+            }
         }
         children
+    }
+
+    /// Block lines are not children, so their fields' timers (a settling
+    /// squiggle, a suggestion for the word under the caret) are collected
+    /// here alongside the children's.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let mut earliest = self
+            .blocks
+            .iter()
+            .filter_map(|block| block.line.next_wake_deadline())
+            .min();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest =
+                    Some(earliest.map_or(deadline, |old: crate::time::Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -8009,9 +9734,8 @@ impl Widget for BlockEditor {
     }
 
     fn wants_tab_input(&self) -> bool {
-        // Both prose/list nesting and code indentation belong to this editor;
-        // the host must route Tab here before traversing other controls.
-        true
+        // Escape then Tab is the keyboard route back to surrounding controls.
+        !self.read_only && !self.tab_navigation
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
@@ -8074,13 +9798,15 @@ impl Widget for BlockEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if self.read_only {
             return false;
         }
+        self.begin_edit();
         match action {
             Action::SetValue(value) => {
                 let cleaned: String = value
@@ -8100,6 +9826,7 @@ impl Widget for BlockEditor {
                 }
                 self.edit_scope = EditScope::Anywhere;
                 self.blocks = vec![block];
+                self.retained_block_selection = None;
                 self.document_selection = None;
                 self.structure_dirty = true;
                 self.focus_block(0, CursorPlacement::End);
@@ -8107,6 +9834,7 @@ impl Widget for BlockEditor {
                 true
             }
             Action::SetSelection { anchor, focus } => {
+                self.retained_block_selection = None;
                 let text = self
                     .blocks
                     .iter()
@@ -8138,6 +9866,7 @@ impl Widget for BlockEditor {
                 let (anchor, focus) = (position(byte_at(*anchor)), position(byte_at(*focus)));
                 self.focus_block(focus.block, CursorPlacement::Byte(focus.byte));
                 if anchor.block == focus.block {
+                    self.retained_block_selection = None;
                     self.document_selection = None;
                     if let Some(block) = self.blocks.get_mut(focus.block) {
                         block
@@ -8164,6 +9893,9 @@ impl Widget for BlockEditor {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if self.find_visible {
+            if self.replace_enabled && self.replace_field.is_focused() {
+                return Widget::ime_cursor_rect(&self.replace_field);
+            }
             return Widget::ime_cursor_rect(&self.find_field);
         }
         if self.link_popover.is_visible() {
@@ -8172,397 +9904,108 @@ impl Widget for BlockEditor {
         if self.slash_menu.is_visible() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
-        let block = self.blocks.get(self.focused?)?;
-        if self
-            .image_attachments
-            .get(&block.id)
-            .is_some_and(|image| !image.editing)
-        {
+        self.document_caret_rect()
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if self.read_only {
             return None;
         }
-        if let Some(rect) = self
-            .table_editors
-            .get(&block.id)
-            .and_then(super::table::Table::projected_ime_rect)
-        {
-            return Some(rect);
+        self.ime_cursor_rect()?;
+        let (scope, field) = if self.find_visible {
+            if self.replace_enabled && self.replace_field.is_focused() {
+                (
+                    b"replace".as_slice(),
+                    self.replace_field.ime_edit_fingerprint(key)?,
+                )
+            } else {
+                (
+                    b"find".as_slice(),
+                    self.find_field.ime_edit_fingerprint(key)?,
+                )
+            }
+        } else if self.link_popover.is_visible() {
+            (
+                b"link".as_slice(),
+                self.link_popover.ime_edit_fingerprint(key)?,
+            )
+        } else if self.slash_menu.is_visible() {
+            (
+                b"slash".as_slice(),
+                self.slash_menu.ime_edit_fingerprint(key)?,
+            )
+        } else {
+            let block = self.blocks.get(self.focused?)?;
+            let field = if let Some(table) = self
+                .table_editors
+                .get(&block.id)
+                .filter(|table| table.projected_ime_rect().is_some())
+            {
+                table.projected_ime_fingerprint(key)?
+            } else {
+                block.line.ime_edit_fingerprint(key)?
+            };
+            (block.id.as_bytes(), field)
+        };
+        let mut stamp = crate::ime::scoped_fingerprint(scope, field, key);
+        if let Some(selection) = self.document_selection {
+            for offset in [
+                selection.anchor.block,
+                selection.anchor.byte,
+                selection.cursor.block,
+                selection.cursor.byte,
+            ] {
+                stamp = crate::ime::scoped_fingerprint(&offset.to_le_bytes(), stamp, key);
+            }
         }
-        Widget::ime_cursor_rect(&block.line)
+        match &self.retained_block_selection {
+            Some(RetainedBlockSelection::Active(ids)) => {
+                stamp = crate::ime::scoped_fingerprint(b"retained", stamp, key);
+                for id in ids {
+                    stamp = crate::ime::scoped_fingerprint(id.as_bytes(), stamp, key);
+                }
+            }
+            Some(RetainedBlockSelection::Refused) => return None,
+            None => {}
+        }
+        Some(stamp)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.is_focused
+            && !self.read_only
+            && !self.find_visible
+            && !self.link_popover.is_visible()
+            && !self.slash_menu.is_visible()
+            && self.visual_formula_focus.is_none()
+            && self.ime_cursor_rect().is_some()
+            && self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| {
+                    block.kind.is_editable() && !matches!(block.kind, BlockKind::Table { .. })
+                })
+    }
+
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
-    #[expect(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
-        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
-    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let mut children: Vec<AccessNode> = self
-            .formula_chrome
-            .iter()
-            .enumerate()
-            .filter_map(|(start, chrome)| {
-                let chrome = chrome.as_ref()?;
-                let syntax = match chrome.descriptor.syntax {
-                    crate::math::FormulaSyntax::Tex => "TeX",
-                    crate::math::FormulaSyntax::Typst => "Typst",
-                };
-                let source = self
-                    .blocks
-                    .get(start..=chrome.end)?
-                    .iter()
-                    .map(Block::text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(
-                    AccessNode::new(Role::Group)
-                        .with_name(format!("{syntax} formula"))
-                        .with_hashed_key(format!("notes.formula:{}", self.blocks.get(start)?.id))
-                        .with_value(source)
-                        .with_children(vec![
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Source editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
-                                    ),
-                                    ..Default::default()
-                                }),
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Visual editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
-                                    ),
-                                    ..Default::default()
-                                }),
-                        ]),
-                )
-            })
-            .collect();
-        children.extend(
-            self.code_copy_hits
-                .iter()
-                .filter_map(|(bounds, start, end)| {
-                    let run = self.blocks.get(*start..=*end)?;
-                    let language = run.first().and_then(|block| match &block.kind {
-                        BlockKind::CodeBlock { lang } => lang.as_deref(),
-                        _ => None,
-                    });
-                    Some(
-                        AccessNode::new(Role::Button)
-                            .with_name(language.map_or_else(
-                                || "Copy code".to_string(),
-                                |lang| format!("Copy {lang} code"),
-                            ))
-                            .with_action_target(self.code_copy_run_target(*start, *end)?)
-                            .with_bounds(*bounds)
-                            .with_state(AccessState::new().focusable(true)),
-                    )
-                }),
-        );
-        if self.find_visible {
-            if let Some(search) = self.find_field.accessibility() {
-                children.push(search.with_name(crate::i18n!("block-editor-find-placeholder")));
-            }
-            children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-previous"))
-                    .with_action_target("notes.find:previous")
-                    .with_bounds(self.find_previous_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-next"))
-                    .with_action_target("notes.find:next")
-                    .with_bounds(self.find_next_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-close"))
-                    .with_action_target("notes.find:close")
-                    .with_bounds(self.find_close_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-        }
-        let total = self.blocks.len();
-        children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
-            let up_disabled = self.neighboring_group(index, true).is_none();
-            let position = index.saturating_add(1);
-            let down_disabled = self.neighboring_group(index, false).is_none();
-            let bounds = self
-                .block_drag_handle_rect(index)
-                .unwrap_or_else(|| block.line.get_rect());
-            let mut block_children = vec![
-                AccessNode::new(Role::Button)
-                    .with_name("Move block up")
-                    .with_action_target(Self::block_move_target(&block.id, "up"))
-                    .with_bounds(bounds)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(!up_disabled)
-                            .disabled(up_disabled),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Move block down")
-                    .with_action_target(Self::block_move_target(&block.id, "down"))
-                    .with_bounds(bounds)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(!down_disabled)
-                            .disabled(down_disabled),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-change-type"))
-                    .with_action_target(format!("notes.block-type:{}", block.id))
-                    .with_bounds(bounds)
-                    .with_state(AccessState::new().focusable(true)),
-            ];
-            if block.kind.is_editable()
-                && block.line.get_rect().height() > 0.0
-                && let Some(text) = block.line.accessibility()
-            {
-                block_children.insert(
-                    0,
-                    text.with_name(crate::i18n::I18nManager::format("widget-block-text", &[]))
-                        .with_action_target(format!("notes.block-text:{}", block.id))
-                        .with_bounds(block.line.get_rect()),
-                );
-            }
-            for (direction, label, disabled) in [
-                (
-                    "in",
-                    "widget-block-indent",
-                    self.blocks[self.movable_group(index)]
-                        .iter()
-                        .any(|b| b.indent() >= MAX_LIST_INDENT),
-                ),
-                ("out", "widget-block-outdent", block.indent() == 0),
-            ] {
-                block_children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::I18nManager::format(label, &[]))
-                        .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
-                        .with_bounds(bounds)
-                        .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
-                );
-            }
-            if let Some(target) = transclusion_target(block) {
-                let name = self
-                    .transclusion_previews
-                    .get(&target)
-                    .map_or("embedded note", |preview| preview.title.as_str());
-                let card_bounds = self
-                    .transclusion_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .map_or_else(|| block.line.get_rect(), |(rect, _)| rect);
-                block_children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(format!("Open embedded note: {name}"))
-                        .with_description("Live preview of a linked note")
-                        .with_action_target(transclusion_action_target(target))
-                        .with_bounds(card_bounds)
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            if matches!(block.kind, BlockKind::Table { .. }) {
-                if let Some(control) = self.table_mode_controls.get(&block.id)
-                    && let Some(mut button) = control.button.accessibility()
-                {
-                    button = button
-                        .with_bounds(control.button.get_rect())
-                        .with_action_target(format!("notes.table-mode:{}", block.id));
-                    block_children.push(button);
-                    for (prefix, button) in [
-                        ("notes.table-add-row", &control.add_row),
-                        ("notes.table-add-column", &control.add_column),
-                    ] {
-                        if let Some(node) = button.accessibility() {
-                            block_children.push(
-                                node.with_bounds(button.get_rect())
-                                    .with_action_target(format!("{prefix}:{}", block.id)),
-                            );
-                        }
-                    }
-                }
-                let table_bounds = self
-                    .table_preview_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .unwrap_or_else(|| block.line.get_rect());
-                let headers = markdown_table_data_rows(block.text())
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default();
-                let rows = markdown_table_data_rows(block.text())
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row_index, row)| {
-                        let cells = row
-                            .into_iter()
-                            .enumerate()
-                            .map(|(column_index, value)| {
-                                let target = format!(
-                                    "notes.table-cell:{}:{row_index}:{column_index}",
-                                    block.id
-                                );
-                                let mut input = AccessNode::new(Role::MultilineTextInput)
-                                    .with_name(decode_table_cell(
-                                        headers.get(column_index).copied().unwrap_or(""),
-                                    ))
-                                    .with_value(decode_table_cell(value))
-                                    .with_action_target(target)
-                                    .with_state(AccessState::new().focusable(true));
-                                if let Some(rect) = self
-                                    .table_editors
-                                    .get(&block.id)
-                                    .and_then(|table| table.projected_rect(row_index, column_index))
-                                {
-                                    input = input.with_bounds(rect);
-                                }
-                                AccessNode::new(Role::Cell)
-                                    .with_name(if row_index == 0 {
-                                        format!("Column {}", column_index.saturating_add(1))
-                                    } else {
-                                        format!(
-                                            "Cell {}, {}",
-                                            row_index,
-                                            column_index.saturating_add(1)
-                                        )
-                                    })
-                                    .with_description(decode_table_cell(
-                                        headers.get(column_index).copied().unwrap_or(""),
-                                    ))
-                                    .with_value(decode_table_cell(value))
-                                    .with_children(vec![input])
-                            })
-                            .collect();
-                        AccessNode::new(Role::Row)
-                            .with_name(if row_index == 0 {
-                                "Header row".to_string()
-                            } else {
-                                format!("Row {row_index}")
-                            })
-                            .with_children(cells)
-                    })
-                    .collect();
-                block_children.push(
-                    AccessNode::new(Role::Table)
-                        .with_name("Markdown table")
-                        .with_value(block.text())
-                        .with_bounds(table_bounds)
-                        .with_children(rows),
-                );
-            }
-            if let Some(image) = self.image_attachments.get(&block.id) {
-                if let Some(button) = image.button().accessibility() {
-                    block_children.push(
-                        button
-                            .with_bounds(image.button().get_rect())
-                            .with_action_target(format!(
-                                "notes.image-{}:{}",
-                                if image.editing { "done" } else { "edit" },
-                                block.id
-                            )),
-                    );
-                }
-                if image.editing {
-                    block_children.push(
-                        AccessNode::new(Role::MultilineTextInput)
-                            .with_name(crate::i18n!("notes-image-source"))
-                            .with_value(block.text())
-                            .with_action_target(format!("notes.image-source:{}", block.id))
-                            .with_bounds(block.line.get_rect())
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .focused(block.line.is_focused()),
-                            ),
-                    );
-                }
-            }
-            if let Some((alt, destination)) = self
-                .image_attachments
-                .get(&block.id)
-                .and_then(|image| standalone_markdown_image(&image.source))
-                .or_else(|| standalone_markdown_image(block.text()))
-            {
-                let bounds = self
-                    .image_preview_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .unwrap_or_else(|| block.line.get_rect());
-                block_children.push(
-                    AccessNode::new(Role::Image)
-                        .with_name(if alt.is_empty() { "Image" } else { alt })
-                        .with_description(destination)
-                        .with_bounds(bounds),
-                );
-            }
-            for span in block.line.marks() {
-                let (name, target) = match &span.mark {
-                    Mark::Link(id) if !id.is_nil() => {
-                        ("Open linked note".to_string(), page_link_action_target(*id))
-                    }
-                    Mark::ExternalLink(url) => (
-                        "Open external link".to_string(),
-                        external_link_action_target(url),
-                    ),
-                    _ => continue,
-                };
-                block_children.push(
-                    AccessNode::new(Role::Link)
-                        .with_name(name)
-                        .with_value(block.text().get(span.range.clone()).unwrap_or_default())
-                        .with_action_target(target)
-                        .with_bounds(block.line.get_rect())
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            AccessNode::new(Role::Group)
-                .with_name(format!(
-                    "{} block {position}",
-                    accessible_kind_name(&block.kind)
-                ))
-                .with_semantic_key(format!("notes.block:{}", block.id))
-                .with_hashed_key(format!("notes.block:group:{}", block.id))
-                .with_position(position, total)
-                .with_level(usize::from(block.indent()) + 1)
-                .with_bounds(block.line.get_rect())
-                .with_children(block_children)
-        }));
-        if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
-            fn namespace_targets(node: &mut AccessNode) {
-                if let Some(target) = node.action_target.take() {
-                    node.action_target = Some(format!("notes.slash-menu:{target}"));
-                }
-                for child in &mut node.children {
-                    namespace_targets(child);
-                }
-            }
-            namespace_targets(&mut menu);
-            menu.semantic_key = Some("notes.slash-menu".into());
-            menu.bounds = Some(self.slash_menu.get_rect().into());
-            children.push(menu);
-        }
-        Some(
-            AccessNode::new(Role::Document)
-                .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block.",
-                )
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: true,
-                    ..Default::default()
-                })
-                .with_children(children),
-        )
+        self.accessibility_shared()
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        self.accessibility_shared_with(None)
+    }
+
+    /// The document node above is never hidden; answer without building
+    /// every block's subtree.
+    fn accessibility_hidden(&self) -> bool {
+        false
     }
 
     #[expect(
@@ -8574,21 +10017,63 @@ impl Widget for BlockEditor {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
+        if self.find_visible {
+            match (target, action) {
+                ("notes.find:query", crate::a11y::Action::SetValue(value))
+                    if !self.is_composing() =>
+                {
+                    self.find_field.set_query(value);
+                    self.refresh_find_matches(true);
+                    self.dirty = true;
+                    return true;
+                }
+                ("notes.find:query", crate::a11y::Action::Focus) if !self.is_composing() => {
+                    self.focus_find_input(false);
+                    return true;
+                }
+                ("notes.find:replacement", crate::a11y::Action::SetValue(value))
+                    if self.replace_enabled && !self.is_composing() =>
+                {
+                    self.replace_field.set_text(value);
+                    self.dirty = true;
+                    return true;
+                }
+                ("notes.find:replacement", crate::a11y::Action::Focus)
+                    if self.replace_enabled && !self.is_composing() =>
+                {
+                    self.focus_find_input(true);
+                    return true;
+                }
+                ("notes.find:replace-all", crate::a11y::Action::Activate)
+                    if self.can_replace_all() =>
+                {
+                    self.replace_all_requested.set(true);
+                    return true;
+                }
+                ("notes.find:replace", crate::a11y::Action::Activate)
+                    if self.find_replace_request().is_some() =>
+                {
+                    self.replace_requested.set(true);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if matches!(action, crate::a11y::Action::Activate) {
             match target {
-                "notes.find:previous" if self.find_visible => {
+                "notes.find:previous" if self.find_visible && !self.is_composing() => {
                     self.step_find(true);
                     return true;
                 }
-                "notes.find:next" if self.find_visible => {
+                "notes.find:next" if self.find_visible && !self.is_composing() => {
                     self.step_find(false);
                     return true;
                 }
-                "notes.find:close" if self.find_visible => {
+                "notes.find:close" if self.find_visible && !self.is_composing() => {
                     self.close_find();
                     return true;
                 }
@@ -8605,7 +10090,7 @@ impl Widget for BlockEditor {
             let handled = self
                 .slash_menu
                 .perform_semantic_action(target, action, state, path);
-            if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+            if let Some(new_kind) = self.slash_menu.take_selection() {
                 self.commit_slash_selection(new_kind);
             }
             if !self.slash_menu.is_visible() {
@@ -8645,8 +10130,10 @@ impl Widget for BlockEditor {
                 let cursor = self.blocks[index].line.cursor_pos();
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
-            self.begin_action_intercept();
-            let handled = self.blocks[index].line.perform_action(action, state, path);
+            self.begin_edit();
+            let handled = self.blocks[index]
+                .line
+                .perform_action(action, &[], state, path);
             if handled {
                 self.dirty = true;
                 if matches!(action, crate::a11y::Action::SetValue(_)) {
@@ -8654,7 +10141,7 @@ impl Widget for BlockEditor {
                     self.commit_pending = true;
                 }
             }
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return handled;
         }
@@ -8673,13 +10160,13 @@ impl Widget for BlockEditor {
                 if self.blocks[index].text() == value {
                     return true;
                 }
-                self.begin_action_intercept();
+                self.begin_edit();
                 self.blocks[index].line.set_text(value);
                 self.edit_pending = true;
                 self.commit_pending = true;
                 self.structure_dirty = true;
                 self.dirty = true;
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
                 return true;
             }
@@ -8703,11 +10190,11 @@ impl Widget for BlockEditor {
                 let (row, column) = self
                     .table_editors
                     .get(id)
-                    .and_then(super::table::Table::projected_focus)
+                    .and_then(super::block_editor_table::DocumentTable::projected_focus)
                     .unwrap_or((0, 0));
-                self.begin_action_intercept();
+                self.begin_edit();
                 let changed = self.edit_table_structure(index, row, column, command);
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
                 return changed;
             }
@@ -8720,9 +10207,9 @@ impl Widget for BlockEditor {
             {
                 match action {
                     crate::a11y::Action::SetValue(value) => {
-                        self.begin_action_intercept();
+                        self.begin_edit();
                         let changed = self.apply_table_cell_edit(index, row, column, value);
-                        let ops = self.take_intercepted_ops();
+                        let ops = self.take_edit_ops();
                         self.pending_semantic_ops.extend(ops);
                         return changed;
                     }
@@ -8772,9 +10259,9 @@ impl Widget for BlockEditor {
             let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
                 return false;
             };
-            self.begin_action_intercept();
+            self.begin_edit();
             let changed = self.try_indent(index, delta);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
@@ -8820,6 +10307,7 @@ impl Widget for BlockEditor {
 
     fn layout_needs_measure(&self) -> bool {
         self.structure_dirty
+            || self.restack
             || self.dirty
             || self
                 .blocks
@@ -8827,11 +10315,40 @@ impl Widget for BlockEditor {
                 .any(|block| block.line.layout_needs_measure())
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.paint_extent(), regions);
+        }
+    }
+
+    /// Its damage after a draw says where each block was and is, or repaints
+    /// where the editor painted then and paints now.
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        if self.paint_damage.is_recorded() {
+            self.drawn_overhang.clone_from(&self.line_overhang);
+            self.drawn_table_focus.clone_from(&self.table_focus_paint);
+        }
+        self.paint_damage.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        // Blocks that came or went may bring or take an image's button: a
+        // widget, which only a rebuild adds or removes.
+        if self.restack {
+            self.refresh_image_attachments();
+        }
         let was = self.structure_dirty;
         self.structure_dirty = false;
         was
@@ -8843,23 +10360,9 @@ impl Widget for BlockEditor {
     /// line rather than through `children()`, which the editor does not
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
-        self.blocks.iter().any(|block| block.line.is_layout_dirty())
-    }
-}
-
-impl crate::undo::UndoPoints for BlockEditor {
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-            || self
-                .blocks
-                .iter()
-                .any(|block| crate::undo::needs_commit(block.line.inner()))
-    }
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-        for block in &mut self.blocks {
-            crate::undo::on_commit(block.line.inner_mut());
-        }
+        self.restack
+            || self.table_relayout
+            || self.blocks.iter().any(|block| block.line.is_layout_dirty())
     }
 }
 
@@ -9139,8 +10642,8 @@ impl BlockEditor {
             return false;
         }
         let consumed = self.slash_menu.handle_key(event);
-        // Drain pending_selection regardless of `consumed` — Enter may have set it.
-        if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+        // Drain the pending selection regardless of `consumed` — Enter may have set it.
+        if let Some(new_kind) = self.slash_menu.take_selection() {
             self.commit_slash_selection(new_kind);
         }
         if !self.slash_menu.is_visible() {
@@ -9315,6 +10818,7 @@ impl BlockEditor {
             start: self.last_mouse_pos,
             active: false,
         });
+        self.block_drag_scroll.begin(source, self.last_mouse_pos);
         *ctx.focus_target = Some(ctx.node_id);
         *ctx.handled = true;
         self.dirty = true;
@@ -9456,6 +10960,8 @@ impl BlockEditor {
                 self.dirty = true;
             }
             self.block_drag = Some(drag);
+            self.block_drag_scroll
+                .update(logical, None, crate::time::now(), |_, _| true);
             return;
         }
 
@@ -9496,7 +11002,7 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return false;
         };
-        if !self.is_focused || ctx.modifiers.state().alt_key() {
+        if !self.is_focused || self.tab_navigation || ctx.modifiers.state().alt_key() {
             return false;
         }
         let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
@@ -9505,12 +11011,13 @@ impl BlockEditor {
             Key::Character(key) if command && key == "[" => -1,
             Key::Named(NamedKey::Tab)
                 if !command
-                    && self.blocks.get(focused_idx).is_some_and(|b| {
-                        !matches!(
-                            b.kind,
-                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                        )
-                    }) =>
+                    && (self.document_selection.is_some()
+                        || self.blocks.get(focused_idx).is_some_and(|b| {
+                            !matches!(
+                                b.kind,
+                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                            )
+                        })) =>
             {
                 if ctx.modifiers.state().shift_key() {
                     -1
@@ -9520,34 +11027,37 @@ impl BlockEditor {
             }
             _ => return false,
         };
-        self.try_indent(focused_idx, delta);
+        self.try_indent_selection(delta);
         *ctx.handled = true;
         true
     }
 
-    /// The leading `/` still falls through to `TextInput` (visible
+    /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
-        use winit::event::{ElementState, KeyEvent};
+        use winit::event::{ElementState, Ime, KeyEvent};
         use winit::keyboard::Key;
 
         if self.slash_menu.is_visible() {
             return;
         }
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return;
+        let character = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => c.as_str(),
+            // Browser beforeinput delivers ordinary text as a commit. Preedit
+            // and larger insertions remain text, not command activation.
+            WindowEvent::Ime(Ime::Commit(text)) => text.as_str(),
+            _ => return,
         };
-        if c.as_str() != "/" {
+        if character != "/" {
             return;
         }
         let Some(focused_idx) = self.focused else {
@@ -9559,16 +11069,31 @@ impl BlockEditor {
         if !can_open {
             return;
         }
-        let caret_byte = self
-            .blocks
-            .get(focused_idx)
-            .map_or(0, |b| b.line.cursor_pos());
+        // Typing replaces a local selection at its normalized start, which
+        // can precede the caret for a forward selection.
+        let trigger_byte = self.blocks.get(focused_idx).map_or(0, |block| {
+            block
+                .line
+                .selection_range()
+                .map_or(block.line.cursor_pos(), |(start, _)| start)
+        });
+        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
+        // only at the start of a block or after whitespace.
+        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
+            let text = block.line.value();
+            text.get(..trigger_byte.min(text.len()))
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace)
+        });
+        if !after_boundary {
+            return;
+        }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
-        self.slash_open_at = Some(caret_byte);
-        self.slash_anchor_caret = Some((focused_idx, caret_byte));
+        self.slash_open_at = Some(trigger_byte);
+        self.slash_anchor_caret = Some((focused_idx, trigger_byte));
     }
 
     /// Focus whichever editable block a left click lands on first, so the
@@ -9675,11 +11200,6 @@ impl BlockEditor {
         if let Some(b) = self.blocks.get_mut(focused_idx)
             && b.kind.is_editable()
         {
-            // Bound RichTextLines ordinarily splice their Text object from
-            // `handle_event`. Action-owned hosts retain that binding for
-            // reconciliation, but their optimistic input must stay local until
-            // the host dispatches the semantic operation captured below.
-            b.line.set_direct_crdt_writes(!self.action_interception);
             b.line.handle_event(event, ctx);
         }
         if let Some(sig) = self
@@ -9727,7 +11247,6 @@ impl BlockEditor {
                     block.line.set_focus(true);
                     self.opening_code_fence = Some((block.id.clone(), lang));
                     self.structure_dirty = true;
-                    self.doc_structure_dirty = true;
                     self.dirty = true;
                     self.edit_pending = true;
                     self.commit_pending = true;
@@ -9810,6 +11329,10 @@ mod retained_layout_tests;
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
 
+#[cfg(test)]
+#[path = "block_editor_image_paste_tests.rs"]
+mod image_paste_tests;
+
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
     /// Keyboard commands operate on one authored fence, across its source rows.
@@ -9887,7 +11410,6 @@ impl BlockEditor {
         self.edit_pending = true;
         self.commit_pending = true;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
     }
 
@@ -9996,7 +11518,7 @@ impl BlockEditor {
                     let at = if whole_lines {
                         0
                     } else {
-                        clamp_char_boundary(&text, old_cursor)
+                        text.floor_char_boundary(old_cursor)
                     };
                     text.insert_str(at, "    ");
                     (at, 0, 4)
@@ -10176,7 +11698,6 @@ impl BlockEditor {
         block.kind = BlockKind::CodeBlock { lang: lang.clone() };
         self.opening_code_fence = Some((id, lang));
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         self.edit_pending = true;
         self.commit_pending = true;
@@ -10270,7 +11791,11 @@ impl BlockEditor {
             let table = self
                 .table_editors
                 .entry(block_id.clone())
-                .or_insert_with(|| crate::widget::table::Table::new(format!("table-{block_id}")));
+                .or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!(
+                        "table-{block_id}"
+                    ))
+                });
             let decoded: Vec<Vec<String>> = rows
                 .into_iter()
                 .map(|row| {
@@ -10361,11 +11886,15 @@ impl BlockEditor {
             return false;
         }
         if let Some(block) = self.blocks.get_mut(index) {
+            // The line measures the table from its text, so a cell that now
+            // wraps relayouts the editor; no widget came or went, so the
+            // tree is not rebuilt (which would repaint the window per key).
             block.line.set_text(&source);
+            block.line.forget_stacked_height();
         }
+        self.table_relayout = true;
         self.edit_pending = true;
         self.commit_pending = true;
-        self.structure_dirty = true;
         self.dirty = true;
         true
     }
@@ -10390,7 +11919,7 @@ impl BlockEditor {
             let (row, column) = self
                 .table_editors
                 .get(&id)
-                .and_then(super::table::Table::projected_focus)
+                .and_then(super::block_editor_table::DocumentTable::projected_focus)
                 .unwrap_or((0, 0));
             self.edit_table_structure(
                 index,
@@ -10413,9 +11942,6 @@ impl BlockEditor {
         if *ctx.handled {
             return true;
         }
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.dirty = true;
-        }
         let mut change = None;
         let mut focused = None;
         let mut exit = None;
@@ -10431,6 +11957,20 @@ impl BlockEditor {
                     exit = Some((index, down));
                 }
             }
+        }
+        // A pointer move repaints a table's controls whose hover it changed
+        // and a focused cell it may drag a selection in. A move that reaches
+        // neither repaints nothing here, so a hand resting on the mouse over
+        // a note costs no frame and no accessibility walk.
+        if matches!(event, WindowEvent::CursorMoved { .. })
+            && (focused.is_some()
+                || self.table_mode_controls.values().any(|control| {
+                    control.button.needs_redraw()
+                        || control.add_row.needs_redraw()
+                        || control.add_column.needs_redraw()
+                }))
+        {
+            self.dirty = true;
         }
         if let Some(index) = focused {
             self.clear_cross_block_selection();
@@ -10471,11 +12011,11 @@ impl BlockEditor {
             return false;
         };
         if semantic {
-            self.begin_action_intercept();
+            self.begin_edit();
         }
         let changed = self.try_convert_to(index, BlockKind::Table { visual: !visual });
         if semantic {
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
         }
         if visual {
@@ -10598,6 +12138,19 @@ impl BlockEditor {
                 }
             }
             LineSignal::BackspaceAtStart => {
+                if self.blocks.get(idx).is_some_and(|block| block.indent() > 0) {
+                    self.try_indent(idx, -1);
+                    return;
+                }
+                if self.blocks.get(idx).is_some_and(|block| {
+                    matches!(block.kind, BlockKind::Heading(_) | BlockKind::Quote)
+                        || block.kind.supports_indent()
+                }) {
+                    self.try_convert_to(idx, BlockKind::Paragraph);
+                    self.edit_pending = true;
+                    self.commit_pending = true;
+                    return;
+                }
                 if idx == 0 {
                     return;
                 }
@@ -10653,7 +12206,7 @@ impl BlockEditor {
             return false;
         };
         let text = block.text();
-        let split = clamp_char_boundary(text, split.min(text.len()));
+        let split = text.floor_char_boundary(split);
         let indent: String = text
             .get(..split)
             .unwrap_or_default()
@@ -10743,7 +12296,7 @@ impl BlockEditor {
             return false;
         }
         let source = block.text();
-        let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let split_at = source.floor_char_boundary(split_at);
         let Some((before, after)) = source.split_at_checked(split_at) else {
             return false;
         };
@@ -10831,7 +12384,52 @@ impl BlockEditor {
     fn handle_event_unscoped(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton};
 
+        // The IME owns candidate-selection keys until it commits/cancels.
+        // Do not let Enter, Tab, or Backspace become structural document edits.
+        if self.is_focused
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+            && self.is_composing()
+        {
+            *ctx.handled = true;
+            return;
+        }
+
+        let changes_selection = match event {
+            WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match &event.logical_key {
+                    Key::Named(
+                        NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight
+                        | NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::PageUp
+                        | NamedKey::PageDown
+                        | NamedKey::Backspace
+                        | NamedKey::Delete
+                        | NamedKey::Enter
+                        | NamedKey::Space,
+                    ) => true,
+                    Key::Character(_) => {
+                        let held = ctx.modifiers.state();
+                        !held.control_key() && !held.super_key() && !held.alt_key()
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        if changes_selection {
+            self.retained_block_selection = None;
+        }
+
         if self.handle_find_event(event, ctx) {
+            return;
+        }
+
+        if self.try_paste_image_key(event, ctx) {
             return;
         }
 
@@ -10896,6 +12494,43 @@ impl BlockEditor {
             return;
         }
 
+        // Paragraph commits belong to the document transaction, even when
+        // the original selection is entirely inside one single-line child.
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
+            && self.ime_multiline()
+            && text.contains('\n')
+            && text.chars().all(|c| c == '\n' || !c.is_control())
+        {
+            if let Some(index) = self.focused
+                && let Some(block) = self.blocks.get_mut(index)
+            {
+                let (start, end) = block
+                    .line
+                    .selection_range()
+                    .unwrap_or_else(|| (block.line.cursor_pos(), block.line.cursor_pos()));
+                block.line.handle_event(
+                    &WindowEvent::Ime(winit::event::Ime::Preedit(String::new(), None)),
+                    ctx,
+                );
+                if self.document_selection.is_none() {
+                    self.document_selection = Some(DocumentSelection {
+                        anchor: DocumentPosition {
+                            block: index,
+                            byte: start,
+                        },
+                        cursor: DocumentPosition {
+                            block: index,
+                            byte: end,
+                        },
+                    });
+                }
+            }
+            if self.replace_document_selection(text) {
+                *ctx.handled = true;
+                return;
+            }
+        }
+
         // A cross-block selection belongs to the document, not any one child
         // TextInput. Consume clipboard/replacement input before line routing.
         if self.handle_document_selection_event(event, *ctx.modifiers) {
@@ -10933,6 +12568,32 @@ impl BlockEditor {
             self.cross_block_drag_start = None;
         }
         self.handle_cursor_moved(event, ctx.scale_factor);
+
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && self.is_focused
+        {
+            if event.logical_key == Key::Named(NamedKey::Escape) {
+                self.clear_document_selection();
+                self.tab_navigation = true;
+                *ctx.handled = true;
+                return;
+            }
+            if !matches!(
+                event.logical_key,
+                Key::Named(
+                    NamedKey::Tab
+                        | NamedKey::Shift
+                        | NamedKey::Control
+                        | NamedKey::Alt
+                        | NamedKey::AltGraph
+                        | NamedKey::Super
+                        | NamedKey::Meta
+                )
+            ) {
+                self.tab_navigation = false;
+            }
+        }
 
         // TextInput does NOT handle Tab, but intercept anyway so future
         // TextInput changes don't break the contract.

@@ -1,10 +1,5 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -44,15 +39,10 @@ impl ComponentContextSource for Host {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: Rc::new(RefCell::new(
-                    ui::permissions::PermissionContext::from_capabilities(
-                        ui::permissions::Actor::person(
-                            Some(ui::permissions::Role::Owner),
-                            "author",
-                        ),
-                        vec![],
-                    ),
-                )),
+                permissions: Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+                    "author",
+                    ui::permissions::Role::Owner,
+                ))),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -92,9 +82,9 @@ fn fixture() -> (
         store.with(&checkout.id, |doc| match i {
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => {
-                chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU");
+                chat::demo::start(doc, "author", "Author", "AU").unwrap();
             }
-            _ => notes::notebook::initialize_empty(doc).unwrap(),
+            _ => notes::read::initialize(doc),
         });
         retained_records.push(store);
         tabs.push(Tab {
@@ -116,6 +106,7 @@ fn fixture() -> (
             active_tab: 10,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     }];
     let tree = DesktopTree {
@@ -181,11 +172,17 @@ fn real_checked_writer_input_and_resources_work_inside_shared_groups() {
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
     frame.poll_frame().unwrap();
     assert!(
+        frame.resources().iter().any(|r| {
+            r.kind == "tilo.rich-text"
+                || r.id.as_str() == "word-processor.document"
+                || r.id.as_str().starts_with("word-processor.document:")
+        }),
+        "checked Writer resources must remain reachable inside desktop rows: {:?}",
         frame
             .resources()
             .iter()
-            .any(|r| r.kind == "word_processor.document"),
-        "checked Writer resources must remain reachable inside desktop rows"
+            .map(|r| format!("{} ({})", r.id.as_str(), r.kind))
+            .collect::<Vec<_>>(),
     );
     frame
         .perform_named("word_processor", &ui::a11y::Action::Focus)
@@ -230,6 +227,7 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
             active_tab: 10,
             width: WindowWidth::Wide,
             maximized: true,
+            focus_history: Vec::new(),
         },
     );
     surface.reconcile(&tree, &records, &mut resolver);
@@ -285,14 +283,21 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
     let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
-    for (instance, resource, action, value) in [
+    for (instance, resource, action, param, value) in [
         (
             11,
-            "chat.channel:c_general",
+            chat::projection::item_id("channels", "c_general"),
             "post",
+            "text",
             "Shared desktop message",
         ),
-        (12, "notes.notebook", "new-page", "Shared desktop page"),
+        (
+            12,
+            "notes.notebook".to_owned(),
+            "new-note",
+            "title",
+            "Shared desktop page",
+        ),
     ] {
         frame
             .invoke_bound_action(
@@ -300,7 +305,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
                     instance_id: instance,
                     address: tilo_actions::ActionAddress::new(resource, action),
                 },
-                serde_json::json!({"value":value}).as_object().unwrap(),
+                serde_json::json!({ param: value }).as_object().unwrap(),
             )
             .unwrap();
     }

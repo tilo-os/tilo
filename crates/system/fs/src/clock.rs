@@ -99,7 +99,7 @@ impl TestClockFile {
                 metadata.ino()
             },
         };
-        validate_open_file_metadata(&metadata, &clock)?;
+        validate_open_file_metadata(&metadata, Some(&clock))?;
         // Close the validation/open race: the path must still name the file
         // whose handle and identity we retain.
         validate_metadata(path, Some(&clock))?;
@@ -112,7 +112,10 @@ impl TestClockFile {
         let mut file = self.file.lock().map_err(|_| {
             ClockConfigurationError::Io(std::io::Error::other("test clock file lock poisoned"))
         })?;
-        validate_open_file_metadata(&file.metadata().map_err(ClockConfigurationError::Io)?, self)?;
+        validate_open_file_metadata(
+            &file.metadata().map_err(ClockConfigurationError::Io)?,
+            Some(self),
+        )?;
         file.seek(SeekFrom::Start(0))
             .map_err(ClockConfigurationError::Io)?;
         let mut bytes = Vec::new();
@@ -138,28 +141,6 @@ impl TestClockFile {
     }
 }
 
-fn validate_open_file_metadata(
-    metadata: &fs::Metadata,
-    expected: &TestClockFile,
-) -> Result<(), ClockConfigurationError> {
-    if !metadata.file_type().is_file() || metadata.len() > MAX_CLOCK_FILE_BYTES {
-        return Err(ClockConfigurationError::InvalidFile);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
-            return Err(ClockConfigurationError::InsecurePermissions);
-        }
-        if metadata.dev() != expected.device || metadata.ino() != expected.inode {
-            return Err(ClockConfigurationError::ReplacedFile);
-        }
-    }
-    Ok(())
-}
-
 fn validate_metadata(
     path: &Path,
     expected: Option<&TestClockFile>,
@@ -167,15 +148,23 @@ fn validate_metadata(
     // `symlink_metadata` deliberately refuses a symlink rather than following
     // it to a file that can be swapped outside this ownership check.
     let metadata = fs::symlink_metadata(path).map_err(ClockConfigurationError::Io)?;
+    validate_open_file_metadata(&metadata, expected)?;
+    Ok(metadata)
+}
+
+/// A small, owner-only regular file, and when `expected` is given, still the
+/// inode that was pinned at installation.
+fn validate_open_file_metadata(
+    metadata: &fs::Metadata,
+    expected: Option<&TestClockFile>,
+) -> Result<(), ClockConfigurationError> {
     if !metadata.file_type().is_file() || metadata.len() > MAX_CLOCK_FILE_BYTES {
         return Err(ClockConfigurationError::InvalidFile);
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
+        use std::os::unix::fs::MetadataExt;
+        if !tilo_files::native::private::private_to_me(metadata) {
             return Err(ClockConfigurationError::InsecurePermissions);
         }
         if expected
@@ -184,7 +173,7 @@ fn validate_metadata(
             return Err(ClockConfigurationError::ReplacedFile);
         }
     }
-    Ok(metadata)
+    Ok(())
 }
 
 #[derive(Debug, Error)]

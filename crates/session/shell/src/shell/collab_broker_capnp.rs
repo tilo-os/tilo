@@ -2,10 +2,12 @@
 pub use tilo_action_broker::collab_broker_capnp::*;
 
 mod local_consent;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod local_consent_tests;
 mod realtime_host;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use local_consent::LocalSessionLiveness;
 pub(crate) use local_consent::LocalSessionPermit;
 pub(crate) use local_consent::{LocalSessionAuthority, LocalSessionLifecycle};
@@ -24,7 +26,6 @@ const NATIVE_CONSENT_FIXTURE_ROOT: &str = "TILO_NATIVE_CONSENT_FIXTURE_ROOT";
 #[cfg(test)]
 pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl FnOnce()) {
     use std::os::unix::fs::PermissionsExt as _;
-    use std::time::{Duration, Instant};
 
     if let Some(marker) = std::env::var_os(NATIVE_CONSENT_CHILD_TEST) {
         assert_eq!(marker, test_name, "isolated child ran the wrong exact test");
@@ -64,20 +65,9 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity")
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity");
         let mut child = child.spawn().expect("spawn isolated native-consent test");
-        let deadline = tilo_test_env::hang_deadline();
-        let status = loop {
-            match child.try_wait().expect("poll isolated native-consent test") {
-                Some(status) => break status,
-                None if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                None => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("isolated native-consent test timed out: {test_name}");
-                }
-            }
-        };
+        let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
+            .expect("wait for isolated native-consent test")
+            .unwrap_or_else(|| panic!("isolated native-consent test timed out: {test_name}"));
         assert!(
             status.success(),
             "isolated native-consent child failed: {status}"
@@ -134,7 +124,7 @@ pub mod tests {
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "Directory test room");
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
@@ -178,6 +168,8 @@ pub mod tests {
     ) -> Vec<crate::shell::search::SearchResult> {
         let chrome = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "open",
             wanted: &[],
             chrome: &chrome,
@@ -263,7 +255,7 @@ pub mod tests {
             ), "unexpected confirmation reply: {confirmation_reply:?}");
             fixture.set_confirmation_required(false);
 
-            let provider = LiveAppActionsProvider::new(fixture.broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(fixture.broker.clone());
             let mut doc = AutoCommit::new();
             let doc_root = automerge::ROOT.clone();
             let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
@@ -285,7 +277,7 @@ pub mod tests {
                 .as_ref()
                 .expect("directory result starts through an atomic broker ticket");
             let InvocationDisposition::Pending(ticket) = begin(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -311,7 +303,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -337,7 +329,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -356,7 +348,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),

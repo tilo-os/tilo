@@ -29,6 +29,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["files.save", "files.paths"]
 
+[resources]
+kinds = ["logs.journal"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

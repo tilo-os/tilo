@@ -5,17 +5,35 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{ActionEmitter, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
-/// Horizontal padding between `rect` and the track on each side.
-/// Both `draw` and `handle_event` use this to translate between
-/// cursor x and a 0..1 value, so it has to live in one place.
-const TRACK_PADDING: f64 = 5.0;
+/// The track runs flush with the slider's rect; the knob overhangs its ends
+/// by its radius, so the track lines up with the content edges beside it.
+const TRACK_PADDING: f64 = 0.0;
+/// Page Up / Page Down move this share of the range.
+const PAGE_FRACTION: f64 = 0.1;
+/// Arrow keys and assistive steps move this share of a range with no step.
+const ARROW_FRACTION: f64 = 0.01;
+
+/// Formats a slider's value for assistive technology ("40 %", "1.5 s").
+type ValueText = Box<dyn Fn(f64) -> String>;
+
+/// A value as plain digits: at most two decimals, no trailing zeros.
+fn plain_number(value: f64) -> String {
+    let text = format!("{value:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
 /// Thickness of the slider track.
 const TRACK_HEIGHT: f64 = 6.0;
 
@@ -35,11 +53,28 @@ pub struct Slider {
     rect: Rect,
     is_hovered: bool,
     is_dragging: bool,
+    /// The drag under way has invoked the action at least once.
+    gesture: bool,
     is_focused: bool,
-    value: f64, // 0.0 to 1.0
+    /// The value, in `range` units.
+    value: f64,
+    /// The values the slider spans; `0.0..=1.0` unless set.
+    range: (f64, f64),
+    /// Values snap to `range.0 + k * step`.
+    step: Option<f64>,
+    /// How the value is spoken; a percentage of a `0..1` range otherwise.
+    value_text: Option<ValueText>,
     /// Where the value lives: a document key or process-local state.
     binding: Option<BoxedBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    /// Invoke the bound action once per drag, when it is let go.
+    settles: bool,
+    /// The value when the current drag began.
+    drag_from: Option<f64>,
+    /// Where the pointer and the value were when Shift was pressed during
+    /// a drag: from there the value moves a tenth as fast, to place it
+    /// finely.
+    fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -65,9 +100,15 @@ pub struct Slider {
     /// by the tree builder.
     accessible_name: Option<String>,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The target height encoded in the current layout style.
+    layout_target: Option<f32>,
 }
 
 impl Slider {
+    /// How fast the value follows the pointer while Shift is held during a
+    /// drag, as a share of the usual pace.
+    const FINE_DRAG: f64 = 0.1;
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -77,10 +118,17 @@ impl Slider {
             rect: Rect::ZERO,
             is_hovered: false,
             is_dragging: false,
+            gesture: false,
             is_focused: false,
             value: 0.5,
-            binding: Some(crate::doc_binding::number_key(on_change_path)),
+            range: (0.0, 1.0),
+            step: None,
+            value_text: None,
+            binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
+            settles: false,
+            drag_from: None,
+            fine_from: None,
             action: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -89,6 +137,7 @@ impl Slider {
             id_override: None,
             accessible_name: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            layout_target: None,
         }
     }
 
@@ -100,10 +149,92 @@ impl Slider {
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
         let (value, binding) = super::binding::local(state);
         let mut slider = Self::new("slider", "");
-        slider.value = value.clamp(0.0, 1.0);
+        slider.value = value;
         slider.binding = Some(binding);
-        slider.publish_local_state();
         slider
+    }
+
+    /// The values the slider spans (`0.0..=1.0` by default). The value, the
+    /// binding and every callback are in these units.
+    #[must_use]
+    pub fn range(mut self, min: f64, max: f64) -> Self {
+        let (min, max) = if min <= max { (min, max) } else { (max, min) };
+        self.range = (min, max);
+        self.value = self.constrain(self.value);
+        self
+    }
+
+    /// Snap values to multiples of `step` from the range's start; the arrow
+    /// keys move one step.
+    #[must_use]
+    pub fn step(mut self, step: f64) -> Self {
+        self.step = (step.is_finite() && step > 0.0).then_some(step);
+        self.value = self.constrain(self.value);
+        self
+    }
+
+    /// Say the value in the slider's own terms ("1.5 s", "Medium") to
+    /// assistive technology.
+    #[must_use]
+    pub fn value_text(mut self, format: impl Fn(f64) -> String + 'static) -> Self {
+        self.value_text = Some(Box::new(format));
+        self
+    }
+
+    /// Clamp `value` into the range and onto the step grid.
+    fn constrain(&self, value: f64) -> f64 {
+        let (min, max) = self.range;
+        if !value.is_finite() {
+            return min;
+        }
+        let value = value.clamp(min, max);
+        match self.step {
+            Some(step) => (min + ((value - min) / step).round() * step).clamp(min, max),
+            None => value,
+        }
+    }
+
+    /// The value as a share of the range, `0..=1`.
+    fn fraction(&self) -> f64 {
+        let (min, max) = self.range;
+        if max > min {
+            ((self.value - min) / (max - min)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The value at a share of the range.
+    fn at_fraction(&self, fraction: f64) -> f64 {
+        let (min, max) = self.range;
+        self.constrain(min + fraction.clamp(0.0, 1.0) * (max - min))
+    }
+
+    /// One arrow-key step.
+    fn arrow_step(&self) -> f64 {
+        self.step
+            .unwrap_or((self.range.1 - self.range.0) * ARROW_FRACTION)
+    }
+
+    /// One page: a tenth of the range, at least one step.
+    fn page_step(&self) -> f64 {
+        ((self.range.1 - self.range.0) * PAGE_FRACTION).max(self.arrow_step())
+    }
+
+    /// What assistive technology says for the value.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the rounded percentage is bounded to the inclusive range 0..=100"
+    )]
+    fn spoken_value(&self) -> String {
+        if let Some(format) = &self.value_text {
+            return format(self.value);
+        }
+        if self.range == (0.0, 1.0) {
+            format!("{}%", (self.fraction() * 100.0).round() as i64)
+        } else {
+            plain_number(self.value)
+        }
     }
 
     /// Observe values produced by user interaction.
@@ -118,6 +249,16 @@ impl Slider {
         self
     }
 
+    /// Invoke the bound action once per drag, with the value it is let go
+    /// at, rather than at every step of it; a key or an assistive action
+    /// still invokes it at once. For an action that is an undoable edit, so
+    /// one drag is one step.
+    #[must_use]
+    pub fn commits_on_release(mut self) -> Self {
+        self.settles = true;
+        self
+    }
+
     /// Route all pointer and accessibility value changes through an action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
@@ -126,15 +267,15 @@ impl Slider {
         self
     }
 
-    /// Return the normalized value currently presented by this slider.
+    /// The value currently presented, in the range's units.
     pub fn value(&self) -> f64 {
         self.value
     }
 
-    /// Set the normalized value programmatically and update a bound local
-    /// model without invoking [`Self::on_change`].
+    /// Set the value programmatically (in the range's units) and update a
+    /// bound local model without invoking [`Self::on_change`].
     pub fn set_value(&mut self, value: f64) {
-        self.value = value.clamp(0.0, 1.0);
+        self.value = self.constrain(value);
         if self.action.is_none() {
             self.publish_local_state();
         }
@@ -194,8 +335,27 @@ impl Slider {
     /// Map a cursor x in widget-local logical pixels to the slider's
     /// 0..1 value, clamped at both ends.
     fn value_from_cursor_x(&self, cursor_x: f64) -> f64 {
-        let track_width = self.rect.width() - TRACK_PADDING * 2.0;
-        ((cursor_x - (self.rect.x0 + TRACK_PADDING)) / track_width).clamp(0.0, 1.0)
+        let fraction = SliderFace::new(self.rect, 0.0).value_at(Point::new(cursor_x, 0.0));
+        self.at_fraction(fraction)
+    }
+
+    /// Arrow, Page and Home/End keys while focused.
+    fn handle_key(&mut self, key: &KeyEvent, state: &AppModel, root: &ModelPath) -> bool {
+        if !self.is_focused || key.state != ElementState::Pressed {
+            return false;
+        }
+        let target = match &key.logical_key {
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => self.value + self.arrow_step(),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => self.value - self.arrow_step(),
+            Key::Named(NamedKey::PageUp) => self.value + self.page_step(),
+            Key::Named(NamedKey::PageDown) => self.value - self.page_step(),
+            Key::Named(NamedKey::Home) => self.range.0,
+            Key::Named(NamedKey::End) => self.range.1,
+            _ => return false,
+        };
+        let target = self.constrain(target);
+        self.commit_value(target, state, root);
+        true
     }
 
     /// Knob radius for the current visual state. Pressed > hover > idle.
@@ -223,15 +383,38 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
-        if (new_value - self.value).abs() <= 0.001 {
+    fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
+        let span = (self.range.1 - self.range.0).abs().max(f64::EPSILON);
+        if (new_value - self.value).abs() <= 0.001 * span {
             return false;
         }
         self.value = new_value;
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.value);
+            if !(self.settles && self.is_dragging) {
+                // The values a drag passes through are one gesture: the
+                // first starts it, the rest continue it, so the whole drag
+                // is one undo step and the next drag is a step of its own.
+                let input = if !self.is_dragging {
+                    crate::bound_dispatch::Input::Discrete
+                } else if std::mem::replace(&mut self.gesture, true) {
+                    crate::bound_dispatch::Input::Continuing
+                } else {
+                    crate::bound_dispatch::Input::Starting
+                };
+                let value = self.value;
+                let _ = crate::bound_dispatch::with_input(input, || action.emit(value));
+            } else if let Some(binding) = self
+                .binding
+                .as_mut()
+                .filter(|binding| binding.document_key().is_none())
+            {
+                // The value a drag will settle on, shown to whatever reads
+                // the control's local state (a label, a live preview) before
+                // the action is invoked at release.
+                binding.publish(&self.value);
+            }
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &self.value);
+            binding.publish(&self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -298,6 +481,30 @@ impl SliderFace {
         self
     }
 
+    /// Where a pointer takes this slider: the track and the knob overhanging
+    /// its ends, grown to the minimum pointer target.
+    pub fn hit_rect(&self, theme: &Theme) -> Rect {
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let grow_y = ((target - self.rect.height()) / 2.0).max(0.0);
+        self.rect.inflate(KNOB_RADIUS, grow_y)
+    }
+
+    /// How far the knob reaches past the track's ends (its pressed radius):
+    /// a host keeps this much room either side of a slider's rect.
+    #[must_use]
+    pub fn overhang() -> f64 {
+        KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
+    }
+
+    /// The share of the range (`0..=1`) under `point`, clamped at both ends.
+    pub fn value_at(&self, point: Point) -> f64 {
+        let track = self.track_rect();
+        if track.width() <= 0.0 {
+            return 0.0;
+        }
+        ((point.x - track.x0) / track.width()).clamp(0.0, 1.0)
+    }
+
     /// The track rect this face paints, so a caller hit-tests the geometry it
     /// actually draws.
     pub fn track_rect(&self) -> Rect {
@@ -339,8 +546,8 @@ impl Slider {
         let track_radius = track_rect.height() / 2.0;
         // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
         // slot) with an edge derived from itself; the filled half is accent.
-        let unfilled = theme.tokens.colors.lift(1.0);
-        let filled = theme.accent_primary;
+        let unfilled = theme.tokens.colors.intent.selection;
+        let filled = theme.tokens.colors.intent.inverted;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -377,21 +584,13 @@ impl Slider {
         let knob_radius = face.knob_radius();
         let knob_center = Point::new(active.x1, face.rect.center().y);
         let knob_shape = Circle::new(knob_center, knob_radius);
-        // One thumb colour that clears both halves of the track (HIG §9.5),
-        // held across rest / hover / drag: the `*_white_*` veneers were a
-        // grey blob on dark and vanished into the unfilled track on light.
-        // Hover and drag read from the radius (above), a firmer edge, and
-        // the halo — not from a second thumb colour.
-        let fill_color = crate::widget::toggle::ink_across(
-            &[filled, unfilled],
-            theme.tokens.colors.text_primary,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-        );
-        let border_color = if face.dragging || face.hovered {
-            crate::surface::edge_on_with(fill_color, crate::chrome::PANEL_BORDER_ALPHA)
-        } else {
-            crate::surface::edge_on(fill_color)
-        };
+        // One thumb colour held across rest / hover / drag; hover and drag
+        // read from the radius (above) and the halo. On a light material the
+        // thumb is a raised white object ringed in a tone that clears both
+        // halves of the track, never a dark disc; on a dark one it is the
+        // primary ink (HIG §9.5), ringed in the ground so it stays a disc of
+        // its own where it sits on the filled half, which is the same ink.
+        let (fill_color, border_color) = thumb_colors(theme, filled, unfilled);
         let border_width = 1.5;
         // Pressed halo: nested hairlines outside the knob, derived against
         // the track they ring, drawn first so the knob sits cleanly on top.
@@ -433,12 +632,13 @@ impl Slider {
             &knob_shape,
         );
 
-        // Tight focus ring around the knob, not the whole widget rect.
+        // Tight focus ring, in your colour, around the knob, not the whole
+        // widget rect.
         if face.focused {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
-                theme.border_focus,
+                theme.tokens.colors.intent.you,
                 None,
                 &Circle::new(knob_center, knob_radius + 2.0),
             );
@@ -446,6 +646,25 @@ impl Slider {
         if face.disabled {
             scene.pop_layer();
         }
+    }
+}
+
+/// The thumb's fill and ring over a track whose halves are `filled` and
+/// `unfilled`.
+fn thumb_colors(
+    theme: &Theme,
+    filled: vello::peniko::Color,
+    unfilled: vello::peniko::Color,
+) -> (vello::peniko::Color, vello::peniko::Color) {
+    let colors = &theme.tokens.colors;
+    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    if crate::widget::toggle::light_material(colors) {
+        let ring =
+            crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
+        (colors.surfaces.raised, ring)
+    } else {
+        let ring = crate::widget::toggle::ink_across(&[filled], colors.surfaces.content, floor);
+        (colors.text_primary, ring)
     }
 }
 
@@ -464,40 +683,63 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn take_structure_dirty(&mut self) -> bool {
+        if self
+            .layout_target
+            .is_some_and(|target| target.to_bits() != self.interaction.minimum_target().to_bits())
+        {
+            self.layout_target = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(value) = binding.pull(state, root)
         {
-            self.value = value.clamp(0.0, 1.0);
+            self.value = self.constrain(value);
         }
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        self.layout_target = Some(self.interaction.minimum_target());
+        // A slider fills its row but never collapses to a knob: the track
+        // keeps six knob widths of travel.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a knob radius in logical pixels, far inside f32's range"
+        )]
+        let min_width = (KNOB_RADIUS * 12.0) as f32 * theme.ui_scale;
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.interaction.minimum_target()),
             },
+            min_size: Size {
+                width: Dimension::length(min_width),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+    /// Value, hover and drag change the paint, not this leaf's intrinsic size.
+    /// Theme and viewport changes rebuild the host layout; target changes
+    /// explicitly invalidate the authored style in `take_structure_dirty`.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
+
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -505,18 +747,19 @@ impl Widget for Slider {
         transform: Affine,
         _text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         Slider::paint(
             scene,
             transform,
             theme,
-            &SliderFace::new(self.rect, self.value)
+            &SliderFace::new(self.rect, self.fraction())
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -526,17 +769,24 @@ impl Widget for Slider {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
-                let hover = self.rect.contains(p);
+                let hover = self.rect.inflate(KNOB_RADIUS, 0.0).contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
                     *ctx.handled = true;
                 }
 
                 if self.is_dragging {
-                    let new_value = self.value_from_cursor_x(p.x);
-                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                    let new_value = if ctx.modifiers.state().shift_key() {
+                        let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
+                        let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
+                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
+                    } else {
+                        self.fine_from = None;
+                        self.value_from_cursor_x(p.x)
+                    };
+                    if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
                         *ctx.handled = true;
                     }
                 }
@@ -552,16 +802,39 @@ impl Widget for Slider {
                 // a press without a preceding `CursorMoved`). On entry
                 // we also jump `value` to the click x — the standard
                 // "press on track to jump" affordance.
-                if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
+                if *element_state == ElementState::Pressed
+                    && self
+                        .rect
+                        .inflate(KNOB_RADIUS, 0.0)
+                        .contains(self.last_cursor)
+                {
                     self.is_dragging = true;
+                    self.gesture = false;
+                    self.drag_from = Some(self.value);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, ctx.state, ctx.path);
+                    self.commit_value(new_value, ctx.state.doc(), ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
+                    self.fine_from = None;
                     *ctx.handled = true;
+                    let moved = self
+                        .drag_from
+                        .take()
+                        .is_some_and(|from| (from - self.value).abs() > 0.001);
+                    if self.settles
+                        && moved
+                        && let Some(action) = &mut self.action
+                    {
+                        let _ = action.emit(self.value);
+                    }
                 }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.handle_key(event, ctx.state.doc(), ctx.path) =>
+            {
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -582,10 +855,6 @@ impl Widget for Slider {
         Some(self.id_override.as_deref().unwrap_or("slider"))
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -599,15 +868,10 @@ impl Widget for Slider {
         self.effectively_enabled()
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the rounded percentage is bounded to the inclusive range 0..=100"
-    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The slider models a normalized 0..1 value; expose it as a percentage
-        // so a screen reader announces something meaningful ("50 percent").
-        let pct = (self.value.clamp(0.0, 1.0) * 100.0).round() as i64;
+        // A `0..1` slider speaks a percentage ("50 percent"); a ranged one
+        // its value, or the app's own words for it (`value_text`).
         let name = self
             .accessible_name
             .as_ref()
@@ -616,13 +880,13 @@ impl Widget for Slider {
         let mut node = AccessNode::new(Role::Slider)
             .with_semantic_key(&self.semantic_id)
             .with_optional_name(name)
-            .with_value(format!("{pct}%"))
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                ..Default::default()
-            });
+            .with_value(self.spoken_value())
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("slider"));
         }
@@ -642,20 +906,24 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        _key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        const STEP: f64 = 0.05;
         if !self.effectively_enabled() {
             return false;
         }
+        // An assistive step is five arrow steps (5% of a stepless range).
+        let step = self.arrow_step() * 5.0;
         match action {
             Action::Increment => {
-                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
+                let target = self.constrain(self.value + step);
+                self.commit_value(target, state.doc(), path)
             }
             Action::Decrement => {
-                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
+                let target = self.constrain(self.value - step);
+                self.commit_value(target, state.doc(), path)
             }
             Action::SetValue(v) => {
                 // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
@@ -668,59 +936,24 @@ impl Widget for Slider {
                 if !parsed.is_finite() {
                     return false;
                 }
-                // Accept either a 0..1 fraction or a 0..100 percentage.
-                let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
-                self.commit_value(frac.clamp(0.0, 1.0), state, path)
+                // A 0..1 slider takes a fraction or a percentage; a ranged
+                // one its own units.
+                let target = if self.range == (0.0, 1.0) && (parsed > 1.0 || v.contains('%')) {
+                    parsed / 100.0
+                } else {
+                    parsed
+                };
+                let target = self.constrain(target);
+                self.commit_value(target, state.doc(), path)
             }
             _ => false,
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Slider {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -731,108 +964,164 @@ impl crate::permissions::capability::PermissionGated for Slider {
 }
 
 impl crate::widget::controls::ActionControls for Slider {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("slider");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
+        crate::widget::controls::value_control_bindings(
+            self.test_id().unwrap_or("slider"),
+            self.action.as_ref(),
+            self.binding.as_ref().and_then(|b| b.document_key()),
+            self.on_change.is_some(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::{AutoCommit, ReadDoc};
 
+    #[test]
+    fn retained_slider_local_value_and_hover_do_not_remeasure_but_targets_and_viewport_do() {
+        let value = crate::LocalState::new(0.5);
+        let mut host = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(Slider::from_state(&value)),
+            (400, 80),
+        );
+        host.profile_frame();
+        assert!(!host.last_relayout().measured);
+        let rect = host
+            .targets()
+            .get("slider")
+            .copied()
+            .expect("the actual slider is mounted");
+        host.click_at(rect.x0 + rect.width() * 0.75, rect.center().y);
+        assert!(!host.last_relayout().measured, "value changes paint only");
+        host.verify_retained_geometry().unwrap();
+        assert!(
+            value.get() > 0.7 && value.get() < 0.8,
+            "the ordinary pointer changes the authoritative local value"
+        );
+        assert!(
+            host.state()
+                .doc
+                .get(automerge::ROOT, "volume")
+                .unwrap()
+                .is_none(),
+            "a value control never writes its document read source"
+        );
+        host.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+        assert!(host.last_relayout().rebuilt);
+        assert!(
+            host.targets()
+                .get("slider")
+                .copied()
+                .expect("the actual slider is mounted")
+                .height()
+                > rect.height()
+        );
+        host.verify_retained_geometry().unwrap();
+        let nodes = host.layout_node_ids();
+        host.resize((640, 120)).unwrap();
+        assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
+        assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
+        assert!(
+            host.targets()
+                .get("slider")
+                .copied()
+                .expect("the actual slider is mounted")
+                .width()
+                > rect.width()
+        );
+        host.verify_retained_geometry().unwrap();
+        host.set_theme(crate::Theme::light());
+        assert!(host.last_relayout().rebuilt);
+        host.verify_retained_geometry().unwrap();
+    }
+
+    /// In a crowded row a slider keeps a usable track instead of shrinking
+    /// to its knob.
+    #[test]
+    fn a_slider_in_a_crowded_row_keeps_a_track() {
+        let harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Row::new()
+                    .no_wrap()
+                    .push(Box::new(crate::widget::Text::new(
+                        "A label long enough to take the whole row by itself",
+                    )))
+                    .push(Box::new(Slider::new("volume", "volume"))),
+            ),
+            (200, 80),
+        );
+        let snapshot = harness.inspection();
+        let slider = snapshot
+            .root
+            .children
+            .iter()
+            .find(|child| child.widget == "Slider")
+            .expect("slider in the row");
+        assert!(slider.rect[2] >= 120.0, "{:?}", slider.rect);
+    }
+
+    /// On a light material the thumb is a raised white object with a ring
+    /// that clears both halves of the track, never a dark disc.
+    #[test]
+    fn the_light_thumb_is_raised_and_ringed() {
+        let theme = Theme::light();
+        let mut scene = Scene::new();
+        Slider::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            &SliderFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), 0.5),
+        );
+        let colors = &theme.tokens.colors;
+        let raised = colors.surfaces.raised;
+        let ring = crate::widget::toggle::ink_across(
+            &[colors.intent.inverted, colors.intent.selection],
+            colors.text_tertiary,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        for ground in [colors.intent.inverted, colors.intent.selection] {
+            assert!(
+                crate::a11y::contrast_ratio(ring, ground)
+                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+            );
+        }
+        assert!(crate::a11y::relative_luminance(raised) > 0.9);
+    }
+
+    /// On a dark material the thumb is the primary ink, ringed so it reads
+    /// as a disc of its own over the filled half (the same ink) and over
+    /// the unfilled one.
+    #[test]
+    fn the_dark_thumb_is_primary_ink_and_ringed() {
+        let theme = Theme::dark();
+        let colors = &theme.tokens.colors;
+        let (filled, unfilled) = (colors.intent.inverted, colors.intent.selection);
+        let (fill, ring) = thumb_colors(&theme, filled, unfilled);
+        assert_eq!(fill, colors.text_primary);
+        let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        assert!(crate::a11y::contrast_ratio(ring, filled) >= floor);
+        assert!(crate::a11y::contrast_ratio(fill, unfilled) >= floor);
+    }
+
     /// Build a slider with a known rect so we don't need a full taffy pass.
-    /// Rect spans [0..200, 0..30] — track-padding 5 px, so the track itself
-    /// is [5..195] (width 190).
+    /// Rect spans [0..200, 0..30]; the track runs flush with it.
     fn slider_at(x0: f64, y0: f64, x1: f64, y1: f64) -> Slider {
         let mut s = Slider::new("test", "value");
         s.rect = Rect::new(x0, y0, x1, y1);
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    /// Drive an event through the slider with default scaffolding.
-    fn dispatch(s: &mut Slider, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_release;
 
     #[test]
     fn slider_pointer_input_hovers_drags_and_jumps() {
@@ -859,7 +1148,7 @@ mod tests {
 
         // Case `drag_continues_after_cursor_leaves_rect`.
         {
-            // Rect [0..200, 0..30]. Track usable width 190 (padding 5 each side).
+            // Rect [0..200, 0..30]. The track runs flush: 200 wide.
             let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
 
             // Move cursor inside, near the left edge of the track.
@@ -871,7 +1160,7 @@ mod tests {
             // Cursor leaves the rect vertically (still within the track's
             // horizontal range). The drag must continue updating `value`.
             dispatch(&mut s, &cursor_moved(150.0, 200.0));
-            let expected = ((150.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+            let expected = (150.0 / 200.0_f64).clamp(0.0, 1.0);
             assert!(
                 (s.value - expected).abs() < 1e-6,
                 "drag outside rect must keep tracking cursor x — got {}, expected {}",
@@ -881,7 +1170,7 @@ mod tests {
 
             // And another move further outside — value still tracks.
             dispatch(&mut s, &cursor_moved(95.0, -50.0));
-            let expected2 = ((95.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+            let expected2 = (95.0 / 200.0_f64).clamp(0.0, 1.0);
             assert!(
                 (s.value - expected2).abs() < 1e-6,
                 "drag continues to track even far outside rect — got {}, expected {}",
@@ -896,14 +1185,14 @@ mod tests {
 
         // Case `press_on_track_jumps_value`.
         {
-            // Rect [0..200, 0..30], track [5..195] (width 190).
-            // x at 0.8 of width → 5 + 0.8*190 = 157.0
+            // Rect [0..200, 0..30]; the track runs flush, so x at 0.8 of
+            // the width is 160.
             let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
 
             // Move cursor to the press location *and* press without any
             // prior hover state being toggled by the same code path —
             // this is the "click on track to jump" affordance.
-            let press_x = 5.0 + 0.8 * 190.0;
+            let press_x = 0.8 * 200.0;
             dispatch(&mut s, &cursor_moved(press_x, 15.0));
             dispatch(&mut s, &mouse_press());
 
@@ -958,8 +1247,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(0.5);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.5);
             assert_eq!(second.value(), 0.5);
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -967,17 +1256,18 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
-                &mut document,
+                &[],
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 0.55);
 
             second.set_value(0.8);
             assert_eq!(state.get(), 0.8);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.8);
             assert_eq!(&*changes.borrow(), &[0.55]);
         }
@@ -1040,14 +1330,16 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
@@ -1056,7 +1348,8 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.80).abs() < 1e-9);
@@ -1065,7 +1358,8 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.20).abs() < 1e-9);
@@ -1081,10 +1375,87 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(s.value, before, "a disabled slider must not change value");
+        }
+
+        // Case `a_settling_slider_invokes_its_action_once_per_drag`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(100.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                "nothing is invoked while the drag goes on"
+            );
+            dispatch(&mut slider, &mouse_release());
+            let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                .expect("letting go invokes the action");
+            let value = invoked.arguments["value"].as_f64().unwrap();
+            assert!((value - slider.value).abs() < 1e-9);
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
+
+        // Case `shift_drags_the_value_a_tenth_as_fast`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 210.0, 30.0);
+            let mut shift = Dispatch::new().modifiers(winit::keyboard::ModifiersState::SHIFT);
+            dispatch(&mut slider, &cursor_moved(105.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            let start = slider.value;
+            shift.send(&mut slider, &cursor_moved(105.0, 15.0));
+            let half_track = SliderFace::new(slider.rect, 0.0).track_rect().width() / 2.0;
+            shift.send(&mut slider, &cursor_moved(105.0 + half_track, 15.0));
+            assert!(
+                (slider.value - start - 0.05).abs() < 1e-6,
+                "{start} -> {}",
+                slider.value
+            );
+            dispatch(&mut slider, &cursor_moved(105.0 + half_track, 15.0));
+            assert!(
+                (slider.value - 1.0).abs() < 1e-6,
+                "without Shift it follows again"
+            );
+        }
+
+        // Case `a_settling_slider_shows_its_drag_in_its_local_state`.
+        {
+            let state = crate::LocalState::new(0.0);
+            let mut slider = Slider::from_state(&state)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                (state.with(|value| *value) - slider.value).abs() < 1e-9,
+                "the local state follows the drag"
+            );
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+            dispatch(&mut slider, &mouse_release());
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_some());
         }
 
         // Case `action_binding_owns_accessibility_value_changes`.
@@ -1109,7 +1480,8 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
@@ -1120,5 +1492,46 @@ mod tests {
                 0.8
             );
         }
+    }
+    #[test]
+    fn ranged_stepped_keyboard_slider_with_a_flush_track() {
+        let mut slider = Slider::new("delay", "")
+            .range(0.0, 10.0)
+            .step(0.5)
+            .value_text(|seconds| format!("{seconds} s"));
+        slider.set_value(3.3);
+        assert!((slider.value() - 3.5).abs() < 1e-9, "snaps to the step");
+        assert_eq!(
+            Widget::accessibility(&slider)
+                .and_then(|n| n.value)
+                .as_deref(),
+            Some("3.5 s")
+        );
+        slider.set_focus(true);
+        let doc = AutoCommit::new();
+        let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
+            let ev =
+                crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+            slider.handle_key(&ev, &doc, &automerge::ROOT)
+        };
+        assert!(key(&mut slider, NamedKey::ArrowRight));
+        assert!((slider.value() - 4.0).abs() < 1e-9);
+        assert!(key(&mut slider, NamedKey::PageUp));
+        assert!((slider.value() - 5.0).abs() < 1e-9);
+        assert!(key(&mut slider, NamedKey::End));
+        assert!((slider.value() - 10.0).abs() < 1e-9);
+        assert!(key(&mut slider, NamedKey::Home));
+        assert!(slider.value().abs() < 1e-9);
+
+        let theme = Theme::dark();
+        let face = SliderFace::new(Rect::new(20.0, 0.0, 220.0, 24.0), 0.0);
+        assert_eq!(face.track_rect().x0, 20.0, "the track runs flush");
+        assert!((face.value_at(Point::new(120.0, 12.0)) - 0.5).abs() < 1e-9);
+        assert_eq!(face.value_at(Point::new(0.0, 12.0)), 0.0);
+        let hit = face.hit_rect(&theme);
+        assert!(
+            hit.x0 < 20.0 && hit.height() >= 32.0,
+            "the knob overhangs: {hit:?}"
+        );
     }
 }

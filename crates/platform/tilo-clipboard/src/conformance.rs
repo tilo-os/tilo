@@ -4,13 +4,11 @@
 //! The checks panic with the violated rule. They write the clipboard they are
 //! given, so run [`check_system`] only where clobbering it is acceptable.
 #![allow(
-    clippy::panic,
-    clippy::expect_used,
     clippy::missing_panics_doc,
     reason = "a conformance check fails by panicking with the violated rule"
 )]
 
-use crate::{Availability, ClipboardBackend, ClipboardTarget, Feature, availability};
+use crate::{Availability, ClipboardBackend, ClipboardTarget, Feature, availability, available};
 
 /// A backend that keeps everything in the process ([`InProcessClipboard`](crate::InProcessClipboard)
 /// or a test double): round trips, independent targets, and no false claim of
@@ -36,7 +34,7 @@ pub fn check_local(backend: &dyn ClipboardBackend) {
 /// malformed image is refused, and a target the column marks unsupported
 /// never leaves the app.
 pub fn check_system(backend: &dyn ClipboardBackend) {
-    if availability(Feature::ReadAnytime) == Availability::Available {
+    if available(Feature::ReadAnytime) {
         round_trips(backend);
     }
     assert!(

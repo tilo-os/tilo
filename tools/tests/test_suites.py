@@ -9,7 +9,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from contextlib import redirect_stdout
+import unittest.mock
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +66,19 @@ class ParseTests(unittest.TestCase):
 
 
 class SelectTests(unittest.TestCase):
+    def test_error_boundary_regressions_are_selected_for_their_inputs(self):
+        manifest = suites.load(ROOT)
+        for changed, expected in (
+            ("scripts/headless-examples/peers-cross-both-ways.py",
+             "scripts/tests/test_headless_error_handling.py"),
+            ("scripts/vm-acceptance/acceptance/core.py",
+             "scripts/vm-acceptance/tests/test_error_paths.py"),
+            ("scripts/perf/resource_bench.py",
+             "scripts/perf/resource_bench_test.py"),
+        ):
+            with self.subTest(changed=changed):
+                self.assertIn(expected, suites.select(manifest, [changed]))
+
     def setUp(self):
         self.manifest = suites.parse(MANIFEST)
 
@@ -361,6 +375,19 @@ class CargoReaderTests(unittest.TestCase):
             text = 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/x.py");\n'
             manifest = READER_MANIFEST + '[[cargo-exempt]]\nfile = "apps/calc/src/lib.rs"\nreason = "ignored test"\n'
             self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}, manifest), [])
+
+
+class GroupSelectionTests(unittest.TestCase):
+    def test_run_group_selects_that_groups_suites_and_rejects_unknown_names(self):
+        group = suites.load(ROOT).groups[0]
+        calls = []
+        with unittest.mock.patch.object(suites, "run", lambda root, selected, jobs: calls.append(selected) or 0):
+            self.assertEqual(suites.main(["run", "--group", group.name]), 0)
+        self.assertEqual(calls, [list(group.suites)])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            suites.main(["run", "--group", "no-such-group"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            suites.main(["run", "--group", group.name, "--all"])
 
 
 if __name__ == "__main__":

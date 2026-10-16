@@ -13,7 +13,7 @@ name = "secret_vault"
 path = "src/lib.rs"
 
 [dependencies]
-private-fs = { version = "0.1.0", path = "../private-fs" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Holds the vault key: the Secret Service on Linux, the Keychain on macOS.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tracing.workspace = true

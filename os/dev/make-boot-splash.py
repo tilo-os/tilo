@@ -6,6 +6,13 @@ import struct
 import sys
 
 WIDTH, HEIGHT = 1024, 768
+# systemd-stub clears the whole screen to black and centres this fixed-size
+# tile on it, at whatever mode the firmware chose. Anything but black at the
+# tile's edge shows as a box floating in the middle of a larger panel, so the
+# background is black and the glow fades out before it reaches an edge.
+BACKGROUND = (0, 0, 0)
+GLOW_CENTER_Y = HEIGHT * 0.44
+GLOW_RADIUS = min(WIDTH / 2, GLOW_CENTER_Y, HEIGHT - GLOW_CENTER_Y) - 8
 
 
 def mix(a, b, amount):
@@ -17,9 +24,8 @@ def coverage(distance, half_width=3.0):
 
 
 def pixel(x, y):
-    background = (14, 16, 23)
-    glow = max(0.0, 1.0 - math.hypot(x - WIDTH / 2, y - HEIGHT * 0.44) / 430.0)
-    color = mix(background, (25, 25, 44), glow * glow * 0.72)
+    glow = max(0.0, 1.0 - math.hypot(x - WIDTH / 2, y - GLOW_CENTER_Y) / GLOW_RADIUS)
+    color = mix(BACKGROUND, (25, 25, 44), glow * glow * 0.72)
 
     cx, cy = WIDTH / 2, HEIGHT * 0.43
     # Tilo's three-dot mark matches the public site favicon. It is geometric

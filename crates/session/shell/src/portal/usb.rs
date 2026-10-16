@@ -4,12 +4,11 @@
 //! opening. The backend authenticates that frontend, shows an unspoofable
 //! shell sheet, and returns only the approved identifiers.
 
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use std::collections::{HashMap, HashSet};
 
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::{OwnedValue, Value};
@@ -54,13 +53,6 @@ impl UsbBackend {
 struct RequestedDevice {
     id: String,
     writable: bool,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     label: Option<String>,
 }
 
@@ -85,80 +77,66 @@ impl UsbBackend {
             HashMap<String, OwnedValue>,
         )>,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let Some(requested) = validate_devices(devices) else {
-            return (2, HashMap::new());
-        };
-        if requested.is_empty() {
-            return approved_result(&requested, &[]);
-        }
-        let request_path = handle.to_string();
-        let dialogs = self.dialogs.clone();
-        let cancel_path = request_path.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id,
-            resource: LifecycleResource::Prompt,
-        };
-        let registered = self
-            .lifecycle
-            .register_request(connection, &request_path, entry, move |_| {
-                let _ = dialogs.cancel(&cancel_path);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            return (2, HashMap::new());
-        }
-        let receiver = match self.dialogs.enqueue_usb_devices(UsbDeviceRequest {
-            review: ReviewRequest {
-                handle: request_path.clone(),
-                app_id,
-                title: crate::shell::i18n::t("portal-usb-title"),
-                reason: crate::shell::i18n::t("portal-usb-reason"),
-                resource: crate::shell::i18n::t("portal-usb-resource"),
-                confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
-            },
-            devices: requested
-                .iter()
-                .map(|device| UsbDeviceRow {
-                    id: device.id.clone(),
-                    label: device
-                        .label
-                        .clone()
-                        .unwrap_or_else(|| crate::shell::i18n::t("portal-usb-unnamed-device")),
-                    writable: device.writable,
-                })
-                .collect(),
-        }) {
-            Ok(receiver) => receiver,
-            Err(_) => {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return (2, HashMap::new());
+    ) -> Reply {
+        answer(async move {
+            let auth = authenticate_call(&self.ctx, &header, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            let requested = validate_devices(devices).or_fail()?;
+            if requested.is_empty() {
+                return approved_result(&requested, &[]);
             }
-        };
-        let response = match receiver.await {
-            Ok(UsbDeviceDecision {
-                decision: ReviewDecision::Confirmed,
-                approved,
-            }) => approved_result(&requested, &approved),
-            Ok(UsbDeviceDecision {
-                decision: ReviewDecision::Cancelled,
-                ..
-            })
-            | Err(_) => (1, HashMap::new()),
-        };
-        self.lifecycle
-            .complete_request_object(connection, &request_path)
-            .await;
-        response
+            let request_path = handle.to_string();
+            let dialogs = self.dialogs.clone();
+            let cancel_path = request_path.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id,
+                resource: LifecycleResource::Prompt,
+            };
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
+            };
+            self.lifecycle
+                .with_request(connection, &request_path, entry, cancel, async {
+                    let receiver = self
+                        .dialogs
+                        .enqueue_usb_devices(UsbDeviceRequest {
+                            review: ReviewRequest {
+                                handle: request_path.clone(),
+                                app_id,
+                                title: crate::shell::i18n::t("portal-usb-title"),
+                                reason: crate::shell::i18n::t("portal-usb-reason"),
+                                resource: crate::shell::i18n::t("portal-usb-resource"),
+                                confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
+                            },
+                            devices: requested
+                                .iter()
+                                .map(|device| UsbDeviceRow {
+                                    id: device.id.clone(),
+                                    label: device.label.clone().unwrap_or_else(|| {
+                                        crate::shell::i18n::t("portal-usb-unnamed-device")
+                                    }),
+                                    writable: device.writable,
+                                })
+                                .collect(),
+                        })
+                        .or_fail()?;
+                    match receiver.await {
+                        Ok(UsbDeviceDecision {
+                            decision: ReviewDecision::Confirmed,
+                            approved,
+                        }) => approved_result(&requested, &approved),
+                        Ok(UsbDeviceDecision {
+                            decision: ReviewDecision::Cancelled,
+                            ..
+                        })
+                        | Err(_) => Err(Ended::Cancelled),
+                    }
+                })
+                .await
+        })
+        .await
     }
 }
 
@@ -183,18 +161,10 @@ fn validate_devices(
             {
                 return None;
             }
-            let writable = access
-                .get("writable")
-                .and_then(|value| value.try_clone().ok())
-                .and_then(|value| bool::try_from(value).ok())
-                .unwrap_or(false);
+            let writable = crate::portal::option::<bool>(&access, "writable").unwrap_or(false);
             let label = ["device", "product", "name"]
                 .into_iter()
-                .find_map(|key| {
-                    info.get(key)
-                        .and_then(|value| value.try_clone().ok())
-                        .and_then(|value| String::try_from(value).ok())
-                })
+                .find_map(|key| crate::portal::option::<String>(&info, key))
                 .filter(|label| {
                     !label.is_empty()
                         && label.len() <= MAX_LABEL
@@ -209,10 +179,7 @@ fn validate_devices(
         .collect()
 }
 
-fn approved_result(
-    devices: &[RequestedDevice],
-    approved_ids: &[String],
-) -> (u32, HashMap<String, OwnedValue>) {
+fn approved_result(devices: &[RequestedDevice], approved_ids: &[String]) -> Outcome {
     let approved_ids: HashSet<&str> = approved_ids.iter().map(String::as_str).collect();
     let approved: Vec<(String, HashMap<String, OwnedValue>)> = devices
         .iter()
@@ -223,12 +190,10 @@ fn approved_result(
             (device.id.clone(), access)
         })
         .collect();
-    let mut result = HashMap::new();
-    let Ok(value) = OwnedValue::try_from(Value::new(approved)) else {
-        return (2, HashMap::new());
-    };
+    let mut result = Results::new();
+    let value = OwnedValue::try_from(Value::new(approved)).or_fail()?;
     result.insert("devices".into(), value);
-    (0, result)
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -250,7 +215,8 @@ mod tests {
                 writable: false,
                 label: Some("Camera".into()),
             }];
-            let (response, result) = approved_result(&devices, &["device-1".into()]);
+            let (response, result) =
+                crate::portal::reply::reply(approved_result(&devices, &["device-1".into()]));
             assert_eq!(response, 0);
             assert!(result.contains_key("devices"));
         }
@@ -268,8 +234,10 @@ mod tests {
                     label: None,
                 },
             ];
-            let (response, result) =
-                approved_result(&devices, &["read-write".into(), "not-requested".into()]);
+            let (response, result) = crate::portal::reply::reply(approved_result(
+                &devices,
+                &["read-write".into(), "not-requested".into()],
+            ));
             assert_eq!(response, 0);
             let result = result.get("devices").unwrap().try_clone().unwrap();
             let rows = Vec::<(String, HashMap<String, OwnedValue>)>::try_from(result).unwrap();

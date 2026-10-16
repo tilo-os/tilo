@@ -32,15 +32,15 @@ use crate::policy::{PowerAction, PowerPolicy};
 
 /// The Settings default idle-suspend timeout, in minutes, used when
 /// `auto_suspend` is on but no explicit `suspend_minutes` is written.
-pub const DEFAULT_SUSPEND_MINUTES: u32 = 15;
+pub const DEFAULT_SUSPEND_MINUTES: u32 = settings_store::power::DEFAULT_SUSPEND_MINUTES;
 
 /// The Settings default screen-blank timeout, in minutes. `0` is the
 /// persisted spelling of "Never".
-pub const DEFAULT_BLANK_MINUTES: u32 = 10;
+pub const DEFAULT_BLANK_MINUTES: u32 = settings_store::power::DEFAULT_BLANK_MINUTES;
 
 /// The Settings default idle-lock timeout, in minutes. `0` is the persisted
 /// spelling of "Never".
-pub const DEFAULT_LOCK_MINUTES: u32 = 5;
+pub const DEFAULT_LOCK_MINUTES: u32 = settings_store::power::DEFAULT_LOCK_MINUTES;
 
 /// The largest screen-blank timeout the Settings UI can express. Rejecting
 /// larger persisted values keeps corrupt/manual configuration from making the
@@ -57,22 +57,25 @@ pub fn settings_path() -> Option<PathBuf> {
     settings_store::settings_path()
 }
 
-/// Load the policy from the shared settings file, falling back to the
-/// Settings defaults on any read/parse failure.
-pub fn load_policy() -> PowerPolicy {
-    load_policy_for_profile(active_power_profile().as_deref())
-}
-
-/// Load Settings policy for a profile already obtained from
-/// power-profiles-daemon. This avoids spawning its CLI from the D-Bus monitor.
+/// Load the policy from the session's settings for the power-profiles-daemon
+/// profile the power service last observed ([`crate::PowerBridge::active_profile`]),
+/// falling back to the Settings defaults when there are none. Never asks the
+/// daemon itself: the compositor reloads this on its frame thread.
+///
+/// The document is read the way every other reader reads it
+/// ([`settings_store::load_section`]): from the source the session installed
+/// when there is one, else from the file. A reader woken by a write to the
+/// store must see that write, and the session's source publishes a change
+/// before it has rewritten the `settings.json` copy, so reading the copy here
+/// let a write made through the store be applied from the value it replaced.
+///
+/// The result is already narrowed to this machine's duty: a host never
+/// suspends on its own.
 pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
-    let Some(path) = settings_path() else {
-        return default_policy();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => policy_from_settings_json_for_profile(&text, active_profile),
-        Err(_) => default_policy(),
-    }
+    let section =
+        serde_json::Value::Object(settings_store::load_section(settings_store::power::SECTION));
+    policy_from_section_for_profile(&section, active_profile)
+        .for_duty(crate::policy::this_machine_duty())
 }
 
 /// The policy a freshly-installed machine runs (Settings defaults). This
@@ -86,10 +89,10 @@ pub fn default_policy() -> PowerPolicy {
     }
 }
 
-/// Parse a [`PowerPolicy`] from a full `settings.json` document. Never fails;
-/// unknown/missing fields take defaults.
+/// Parse a [`PowerPolicy`] from a full `settings.json` document with no
+/// active power profile. Never fails; unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
-    policy_from_settings_json_for_profile(text, active_power_profile().as_deref())
+    policy_from_settings_json_for_profile(text, None)
 }
 
 pub fn policy_from_settings_json_for_profile(
@@ -104,11 +107,6 @@ pub fn policy_from_settings_json_for_profile(
         return default_policy();
     };
     policy_from_section_for_profile(section, active_profile)
-}
-
-/// Parse a [`PowerPolicy`] from just the `"power"` object.
-pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
-    policy_from_section_for_profile(section, active_power_profile().as_deref())
 }
 
 /// Resolve a policy for a known power-profiles-daemon profile.
@@ -199,22 +197,6 @@ pub fn policy_from_section_for_profile(
         ),
         critical_action: action("critical_action", defaults.critical_action),
     }
-}
-
-fn active_power_profile() -> Option<String> {
-    let output = bounded_command::run(
-        "powerprofilesctl",
-        &["get"],
-        None,
-        64 * 1024,
-        Duration::from_secs(3),
-    )
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let profile = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!profile.is_empty()).then_some(profile)
 }
 
 #[cfg(test)]

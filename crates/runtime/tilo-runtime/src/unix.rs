@@ -21,8 +21,7 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
-    // SAFETY: geteuid has no arguments or memory preconditions.
-    if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+    if !metadata.file_type().is_dir() || !tilo_files::native::private::owned_by_me(&metadata) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "runtime directory must be owned by this user and not a symlink",
@@ -163,6 +162,9 @@ impl Connections {
         let fds = services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
+            // Independently attached connections use their existing RPC route,
+            // not the manifest launcher's executing-task challenge protocol.
+            .env_remove(launcher::services::COLLAB_EXECUTING_PEER_ENV)
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
@@ -215,9 +217,8 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid has no memory preconditions.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || !tilo_files::native::private::owned_by_me(&metadata)
         || metadata.nlink() != 1
         || metadata.permissions().mode() & 0o077 != 0
     {
@@ -241,7 +242,8 @@ mod tests {
         let mut command = std::process::Command::new("/usr/bin/true");
         command
             .env("TILO_RUNTIME_CONNECTION_OWNER_PID", "1")
-            .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent");
+            .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent")
+            .env(launcher::services::COLLAB_EXECUTING_PEER_ENV, "1");
         let _connections = super::Connections::prepare(
             &mut command,
             "dev.tilo.child",
@@ -256,6 +258,7 @@ mod tests {
         for key in [
             "TILO_RUNTIME_CONNECTION_OWNER_PID",
             "TILO_RUNTIME_RESUME_LIVE",
+            launcher::services::COLLAB_EXECUTING_PEER_ENV,
         ] {
             assert_eq!(
                 command.get_envs().find(|(name, _)| *name == key).unwrap().1,

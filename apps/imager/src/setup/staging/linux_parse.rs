@@ -360,10 +360,6 @@ mod tests {
 
     /// sfdisk, lsblk/sysfs, mountinfo and LUKS/LVM backing disks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn linux_disk_inventory_parsers_normalise_units_and_backing_devices() {
         // Phase `sfdisk_dump_becomes_a_lowercase_disk`.
         {

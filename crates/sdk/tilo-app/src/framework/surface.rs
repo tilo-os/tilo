@@ -2,16 +2,22 @@
 //! resource: collaboration, history, undo, permissions and the action door.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::Resource;
-use ui_core::PresencePayload;
+use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
+use ui_core::automerge::transaction::Transactable as _;
+use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, Widget};
+use ui_core::{PresencePayload, WakeHandle};
 
+use super::controls::Actions;
 use super::dispatch::Dispatcher;
+use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs};
 use super::live::Live;
+use super::rows::{LiveRow, outside_document, resolved_outside_document};
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
 /// layout engine — taking part in a resource.
@@ -37,7 +43,7 @@ use super::live::Live;
 ///   gesture that is several edits goes in one [`Dispatcher::group`] (or
 ///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
 ///   Ctrl+Z takes all of it back.
-/// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
+/// * **Permissions** — [`RecordEnv::read_only`](super::RecordEnv::read_only) says the participant may
 ///   only view; present accordingly. It follows role changes while the app
 ///   runs, and [`read_only_changed`](Self::read_only_changed) announces each
 ///   one. Refused actions change nothing.
@@ -51,14 +57,100 @@ use super::live::Live;
 ///   the toolkit's `Widget::presence_payload` (one line:
 ///   `selection.presence::<R>(app_id)`), and draw collaborators from the
 ///   `PresenceCtx` every draw receives, under the same keys.
-pub trait ResourceSurface<R: Resource>: Widget {
+/// * **Effects** — work with no document delta (back up now, connect, run a
+///   query) is the surface's effect vocabulary `E`, a `#[derive(Effect)]`
+///   enum: implement `ResourceSurface<R, E>` and answer each effect in
+///   [`effect`](Self::effect) with `&mut self`, starting a job through the
+///   [`EffectCx`] when it takes time. Every caller — a button
+///   ([`Dispatcher::effect`]), the palette, an agent — reaches it the same
+///   way; [`effects`](Self::effects) says which are unavailable right now.
+/// * **Run mode** — start work that reaches outside the process (a decoder
+///   service, a socket, a probe) only when [`RecordEnv::mode`](super::RecordEnv::mode) is live. A
+///   capture reads [`RecordEnv::fixture`](super::RecordEnv::fixture) instead; a past version starts
+///   nothing. Work still in flight that the frame shows (a page render, a
+///   decode) is reported by the toolkit's `Widget::has_pending_visual_work`;
+///   a capture waits for it.
+/// * **One published tree** — what the surface offers the palette, agents
+///   and scripts joins the resource's own publication:
+///   [`bound_declarations`](Self::bound_declarations) for edits bound to
+///   where the user is (delete the selected clip, bookmark the current
+///   folder), and [`live_rows`](Self::live_rows) for the live external
+///   entities it shows (processes, containers), which carry only view and
+///   effect operations. A document action the surface's own
+///   `PublishesResources` offers is dropped, so nothing reaches the
+///   document beside the resource's actions.
+pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
+    ///
+    /// Keeping `state` past this call is allowed but not free: while it is
+    /// held, the next change brings a copy up to date. A copy shares what
+    /// the change did not touch — every [`Collection`](tilo_resource::Collection)
+    /// item, untouched `Keyed`/`Ordered` fields, the untouched chunks of a
+    /// `Map`, `Set` or `Grid` — but plain fields (a `Vec`, a `BTreeMap`) are
+    /// copied whole on every change, so a large one belongs in one of those,
+    /// and a surface keeps the parts it needs rather than the `Rc` when the
+    /// state has large plain ones.
     fn present(&mut self, state: &Rc<R::State>);
+
+    fn supports_device_shell(&self) -> bool {
+        false
+    }
+
+    /// Answer a private owner operation from the authenticated hosting shell.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unavailable device-shell operations.
+    fn device_shell_operation(
+        &mut self,
+        _operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("This surface has no device shell".into())
+    }
+
+    /// A trusted hosting shell owner selected the device-shell target. No grant is implied.
+    fn request_device_shell(&mut self) -> bool {
+        false
+    }
+
+    /// The latest bounded query from the platform's canonical search source.
+    /// Runs on the UI thread before sync, coalescing queries between frames.
+    /// A surface may refresh remote results through its attached jobs; expose
+    /// their entries through `search_entries`, rather than another provider.
+    /// Never called for a History view and lends no document.
+    fn search_query(&mut self, query: &ui_core::search::SearchQuery) {
+        let _ = query;
+    }
+
+    /// Consume a request to retry this window's failed record save, once.
+    /// The framework's record owner performs the retry after releasing its
+    /// document loan; the surface never writes or flushes storage itself.
+    /// History surfaces cannot request a retry.
+    fn take_save_retry(&mut self) -> bool {
+        false
+    }
+
+    /// A pending device-local request for the hosting shell, consumed once.
+    /// The host answers it through its permission flow; this callback lends no document.
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        None
+    }
 
     /// The channel edits go through, and whether they will be accepted.
     /// Called once, before the first [`present`](Self::present).
     fn attach(&mut self, cx: SurfaceCx<R>) {
         let _ = cx;
+    }
+
+    /// A participant's action — an agent's verb, a collaborator's edit
+    /// taken through the door — left them at `place`, as the resource says
+    /// it lands ([`Resource::lands`](tilo_resource::Resource::lands)).
+    /// Called after [`present`](Self::present) showed the state holding it.
+    /// Presence draws them there already; a surface that acts at a
+    /// participant's place (typing at an agent's caret) reads it here, or
+    /// any time through [`Live::place_of`](super::Live::place_of), instead
+    /// of keeping its own copy.
+    fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &tilo_resource::Place) {
+        let _ = (participant, place);
     }
 
     /// The participant's permission to edit changed while the app runs: a
@@ -70,26 +162,237 @@ pub trait ResourceSurface<R: Resource>: Widget {
 
     /// Stage view state for a screenshot scenario (`None` for a plain
     /// `--shots`): a selection, an open menu, a drag in flight. Called at the
-    /// start of the sync after the scenario's actions applied, so the surface
-    /// has been presented their result and its own `sync` follows with the
-    /// document. Edits it dispatches here are submitted like any other and
+    /// start of the sync after the scenario's actions applied and were laid
+    /// out, so the surface has been presented their result, knows its
+    /// geometry, and its own `sync` follows with the document. Edits it dispatches here are submitted like any other and
     /// applied before the frame is captured. Must be deterministic: the same
     /// scenario stages the same scene on every run. Never called in a live
     /// window.
     fn stage(&mut self, scenario: Option<&str>) {
         let _ = scenario;
     }
+
+    /// Answer `effect`, invoked by a control, the palette, an agent or a
+    /// script: finish now ([`Effected::done`](super::Effected::done)), or
+    /// start a job with [`EffectCx::thread`], [`EffectCx::spawn`] or
+    /// [`EffectCx::reply`] and answer [`Effected::Pending`](super::Effected::Pending)
+    /// (only for an effect declared `job`). A job's completion runs on the
+    /// UI thread with `&mut self` again, and changes the document through
+    /// the context's dispatcher. Never called in History mode.
+    ///
+    /// # Errors
+    /// Returns why the effect failed, which its caller is told.
+    fn effect(&mut self, effect: E, cx: &mut EffectCx<R, Self>) -> EffectAnswer
+    where
+        Self: Sized,
+    {
+        let _ = cx;
+        Err(format!("`{}` has no handler", effect.id()))
+    }
+
+    /// The effects that differ from their declaration right now, as the
+    /// surface's state says: unavailable while the engine is offline,
+    /// relabelled while recording. Read after every sync, so the published
+    /// actions follow the surface.
+    fn effects(&self) -> Vec<EffectStatus> {
+        Vec::new()
+    }
+
+    /// The resource's own actions that differ from their declaration right
+    /// now, as the surface's live state says (`Camera::SET_MODE` unavailable
+    /// while recording, with why). Read whenever the resource is published,
+    /// so the palette, agents and the door follow the surface: an action
+    /// unavailable here is refused with its reason.
+    fn availability(&self) -> Vec<EffectStatus> {
+        Vec::new()
+    }
+
+    /// Edits bound to the surface's view state — the selection, the caret,
+    /// the playhead, the folder or page shown — as typed builders of the
+    /// resource's action, published on the resource beside its declared
+    /// actions. Invoking one dispatches the action it builds through the
+    /// same permission check, confirmation and undo as any other. An id the
+    /// resource already publishes keeps the resource's action, unless the
+    /// bound one refines it ([`tilo_resource::bind_declaration`]): same
+    /// parameters, permission and risk, adding only where it was invoked
+    /// from, such as the caret an append leaves its writer at.
+    fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
+        Vec::new()
+    }
+
+    /// The live external entities the surface shows, published as children
+    /// of the resource and merged by id with its document children. Keep it
+    /// to what fits a published tree (the rows on screen, a bounded page)
+    /// and resolve the rest in [`live_row`](Self::live_row).
+    fn live_rows(&self) -> Vec<LiveRow> {
+        Vec::new()
+    }
+
+    /// The live row `id`, when [`live_rows`](Self::live_rows) leaves it out,
+    /// so an action addressed to any entity the surface knows still reaches
+    /// it.
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        let _ = id;
+        None
+    }
+
+    /// Edits of the resource bound to the live row `row` (rename *this*
+    /// file): typed builders of the resource's action, published on that row
+    /// and applied through the same permission check, confirmation and undo
+    /// as the resource's own declarations. A row itself carries only view
+    /// and effect operations; this is how it offers a document change.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>> {
+        let _ = row;
+        Vec::new()
+    }
+
+    /// Search entries for what the surface shows that the resource does not
+    /// hold — a page's text, a book's outline, the processes running —
+    /// indexed with the resource's own ([`Resource::search`]) as the app's
+    /// one search source. Read whenever someone searches, so keep it to what
+    /// the surface already has at hand.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        Vec::new()
+    }
+}
+
+/// Run `forward`, a pass of a surface over the document, keeping every change
+/// it makes outside its dispatcher out of the document
+/// ([`refuse_raw_writes`]).
+fn only_through_actions(
+    state: &mut ui_core::widget::Edits<'_>,
+    path: &ModelPath,
+    pass: &str,
+    forward: impl FnOnce(&mut ui_core::widget::Edits<'_>, &ModelPath),
+) {
+    let before = ui_core::doc::document(state, path).0.pending_ops();
+    forward(state, path);
+    refuse_raw_writes(ui_core::doc::document(state, path).0, before, pass);
+}
+
+/// A surface changes its resource only through its dispatcher: every action
+/// it applies is committed as one change, attributed and undoable. Anything
+/// else would remain uncommitted; the typed loan prevents such a write.
+/// A debug build also checks this invariant at the callback boundary.
+fn refuse_raw_writes(doc: &AutoCommit, before: usize, pass: &str) {
+    if before != 0 || doc.pending_ops() == 0 {
+        return;
+    }
+    let dropped = doc.pending_ops();
+    tracing::error!(
+        pass,
+        dropped,
+        "a surface wrote the document outside an action; the write was refused"
+    );
+    debug_assert_eq!(
+        dropped, 0,
+        "a surface wrote the document outside an action during `{pass}`"
+    );
+}
+
+/// What a hosted surface adds to its resource's publication, as the root
+/// collects it.
+pub(crate) trait SurfacePublication {
+    /// The resource type the surface is hosted on; a root collects only its
+    /// own type's surfaces.
+    fn resource(&self) -> std::any::TypeId;
+    /// Add the edits the surface binds to where the user is to `into`, a
+    /// `Vec<ActionDecl<R>>` of its resource type `R`.
+    fn bound_declarations(&self, into: &mut dyn std::any::Any);
+    fn availability(&self) -> Vec<EffectStatus>;
+    fn live_rows(&self) -> Vec<LiveRow>;
+    fn live_row(&self, id: &str) -> Option<LiveRow>;
+    /// Whether the surface binds any edit on the row `row`.
+    fn offers_on_row(&self, row: &str) -> bool;
+    /// Add the edits the surface binds on the row `row` to `into`, a
+    /// `Vec<ActionDecl<R>>` of its resource type `R`; whether it bound any.
+    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool;
+    fn search_entries(&self) -> Vec<SearchEntry>;
+    fn supports_device_shell(&self) -> bool;
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String>;
+    fn request_device_shell(&mut self) -> bool;
+    fn search_queries(&self) -> SearchQueries;
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
+    fn take_save_retry(&mut self) -> bool;
+}
+
+/// Coalesced query delivery owned by the canonical provider and surface host.
+#[derive(Clone, Default)]
+pub(crate) struct SearchQueries(Rc<RefCell<QueryDelivery>>);
+
+#[derive(Default)]
+struct QueryDelivery {
+    last: Option<ui_core::search::SearchQuery>,
+    pending: Option<ui_core::search::SearchQuery>,
+}
+
+impl SearchQueries {
+    pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
+        if query
+            .text()
+            .chars()
+            .nth(ui_core::search::MAX_SEARCH_QUERY_SCALARS)
+            .is_some()
+        {
+            return;
+        }
+        let mut delivery = self.0.borrow_mut();
+        if delivery.last.as_ref() != Some(query) {
+            delivery.last = Some(query.clone());
+            delivery.pending = Some(query.clone());
+        }
+    }
+
+    fn take(&self) -> Option<ui_core::search::SearchQuery> {
+        self.0.borrow_mut().pending.take()
+    }
 }
 
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
-    pub(crate) dispatch: Dispatcher<R>,
-    pub(crate) live: Live<R>,
+    pub(crate) env: super::env::RecordEnv<R>,
+    pub(crate) jobs: Jobs<R>,
+    pub(crate) actions: Actions<R>,
+}
+
+impl<R: Resource> std::ops::Deref for SurfaceCx<R> {
+    type Target = super::env::RecordEnv<R>;
+    fn deref(&self) -> &super::env::RecordEnv<R> {
+        &self.env
+    }
 }
 
 impl<R: Resource> SurfaceCx<R> {
-    pub fn dispatcher(&self) -> Dispatcher<R> {
-        self.dispatch.clone()
+    /// The host-owned identity of the record this surface shows. A durable
+    /// activation link can name it without relying on the last-open window.
+    /// Absent in a historical view that cannot launch live work.
+    pub fn record(&self) -> Option<&ui_core::record::RecordId> {
+        self.run.launched.record.as_ref()
+    }
+
+    /// What [`RecordEnv::open_here`](super::env::RecordEnv::open_here) does, kept for later: the input that asks
+    /// for another record arrives after attaching (a file chosen in a
+    /// picker). `None` in a past version and a capture.
+    pub fn opener(&self) -> Option<super::OpenHere> {
+        self.run.opener.clone()
+    }
+
+    /// Jobs the surface starts on its own, with nobody invoking an effect;
+    /// their completions get `&mut` the surface (`jobs.start::<Self>(…)`).
+    /// Keep the handle. See [`Jobs`].
+    pub fn jobs(&self) -> Jobs<R> {
+        self.jobs.clone()
+    }
+
+    /// The resource's published actions and the surface's effects, for
+    /// binding the toolkit controls a surface builds itself (a toggle, a
+    /// dropdown, a button deep in its own widget tree) the way a view's
+    /// controls are bound: [`Actions::bind`], [`Actions::bind_effect`].
+    pub fn actions(&self) -> Actions<R> {
+        self.actions.clone()
     }
 
     /// The live state, for a surface that reads it where it needs it (in
@@ -100,15 +403,42 @@ impl<R: Resource> SurfaceCx<R> {
         self.live.clone()
     }
 
-    /// Whether the participant may only view, as of now.
-    pub fn read_only(&self) -> bool {
-        self.dispatch.read_only()
+    /// The file whose history History shows beside the resource's, for an
+    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
+    /// set its target to the file the surface shows (the selected one) and
+    /// open it from the surface's own History command. `None` for any other
+    /// app, and in a past version.
+    pub fn file_history(&self) -> Option<ui_core::history_mode::checked_files::FileHistorySource> {
+        self.run
+            .file_history
+            .as_ref()
+            .map(|(source, _)| source.clone())
     }
 
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
         self.dispatch.app_id()
+    }
+
+    /// The app's secrets. A secret of one document item (a profile's
+    /// password) is `cx.secrets().item(purpose, id)`.
+    pub fn secrets(&self) -> ui_core::secrets::SecretStore {
+        self.storage.storage().secrets()
+    }
+
+    /// The app's private file areas.
+    pub fn files(&self) -> ui_core::storage::AppFiles {
+        self.storage.storage().files()
+    }
+
+    /// Wakes the app from another thread — a worker's result, a socket's
+    /// message — so the surface syncs and draws it without waiting for
+    /// input.
+    pub fn waker(&self) -> WakeHandle {
+        self.effects
+            .env()
+            .map_or_else(WakeHandle::new, |env| env.wake.clone())
     }
 }
 
@@ -126,16 +456,25 @@ pub enum ResourceSelection {
         start: usize,
         end: usize,
     },
+    /// A pointer over an item, at a point of the shared window (logical
+    /// pixels): where a collaborator is aiming in a surface that draws
+    /// their cursor itself.
+    Pointer { item: String, x: f32, y: f32 },
 }
 
 impl ResourceSelection {
     /// The toolkit presence frame for this selection, keyed to the resource
     /// item so peers resolve it against their own layout.
     pub fn presence<R: Resource>(&self, app_id: &str) -> (PresenceKey, PresencePayload) {
+        self.presence_of(R::KIND, app_id)
+    }
+
+    /// [`Self::presence`] for a resource known by its `kind` alone.
+    pub fn presence_of(&self, kind: &str, app_id: &str) -> (PresenceKey, PresencePayload) {
         let key = |item: &str| PresenceKey::Resource {
             app: app_id.to_owned(),
             id: item.to_owned(),
-            kind: R::KIND.to_owned(),
+            kind: kind.to_owned(),
         };
         match self {
             Self::Item(item) => (key(item), PresencePayload::Selection { start: 0, end: 0 }),
@@ -147,35 +486,85 @@ impl ResourceSelection {
                     end: *end,
                 },
             ),
+            Self::Pointer { item, x, y } => (key(item), PresencePayload::Pointer { x: *x, y: *y }),
         }
     }
 }
 
-/// Presents resource changes to a hosted surface and otherwise stays out of
-/// its way: layout, drawing and input are the surface's own.
-pub(crate) struct SurfaceHost<R: Resource, S> {
+impl From<tilo_resource::Place> for ResourceSelection {
+    fn from(place: tilo_resource::Place) -> Self {
+        match place {
+            tilo_resource::Place::Item(item) => Self::Item(item),
+            tilo_resource::Place::Caret { item, at } => Self::Caret { item, at },
+            tilo_resource::Place::Range { item, start, end } => Self::Range { item, start, end },
+        }
+    }
+}
+
+/// Presents resource changes to a hosted surface, routes its effects to it,
+/// and otherwise stays out of its way: layout, drawing and input are the
+/// surface's own.
+///
+/// The surface is laid out first, so the host and the surface it forwards
+/// its name to are one address: the window's map of named widgets, which
+/// keys a widget by address and name, finds the surface's own node when a
+/// test or a headless drive names it.
+#[repr(C)]
+pub(crate) struct SurfaceHost<R: Resource, S, E> {
+    surface: S,
+    search_queries: SearchQueries,
     live: Live<R>,
     presented: u64,
+    /// The number of the next landing to tell the surface of.
+    landings: u64,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
     staging: Staging,
-    surface: S,
+    /// Runs the surface's effects; `None` in History mode, where they never
+    /// run.
+    effects: Option<EffectRunner<R, S, E>>,
+    /// What the surface last said of its effects, which the root publishes.
+    statuses: Rc<RefCell<Vec<EffectStatus>>>,
+    /// The jobs the surface started on its own.
+    jobs: OwnedJobs<R, S>,
 }
 
 /// The scenario a surface stages on its next sync: outer `None` is nothing
 /// to stage, inner `None` is a plain `--shots`.
 pub(crate) type Staging = Rc<RefCell<Option<Option<String>>>>;
 
-impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
-    pub(crate) fn new(live: Live<R>, dispatch: Dispatcher<R>, surface: S) -> Self {
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, S, E> {
+    pub(crate) fn new(
+        live: Live<R>,
+        dispatch: Dispatcher<R>,
+        effects: &Effects<R>,
+        jobs: Jobs<R>,
+        alive: Weak<()>,
+        surface: S,
+    ) -> Self {
+        let statuses = Rc::new(RefCell::new(surface.effects()));
+        let runner = effects.env().map(|env| EffectRunner::new(env.clone()));
+        // Captures and History describe their controls too. Publication is
+        // inert metadata; only the runner below can execute an effect.
+        if !E::declarations().is_empty() {
+            let published = Rc::clone(&statuses);
+            effects.publish::<E>(alive, move || {
+                super::effect::published_specs::<E>(&published.borrow())
+            });
+        }
         Self {
             presented: live.revision(),
+            landings: live.landings_since(u64::MAX).1,
             live,
             read_only: dispatch.read_only(),
             dispatch,
             staging: Staging::default(),
+            effects: runner,
+            statuses,
+            jobs: OwnedJobs::new(jobs),
             surface,
+            search_queries: SearchQueries::default(),
         }
     }
 
@@ -184,20 +573,66 @@ impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
     }
 }
 
-// The host adds one thing to the surface — presenting new resource state
-// before the surface syncs — and forwards everything else to it.
-impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
-    type Inner = S;
+/// What a [`HostedSurface`] asks of the host of a surface of particular
+/// types: the only surface-hosting code compiled per surface.
+pub(crate) trait SurfaceDriver: SurfacePublication {
+    /// The surface, as a widget.
+    fn surface(&self) -> &(dyn Widget + 'static);
+    fn surface_mut(&mut self) -> &mut (dyn Widget + 'static);
+    /// The surface by its own type, for whoever reaches it so (a test
+    /// driving it, a host that embeds it).
+    fn surface_any(&self) -> &dyn std::any::Any;
+    fn surface_any_mut(&mut self) -> &mut dyn std::any::Any;
+    /// Whether `event` only scrolls the view, with nothing for the host to
+    /// present first.
+    fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool;
+    /// Present what changed, then sync the surface.
+    fn sync(&mut self, state: &AppModel, path: &ModelPath);
+    /// Start `op` as one of the surface's effects, if it is one.
+    ///
+    /// # Errors
+    /// The effect's refusal.
+    fn start_effect(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &AutoCommit,
+    ) -> Result<Option<ResourceOperationStart>, String>;
+    /// Progress of one of the surface's effects, if `invocation` is one.
+    fn poll_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+    ) -> Option<tilo_actions::InvocationUpdate>;
+}
 
-    fn inner(&self) -> &S {
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
+    for SurfaceHost<R, S, E>
+{
+    fn surface(&self) -> &(dyn Widget + 'static) {
         &self.surface
     }
 
-    fn inner_mut(&mut self) -> &mut S {
+    fn surface_mut(&mut self) -> &mut (dyn Widget + 'static) {
         &mut self.surface
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn surface_any(&self) -> &dyn std::any::Any {
+        &self.surface
+    }
+
+    fn surface_any_mut(&mut self) -> &mut dyn std::any::Any {
+        &mut self.surface
+    }
+
+    fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
+        self.live.revision() == self.presented
+            && self.staging.borrow().is_none()
+            && self.search_queries.0.borrow().pending.is_none()
+            && self.dispatch.read_only() == self.read_only
+            && self.surface.view_only_scroll(event)
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let read_only = self.dispatch.read_only();
         if read_only != self.read_only {
             self.read_only = read_only;
@@ -207,10 +642,431 @@ impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
             self.presented = self.live.revision();
             self.surface.present(&self.live.get());
         }
+        let (landed, next) = self.live.landings_since(self.landings);
+        self.landings = next;
+        for (participant, place) in &landed {
+            self.surface.landed(participant, place);
+        }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
             self.surface.stage(scenario.as_deref());
         }
+        if let Some(query) = self.search_queries.take()
+            && self.effects.is_some()
+        {
+            self.surface.search_query(&query);
+        }
+        self.jobs.poll(&mut self.surface);
         self.surface.sync(state, path);
+        if self.effects.is_some() {
+            let now = self.surface.effects();
+            if *self.statuses.borrow() != now {
+                *self.statuses.borrow_mut() = now;
+            }
+        }
+    }
+    fn start_effect(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &AutoCommit,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        match self.effects.as_mut() {
+            Some(runner) => runner.start(op, &mut self.surface, Some(doc), S::effect),
+            None => Ok(None),
+        }
+    }
+
+    fn poll_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.effects
+            .as_mut()?
+            .poll(invocation, cancellation_requested, &mut self.surface)
+    }
+}
+
+/// A hosted surface as mounted in the view: its [`SurfaceHost`] behind the
+/// one widget type every surface shares.
+pub(crate) struct HostedSurface {
+    host: Box<dyn SurfaceDriver>,
+}
+
+impl HostedSurface {
+    /// `host` mounted as a widget. The widget is made here, outside any
+    /// generic code, so its implementation of the widget contract is
+    /// compiled once in the shared runtime rather than in every app.
+    #[inline(never)]
+    pub(crate) fn element(host: Box<dyn SurfaceDriver>) -> ui_core::widget::Element {
+        Box::new(Self { host })
+    }
+}
+
+// The host adds three things to the surface — presenting new resource state
+// before the surface syncs, answering its effects, and publishing what it
+// says of them — and forwards everything else to it.
+impl Decorator for HostedSurface {
+    fn provide<'a>(&'a self, request: &mut ui_core::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn SurfacePublication>() {
+            request.provide::<dyn SurfacePublication>(self);
+            return;
+        }
+        if request.wants::<dyn ui_core::resources::PublishesResources>() {
+            request.provide::<dyn ui_core::resources::PublishesResources>(self);
+            return;
+        }
+        self.host.surface().provide(request);
+    }
+
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut ui_core::widget::capability::RequestMut<'a, '_>,
+    ) {
+        if request.wants::<dyn SurfacePublication>() {
+            request.provide::<dyn SurfacePublication>(self);
+            return;
+        }
+        if request.wants::<dyn ui_core::resources::PublishesResources>() {
+            request.provide::<dyn ui_core::resources::PublishesResources>(self);
+            return;
+        }
+        self.host.surface_mut().provide_mut(request);
+    }
+
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.host.surface()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.host.surface_mut()
+    }
+
+    fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
+        self.host.view_only_scroll(event)
+    }
+
+    // The host adds no structure of its own: a change its surface can
+    // describe stays described.
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+        self.host.surface_mut().take_structure_change()
+    }
+
+    // The host is invisible to whoever reaches the surface by its type (a
+    // test driving it, a host that embeds it): it answers as the surface.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self.host.surface_any())
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self.host.surface_any_mut())
+    }
+
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ObjId) {
+        self.host.surface_mut().settle(edits, path);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.host.sync(state, path);
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = self.host.start_effect(op, doc.doc())? {
+            return Ok(Some(started));
+        }
+        // The surface answers its operations as its effect vocabulary; only
+        // the toolkit's own widgets inside it (a button bound to a view)
+        // answer theirs, never the surface by hand.
+        let before = doc.pending_ops();
+        let started =
+            ui_core::host_operation::start_in_children(self.host.surface_mut(), op, doc, path);
+        refuse_raw_writes(doc, before, "start_operation");
+        started
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.host.surface_mut().update(state, path)
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui_core::winit::event::WindowEvent,
+        ctx: &mut ui_core::widget::EventCtx<'_>,
+    ) {
+        let before = ctx.state.pending_ops();
+        self.host.surface_mut().handle_event(event, ctx);
+        refuse_raw_writes(ctx.state.doc(), before, "handle_event");
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui_core::a11y::Action,
+        state: &mut ui_core::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let surface = self.host.surface_mut();
+        let mut performed = false;
+        only_through_actions(state, path, "perform_semantic_action", |state, path| {
+            performed = surface.perform_semantic_action(target, action, state, path);
+        });
+        performed
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(update) = self.host.poll_effect(invocation, cancellation_requested) {
+            return Some(update);
+        }
+        self.host
+            .surface_mut()
+            .children_mut()
+            .into_iter()
+            .find_map(|child| {
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+            })
+    }
+}
+
+impl SurfacePublication for HostedSurface {
+    fn resource(&self) -> std::any::TypeId {
+        self.host.resource()
+    }
+    fn bound_declarations(&self, into: &mut dyn std::any::Any) {
+        self.host.bound_declarations(into);
+    }
+    fn availability(&self) -> Vec<EffectStatus> {
+        self.host.availability()
+    }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.host.live_rows()
+    }
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.host.live_row(id)
+    }
+    fn offers_on_row(&self, row: &str) -> bool {
+        self.host.offers_on_row(row)
+    }
+    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
+        self.host.row_declarations(row, into)
+    }
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.host.search_entries()
+    }
+    fn supports_device_shell(&self) -> bool {
+        self.host.supports_device_shell()
+    }
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        self.host.device_shell_operation(operation)
+    }
+    fn request_device_shell(&mut self) -> bool {
+        self.host.request_device_shell()
+    }
+    fn search_queries(&self) -> SearchQueries {
+        self.host.search_queries()
+    }
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        self.host.take_host_intent()
+    }
+    fn take_save_retry(&mut self) -> bool {
+        self.host.take_save_retry()
+    }
+}
+
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublication
+    for SurfaceHost<R, S, E>
+{
+    fn resource(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<R>()
+    }
+
+    fn supports_device_shell(&self) -> bool {
+        self.surface.supports_device_shell()
+    }
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        self.surface.device_shell_operation(operation)
+    }
+    fn request_device_shell(&mut self) -> bool {
+        self.surface.request_device_shell()
+    }
+
+    fn take_save_retry(&mut self) -> bool {
+        self.effects.is_some() && self.surface.take_save_retry()
+    }
+
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        self.surface.take_host_intent()
+    }
+
+    fn bound_declarations(&self, into: &mut dyn std::any::Any) {
+        if let Some(into) = into.downcast_mut::<Vec<ActionDecl<R>>>() {
+            into.extend(self.surface.bound_declarations());
+        }
+    }
+
+    fn availability(&self) -> Vec<EffectStatus> {
+        self.surface.availability()
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.surface.live_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.surface.live_row(id)
+    }
+
+    fn offers_on_row(&self, row: &str) -> bool {
+        !self.surface.row_declarations(row).is_empty()
+    }
+
+    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
+        let offered = self.surface.row_declarations(row);
+        match into.downcast_mut::<Vec<ActionDecl<R>>>() {
+            Some(into) if !offered.is_empty() => {
+                into.extend(offered);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.surface.search_entries()
+    }
+
+    fn search_queries(&self) -> SearchQueries {
+        self.search_queries.clone()
+    }
+}
+
+// What the surface publishes as a widget passes through here, without
+// document actions: those are the resource's, through its dispatcher.
+impl ui_core::resources::PublishesResources for HostedSurface {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::resources(self.host.surface(), doc)
+            .into_iter()
+            .map(outside_document)
+            .collect()
+    }
+
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::caller_view_resources(self.host.surface(), doc)
+            .into_iter()
+            .map(outside_document)
+            .collect()
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui_core::widget::ActionDirectoryResourcePage> {
+        let mut page = ui_core::resources::action_directory_resource_page(
+            self.host.surface(),
+            doc,
+            cursor,
+            max_results,
+        )?;
+        page.resources = page.resources.into_iter().map(outside_document).collect();
+        Some(page)
+    }
+
+    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
+        ui_core::resources::action_directory_revision(self.host.surface(), doc)
+    }
+
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui_core::widget::ActionDirectoryInvocationDomain {
+        ui_core::resources::action_directory_invocation_domain(self.host.surface(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        ui_core::resources::resource(self.host.surface(), doc, id).map(resolved_outside_document)
+    }
+
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::resources_for(self.host.surface(), participant, doc)
+            .into_iter()
+            .map(outside_document)
+            .collect()
+    }
+
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        ui_core::resources::resource_for(self.host.surface(), participant, doc, id)
+            .map(resolved_outside_document)
+    }
+
+    fn action_directory_visibility(
+        &self,
+        doc: &AutoCommit,
+        resource_id: &str,
+    ) -> Option<tilo_actions::ActionAddress> {
+        ui_core::resources::action_directory_visibility(self.host.surface(), doc, resource_id)
+    }
+
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[ui_core::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        ui_core::resources::document_action_result(self.host.surface(), doc, address, changes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::ROOT;
+    use ui_core::automerge::transaction::Transactable;
+
+    #[test]
+    fn what_a_surface_applied_through_actions_stays() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "applied").unwrap();
+        // The executor commits every action it applies.
+        doc.commit();
+        let heads = doc.get_heads();
+        refuse_raw_writes(&doc, 0, "sync");
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside an action")]
+    fn a_surface_writing_around_its_dispatcher_is_stopped() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "raw").unwrap();
+        refuse_raw_writes(&doc, 0, "sync");
     }
 }

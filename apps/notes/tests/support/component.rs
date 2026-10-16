@@ -1,11 +1,12 @@
 //! Explicit temporary canonical records and controlled runner fonts.
 #[path = "canonical.rs"]
 pub mod canonical;
-pub use canonical::LegacyFixture;
+pub use canonical::NotebookFixture;
 use std::rc::Rc;
 use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
 use ui::record::RecordCheckout;
+use ui::widget::Edits;
 
 pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
     LaunchTarget::Record {
@@ -13,11 +14,11 @@ pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
         reveal: None,
     }
 }
-pub fn component(f: &LegacyFixture, instance: u64, target: LaunchTarget) -> AppComponent {
+pub fn component(f: &NotebookFixture, instance: u64, target: LaunchTarget) -> AppComponent {
     restored_component(f, instance, target, RestoreInput::None)
 }
 pub fn restored_component(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     instance: u64,
     target: LaunchTarget,
     restore: RestoreInput,
@@ -25,7 +26,7 @@ pub fn restored_component(
     try_restored_component(f, instance, target, restore).unwrap()
 }
 pub fn try_restored_component(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     instance: u64,
     target: LaunchTarget,
     restore: RestoreInput,
@@ -51,8 +52,7 @@ pub fn try_restored_component(
 }
 pub fn renderer() -> ui::TextRenderer {
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/sdk/ui-core/assets/fonts"),
+        ui::font_catalog::checkout_root(),
         "en-US",
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()
@@ -95,10 +95,9 @@ pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
         text_renderer: renderer(),
     }
 }
-pub fn imported(f: &LegacyFixture) -> ui::record::RecordCheckout {
-    notes::legacy_import::import_legacy(&f.records, &f.source, f.key)
-        .unwrap()
-        .checkout
+/// Write the fixture's notebook into its record.
+pub fn notebook(f: &NotebookFixture) -> ui::record::RecordCheckout {
+    f.write_notebook()
 }
 
 pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
@@ -126,32 +125,32 @@ pub fn close_widget(widget: &mut dyn ui::Widget) {
     }
 }
 
-pub fn driver(f: &LegacyFixture, instance: u64, checkout: &RecordCheckout) -> ui::headless::Driver {
-    let mut driver = ui::headless::Driver::from_component(
-        component(f, instance, existing(checkout)),
-        (1000, 700),
-        runner_inputs(),
-    )
-    .unwrap();
+pub fn driver(
+    f: &NotebookFixture,
+    instance: u64,
+    checkout: &RecordCheckout,
+) -> ui::headless::FrameHarness {
+    component_driver(component(f, instance, existing(checkout)))
+}
+/// A 1000x700 driver for `component` that matches shortcuts as Linux does.
+pub fn component_driver(component: AppComponent) -> ui::headless::FrameHarness {
+    let mut driver =
+        ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+            .unwrap();
     // These scenarios spell host shortcuts with Ctrl (Ctrl+Z undo). The
     // driver otherwise follows the build host's conventions, where macOS
     // binds undo to Cmd and a Ctrl+Z would never reach history.
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
     driver
 }
+/// Invoke `action` of `resource`, which takes no arguments.
 pub fn invoke(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     instance: u64,
     resource: impl Into<String>,
     action: impl Into<String>,
-    value: Option<&str>,
 ) {
-    let arguments = value.map_or_else(serde_json::Map::new, |value| {
-        serde_json::json!({"value": value})
-            .as_object()
-            .unwrap()
-            .clone()
-    });
+    let arguments = serde_json::Map::new();
     driver
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
@@ -163,7 +162,131 @@ pub fn invoke(
         .unwrap();
     driver.relayout();
 }
-pub fn close_driver(driver: &mut ui::headless::Driver) {
+/// Invoke `action` of `resource` with `arguments`, as an agent does.
+pub fn invoke_with(
+    driver: &mut ui::headless::FrameHarness,
+    instance: u64,
+    resource: impl Into<String>,
+    action: impl Into<String>,
+    arguments: serde_json::Value,
+) {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("arguments are an object");
+    };
+    driver
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: instance,
+                address: tilo_actions::ActionAddress::new(resource, action),
+            },
+            &arguments,
+        )
+        .unwrap();
+    driver.relayout();
+}
+
+/// Make a top-level note titled `title`.
+pub fn new_note(driver: &mut ui::headless::FrameHarness, instance: u64, title: &str) {
+    invoke_with(
+        driver,
+        instance,
+        NOTEBOOK,
+        "new-note",
+        serde_json::json!({ "title": title }),
+    );
+}
+
+/// Show note `page`, revealing `block` in it when one is named.
+pub fn open_note(
+    driver: &mut ui::headless::FrameHarness,
+    instance: u64,
+    page: notes::PageId,
+    block: Option<&str>,
+) {
+    let arguments = match block {
+        Some(block) => serde_json::json!({ "page": page, "block": block }),
+        None => serde_json::json!({ "page": page }),
+    };
+    invoke_with(driver, instance, NOTEBOOK, "open-note", arguments);
+}
+
+/// Browse the notes tagged `tag`.
+pub fn open_tag(driver: &mut ui::headless::FrameHarness, instance: u64, tag: uuid::Uuid) {
+    invoke_with(
+        driver,
+        instance,
+        NOTEBOOK,
+        "open-tag",
+        serde_json::json!({ "tag": tag }),
+    );
+}
+
+/// Replace the text of `block` of the fixture's child note through window
+/// `instance`, as an agent does: one field edit of the note's body.
+pub fn replace_text_through(
+    driver: &mut ui::headless::FrameHarness,
+    instance: u64,
+    f: &NotebookFixture,
+    checkout: &RecordCheckout,
+    block: &str,
+    text: &str,
+) {
+    let old = f
+        .records
+        .read(&checkout.id, |doc| {
+            notes::read::page_block_snapshots(doc, f.child)
+                .into_iter()
+                .find(|(id, _)| id == block)
+                .unwrap()
+                .1
+        })
+        .unwrap();
+    let edit = notes::Notebook::paths()
+        .pages
+        .item(&notes::notebook::page_id(f.child))
+        .body
+        .perform(&tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block: block.to_owned(),
+            at: 0,
+            del: old.chars().count(),
+            ins: text.to_owned(),
+        })
+        .unwrap();
+    invoke_with(
+        driver,
+        instance,
+        NOTEBOOK,
+        "field-edit",
+        serde_json::json!({ "edit": edit }),
+    );
+}
+
+/// Give note `page` tag `tag` through window `instance`: one field edit.
+pub fn assign_tag_through(
+    driver: &mut ui::headless::FrameHarness,
+    instance: u64,
+    page: notes::PageId,
+    tag: uuid::Uuid,
+) {
+    let edit = notes::Notebook::paths()
+        .pages
+        .item(&notes::notebook::page_id(page))
+        .tags
+        .insert(&notes::notebook::page_id(tag));
+    invoke_with(
+        driver,
+        instance,
+        NOTEBOOK,
+        "field-edit",
+        serde_json::json!({ "edit": edit }),
+    );
+}
+
+/// The notebook's published resource.
+pub const NOTEBOOK: &str = "notes.notebook";
+
+pub fn close_driver(driver: &mut ui::headless::FrameHarness) {
     driver.close_components();
     let reports = driver.take_component_close_reports();
     assert!(!reports.is_empty());
@@ -180,9 +303,70 @@ pub fn close_driver(driver: &mut ui::headless::Driver) {
 pub fn edit_body(
     doc: &mut automerge::AutoCommit,
     page: notes::PageId,
-    edit: qdoc_rich_text::RichTextAction,
+    edit: tilo_document::RichTextAction,
 ) {
-    notes::doc::NotesDoc::edit_page_body(doc, page, &edit).unwrap();
+    tilo_actions::Action::apply(&notes::actions::edit_body_action(page, edit), doc).unwrap();
+}
+
+/// Apply one notebook action to `doc`, as a collaborator's change arrives.
+///
+/// # Errors
+/// The action's refusal.
+pub fn apply_to(
+    doc: &mut automerge::AutoCommit,
+    action: &notes::actions::Action,
+) -> Result<(), String> {
+    tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())
+}
+
+/// Apply one rich-text edit to `page`'s body.
+///
+/// # Errors
+/// The edit's refusal.
+pub fn edit_page_body(
+    doc: &mut automerge::AutoCommit,
+    page: notes::PageId,
+    edit: &tilo_document::RichTextAction,
+) -> Result<(), String> {
+    apply_to(doc, &notes::actions::edit_body_action(page, edit))
+}
+
+/// Write note `page` titled `title` under `parent`, as a collaborator does:
+/// made when the notebook lacks it, renamed and moved when it has it.
+pub fn upsert_page(doc: &mut automerge::AutoCommit, page: &notes::PageMeta) {
+    let exists = notes::read::list_pages(doc)
+        .iter()
+        .any(|known| known.id == page.id);
+    if exists {
+        apply_to(
+            doc,
+            &notes::actions::rename_page_action(page.id, &page.title),
+        )
+        .unwrap();
+        apply_to(
+            doc,
+            &notes::actions::move_page_action(page.id, page.parent, None),
+        )
+        .unwrap();
+    } else {
+        apply_to(
+            doc,
+            &notes::actions::create_page_action(page.id, page.parent, &page.title),
+        )
+        .unwrap();
+    }
+}
+
+/// Copy note `page` and the notes under it; the copy's id.
+pub fn duplicate(doc: &mut automerge::AutoCommit, page: notes::PageId) -> notes::PageId {
+    let before = notes::read::list_pages(doc);
+    let parent = before.iter().find(|known| known.id == page).unwrap().parent;
+    apply_to(doc, &notes::actions::duplicate_action(page)).unwrap();
+    notes::read::list_pages(doc)
+        .into_iter()
+        .find(|copy| copy.parent == parent && before.iter().all(|known| known.id != copy.id))
+        .unwrap()
+        .id
 }
 
 /// Replace the whole text of `block`.
@@ -192,7 +376,7 @@ pub fn replace_block_text(
     block: &str,
     text: &str,
 ) {
-    let old = notes::doc::NotesDoc::page_block_snapshots(doc, page)
+    let old = notes::read::page_block_snapshots(doc, page)
         .into_iter()
         .find(|(id, _)| id == block)
         .map(|(_, text)| text)
@@ -200,8 +384,8 @@ pub fn replace_block_text(
     edit_body(
         doc,
         page,
-        qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block: block.to_owned(),
             at: 0,
             del: old.chars().count(),
@@ -215,7 +399,7 @@ pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block:
     edit_body(
         doc,
         page,
-        qdoc_rich_text::RichTextAction::RemoveBlocks {
+        tilo_document::RichTextAction::RemoveBlocks {
             blocks: vec![block.to_owned()],
         },
     );
@@ -223,20 +407,18 @@ pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block:
 
 /// The stored spelling of the kind of `page`'s block at `index`.
 pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -> String {
-    notes::doc::NotesDoc::page_blocks(doc, page)[index]
-        .kind
-        .stored()
+    notes::read::page_blocks(doc, page)[index].kind.stored()
 }
 
-pub fn revision(f: &LegacyFixture, checkout: &RecordCheckout) -> u64 {
+pub fn revision(f: &NotebookFixture, checkout: &RecordCheckout) -> u64 {
     f.records
         .read_history(&checkout.id, |_, history| history.revision())
         .unwrap()
 }
-pub fn page_rect(driver: &ui::headless::Driver, page: notes::PageId) -> vello::kurbo::Rect {
+pub fn page_rect(driver: &ui::headless::FrameHarness, page: notes::PageId) -> vello::kurbo::Rect {
     semantic_rect(driver, &format!("notes:page:{page}"))
 }
-pub fn semantic_rect(driver: &ui::headless::Driver, target: &str) -> vello::kurbo::Rect {
+pub fn semantic_rect(driver: &ui::headless::FrameHarness, target: &str) -> vello::kurbo::Rect {
     fn access(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
         if node.action_target.as_deref() == Some(target)
             || node.semantic_key.as_deref() == Some(target)
@@ -251,7 +433,9 @@ pub fn semantic_rect(driver: &ui::headless::Driver, target: &str) -> vello::kurb
             .and_then(|node| access(node, target))
             .or_else(|| node.children.iter().find_map(|node| retained(node, target)))
     }
-    retained(&driver.inspection().root, target).unwrap()
+    retained(&driver.inspection().root, target)
+        .or_else(|| driver.targets().get(target).copied())
+        .unwrap()
 }
 
 /// The actual component boundary with its admitted layout, for an unfinished
@@ -274,6 +458,10 @@ impl BoundNotes {
             widget.children().into_iter().find_map(editor)
         }
         let mut tile = Box::new(ui::widget::TileHost::from_component(component));
+        // A host syncs a mounted component before laying it out: the
+        // notebook surface binds its open note's editor then.
+        let outer = automerge::AutoCommit::new();
+        tile.sync(&outer, &automerge::ROOT);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
@@ -296,7 +484,7 @@ impl BoundNotes {
             nodes,
             node: matching[0],
             tree,
-            outer: automerge::AutoCommit::new(),
+            outer,
         }
     }
     pub fn pending_edit(
@@ -330,7 +518,7 @@ impl BoundNotes {
                     widget.perform_semantic_action(
                         &format!("notes.block-move:{block}:up"),
                         &ui::a11y::Action::Activate,
-                        doc,
+                        &mut Edits::lend(doc),
                         root,
                     )
                 },
@@ -340,11 +528,11 @@ impl BoundNotes {
         assert!(handled);
     }
 
-    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::Driver {
+    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::FrameHarness {
         drop(self.bindings);
         drop(self.nodes);
         drop(self.tree);
-        ui::headless::Driver::new_with_controlled_inputs(
+        ui::headless::FrameHarness::new_with_controlled_inputs(
             ui::state::State::new(),
             self.tile,
             (1000, 700),
@@ -360,7 +548,7 @@ impl BoundNotes {
 }
 
 pub fn invoke_confirmed(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     instance: u64,
     resource: String,
     action: &str,
@@ -375,20 +563,13 @@ pub fn invoke_confirmed(
     driver.relayout();
 }
 
-pub fn move_pointer(driver: &mut ui::headless::Driver, point: vello::kurbo::Point) {
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    });
+pub fn move_pointer(driver: &mut ui::headless::FrameHarness, point: vello::kurbo::Point) {
+    driver.send(&ui::synthetic_input::cursor_moved(point.x, point.y));
 }
 pub fn mouse(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     button: winit::event::MouseButton,
     state: winit::event::ElementState,
 ) {
-    driver.send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        button,
-        state,
-    });
+    driver.send(&ui::synthetic_input::mouse_input(state, button));
 }

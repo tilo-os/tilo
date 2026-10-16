@@ -1,6 +1,6 @@
 //! One-shot `PipeWire` registry custody. The same observed connection is handed
 //! to `GStreamer`; no path reconnect or display-row authority substitutes for it.
-use super::{AtomicU64, BTreeMap, Duration, Instant, Ordering};
+use super::{AtomicU64, Ordering};
 use media::AudioGraph;
 use std::os::fd::OwnedFd;
 
@@ -75,8 +75,10 @@ pub(super) fn observe() -> Result<Observed, String> {
     use pw::types::ObjectType;
     use std::{
         cell::{Cell, RefCell},
+        collections::BTreeMap,
         os::fd::FromRawFd,
         rc::Rc,
+        time::{Duration, Instant},
     };
     let _permit = Permit::acquire()?;
     let started = Instant::now();

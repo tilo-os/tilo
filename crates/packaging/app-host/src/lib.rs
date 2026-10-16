@@ -21,28 +21,23 @@
 //!
 //! The crate exposes both a daemon binary (`tilo-app-host`) and the
 //! library surface, so tests can drive the service in-process without
-//! spawning the binary.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! spawning the binary. Only the client side — [`client`], the wire schema,
+//! [`install::InstallExpectation`] and archive review in [`local_package`] —
+//! builds without the default `service` feature. The Store app depends on
+//! that side alone, so an app never compiles the privileged door it talks to
+//! and the shared app runtime does not carry it.
 
 use std::path::PathBuf;
 
 pub mod client;
-pub mod dev_env;
-pub mod fetch;
 pub mod install;
+#[cfg(feature = "service")]
+pub mod runtime_request;
+#[cfg(feature = "service")]
 pub mod service;
+#[cfg(all(unix, feature = "test-support"))]
+pub mod testing;
+#[cfg(feature = "service")]
 pub mod transport;
 
 /// Generated Cap'n Proto bindings for `schema/app-host.capnp`. The
@@ -54,22 +49,25 @@ pub mod transport;
     clippy::restriction,
     unused_imports,
     unused_qualifications,
-    unused_results,
-    non_camel_case_types,
     missing_docs,
     dead_code,
-    unsafe_code,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
 pub mod app_host_capnp {
     include!("generated/app_host_capnp.rs");
 }
 
-pub use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
+#[cfg(feature = "service")]
+pub use package_store::PackageStore;
+pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
-/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
-pub fn default_socket_path() -> PathBuf {
-    let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
-    base.join("tilo").join("services").join("app-host.sock")
+/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
+/// `None` without a runtime directory. Never the shared temp directory, where
+/// any local user could bind the name first.
+pub fn default_socket_path() -> Option<PathBuf> {
+    tilo_paths::xdg::runtime_dir()
+        .map(|base| base.join("tilo").join("services").join("app-host.sock"))
 }
+
+pub mod local_package;

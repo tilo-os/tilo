@@ -1,6 +1,5 @@
 use serde_json::json;
 use tilo_automation::{Binding, Step};
-use ui::prelude::Json;
 use ui::tilo_actions::{ActionParam, ParamType};
 
 use super::*;
@@ -11,33 +10,39 @@ fn step(value: serde_json::Value) -> Step {
 }
 
 fn draft(steps: Vec<Step>) -> Draft {
-    Draft {
-        name: "Digest".into(),
-        shortcut_id: "digest".into(),
-        program: Json(Program {
-            inputs: vec![
-                ActionParam::required("who", ParamType::Text, "Who"),
-                ActionParam::required("count", ParamType::Integer, "How many"),
-            ],
-            steps,
-            output: None,
-            ..Program::default()
-        }),
-        replaces_saved: false,
-    }
+    let program = Program {
+        inputs: vec![
+            ActionParam::required("who", ParamType::Text, "Who"),
+            ActionParam::required("count", ParamType::Integer, "How many"),
+        ],
+        steps,
+        output: None,
+        ..Program::default()
+    };
+    let mut minted = 0_u32;
+    Draft::new(
+        "Digest".into(),
+        "digest".into(),
+        &program,
+        false,
+        &mut || {
+            minted += 1;
+            ui::prelude::Id::from_raw(format!("item{minted}"))
+        },
+    )
 }
 
 fn list() -> Step {
     step(
-        json!({"id": "list", "step": "invoke", "app_id": "so.tilo.notes",
-                "resource": {"fixed": "notes.folder:inbox"}, "action": "list"}),
+        json!({"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                "resource": {"fixed": "notes.folder:inbox"}}),
     )
 }
 
 fn create(args: &serde_json::Value) -> Step {
     step(
-        json!({"id": "create", "step": "invoke", "app_id": "so.tilo.notes",
-                "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+        json!({"id": "create", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                "resource": {"fixed": "notes.folder:inbox"},
                 "args": args}),
     )
 }
@@ -85,7 +90,9 @@ fn problems_name_the_offending_step() {
         "{found:?}"
     );
     assert!(
-        at_create.iter().any(|reason| reason.contains("pinned")),
+        at_create
+            .iter()
+            .any(|reason| reason == "Pin it needs a value"),
         "the required `pinned` is unbound: {found:?}"
     );
     assert!(!found.contains_key("0"), "the list step is fine: {found:?}");
@@ -111,13 +118,13 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
         list(),
     ];
     let permissions = grant::least_privilege(&steps, &catalog);
-    let named: Vec<(String, String, collab_types::Verb)> = permissions
+    let named: Vec<(String, String, tilo_action_policy::ActionKind)> = permissions
         .iter()
         .map(|permission| {
             (
                 permission.app_id.clone(),
                 permission.action.clone(),
-                permission.verb,
+                permission.kind,
             )
         })
         .collect();
@@ -127,17 +134,17 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
             (
                 "so.tilo.notes".into(),
                 "list".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
             (
                 "so.tilo.notes".into(),
                 "create".into(),
-                collab_types::Verb::Write
+                tilo_action_policy::ActionKind::Undoable
             ),
             (
                 tilo_automation::AGENT_APP_ID.into(),
                 "summarise".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
         ]
     );
@@ -180,4 +187,61 @@ fn the_picker_groups_the_catalogue_by_app_then_kind() {
         .unwrap();
     assert_eq!(create.params, ["title: text", "pinned: boolean"]);
     assert_eq!(app_label("so.tilo.speed-test"), "Speed Test");
+}
+
+#[test]
+fn steps_are_numbered_in_reading_order_and_bindings_name_them_so() {
+    let branch = step(json!({
+        "id": "branch", "step": "if", "cond": {"truthy": {"input": "who"}},
+        "then": [{"id": "create", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                  "resource": {"fixed": "notes.folder:inbox"}}]
+    }));
+    let steps = vec![list(), branch];
+    assert_eq!(step_number(&steps, "list"), Some(1));
+    assert_eq!(step_number(&steps, "branch"), Some(2));
+    assert_eq!(
+        step_number(&steps, "create"),
+        Some(3),
+        "a step inside a branch follows the step that holds it"
+    );
+    assert_eq!(step_number(&steps, "missing"), None);
+
+    let said = |binding: Binding| describe(&binding, &steps);
+    assert_eq!(said(Binding::Input("who".into())), "input who");
+    assert_eq!(said(Binding::step("list", "")), "result of step 1");
+    assert_eq!(said(Binding::step("list", "/titles")), "titles from step 1");
+    assert_eq!(
+        said(Binding::step("list", "/titles/0")),
+        "item 1 of titles from step 1"
+    );
+    assert_eq!(
+        said(Binding::Template("{{step.list/titles}}".into())),
+        "titles from step 1",
+        "a template that is only a placeholder reads as the value itself"
+    );
+    assert_eq!(
+        said(Binding::Template("Re: {{input.who}} ({{var.n}})".into())),
+        "text “Re: [input who] ([variable n])”"
+    );
+}
+
+#[test]
+fn a_step_is_titled_by_what_it_does_and_placed_by_where_it_acts() {
+    let catalog = crate::samples::catalog();
+    let steps = vec![list()];
+    let listing = &steps[0];
+    assert_eq!(title(listing, &catalog, &steps), "List notes");
+    assert_eq!(
+        context(listing, &catalog).as_deref(),
+        Some("Inbox in Notes")
+    );
+    let unknown = step(
+        json!({"id": "x", "step": "invoke", "action": {"app": "so.tilo.gone", "kind": "gone", "action": "vanish"},
+                              "resource": {"fixed": "gone"}}),
+    );
+    assert_eq!(title(&unknown, &catalog, &steps), "vanish");
+    assert_eq!(
+        context(&unknown, &catalog).as_deref(),
+        Some("Gone no longer offers this action")
+    );
 }

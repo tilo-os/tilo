@@ -33,8 +33,11 @@ class WorkspaceMemberTests(unittest.TestCase):
             f"[workspace]\nmembers = [\n{member_rows}\n]\nexclude = [\n{exclude_rows}\n]\n",
         )
 
-    def crate(self, relative: str) -> None:
-        self.write(f"{relative}/Cargo.toml", '[package]\nname = "fixture"\nversion = "0.1.0"\n')
+    def crate(self, relative: str, edition: str = 'edition = "2024"') -> None:
+        self.write(
+            f"{relative}/Cargo.toml",
+            f'[package]\nname = "fixture"\nversion = "0.1.0"\n{edition}\n',
+        )
 
     def errors(self) -> list[str]:
         state = checker.inventory(self.root)
@@ -91,6 +94,26 @@ class WorkspaceMemberTests(unittest.TestCase):
             self.assertEqual(
                 self.errors(),
                 ["path is both a workspace member and excluded: crates/wasm"],
+            )
+        with self.subTest(phase='every member is on edition 2024'):
+            self.doCleanups()
+            self.setUp()
+            self.crate("apps/current")
+            self.crate("apps/inherited", "edition.workspace = true")
+            self.crate("apps/older", 'edition = "2021"')
+            self.crate("apps/undeclared", "")
+            self.configure(["apps/current", "apps/inherited", "apps/older", "apps/undeclared"])
+            self.write(
+                "Cargo.toml",
+                (self.root / "Cargo.toml").read_text(encoding="utf-8")
+                + '\n[workspace.package]\nedition = "2024"\n',
+            )
+            self.assertEqual(
+                self.errors(),
+                [
+                    "workspace member is on edition 2021, not 2024: apps/older",
+                    "workspace member is on edition 2015, not 2024: apps/undeclared",
+                ],
             )
 
 

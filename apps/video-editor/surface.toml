@@ -1,0 +1,371 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "video-editor.project"
+label = "Project"
+version = 1
+fields = [
+  { path = "name", type = "String" },
+  { path = "fps", type = "f64" },
+  { path = "width", type = "u32" },
+  { path = "height", type = "u32" },
+  { path = "format_explicit", type = "bool" },
+  { path = "mark_in", type = "Option<f64>" },
+  { path = "mark_out", type = "Option<f64>" },
+  { path = "media", type = "Keyed<MediaItem>", stored = "keyed" },
+  { path = "media.*.id", type = "MediaId", readonly = true },
+  { path = "media.*.name", type = "String", label = true },
+  { path = "media.*.kind", type = "MediaKind" },
+  { path = "media.*.duration", type = "f64" },
+  { path = "media.*.width", type = "u32" },
+  { path = "media.*.height", type = "u32" },
+  { path = "media.*.fps", type = "f64" },
+  { path = "media.*.palette", type = "u8" },
+  { path = "media.*.path", type = "String" },
+  { path = "media.*.text", type = "Option<TextSource>", stored = "record" },
+  { path = "media.*.text.content", type = "String" },
+  { path = "media.*.text.size", type = "f64" },
+  { path = "media.*.text.color", type = "[f64; 4]" },
+  { path = "media.*.text.align", type = "TextAlign" },
+  { path = "media.*.text.font", type = "String" },
+  { path = "media.*.text.bold", type = "bool" },
+  { path = "media.*.text.italic", type = "bool" },
+  { path = "media.*.text.backdrop", type = "f64" },
+  { path = "media.*.has_audio", type = "bool" },
+  { path = "tracks", type = "Keyed<Track>", stored = "keyed" },
+  { path = "tracks.*.id", type = "TrackId", readonly = true },
+  { path = "tracks.*.name", type = "String", label = true },
+  { path = "tracks.*.kind", type = "TrackKind" },
+  { path = "tracks.*.index", type = "u32" },
+  { path = "tracks.*.muted", type = "bool" },
+  { path = "tracks.*.locked", type = "bool" },
+  { path = "tracks.*.solo", type = "bool" },
+  { path = "tracks.*.gain_db", type = "f64" },
+  { path = "tracks.*.pan", type = "f64" },
+  { path = "clips", type = "Keyed<Clip>", stored = "keyed" },
+  { path = "clips.*.id", type = "ClipId", readonly = true },
+  { path = "clips.*.track", type = "TrackId" },
+  { path = "clips.*.media", type = "MediaId" },
+  { path = "clips.*.start", type = "f64" },
+  { path = "clips.*.in_point", type = "f64" },
+  { path = "clips.*.out_point", type = "f64" },
+  { path = "clips.*.opacity", type = "f64" },
+  { path = "clips.*.volume", type = "f64" },
+  { path = "clips.*.transition", type = "Transition" },
+  { path = "clips.*.palette", type = "u8" },
+  { path = "clips.*.filters", type = "Filters", stored = "record" },
+  { path = "clips.*.filters.brightness", type = "f64" },
+  { path = "clips.*.filters.contrast", type = "f64" },
+  { path = "clips.*.filters.saturation", type = "f64" },
+  { path = "clips.*.curves", type = "Curve" },
+  { path = "clips.*.fade_in", type = "f64" },
+  { path = "clips.*.fade_out", type = "f64" },
+  { path = "clips.*.transition_duration", type = "f64" },
+  { path = "clips.*.effects", type = "Ordered<ClipEffect>", stored = "collection" },
+  { path = "clips.*.effects.*.id", type = "Uuid", readonly = true },
+  { path = "clips.*.effects.*.kind", type = "EffectKind" },
+  { path = "clips.*.effects.*.amount", type = "f64" },
+  { path = "clips.*.transform", type = "Transform", stored = "record" },
+  { path = "clips.*.transform.scale_x", type = "f64" },
+  { path = "clips.*.transform.scale_y", type = "f64" },
+  { path = "clips.*.transform.pos_x", type = "f64" },
+  { path = "clips.*.transform.pos_y", type = "f64" },
+  { path = "clips.*.transform.rotation", type = "f64" },
+  { path = "clips.*.transform.anchor_x", type = "f64" },
+  { path = "clips.*.transform.anchor_y", type = "f64" },
+  { path = "clips.*.transform.crop_left", type = "f64" },
+  { path = "clips.*.transform.crop_right", type = "f64" },
+  { path = "clips.*.transform.crop_top", type = "f64" },
+  { path = "clips.*.transform.crop_bottom", type = "f64" },
+  { path = "clips.*.speed", type = "Speed", stored = "record" },
+  { path = "clips.*.speed.rate", type = "f64" },
+  { path = "clips.*.speed.reverse", type = "bool" },
+  { path = "clips.*.key", type = "ChromaKey", stored = "record" },
+  { path = "clips.*.key.enabled", type = "bool" },
+  { path = "clips.*.key.color", type = "[f64; 3]" },
+  { path = "clips.*.key.tolerance", type = "f64" },
+  { path = "clips.*.key.softness", type = "f64" },
+  { path = "clips.*.key.spill", type = "f64" },
+  { path = "clips.*.mask", type = "Mask", stored = "record" },
+  { path = "clips.*.mask.shape", type = "MaskShape" },
+  { path = "clips.*.mask.x", type = "f64" },
+  { path = "clips.*.mask.y", type = "f64" },
+  { path = "clips.*.mask.w", type = "f64" },
+  { path = "clips.*.mask.h", type = "f64" },
+  { path = "clips.*.mask.rotation", type = "f64" },
+  { path = "clips.*.mask.feather", type = "f64" },
+  { path = "clips.*.mask.invert", type = "bool" },
+  { path = "clips.*.anim", type = "ClipAnimation" },
+  { path = "clips.*.markers", type = "Keyed<Marker>", stored = "keyed" },
+  { path = "clips.*.markers.*.id", type = "Uuid", readonly = true },
+  { path = "clips.*.markers.*.t", type = "f64" },
+  { path = "clips.*.markers.*.name", type = "String", label = true },
+  { path = "clips.*.markers.*.palette", type = "u8" },
+  { path = "clips.*.markers.*.note", type = "String" },
+  { path = "clips.*.link", type = "Option<Uuid>" },
+  { path = "clips.*.sound_split", type = "bool" },
+  { path = "clips.*.link_follows", type = "bool" },
+  { path = "markers", type = "Keyed<Marker>", stored = "keyed" },
+  { path = "markers.*.id", type = "Uuid", readonly = true },
+  { path = "markers.*.t", type = "f64" },
+  { path = "markers.*.name", type = "String", label = true },
+  { path = "markers.*.palette", type = "u8" },
+  { path = "markers.*.note", type = "String" },
+]
+
+[[resources.verbs]]
+id = "set-frame-size"
+kind = "undoable"
+params = [
+  { name = "width", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "height", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-frame-rate"
+kind = "undoable"
+params = [
+  { name = "fps", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "set-render-range"
+kind = "undoable"
+params = [
+  { name = "start", required = true, schema = { type = "number" } },
+  { name = "end", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "mark-in"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "mark-out"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "clear-marks"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "add-title"
+kind = "undoable"
+params = [
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-marker"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-marker"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "marker", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-track"
+kind = "undoable"
+params = [
+  { name = "kind", required = true, schema = { type = "string", enum = ["Video", "Audio"] } },
+]
+
+[[resources.verbs]]
+id = "reset-mix"
+kind = "undoable"
+params = [
+  { name = "track", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "trim-lanes"
+kind = "undoable"
+params = [
+  { name = "tracks", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "db", required = true, schema = { type = "number" } },
+  { name = "headroom", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "delete-track"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "track", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "place-clip"
+kind = "undoable"
+params = [
+  { name = "media", required = true, schema = { type = "string" } },
+  { name = "track", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "delete-media"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "media", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "use-as-project-format"
+kind = "undoable"
+params = [
+  { name = "media", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "ripple-delete"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "split-clip"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "trim-in-clip"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "trim-out-clip"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "set-speed"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "rate", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "toggle-reverse"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reset-speed"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-param"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "param", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "number" } },
+  { name = "value", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "add-effect"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "effect", required = true, schema = { type = "string", enum = ["Grayscale", "Sepia", "Invert", "Warm", "Cool", "Vignette"] } },
+]
+
+[[resources.verbs]]
+id = "remove-effect"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "effect", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-effect"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "effect", required = true, schema = { type = "string" } },
+  { name = "up", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-effect-amount"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "effect", required = true, schema = { type = "string" } },
+  { name = "amount", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "clear-effects"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unlink"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "link-audio"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "link-with"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "other", required = true, schema = { type = "string" } },
+]
+

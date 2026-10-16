@@ -9,8 +9,8 @@
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read+exec on the host bin dirs, for `$SHELL` in the built-in
-# terminal tab and for any language server enabled through
-# `TILO_CODE_LSP`.
+# terminal tab and for the language servers it starts unless they are
+# turned off in its preferences.
 #
 
 
@@ -31,10 +31,17 @@ de = "Code-Editor"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[continuity]
+required = ["presentation"]
+semantic-schema = "text-position-v1"
+
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["files.paths"]
 optional = ["clipboard", "files.open", "files.save", "app-files", "threads", "processes"]
+
+[resources]
+kinds = ["code_editor.project", "terminal.history", "terminal.session"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -66,7 +73,6 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/code-editor"

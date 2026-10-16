@@ -1,1092 +1,3386 @@
-//! `NavShell` — the HIG §1 navigation primitive.
+//! `NavShell` — the one window shell.
 //!
-//! A **sidebar** (§1a) docks/collapses via a hamburger when wide and becomes
-//! an overlay drawer over content — never a full-screen page — when narrow.
-//! A **content master/detail** (§1b) shows both panes side by side when wide
-//! and pushes detail over overview (Back button) when narrow. Compose both
-//! (`[ sidebar | overview | detail ]`) or use [`NavShell::new`] alone; the
-//! shell owns the breakpoint, eased collapse/push slides, the scrim, and
-//! button/scrim/Esc self-routing.
+//! Every app with navigation is a `NavShell`: an optional sidebar of
+//! destinations (HIG §1a), an optional overview list beside the content
+//! (§1b), the content, and an optional inspector at the trailing edge. The
+//! app hands it the columns and their headers; the shell owns everything
+//! else, at the shell metrics (`theme.tokens.metrics`):
+//!
+//! - **One header row** across the top of the window holds each column's
+//!   header (title, an optional count, a leading fill such as a path bar,
+//!   and actions), so the row reads as one unified toolbar. Windows have no
+//!   title bar; this row is the window's top edge. Its geometry is
+//!   [`crate::chrome::HeaderRowFace`], the same face a painted app uses.
+//!   Actions that do not fit first collapse to their icons, then move into
+//!   a trailing More menu.
+//! - **The sidebar toggle** is a Plain icon button (`Icon::PanelLeft`) the
+//!   shell draws at the window's top-leading corner, on the sidebar while it
+//!   shows and on the next column while it is hidden. One shortcut toggles
+//!   it in every app (`HostShortcut::Sidebar`), and the button publishes the
+//!   action ("Show sidebar" / "Hide sidebar") to the palette and to agents.
+//! - **Back** is the shell's: a narrow window's push stack, and an app's own
+//!   page stack ([`NavShell::with_back`]), share one `ChevronLeft` chip at
+//!   the leading edge of the content's header.
+//! - **History** is the window's: where the app has History, the host puts
+//!   its control (`Icon::History`, a Plain icon button named "History") at
+//!   the trailing edge of the row, and it reads as on while History shows.
+//!   The app adds no History button of its own.
+//! - **Responsive:** below the width where the content would be squeezed
+//!   the sidebar collapses into a floating drawer under the header row (or,
+//!   in [`NavMode::Push`], becomes the first screen of a push stack); the
+//!   overview and the content become push screens with a Back button when
+//!   they no longer fit side by side; the inspector becomes a drawer from
+//!   the trailing edge. Behind an open drawer the other columns stay laid
+//!   out and painted, inert under the scrim, and the header row stays live.
+//!   A person's show/hide choice is remembered per window size class.
+//! - **Resizable:** dragging the sidebar's trailing edge resizes it;
+//!   dragging it below its minimum width hides it.
+//! - **Regions:** the sidebar stands on `Region::Sidebar`, the inspector on
+//!   `Region::Inspector`, the overview and content on the window ground;
+//!   each column's children draw with that region's theme.
+//! - **Motion:** hide, show and push move with `motion.durations.base`;
+//!   under reduced motion they cross-fade.
+//!
+//! There is no width, breakpoint, colour or padding to pass: the shell is
+//! semantic. A filter field for the sidebar's list goes in
+//! [`NavShell::with_filter`] (Ctrl+F focuses it).
+//!
+//! Slots and headers change in place (`set_content`, `set_content_header`,
+//! …). A change made while an event is being routed takes effect when the
+//! host next builds the tree, never in the middle of the event, so the host
+//! never holds a widget the shell has dropped.
 
-use crate::time::Instant;
-use crate::widget::{AppModel, ModelPath};
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use std::rc::Rc;
+
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
-use crate::icons::{Icon, draw_icon};
+use crate::LocalState;
+use crate::chrome::HeaderRowMetrics;
+use crate::icons::Icon;
+use crate::local_state::LocalBinding;
+use crate::platform::{HostShortcut, PlatformConventions};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::{Metrics, Spacing};
-use crate::widget::TaffyTreeExt;
-use crate::widget::nav_split::{FlapState, SplitLayout};
-use crate::widget::{AuthoredExtent, Element, Widget};
+use crate::time::Instant;
+use crate::widget::flap::{FlapState, SplitLayout};
+use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint};
+use crate::widget::window_header::{HistoryControl, WindowHeader};
+use crate::widget::{
+    AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
+};
 
-/// The OS-wide genuine-sidebar width (`Metrics::sidebar_width`).
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
-pub const DEFAULT_NAVSHELL_SIDEBAR_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
-/// The OS-wide overview column width (`Metrics::overview_width`).
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
-pub const DEFAULT_NAVSHELL_OVERVIEW_WIDTH: f64 = Metrics::BASE.overview_width as f64;
-/// 20 px under `Metrics::compact_breakpoint` (720); pinned by tests and by
-/// the apps that chose this shell, so recorded rather than moved.
-pub const DEFAULT_NAVSHELL_BREAKPOINT: f64 = 700.0;
-/// Detail pane's minimum width in the side-by-side layout; overview gives up
-/// space first.
-const MIN_DETAIL_WIDTH: f64 = 260.0;
-/// Caps the per-frame dt so a stale `Instant` (first frame, or a parked
-/// event loop) can't teleport a slide past its animation.
+mod header_parts;
+use crate::widget::toast::{ToastKind, ToastStack};
+use header_parts::{HeaderTitle, MoreActions};
+
+/// Caps the per-frame dt so a stale clock (first frame, or a parked event
+/// loop) can't teleport a slide past its animation.
 const MAX_FRAME_DT: f64 = 0.1;
-/// Menu / Back chip square at 1×; grown with the body line by
-/// `text_control_height` when the tree is built. `AppShell`'s Back button
-/// is 34; neither is a `Metrics` height yet (see the F1 layout review, which
-/// proposes `min_pointer_target` + `s3` inset for both).
-const CHIP_SIZE: f64 = 36.0;
-/// `spacing.s3` at 1×; the live value is read from the theme at build.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
-const CHIP_INSET: f64 = Spacing::BASE.s3 as f64;
-/// Back chip width at 1×: the glyph square plus the "Back" label run.
-const BACK_CHIP_WIDTH: f64 = 104.0;
 
-/// Narrows a screen-space `f64` (rect extent, alpha) to the `f32` taffy/
-/// vello layout math expects.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout coordinates and [0,1] alpha never approach f32::MAX; this narrowing is exact for every practical UI extent"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
+/// What the sidebar becomes when the window is too narrow to dock it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavMode {
+    /// A floating drawer over the content, summoned by the toggle — a
+    /// sidebar of destinations (mail, files, music).
+    #[default]
+    Overlay,
+    /// The first screen of a push stack: choosing a destination pushes the
+    /// content with a Back button (settings, a list of categories).
+    Push,
+    /// Always docked: a compact icon rail (`NavList::rail`) that fits beside
+    /// the content at every width.
+    Docked,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShellMode {
-    /// Docked sidebar + side-by-side content (`>=` breakpoint).
-    Wide,
-    /// Overlay-drawer sidebar + push content (`<` breakpoint).
-    Narrow,
+/// A screen of the narrow push stack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavPane {
+    /// The sidebar, as the first screen in [`NavMode::Push`].
+    Sidebar,
+    /// The overview list.
+    Overview,
+    /// The content.
+    #[default]
+    Content,
 }
 
-impl ShellMode {
-    pub fn from_width(total_w: f64, breakpoint: f64) -> Self {
-        if total_w >= breakpoint {
-            ShellMode::Wide
-        } else {
-            ShellMode::Narrow
+/// Where the sidebar is this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SidebarPlacement {
+    /// No sidebar.
+    #[default]
+    None,
+    /// Beside the content (possibly hidden by the person).
+    Docked,
+    /// A floating drawer over the content.
+    Drawer,
+    /// The first screen of the push stack.
+    Screen,
+}
+
+/// Where the inspector is this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InspectorPlacement {
+    #[default]
+    None,
+    Docked,
+    Drawer,
+}
+
+/// Where the overview is this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverviewPlacement {
+    /// No overview.
+    #[default]
+    None,
+    /// The overview list, beside the content or as a push screen.
+    List,
+    /// Collapsed into its rail beside the content ([`NavShell::overview_rail`]).
+    Rail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Column {
+    Sidebar,
+    Overview,
+    Content,
+    Inspector,
+}
+
+impl Column {
+    const ALL: [Self; 4] = [
+        Self::Sidebar,
+        Self::Overview,
+        Self::Content,
+        Self::Inspector,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Sidebar => 0,
+            Self::Overview => 1,
+            Self::Content => 2,
+            Self::Inspector => 3,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Sidebar => "sidebar",
+            Self::Overview => "overview",
+            Self::Content => "content",
+            Self::Inspector => "inspector",
         }
     }
 }
 
-/// How the **content** master/detail region resolves at the current width.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentLayout {
-    SideBySide,
-    /// One pane at a time; detail pushes in from the right (narrow).
-    Push,
-    /// The only content pane; fills the region at every width. The shape of
-    /// a sidebar-plus-content app (§1a with no §1b split) — a file manager,
-    /// a settings pane.
-    Single,
+/// `array`'s entry for `column`.
+fn at<T>(array: &[T; 4], column: Column) -> &T {
+    let [sidebar, overview, content, inspector] = array;
+    match column {
+        Column::Sidebar => sidebar,
+        Column::Overview => overview,
+        Column::Content => content,
+        Column::Inspector => inspector,
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NavPane {
-    Overview,
-    Detail,
+/// `array`'s entry for `column`, to change.
+fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
+    let [sidebar, overview, content, inspector] = array;
+    match column {
+        Column::Sidebar => sidebar,
+        Column::Overview => overview,
+        Column::Content => content,
+        Column::Inspector => inspector,
+    }
 }
 
-/// What the single top-left affordance is doing this frame; exactly one
-/// ever occupies the corner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Affordance {
-    None,
-    /// Hamburger closed, chevron open — never an `X`.
-    SidebarToggle,
+/// One retained child of the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Part {
+    Body(Column),
+    /// The overview's rail, standing in for the overview where the list
+    /// does not fit.
+    Rail,
+    /// A column's title (and count) in the header row.
+    Title(Column),
+    /// The fill between a header's leading buttons and its actions.
+    Leading(Column),
+    /// One of a header's actions.
+    Action(Column, usize),
+    /// The More button the actions overflow into.
+    More(Column),
+    /// Controls under the overview's header.
+    Controls,
+    Filter,
+    Toggle,
     Back,
+    InspectorToggle,
+    /// The window's History control; `true` is the one shown while History
+    /// is open.
+    History(bool),
+}
+
+/// A column's header: a title the shell paints and actions the app owns.
+struct Header {
+    title: HeaderTitle,
+    binding: Option<LocalBinding<String>>,
+    actions: Vec<Element>,
+    more: MoreActions,
+    leading: Option<Element>,
+}
+
+impl Header {
+    fn new(column: Column) -> Self {
+        Self {
+            title: HeaderTitle::new(),
+            binding: None,
+            actions: Vec::new(),
+            more: MoreActions::new(&format!("nav-shell-more-{}", column.key())),
+            leading: None,
+        }
+    }
+}
+
+/// What an optional slot becomes at the next build: the element, or none.
+struct Staged(Option<Element>);
+
+impl Staged {
+    fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+/// Slot and header changes waiting for the next build of the host tree.
+#[derive(Default)]
+struct Pending {
+    bodies: [Option<Staged>; 4],
+    actions: [Option<Vec<Element>>; 4],
+    leading: [Option<Staged>; 4],
+    controls: Option<Staged>,
+    rail: Option<Staged>,
+}
+
+impl Pending {
+    fn is_empty(&self) -> bool {
+        self.bodies.iter().all(Option::is_none)
+            && self.actions.iter().all(Option::is_none)
+            && self.leading.iter().all(Option::is_none)
+            && self.controls.is_none()
+            && self.rail.is_none()
+    }
+}
+
+/// The shell metrics resolved against the theme the tree was built with.
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    row: HeaderRowMetrics,
+    header: f64,
+    chip: f64,
+    inset: f64,
+    gap: f64,
+    sidebar: f64,
+    sidebar_min: f64,
+    sidebar_max: f64,
+    rail: f64,
+    overview: f64,
+    inspector: f64,
+    drawer: f64,
+    drawer_dismiss_band: f64,
+    content_min: f64,
+    detail_min: f64,
+    filter: f64,
+    resize_grip: f64,
+    scale: f64,
+}
+
+impl Metrics {
+    fn resolve(theme: &Theme) -> Self {
+        let m = theme.tokens.metrics;
+        let s = theme.tokens.spacing;
+        let growth = f64::from(theme.text_growth());
+        let row = HeaderRowMetrics::resolve(theme);
+        Self {
+            row,
+            header: row.height,
+            chip: row.chip,
+            inset: row.inset,
+            gap: row.gap,
+            sidebar: f64::from(m.sidebar_width) * growth,
+            sidebar_min: f64::from(m.sidebar_min_width) * growth,
+            sidebar_max: f64::from(m.sidebar_max_width) * growth,
+            rail: f64::from(m.rail_width),
+            overview: f64::from(m.overview_width) * growth,
+            inspector: f64::from(m.inspector_width) * growth,
+            drawer: f64::from(m.drawer_width) * growth,
+            drawer_dismiss_band: f64::from(m.min_pointer_target + s.s4),
+            content_min: f64::from(m.content_min_width) * growth,
+            detail_min: f64::from(m.detail_min_width) * growth,
+            filter: crate::widget::text_control_height(
+                f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+                theme,
+            ),
+            resize_grip: f64::from(s.s1),
+            scale: theme.responsive_scale(),
+        }
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::resolve(&Theme::dark())
+    }
+}
+
+/// How a column's actions fit its header, decided by the layout policy.
+#[derive(Clone, Debug, Default)]
+struct ColumnFit {
+    /// Which actions are buttons that can show their icon alone.
+    capable: Vec<bool>,
+    /// Which of them show their icon alone right now.
+    compact_now: Vec<bool>,
+    /// Each action's width with its label, measured while it showed it.
+    full: Vec<Option<f64>>,
+    /// The labelled buttons collapse to their icons.
+    compact: bool,
+    /// How many actions stand in the row; the rest are in the More menu.
+    /// `None` until the first layout decides.
+    shown: Option<usize>,
+}
+
+/// Everything the geometry depends on. Shared with the layout policy the
+/// host runs, so the policy and the shell compute the same rects.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "which slots the app filled are independent facts"
+)]
+#[derive(Clone, Debug)]
+struct Inputs {
+    mode: NavMode,
+    metrics: Metrics,
+    has_sidebar: bool,
+    has_overview: bool,
+    has_rail: bool,
+    has_inspector: bool,
+    has_filter: bool,
+    has_controls: bool,
+    /// The window's History control, where the host gave the shell one.
+    history: Option<HistoryControl>,
+    titled: [bool; 4],
+    actions: [usize; 4],
+    leading: [bool; 4],
+    /// The app's own page stack can go back ([`NavShell::with_back`]).
+    content_back: bool,
+    /// The docked sidebar width a person dragged to, authored at 1×.
+    user_sidebar: Option<f64>,
+    sidebar: FlapState,
+    inspector: FlapState,
+    pane: NavPane,
+    /// Eased position in the push stack: the front screen's index while
+    /// settled, fractional while sliding.
+    push_pos: Option<f64>,
+    push_from: Option<f64>,
+    push_progress: f64,
+    /// The parts in the order they were built (their placement index).
+    parts: Vec<Part>,
+    /// How each column's actions fit, written by the layout policy.
+    fit: Rc<RefCell<[ColumnFit; 4]>>,
+}
+
+impl Default for Inputs {
+    fn default() -> Self {
+        Self {
+            mode: NavMode::Overlay,
+            metrics: Metrics::default(),
+            has_sidebar: false,
+            has_overview: false,
+            has_rail: false,
+            has_inspector: false,
+            has_filter: false,
+            has_controls: false,
+            history: None,
+            titled: [false; 4],
+            actions: [0; 4],
+            leading: [false; 4],
+            content_back: false,
+            user_sidebar: None,
+            sidebar: FlapState::open_when_docked(),
+            inspector: FlapState::open_when_docked(),
+            pane: NavPane::Content,
+            push_pos: None,
+            push_from: None,
+            push_progress: 1.0,
+            parts: Vec::new(),
+            fit: Rc::new(RefCell::new(Default::default())),
+        }
+    }
+}
+
+impl Inputs {
+    fn sidebar_width(&self) -> f64 {
+        let m = &self.metrics;
+        if self.mode == NavMode::Docked {
+            return m.rail;
+        }
+        self.user_sidebar
+            .map_or(m.sidebar, |authored| authored * m.scale)
+            .clamp(m.sidebar_min, m.sidebar_max)
+    }
+
+    fn header_wanted(&self, column: Column) -> bool {
+        let i = column.index();
+        self.titled.get(i).copied().unwrap_or(false)
+            || self.actions.get(i).copied().unwrap_or(0) > 0
+            || self.leading.get(i).copied().unwrap_or(false)
+    }
+}
+
+/// The shell's geometry for one size, in coordinates local to the shell.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavGeometry {
+    pub sidebar: SidebarPlacement,
+    pub inspector: InspectorPlacement,
+    pub overview: OverviewPlacement,
+    /// The overview and content stand side by side.
+    pub side_by_side: bool,
+    /// The push stack's screens, first to last, when it has more than one.
+    pub stack: Vec<NavPane>,
+    pub header_height: f64,
+    /// Width at or above which the sidebar docks.
+    pub breakpoint: f64,
+    /// Each column's visible area (header and body); a drawer's panel.
+    pub sidebar_column: Rect,
+    pub overview_column: Rect,
+    pub content_column: Rect,
+    pub inspector_column: Rect,
+    /// The overview's rail, where the overview collapsed into it.
+    pub rail: Rect,
+    bodies: [Rect; 4],
+    headers: [Rect; 4],
+    pub filter: Rect,
+    /// The band of the controls under the overview's header.
+    pub controls: Rect,
+    pub toggle: Rect,
+    pub back: Rect,
+    pub inspector_toggle: Rect,
+    /// The window's History control, at the trailing edge of the row.
+    pub history: Rect,
+    /// The column whose header holds the sidebar toggle and the Back button.
+    toggle_column: Option<Column>,
+    back_column: Option<Column>,
+    inspector_toggle_column: Option<Column>,
+    history_column: Option<Column>,
+    pub scrim: Rect,
+    /// How far the drawer's scrim has faded in, `0..=1`; the theme's
+    /// `surfaces.scrim_strength` is applied at paint.
+    pub scrim_openness: f32,
+    pub resize_handle: Rect,
+}
+
+impl NavGeometry {
+    fn column(&self, column: Column) -> Rect {
+        match column {
+            Column::Sidebar => self.sidebar_column,
+            Column::Overview => self.overview_column,
+            Column::Content => self.content_column,
+            Column::Inspector => self.inspector_column,
+        }
+    }
+
+    fn body(&self, column: Column) -> Rect {
+        self.bodies
+            .get(column.index())
+            .copied()
+            .unwrap_or(Rect::ZERO)
+    }
+
+    fn header(&self, column: Column) -> Rect {
+        self.headers
+            .get(column.index())
+            .copied()
+            .unwrap_or(Rect::ZERO)
+    }
+
+    fn translated(&self, by: Vec2) -> Self {
+        let t = |r: Rect| if r == Rect::ZERO { r } else { r + by };
+        Self {
+            sidebar_column: t(self.sidebar_column),
+            overview_column: t(self.overview_column),
+            content_column: t(self.content_column),
+            inspector_column: t(self.inspector_column),
+            rail: t(self.rail),
+            bodies: self.bodies.map(t),
+            headers: self.headers.map(t),
+            filter: t(self.filter),
+            controls: t(self.controls),
+            toggle: t(self.toggle),
+            back: t(self.back),
+            inspector_toggle: t(self.inspector_toggle),
+            history: t(self.history),
+            scrim: t(self.scrim),
+            resize_handle: t(self.resize_handle),
+            ..self.clone()
+        }
+    }
+
+    /// The parts this geometry shows, in build order (back to front). Behind
+    /// an open drawer the other columns stay: laid out and painted, inert.
+    fn visible_parts(&self, inputs: &Inputs) -> Vec<Part> {
+        let mut parts = Vec::new();
+        let shows = |r: Rect| r.width() > 0.0 && r.height() > 0.0;
+        if inputs.has_rail && shows(self.rail) {
+            parts.push(Part::Rail);
+        }
+        for column in [
+            Column::Overview,
+            Column::Content,
+            Column::Inspector,
+            Column::Sidebar,
+        ] {
+            let present = match column {
+                Column::Sidebar => inputs.has_sidebar,
+                Column::Overview => inputs.has_overview,
+                Column::Content => true,
+                Column::Inspector => inputs.has_inspector,
+            };
+            if !present || !shows(self.column(column)) {
+                continue;
+            }
+            parts.push(Part::Body(column));
+            let i = column.index();
+            if shows(self.header(column)) {
+                let docked_rail = inputs.mode == NavMode::Docked && column == Column::Sidebar;
+                if inputs.titled.get(i).copied().unwrap_or(false) && !docked_rail {
+                    parts.push(Part::Title(column));
+                }
+                if inputs.leading.get(i).copied().unwrap_or(false) {
+                    parts.push(Part::Leading(column));
+                }
+                let actions = inputs.actions.get(i).copied().unwrap_or(0);
+                for action in 0..actions {
+                    parts.push(Part::Action(column, action));
+                }
+                if actions > 0 {
+                    parts.push(Part::More(column));
+                }
+            }
+            if inputs.has_filter && self.filter_column(inputs) == Some(column) && shows(self.filter)
+            {
+                parts.push(Part::Filter);
+            }
+            if inputs.has_controls && column == Column::Overview && shows(self.controls) {
+                parts.push(Part::Controls);
+            }
+        }
+        if shows(self.back) {
+            parts.push(Part::Back);
+        }
+        if shows(self.inspector_toggle) {
+            parts.push(Part::InspectorToggle);
+        }
+        if let Some(control) = inputs.history
+            && shows(self.history)
+        {
+            parts.push(Part::History(control.is_open()));
+        }
+        if shows(self.toggle) {
+            parts.push(Part::Toggle);
+        }
+        parts
+    }
+
+    fn sidebar_modal(&self) -> bool {
+        self.sidebar == SidebarPlacement::Drawer && self.sidebar_column.width() > 0.0
+    }
+
+    fn inspector_modal(&self) -> bool {
+        self.inspector == InspectorPlacement::Drawer && self.inspector_column.width() > 0.0
+    }
+
+    /// An open drawer is modal: the columns under its scrim take no input
+    /// and are not exposed; the header row stays live.
+    fn modal(&self) -> bool {
+        self.sidebar_modal() || self.inspector_modal()
+    }
+
+    fn in_drawer(&self, column: Column) -> bool {
+        match column {
+            Column::Sidebar => self.sidebar_modal(),
+            Column::Inspector => self.inspector_modal(),
+            Column::Overview | Column::Content => false,
+        }
+    }
+
+    fn floating(&self, column: Column) -> bool {
+        match column {
+            Column::Sidebar => self.sidebar == SidebarPlacement::Drawer,
+            Column::Inspector => self.inspector == InspectorPlacement::Drawer,
+            Column::Overview | Column::Content => false,
+        }
+    }
+
+    fn filter_column(&self, inputs: &Inputs) -> Option<Column> {
+        if inputs.has_sidebar {
+            Some(Column::Sidebar)
+        } else if inputs.has_overview {
+            Some(Column::Overview)
+        } else {
+            Some(Column::Content)
+        }
+    }
+
+    /// Where the title (or, without one, the leading fill) of `column`'s
+    /// header starts: after the shell's leading buttons in it, else at the
+    /// content gutter (a sidebar's at the buttons' inset).
+    fn lead_end(&self, column: Column, m: &Metrics) -> f64 {
+        let header = self.header(column);
+        let mut x = if column == Column::Sidebar {
+            header.x0 + m.inset
+        } else {
+            header.x0 + m.row.gutter
+        };
+        for (button, home) in [
+            (self.toggle, self.toggle_column),
+            (self.back, self.back_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x = x.max(button.x1 + m.gap);
+            }
+        }
+        x
+    }
+
+    /// The trailing end of `column`'s actions: before the shell's trailing
+    /// buttons in it, one inset in.
+    fn trail_start(&self, column: Column, m: &Metrics) -> f64 {
+        self.actions_band(column).x1 - m.inset
+    }
+
+    /// The run of a header the app's actions may take: from the header's
+    /// start to before the trailing shell buttons.
+    fn actions_band(&self, column: Column) -> Rect {
+        let header = self.header(column);
+        if header == Rect::ZERO {
+            return Rect::ZERO;
+        }
+        let mut x1 = header.x1;
+        for (button, home) in [
+            (self.inspector_toggle, self.inspector_toggle_column),
+            (self.history, self.history_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x1 = x1.min(button.x0);
+            }
+        }
+        Rect::new(header.x0, header.y0, x1, header.y1)
+    }
+}
+
+/// Compute the geometry for a shell of size `w × h`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the responsive plan is one ordered decision: sidebar, inspector, split, stack, then rects"
+)]
+fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
+    let m = inputs.metrics;
+    let mut g = NavGeometry::default();
+    if w <= 0.0 || h <= 0.0 {
+        return g;
+    }
+    let sw = inputs.sidebar_width().min(w);
+    let ow = if inputs.has_overview { m.overview } else { 0.0 };
+    let iw = if inputs.has_inspector {
+        m.inspector
+    } else {
+        0.0
+    };
+    let content_need = if inputs.has_overview {
+        ow + m.detail_min
+    } else {
+        m.content_min
+    };
+
+    // 1. The sidebar docks while the content beside it keeps its minimum.
+    g.breakpoint = if inputs.has_sidebar && inputs.mode != NavMode::Docked {
+        sw + content_need
+    } else {
+        0.0
+    };
+    g.sidebar = if !inputs.has_sidebar {
+        SidebarPlacement::None
+    } else if inputs.mode == NavMode::Docked || w >= g.breakpoint {
+        SidebarPlacement::Docked
+    } else if inputs.mode == NavMode::Push {
+        SidebarPlacement::Screen
+    } else {
+        SidebarPlacement::Drawer
+    };
+    let sidebar_layout = layout_of(g.sidebar);
+    let sidebar_open = inputs.sidebar.is_open(sidebar_layout);
+    let sidebar_reveal = inputs.sidebar.reveal_in(sidebar_layout);
+    let docked_target = if g.sidebar == SidebarPlacement::Docked && sidebar_open {
+        sw
+    } else {
+        0.0
+    };
+    let docked_now = if g.sidebar == SidebarPlacement::Docked {
+        sw * sidebar_reveal
+    } else {
+        0.0
+    };
+
+    // 2. The inspector docks while the content keeps its minimum beside it.
+    g.inspector = if !inputs.has_inspector {
+        InspectorPlacement::None
+    } else if w - docked_target >= content_need + iw {
+        InspectorPlacement::Docked
+    } else {
+        InspectorPlacement::Drawer
+    };
+    let inspector_layout = inspector_layout_of(g.inspector);
+    let inspector_open = inputs.inspector.is_open(inspector_layout);
+    let inspector_reveal = inputs.inspector.reveal_in(inspector_layout);
+    let inspector_target = if g.inspector == InspectorPlacement::Docked && inspector_open {
+        iw
+    } else {
+        0.0
+    };
+    let inspector_now = if g.inspector == InspectorPlacement::Docked {
+        iw * inspector_reveal
+    } else {
+        0.0
+    };
+
+    // 3. Overview and content side by side while both fit; where the list
+    //    does not but its rail does, the overview collapses into the rail.
+    let region_target = w - docked_target - inspector_target;
+    let list_fits = region_target >= ow + m.detail_min;
+    let rail_fits = inputs.has_rail && region_target >= m.rail + m.detail_min;
+    g.overview = if !inputs.has_overview {
+        OverviewPlacement::None
+    } else if !list_fits && rail_fits {
+        OverviewPlacement::Rail
+    } else {
+        OverviewPlacement::List
+    };
+    g.side_by_side = !inputs.has_overview || list_fits || rail_fits;
+
+    // 4. The push stack.
+    let mut stack = Vec::new();
+    if g.sidebar == SidebarPlacement::Screen {
+        stack.push(NavPane::Sidebar);
+    }
+    if inputs.has_overview && !g.side_by_side {
+        stack.push(NavPane::Overview);
+    }
+    stack.push(NavPane::Content);
+    let front = stack_index(&stack, inputs.pane);
+    let pos = inputs.push_pos.map_or(f64_of_usize(front), |pos| {
+        pos.clamp(0.0, f64_of_usize(stack.len().saturating_sub(1)))
+    });
+    g.stack = if stack.len() > 1 {
+        stack.clone()
+    } else {
+        Vec::new()
+    };
+
+    // 5. The header row.
+    let needs_header = inputs.has_sidebar
+        || inputs.has_inspector
+        || inputs.history.is_some()
+        || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
+        || inputs.content_back
+        || stack.len() > 1;
+    g.header_height = if needs_header { m.header.min(h) } else { 0.0 };
+    let hh = g.header_height;
+    let header_of = |col: Rect| {
+        if hh > 0.0 && col.width() > 0.0 {
+            Rect::new(col.x0, col.y0, col.x1, col.y0 + hh)
+        } else {
+            Rect::ZERO
+        }
+    };
+    // A floating drawer stands under the header row, `s2` in.
+    let drawer_top = if hh > 0.0 { hh + m.gap } else { m.gap };
+    let drawer_bottom = (h - m.gap).max(drawer_top);
+
+    // 6. Columns.
+    let region = Rect::new(docked_now, 0.0, (w - inspector_now).max(docked_now), h);
+    let region_w = region.width();
+    let screen_x = |pane: NavPane| -> f64 {
+        let i = stack_index(&stack, pane);
+        (f64_of_usize(i) - pos) * w
+    };
+    // Sidebar.
+    let mut sidebar_body = Rect::ZERO;
+    let mut sidebar_header = Rect::ZERO;
+    match g.sidebar {
+        SidebarPlacement::None => {}
+        SidebarPlacement::Docked => {
+            if docked_now > 0.0 {
+                g.sidebar_column = Rect::new(0.0, 0.0, docked_now, h);
+                // The body keeps its width and slides under the edge, so its
+                // rows never reflow while it collapses.
+                sidebar_body = Rect::new(docked_now - sw, hh, docked_now, h);
+                sidebar_header = header_of(g.sidebar_column);
+            }
+        }
+        SidebarPlacement::Drawer => {
+            if sidebar_reveal > 0.001 {
+                // Keep a pointer-sized strip of the scrim exposed so the
+                // drawer can be dismissed even when enlarged text fills it.
+                let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
+                let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
+                g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
+                (sidebar_header, sidebar_body) =
+                    drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
+                g.scrim = Rect::new(0.0, hh, w, h);
+                g.scrim_openness = unit_f32(sidebar_reveal);
+            }
+        }
+        SidebarPlacement::Screen => {
+            let x = screen_x(NavPane::Sidebar);
+            if x > -w && x < w {
+                g.sidebar_column = Rect::new(x, 0.0, x + w, h);
+                sidebar_body = Rect::new(x, hh, x + w, h);
+                sidebar_header = header_of(g.sidebar_column);
+            }
+        }
+    }
+    // Overview and content.
+    if g.side_by_side {
+        let x = region.x0 + screen_x(NavPane::Content);
+        let lead = match g.overview {
+            OverviewPlacement::List => ow.min((region_w - m.detail_min).max(0.0)),
+            OverviewPlacement::Rail => m.rail.min(region_w),
+            OverviewPlacement::None => 0.0,
+        };
+        match g.overview {
+            OverviewPlacement::List => g.overview_column = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::Rail => g.rail = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::None => {}
+        }
+        g.content_column = Rect::new(x + lead, 0.0, x + region_w, h);
+    } else {
+        let ox = region.x0 + screen_x(NavPane::Overview);
+        let cx = region.x0 + screen_x(NavPane::Content);
+        if ox > -w && ox < w {
+            g.overview_column = Rect::new(ox, 0.0, ox + region_w, h);
+        }
+        if cx > -w && cx < w {
+            g.content_column = Rect::new(cx, 0.0, cx + region_w, h);
+        }
+    }
+    // Inspector.
+    let mut inspector_body = Rect::ZERO;
+    let mut inspector_header = Rect::ZERO;
+    match g.inspector {
+        InspectorPlacement::None => {}
+        InspectorPlacement::Docked => {
+            if inspector_now > 0.0 {
+                g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
+                inspector_body = Rect::new(w - inspector_now, hh, w - inspector_now + iw, h);
+                inspector_header = header_of(g.inspector_column);
+            }
+        }
+        InspectorPlacement::Drawer => {
+            if inspector_reveal > 0.001 {
+                let dw = iw.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
+                let x1 = w - m.gap + (dw + m.gap) * (1.0 - inspector_reveal);
+                g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
+                (inspector_header, inspector_body) = drawer_split(
+                    g.inspector_column,
+                    hh,
+                    inputs.header_wanted(Column::Inspector),
+                );
+                if g.scrim == Rect::ZERO {
+                    g.scrim = Rect::new(0.0, hh, w, h);
+                    g.scrim_openness = unit_f32(inspector_reveal);
+                }
+            }
+        }
+    }
+
+    // 7. Headers and bodies.
+    g.headers = [
+        sidebar_header,
+        header_of(g.overview_column),
+        header_of(g.content_column),
+        inspector_header,
+    ];
+    let body_of = |col: Rect| {
+        if col.width() > 0.0 {
+            Rect::new(col.x0, col.y0 + hh, col.x1, col.y1)
+        } else {
+            Rect::ZERO
+        }
+    };
+    g.bodies = [
+        sidebar_body,
+        body_of(g.overview_column),
+        body_of(g.content_column),
+        inspector_body,
+    ];
+    if g.rail.width() > 0.0 {
+        g.rail = Rect::new(g.rail.x0, hh, g.rail.x1, g.rail.y1);
+    }
+
+    // 8. The filter field and the overview's controls sit under their
+    //    column's header, one control band each.
+    let take_band = |g: &mut NavGeometry, column: Column| -> Rect {
+        let body = g.body(column);
+        if g.column(column).width() <= 0.0 || body.height() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let top = body.y0;
+        let band = Rect::new(
+            body.x0 + m.inset,
+            top,
+            (body.x1 - m.inset).max(body.x0 + m.inset),
+            top + m.filter,
+        );
+        if let Some(slot) = g.bodies.get_mut(column.index()) {
+            slot.y0 = (top + m.filter + m.gap).min(slot.y1);
+        }
+        band
+    };
+    if inputs.has_filter
+        && let Some(column) = g.filter_column(inputs)
+    {
+        g.filter = take_band(&mut g, column);
+    }
+    if inputs.has_controls && inputs.has_overview {
+        g.controls = take_band(&mut g, Column::Overview);
+    }
+
+    // 9. The shell's own buttons.
+
+    let front_pane = stack.get(front).copied().unwrap_or(NavPane::Content);
+    let front_column = match front_pane {
+        NavPane::Sidebar => Column::Sidebar,
+        NavPane::Overview => Column::Overview,
+        NavPane::Content if inputs.has_overview && g.overview_column.width() > 0.0 => {
+            Column::Overview
+        }
+        NavPane::Content => Column::Content,
+    };
+    let push_back = stack.len() > 1 && front > 0;
+    let window_row = Rect::new(0.0, 0.0, w, hh);
+    if hh > 0.0
+        && !push_back
+        && inputs.has_sidebar
+        && matches!(
+            g.sidebar,
+            SidebarPlacement::Docked | SidebarPlacement::Drawer
+        )
+    {
+        // Pinned to the window's top-leading corner, on the sidebar while it
+        // shows docked and on the next column otherwise, so it never chases
+        // a sliding edge (a drawer opens under the row, beside it).
+        g.toggle = m.row.leading_chip(window_row, 0);
+        g.toggle_column = Some(
+            if g.sidebar == SidebarPlacement::Docked && g.sidebar_column.x1 >= g.toggle.x1 {
+                Column::Sidebar
+            } else {
+                front_column
+            },
+        );
+    }
+    let back_column = if push_back {
+        Some(front_column)
+    } else if inputs.content_back && g.content_column.width() > 0.0 {
+        Some(Column::Content)
+    } else {
+        None
+    };
+    if let Some(column) = back_column
+        && (push_back || g.header(column) != Rect::ZERO)
+    {
+        let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
+        // The page moves; navigation belongs to the window. Back must stay
+        // operable even before the incoming screen enters the viewport.
+        let row = if push_back {
+            window_row
+        } else {
+            g.header(column)
+        };
+        g.back = if slot == 0 {
+            m.row.leading_chip(row, 0)
+        } else {
+            // After the toggle, which is pinned to the window's corner.
+            let x = g.toggle.x1 + m.gap;
+            Rect::new(x, g.toggle.y0, x + m.chip, g.toggle.y1)
+        };
+        g.back_column = Some(column);
+    }
+    // History stands in the window's top-trailing corner: the trailing edge
+    // of the column that reaches the window's trailing edge (never a drawer).
+    if inputs.history.is_some()
+        && let Some(column) = [
+            Column::Inspector,
+            Column::Content,
+            Column::Overview,
+            Column::Sidebar,
+        ]
+        .into_iter()
+        .find(|column| {
+            let header = g.header(*column);
+            !g.floating(*column)
+                && g.column(*column).width() > 0.0
+                && header.x0 < w - 0.5
+                && header.x1 >= w - 0.5
+        })
+    {
+        g.history_column = Some(column);
+        g.history = m.row.trailing_chip(g.header(column), 0);
+    }
+    if inputs.has_inspector && hh > 0.0 {
+        // Docked and open, the toggle heads the inspector; otherwise it
+        // stands in the content's header (a drawer opens under it).
+        let column = if g.inspector == InspectorPlacement::Docked && inspector_open {
+            Column::Inspector
+        } else if g.content_column.width() > 0.0 {
+            Column::Content
+        } else {
+            front_column
+        };
+        let row = g.header(column);
+        if row != Rect::ZERO && g.column(column).width() > 0.0 {
+            g.inspector_toggle_column = Some(column);
+            let slot = usize::from(g.history_column == Some(column));
+            g.inspector_toggle = m.row.trailing_chip(row, slot);
+        }
+    }
+    // Content is fully hidden by a pushed screen: no buttons on it.
+    if g.toggle_column.is_some_and(|c| g.column(c).width() <= 0.0) {
+        g.toggle = Rect::ZERO;
+        g.toggle_column = None;
+    }
+
+    // 10. Dragging the docked sidebar's trailing edge resizes it.
+    if g.sidebar == SidebarPlacement::Docked
+        && inputs.mode != NavMode::Docked
+        && sidebar_open
+        && g.sidebar_column.width() > 0.0
+    {
+        let x = g.sidebar_column.x1;
+        g.resize_handle = Rect::new(x - m.resize_grip, hh, x + m.resize_grip, h);
+    }
+    g
+}
+
+/// A floating drawer's header (when its column has one) and body.
+fn drawer_split(col: Rect, hh: f64, header: bool) -> (Rect, Rect) {
+    if col.width() <= 0.0 {
+        return (Rect::ZERO, Rect::ZERO);
+    }
+    if header && hh > 0.0 {
+        let y1 = (col.y0 + hh).min(col.y1);
+        (
+            Rect::new(col.x0, col.y0, col.x1, y1),
+            Rect::new(col.x0, y1, col.x1, col.y1),
+        )
+    } else {
+        (Rect::ZERO, col)
+    }
+}
+
+fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
+    match sidebar {
+        SidebarPlacement::Drawer | SidebarPlacement::Screen => SplitLayout::Overlay,
+        SidebarPlacement::Docked | SidebarPlacement::None => SplitLayout::Docked,
+    }
+}
+
+fn inspector_layout_of(inspector: InspectorPlacement) -> SplitLayout {
+    match inspector {
+        InspectorPlacement::Drawer => SplitLayout::Overlay,
+        InspectorPlacement::Docked | InspectorPlacement::None => SplitLayout::Docked,
+    }
+}
+
+fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
+    stack
+        .iter()
+        .position(|p| *p == pane)
+        .or_else(|| {
+            // An overview standing beside the content is the content screen.
+            (pane == NavPane::Overview)
+                .then(|| stack.iter().position(|p| *p == NavPane::Content))
+                .flatten()
+        })
+        .unwrap_or(stack.len().saturating_sub(1))
 }
 
 #[allow(
+    clippy::cast_possible_truncation,
+    reason = "a reveal is clamped to 0..=1, always well within f32 range"
+)]
+fn unit_f32(v: f64) -> f32 {
+    v.clamp(0.0, 1.0) as f32
+}
+
+/// The shell's buttons report presses here.
+#[derive(Default)]
+struct Requests {
+    toggle: Cell<bool>,
+    back: Cell<bool>,
+    inspector: Cell<bool>,
+}
+
+/// A drag of the sidebar's trailing edge.
+#[derive(Clone, Copy, Debug)]
+struct Resize {
+    start_x: f64,
+    start_width: f64,
+}
+
+/// An app's own page stack, which the shell's Back chip pops.
+struct ContentBack {
+    can_go_back: Box<dyn Fn() -> bool>,
+    go_back: Box<dyn FnMut()>,
+}
+
+/// An open/closed state the app keeps in a [`LocalState`].
+struct OpenBinding {
+    binding: LocalBinding<bool>,
+    /// A value to apply once the layout knows the placement.
+    wanted: Option<bool>,
+}
+
+/// What the host walks in place of a part under an open drawer's scrim:
+/// no focus, no semantics, no children. The part itself is still laid out,
+/// painted, synced and updated by the shell.
+#[derive(Debug, Default)]
+struct InertPart;
+
+static INERT_PART: InertPart = InertPart;
+
+impl Widget for InertPart {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), node_map, self)
+    }
+
+    fn name(&self) -> &'static str {
+        "NavShellInert"
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+}
+
+/// The one window shell. See the module docs.
+#[allow(
     clippy::struct_excessive_bools,
-    reason = "toggle policy, layout cache validity, animation activity and dirtiness are independent flags"
+    reason = "structure, layout and paint dirtiness and the cross-fade are independent flags"
 )]
 pub struct NavShell {
+    id: Option<String>,
     sidebar: Option<Element>,
-    overview: Element,
-    /// `None` for a sidebar-plus-content app: no overview/detail split to
-    /// push between, so the single content pane must stay visible at every
-    /// width.
-    detail: Option<Element>,
+    overview: Option<Element>,
+    content: Element,
+    inspector: Option<Element>,
+    rail: Option<Element>,
+    filter: Option<SearchField>,
+    controls: Option<Element>,
+    headers: [Header; 4],
+    pending: Pending,
+    toggle: Button,
+    back: Button,
+    inspector_toggle: Button,
+    /// The window's History control: the one that opens History and the
+    /// one, on, that closes it.
+    history_open: Button,
+    history_close: Button,
+    requests: Rc<Requests>,
+    pane_binding: Option<LocalBinding<NavPane>>,
+    sidebar_state: Option<OpenBinding>,
+    inspector_state: Option<OpenBinding>,
+    content_back: Option<ContentBack>,
+    /// The content pane the person last worked in; a collapse to narrow
+    /// keeps it in front.
+    active_hint: Option<NavPane>,
 
-    /// The app's inputs as authored at 1× (HIG §9.6,
-    /// [`AuthoredExtent`]); `None` means the token default
-    /// (`theme.tokens.metrics`). Resolved against the theme in
-    /// `build_layout` into the `breakpoint` / `*_width` fields below.
-    authored_breakpoint: AuthoredExtent,
-    authored_sidebar_width: Option<AuthoredExtent>,
-    authored_narrow_sidebar_width: Option<AuthoredExtent>,
-    authored_overview_width: Option<AuthoredExtent>,
-
-    breakpoint: f64,
-    sidebar_width: f64,
-    /// Optional wider width for the narrow overlay drawer. This lets a
-    /// destination list remain comfortably usable on a phone without making
-    /// its persistent desktop sidebar unnecessarily wide.
-    narrow_sidebar_width: Option<f64>,
-    overview_width: f64,
-    /// Detail pane's minimum width in the side-by-side layout, resolved
-    /// from [`MIN_DETAIL_WIDTH`].
-    min_detail_width: f64,
-    /// The affordance chip's geometry resolved against the theme: the
-    /// `s3` inset, the square grown with the body line
-    /// ([`crate::widget::text_control_height`]) so a 2× "Back" label still
-    /// fits, and the Back chip's width.
-    chip_inset: f64,
-    chip_size: f64,
-    back_chip_width: f64,
-
-    /// Reveal easing for the sidebar (collapse when docked, slide when
-    /// overlay); open-when-docked by default.
-    sidebar_flap: FlapState,
-    pane: NavPane,
-    /// Push easing: `0` = overview front, `1` = detail front. Closed
-    /// (overview) by default.
-    push: FlapState,
-    /// The content pane the user most recently engaged; drives which pane
-    /// survives a collapse to narrow (never the sidebar). Falls back to the
-    /// right-most pane (detail) when `None`.
-    active_pane_hint: Option<NavPane>,
-    /// Previous layout's mode, so `apply_layout` can spot a wide→narrow
-    /// collapse and seed the visible pane from the last-interacted one.
-    last_mode: Option<ShellMode>,
-
-    // --- resolved geometry (recomputed each layout / animation frame) ---
-    rect: Rect,
-    sidebar_rect: Rect,
-    overview_rect: Rect,
-    detail_rect: Rect,
-    scrim_rect: Rect,
-    /// Zero when `affordance == Affordance::None`.
-    affordance_rect: Rect,
-    affordance: Affordance,
-    /// Suppress the collapse chip while docked (wide); the hamburger still
-    /// appears narrow, to summon the drawer.
-    hide_docked_toggle: bool,
-
-    last_cursor: Point,
-
-    // --- inner taffy for the children ---
-    inner_taffy: Option<TaffyTree<()>>,
-    /// Pane constraints used by the retained child tree (origins may translate).
-    inner_extents: Option<[(f64, f64); 3]>,
-    /// Preserve the outer layout typography for the isolated child tree.
+    inputs: Rc<RefCell<Inputs>>,
+    policy: Rc<crate::widget::manual::Policy>,
+    invalidation: ManualInvalidation,
+    baseline: Vec<(NodeId, Style)>,
+    /// The parts in the host tree, in build order.
+    host_parts: Vec<Part>,
+    /// What the host meets in place of a part under a drawer's scrim, one
+    /// per part in the tree.
+    inert_parts: Vec<InertPart>,
     layout_theme: Theme,
-    /// Set by `adjust_layout_with_measure` once the host solver has solved
-    /// the panes for this pass, consumed by the `apply_layout` that follows:
-    /// a freshly measured child still reports `layout_needs_measure()` until
-    /// it is drawn, and without this the apply would re-solve the very same
-    /// geometry with a throwaway renderer.
-    host_solved: bool,
-    sidebar_node: Option<NodeId>,
-    overview_node: Option<NodeId>,
-    detail_node: Option<NodeId>,
+    conventions: PlatformConventions,
 
-    animating: bool,
-    dirty: bool,
-    host_structure_dirty: bool,
-    host_interactive_panels: [bool; 3],
+    rect: Rect,
+    geometry: NavGeometry,
+    last_stack: Option<Vec<NavPane>>,
+    /// The app or the person chose the front screen.
+    pane_chosen: bool,
+    resize: Option<Resize>,
+    last_cursor: Point,
     last_tick: Option<Instant>,
+    /// Reduced motion: the sidebar and drawers fade in instead of sliding.
+    fade: f64,
+    animating: bool,
+    /// The host tree has been built once.
+    built: bool,
+    structure_dirty: bool,
+    layout_dirty: bool,
+    paint_dirty: bool,
+    /// The window's transient notices, over its bottom trailing corner.
+    toasts: ToastStack,
+    /// Every pixel the notices painted in the last draw, their shadows
+    /// included, and what they painted there.
+    toasts_painted: Option<Rect>,
+    toasts_scene: Scene,
+    /// [`Self::toasts_painted`] and [`Self::toasts_scene`] as of the last
+    /// frame the host presented ([`Widget::mark_drawn`]).
+    toasts_drawn: Option<Rect>,
+    toasts_drawn_scene: Scene,
+    /// A notice came, went or changed: the next draw paints it.
+    toasts_dirty: bool,
+    /// The window's sync status, quiet text before the trailing controls
+    /// of the row History stands in.
+    sync_status: crate::widget::HeaderStatus,
+    /// The room that row leaves before the sync status, where a document
+    /// says how its save is going ([`Self::header_status_slot`]).
+    status_slot: Rect,
+}
+
+impl Default for NavShell {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NavShell {
-    /// Content-only shell (no sidebar): overview + detail, e.g. weather.
-    pub fn new(overview: Element, detail: Element) -> Self {
+    /// An empty shell; give it columns with the builders.
+    pub fn new() -> Self {
+        let requests = Rc::new(Requests::default());
+        let inputs = Rc::new(RefCell::new(Inputs::default()));
+        let policy_inputs = Rc::clone(&inputs);
+        let policy: Rc<crate::widget::manual::Policy> =
+            Rc::new(move |ctx: &mut ManualContext<'_>| place_parts(&policy_inputs.borrow(), ctx));
+        let toggle = Self::shell_button("nav-shell-sidebar", Icon::PanelLeft, "Hide sidebar", {
+            let requests = Rc::clone(&requests);
+            move || requests.toggle.set(true)
+        });
+        let back = Self::shell_button("nav-shell-back", Icon::ChevronLeft, "Back", {
+            let requests = Rc::clone(&requests);
+            move || requests.back.set(true)
+        });
+        let inspector_toggle =
+            Self::shell_button("nav-shell-inspector", Icon::PanelRight, "Hide inspector", {
+                let requests = Rc::clone(&requests);
+                move || requests.inspector.set(true)
+            });
         Self {
+            id: None,
             sidebar: None,
-            overview,
-            detail: Some(detail),
-            authored_breakpoint: AuthoredExtent::text(DEFAULT_NAVSHELL_BREAKPOINT),
-            authored_sidebar_width: None,
-            authored_narrow_sidebar_width: None,
-            authored_overview_width: None,
-            breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
-            sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
-            narrow_sidebar_width: None,
-            overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
-            min_detail_width: MIN_DETAIL_WIDTH,
-            chip_inset: CHIP_INSET,
-            chip_size: CHIP_SIZE,
-            back_chip_width: BACK_CHIP_WIDTH,
-            sidebar_flap: FlapState::open_when_docked(),
-            pane: NavPane::Overview,
-            push: FlapState::closed_by_default(),
-            active_pane_hint: None,
-            last_mode: None,
-            rect: Rect::ZERO,
-            sidebar_rect: Rect::ZERO,
-            overview_rect: Rect::ZERO,
-            detail_rect: Rect::ZERO,
-            scrim_rect: Rect::ZERO,
-            affordance_rect: Rect::ZERO,
-            affordance: Affordance::None,
-            hide_docked_toggle: false,
-            last_cursor: Point::ZERO,
-            inner_taffy: None,
-            inner_extents: None,
+            overview: None,
+            content: Box::new(crate::widget::Spacer::new()),
+            inspector: None,
+            rail: None,
+            filter: None,
+            controls: None,
+            headers: Column::ALL.map(Header::new),
+            pending: Pending::default(),
+            toggle,
+            back,
+            inspector_toggle,
+            history_open: crate::standalone_history_host::history_control_button(
+                "nav-shell-history",
+                HistoryControl::Closed,
+            ),
+            history_close: crate::standalone_history_host::history_control_button(
+                "nav-shell-history",
+                HistoryControl::Open,
+            ),
+            requests,
+            pane_binding: None,
+            sidebar_state: None,
+            inspector_state: None,
+            content_back: None,
+            active_hint: None,
+            inputs,
+            policy,
+            invalidation: ManualInvalidation::default(),
+            baseline: Vec::new(),
+            host_parts: Vec::new(),
+            inert_parts: Vec::new(),
             layout_theme: Theme::dark(),
-            host_solved: false,
-            sidebar_node: None,
-            overview_node: None,
-            detail_node: None,
-            animating: false,
-            dirty: false,
-            host_structure_dirty: false,
-            host_interactive_panels: [false; 3],
+            conventions: PlatformConventions::default(),
+            rect: Rect::ZERO,
+            geometry: NavGeometry::default(),
+            last_stack: None,
+            pane_chosen: false,
+            resize: None,
+            last_cursor: Point::ZERO,
             last_tick: None,
+            fade: 1.0,
+            animating: false,
+            built: false,
+            structure_dirty: false,
+            layout_dirty: true,
+            paint_dirty: true,
+            toasts: ToastStack::new().with_max(1),
+            toasts_painted: None,
+            toasts_scene: Scene::new(),
+            toasts_drawn: None,
+            toasts_drawn_scene: Scene::new(),
+            toasts_dirty: false,
+            sync_status: crate::widget::HeaderStatus::default(),
+            status_slot: Rect::ZERO,
         }
     }
 
-    /// Sidebar-plus-content shell (file-manager / settings shape).
-    ///
-    /// Use this instead of [`NavShell::new`] when the left pane is a list of
-    /// *destinations*: passing it as `new`'s `overview` makes it §1b
-    /// content, which narrow then promotes to a full-screen page, pushing
-    /// the content off the window.
-    pub fn sidebar_over_content(sidebar: Element, content: Element) -> Self {
-        let mut shell = Self::new(content, Box::new(crate::widget::Spacer::new()));
-        shell.sidebar = Some(sidebar);
-        shell.detail = None;
-        shell
+    fn shell_button(id: &str, icon: Icon, name: &str, on_press: impl FnMut() + 'static) -> Button {
+        Button::icon_only(id, icon, name).on_view(on_press)
     }
 
-    /// Attach a genuine sidebar: `[ sidebar | overview | detail ]`.
+    // --- notices -----------------------------------------------------------
+
+    /// Show a transient notice over the window's bottom trailing corner: an
+    /// operation's result or failure. It replaces the one showing, expires on
+    /// its own (held while the pointer rests on it and under the capture
+    /// clock), and a click dismisses it.
+    pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.toasts.push(text, kind);
+        self.toasts_dirty = true;
+    }
+
+    /// Take down the notice showing, when its news no longer holds.
+    pub fn dismiss_toast(&mut self) {
+        if !self.toasts.is_empty() {
+            self.toasts.dismiss(0);
+            self.toasts_dirty = true;
+        }
+    }
+
+    /// The notice showing, if any.
+    pub fn toast_text(&self) -> Option<&str> {
+        self.toasts.iter().next().map(|toast| toast.text.as_str())
+    }
+
+    /// Whether the notices painted anything other than what the host last
+    /// presented: one came, went, expired, moved or changed its look.
+    fn toasts_changed(&self) -> bool {
+        self.toasts_painted != self.toasts_drawn
+            || !self.toasts_scene.encoding_eq(&self.toasts_drawn_scene)
+    }
+
+    fn toasts_expired(&self) -> bool {
+        self.toasts
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now())
+    }
+
+    // --- slots -------------------------------------------------------------
+
+    /// The sidebar of destinations (usually a [`crate::widget::NavList`]).
     #[must_use]
-    pub fn with_sidebar(mut self, sidebar: Element) -> Self {
-        self.inner_taffy = None;
-        self.sidebar = Some(sidebar);
+    pub fn sidebar(mut self, sidebar: Element) -> Self {
+        self.set_sidebar(Some(sidebar));
         self
     }
 
-    /// The width, in logical px **authored at 1×**, at or above which the
-    /// shell is wide. Resolved against the theme when the tree is built
-    /// (`× ui_scale × text_scale.max(1.0)`, [`Theme::responsive_scale`]), so
-    /// at 200 % text the panes stop fitting side by side at twice the
-    /// window width without the app multiplying anything. Read the resolved
-    /// value back with [`Self::breakpoint`].
+    /// The overview list beside the content (a message list, a city list):
+    /// content the person reads, not navigation.
     #[must_use]
-    pub fn with_breakpoint(mut self, px: f64) -> Self {
-        self.authored_breakpoint = AuthoredExtent::text(px);
-        self.breakpoint = px;
+    pub fn overview(mut self, overview: Element) -> Self {
+        self.set_overview(Some(overview));
         self
     }
 
-    /// Update the responsive threshold when an accessibility text scale makes
-    /// the same logical chrome require more horizontal room.  This is local
-    /// presentation policy, never collaborative navigation state.
-    pub fn set_breakpoint(&mut self, px: f64) {
-        self.breakpoint = px.max(1.0);
-        self.dirty = true;
-    }
-
-    /// Docked width of a **text-sized** sidebar (a destination list),
-    /// authored at 1× and scaled like [`Self::with_breakpoint`]. Default:
-    /// `theme.tokens.metrics.sidebar_width`.
+    /// What the overview collapses into where the list no longer fits
+    /// beside the content but a rail does: a [`crate::widget::NavList::rail`]
+    /// of the same places, so the window narrows to rail and detail before
+    /// it pushes.
     #[must_use]
-    pub fn with_sidebar_width(mut self, px: f64) -> Self {
-        self.authored_sidebar_width = Some(AuthoredExtent::text(px));
-        self.sidebar_width = px;
+    pub fn overview_rail(mut self, rail: Element) -> Self {
+        self.set_overview_rail(Some(rail));
         self
     }
 
-    /// Docked width of an **icon rail** sidebar — glyphs, not text — which
-    /// follows `ui_scale` only.
+    /// The content.
     #[must_use]
-    pub fn with_icon_sidebar_width(mut self, px: f64) -> Self {
-        self.authored_sidebar_width = Some(AuthoredExtent::icon(px));
-        self.sidebar_width = px;
+    pub fn content(mut self, content: Element) -> Self {
+        self.set_content(content);
         self
     }
 
-    /// Override the sidebar width only while it is an overlay drawer below
-    /// the shell breakpoint. The normal docked width remains unchanged.
-    /// Authored at 1× for a text-sized drawer; scaled like
-    /// [`Self::with_breakpoint`].
+    /// The inspector at the trailing edge: properties of the selection.
     #[must_use]
-    pub fn with_narrow_sidebar_width(mut self, px: f64) -> Self {
-        self.authored_narrow_sidebar_width = Some(AuthoredExtent::text(px));
-        self.narrow_sidebar_width = Some(px);
+    pub fn inspector(mut self, inspector: Element) -> Self {
+        self.set_inspector(Some(inspector));
         self
     }
 
-    /// Width of a **text-sized** overview column, authored at 1× and scaled
-    /// like [`Self::with_breakpoint`]. Default:
-    /// `theme.tokens.metrics.overview_width`.
+    /// Controls that act on the overview list (its sort order, a scope),
+    /// under the overview's header at the shell's inset.
     #[must_use]
-    pub fn with_overview_width(mut self, px: f64) -> Self {
-        self.authored_overview_width = Some(AuthoredExtent::text(px));
-        self.overview_width = px;
+    pub fn overview_controls(mut self, controls: Element) -> Self {
+        self.set_overview_controls(Some(controls));
         self
     }
 
-    /// Width of an overview collapsed to an **icon rail**; follows
-    /// `ui_scale` only.
+    /// The sidebar column's header: a sentence-case title and the app's
+    /// actions (buttons). The toggle is the shell's; do not add one.
     #[must_use]
-    pub fn with_icon_overview_width(mut self, px: f64) -> Self {
-        self.authored_overview_width = Some(AuthoredExtent::icon(px));
-        self.overview_width = px;
+    pub fn sidebar_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_sidebar_header(title, actions);
         self
     }
 
-    /// The breakpoint the shell currently resolves against — the authored
-    /// value scaled by the theme it was last built with. Compare a window
-    /// width against this, never against the constant handed to
-    /// [`Self::with_breakpoint`].
-    pub fn breakpoint(&self) -> f64 {
-        self.breakpoint
-    }
-
-    /// The docked sidebar width currently laid out (resolved like
-    /// [`Self::breakpoint`]).
-    pub fn sidebar_width(&self) -> f64 {
-        self.sidebar_width
-    }
-
-    /// The overview column width currently laid out (resolved like
-    /// [`Self::breakpoint`]).
-    pub fn overview_width(&self) -> f64 {
-        self.overview_width
-    }
-
-    /// Resolve the authored inputs and the chip geometry against `theme`
-    /// (HIG §9.6, [`AuthoredExtent::resolve`]). A token default is already
-    /// `ui_scale`d and grows with `text_growth`. Identity on a stock theme.
-    fn resolve_inputs(&mut self, theme: &Theme) {
-        let growth = f64::from(theme.text_growth());
-        let metrics = theme.tokens.metrics;
-        self.breakpoint = self.authored_breakpoint.resolve(theme);
-        self.sidebar_width = self.authored_sidebar_width.map_or_else(
-            || f64::from(metrics.sidebar_width) * growth,
-            |extent| extent.resolve(theme),
-        );
-        self.narrow_sidebar_width = self
-            .authored_narrow_sidebar_width
-            .map(|extent| extent.resolve(theme));
-        self.overview_width = self.authored_overview_width.map_or_else(
-            || f64::from(metrics.overview_width) * growth,
-            |extent| extent.resolve(theme),
-        );
-        self.min_detail_width = AuthoredExtent::text(MIN_DETAIL_WIDTH).resolve(theme);
-        self.chip_inset = f64::from(theme.tokens.spacing.s3);
-        self.chip_size = crate::widget::text_control_height(CHIP_SIZE, theme);
-        // Glyph square plus the label run, which grows with the text.
-        self.back_chip_width =
-            self.chip_size + AuthoredExtent::text(BACK_CHIP_WIDTH - CHIP_SIZE).resolve(theme);
-    }
-
-    /// Height of the band the top-left chip occupies: inset, chip, inset.
-    fn chip_band(&self) -> f64 {
-        self.chip_inset * 2.0 + self.chip_size
-    }
-
+    /// The overview column's header (the list's title and its actions).
     #[must_use]
-    pub fn hide_toggle_when_docked(mut self) -> Self {
-        self.hide_docked_toggle = true;
+    pub fn overview_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_overview_header(title, actions);
         self
     }
 
+    /// The content column's header: the detail title and toolbar actions.
     #[must_use]
-    pub fn with_sidebar_collapsed(mut self) -> Self {
-        self.sidebar_flap = FlapState::closed_by_default();
+    pub fn content_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_content_header(title, actions);
         self
     }
 
-    // --- live child swap -------------------------------------------------
+    /// The content's header with its title bound to `title`: a view names
+    /// its content from resource state, and the header follows the state.
+    #[must_use]
+    pub fn content_header_bound(
+        mut self,
+        title: &LocalState<String>,
+        actions: Vec<Element>,
+    ) -> Self {
+        let (value, binding) = LocalBinding::new(title);
+        self.set_content_header(value, actions);
+        if let Some(header) = self.headers.get_mut(Column::Content.index()) {
+            header.binding = Some(binding);
+        }
+        self
+    }
+
+    /// The fill of the content's header between the shell's leading buttons
+    /// and the actions: a path bar or breadcrumb, or a mode or tab switcher
+    /// with no title. It stands at its own width, and gets the room there is
+    /// when it needs more.
+    #[must_use]
+    pub fn content_header_leading(mut self, leading: Element) -> Self {
+        self.set_content_header_leading(Some(leading));
+        self
+    }
+
+    /// The inspector column's header.
+    #[must_use]
+    pub fn inspector_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_inspector_header(title, actions);
+        self
+    }
+
+    /// How many items the overview lists, after its title.
+    #[must_use]
+    pub fn overview_count(mut self, count: usize) -> Self {
+        self.set_count(Column::Overview, Some(count));
+        self
+    }
+
+    /// How many items the content shows, after its title.
+    #[must_use]
+    pub fn content_count(mut self, count: usize) -> Self {
+        self.set_count(Column::Content, Some(count));
+        self
+    }
+
+    /// The one filter field of the window, scoped to the sidebar's list (or
+    /// the overview when there is no sidebar, else the content), at the
+    /// shell's metrics. Ctrl+F (⌘F) focuses it. The shell carries its query
+    /// to the column's [`crate::widget::Filterable`] after every event and
+    /// keeps the field: read it back with [`Self::filter`].
+    #[must_use]
+    pub fn with_filter(mut self, filter: SearchField) -> Self {
+        self.filter = Some(filter);
+        self.slots_changed();
+        self
+    }
+
+    /// What the sidebar becomes in a narrow window.
+    #[must_use]
+    pub fn mode(mut self, mode: NavMode) -> Self {
+        self.inputs.borrow_mut().mode = mode;
+        self.slots_changed();
+        self
+    }
+
+    /// Give the shell a stable id for tests and inspection; its headings
+    /// group is keyed by it on the agent surface.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Start with the sidebar hidden (where it docks).
+    #[must_use]
+    pub fn with_sidebar_hidden(self) -> Self {
+        self.inputs.borrow_mut().sidebar.snap(false);
+        self
+    }
+
+    /// Start with the inspector hidden (where it docks).
+    #[must_use]
+    pub fn with_inspector_hidden(self) -> Self {
+        self.inputs.borrow_mut().inspector.snap(false);
+        self
+    }
+
+    /// Keep whether the sidebar shows in `state`: the shell writes where it
+    /// stands once laid out and every choice the person makes; setting the
+    /// state shows or hides the sidebar (opens the drawer in a narrow
+    /// window, from `ViewCx::on_stage` for a capture).
+    #[must_use]
+    pub fn with_sidebar_state(mut self, state: &LocalState<bool>) -> Self {
+        let (_, binding) = LocalBinding::new(state);
+        self.sidebar_state = Some(OpenBinding {
+            binding,
+            wanted: None,
+        });
+        self
+    }
+
+    /// Keep whether the inspector shows in `state`, as
+    /// [`Self::with_sidebar_state`].
+    #[must_use]
+    pub fn with_inspector_state(mut self, state: &LocalState<bool>) -> Self {
+        let (_, binding) = LocalBinding::new(state);
+        self.inspector_state = Some(OpenBinding {
+            binding,
+            wanted: None,
+        });
+        self
+    }
+
+    /// Keep the front screen of a narrow window in `state`: a row of the
+    /// overview can push the content by setting [`NavPane::Content`], and
+    /// the Back button writes the screen it returns to.
+    #[must_use]
+    pub fn with_pane_state(mut self, state: &LocalState<NavPane>) -> Self {
+        let (pane, binding) = LocalBinding::new(state);
+        self.inputs.borrow_mut().pane = pane;
+        self.pane_binding = Some(binding);
+        self.pane_chosen = true;
+        self
+    }
+
+    /// Bind the content's Back to the app's page stack: while `stack` can go
+    /// back the shell shows its Back chip at the leading edge of the
+    /// content's header, and pressing it pops the stack (browse history, a
+    /// drill-down from a dashboard into a queue). A narrow window's push
+    /// stack shares the chip: Back pops the app's pages first.
+    #[must_use]
+    pub fn with_back<T>(self, stack: &LocalState<crate::NavStack<T>>) -> Self
+    where
+        T: Clone + PartialEq + 'static,
+    {
+        let read = stack.clone();
+        let write = stack.clone();
+        self.on_back(
+            move || read.with(crate::NavStack::can_go_back),
+            move || {
+                write.update(|stack| {
+                    stack.back();
+                });
+            },
+        )
+    }
+
+    /// The content's Back for a page stack the app keeps itself:
+    /// `can_go_back` is asked every frame, `go_back` runs on a press.
+    #[must_use]
+    pub fn on_back(
+        mut self,
+        can_go_back: impl Fn() -> bool + 'static,
+        go_back: impl FnMut() + 'static,
+    ) -> Self {
+        let can = can_go_back();
+        self.content_back = Some(ContentBack {
+            can_go_back: Box::new(can_go_back),
+            go_back: Box::new(go_back),
+        });
+        self.inputs.borrow_mut().content_back = can;
+        self.slots_changed();
+        self
+    }
+
+    // --- live slot swap ----------------------------------------------------
     //
-    // Hosts that rebuild their child subtree on a structure change keep the
-    // `NavShell` itself and swap panes in here instead of recreating it —
-    // the shell's responsive state lives on the shell, not the children, so
-    // swapping preserves the sidebar/push position across the rebuild.
-
-    pub fn set_overview(&mut self, overview: Element) {
-        self.inner_taffy = None;
-        self.overview = overview;
-        self.host_structure_dirty = true;
-    }
-
-    pub fn set_detail(&mut self, detail: Element) {
-        self.inner_taffy = None;
-        self.detail = Some(detail);
-        self.host_structure_dirty = true;
-    }
-
-    /// Replace the single content pane of a [`NavShell::sidebar_over_content`]
-    /// shell. Writes the same slot as [`Self::set_overview`]; named so a
-    /// single-pane app doesn't have to call its content an "overview".
-    pub fn set_content(&mut self, content: Element) {
-        self.set_overview(content);
-    }
-
-    pub fn has_detail(&self) -> bool {
-        self.detail.is_some()
-    }
+    // A host that rebuilds its children keeps the shell and swaps them in
+    // here: the shell's responsive state lives on the shell. A swap made
+    // while the host holds the tree waits for the next build.
 
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
-        self.inner_taffy = None;
-        self.sidebar = sidebar;
-        self.host_structure_dirty = true;
+        self.stage_body(Column::Sidebar, sidebar);
     }
 
-    // --- layout-mode queries ---------------------------------------------
+    pub fn set_overview(&mut self, overview: Option<Element>) {
+        self.stage_body(Column::Overview, overview);
+    }
+
+    pub fn set_content(&mut self, content: Element) {
+        self.stage_body(Column::Content, Some(content));
+    }
+
+    pub fn set_inspector(&mut self, inspector: Option<Element>) {
+        self.stage_body(Column::Inspector, inspector);
+    }
+
+    pub fn set_overview_rail(&mut self, rail: Option<Element>) {
+        self.pending.rail = Some(Staged(rail));
+        self.pending_changed();
+    }
+
+    pub fn set_overview_controls(&mut self, controls: Option<Element>) {
+        self.pending.controls = Some(Staged(controls));
+        self.pending_changed();
+    }
+
+    pub fn set_content_header_leading(&mut self, leading: Option<Element>) {
+        if let Some(slot) = self.pending.leading.get_mut(Column::Content.index()) {
+            *slot = Some(Staged(leading));
+        }
+        self.pending_changed();
+    }
+
+    fn stage_body(&mut self, column: Column, element: Option<Element>) {
+        if let Some(slot) = self.pending.bodies.get_mut(column.index()) {
+            *slot = Some(Staged(element));
+        }
+        self.pending_changed();
+    }
+
+    /// Change the sidebar's header in place: its title and actions.
+    pub fn set_sidebar_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Sidebar, title.into(), actions);
+    }
+
+    /// Change the overview's header in place.
+    pub fn set_overview_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Overview, title.into(), actions);
+    }
+
+    /// Change the content's header in place (the selected message's subject
+    /// and what can be done to it).
+    pub fn set_content_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Content, title.into(), actions);
+    }
+
+    /// Change the inspector's header in place.
+    pub fn set_inspector_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Inspector, title.into(), actions);
+    }
+
+    fn stage_header(&mut self, column: Column, title: String, actions: Vec<Element>) {
+        self.set_title(column, title);
+        if let Some(slot) = self.pending.actions.get_mut(column.index()) {
+            *slot = Some(actions);
+        }
+        self.pending_changed();
+    }
+
+    /// Change the sidebar's title in place.
+    pub fn set_sidebar_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Sidebar, title.into());
+    }
+
+    /// Change the overview's title in place.
+    pub fn set_overview_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Overview, title.into());
+    }
+
+    /// Change the content's title in place (the selected message's subject).
+    pub fn set_content_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Content, title.into());
+    }
+
+    /// Change the inspector's title in place.
+    pub fn set_inspector_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Inspector, title.into());
+    }
+
+    /// Show or clear the count after the content's title.
+    pub fn set_content_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Content, count);
+    }
+
+    /// Whether the content's page stack can go back, for an app that keeps
+    /// it itself ([`Self::on_back`]).
+    pub fn set_can_go_back(&mut self, can: bool) {
+        let changed = {
+            let mut inputs = self.inputs.borrow_mut();
+            let changed = inputs.content_back != can;
+            inputs.content_back = can;
+            changed
+        };
+        if changed {
+            self.structure_dirty = true;
+            self.invalidate();
+        }
+    }
+
+    fn set_title(&mut self, column: Column, title: String) {
+        let title = (!title.trim().is_empty()).then_some(title);
+        if let Some(header) = self.headers.get_mut(column.index())
+            && header.title.title != title
+        {
+            header.title.title = title;
+            self.slots_changed();
+        }
+    }
+
+    fn set_count(&mut self, column: Column, count: Option<usize>) {
+        if let Some(header) = self.headers.get_mut(column.index())
+            && header.title.count != count
+        {
+            header.title.count = count;
+            self.invalidate();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// A slot or header waits for the next build; before the first one there
+    /// is no tree to wait for.
+    fn pending_changed(&mut self) {
+        if !self.built {
+            self.apply_pending();
+        }
+        self.slots_changed();
+    }
+
+    /// Put the waiting slots and headers in place, dropping what they
+    /// replace. Only before the first build or from `build_layout`, when the
+    /// host holds no part of the old tree.
+    fn apply_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        let Pending {
+            bodies,
+            actions,
+            leading,
+            controls,
+            rail,
+        } = pending;
+        for (column, body) in Column::ALL.into_iter().zip(bodies) {
+            let Some(Staged(body)) = body else { continue };
+            match column {
+                Column::Sidebar => self.sidebar = body,
+                Column::Overview => self.overview = body,
+                Column::Content => {
+                    if let Some(content) = body {
+                        self.content = content;
+                    }
+                }
+                Column::Inspector => self.inspector = body,
+            }
+        }
+        for (header, actions) in self.headers.iter_mut().zip(actions) {
+            if let Some(actions) = actions {
+                header.more.close();
+                header.actions = actions;
+            }
+        }
+        for (header, leading) in self.headers.iter_mut().zip(leading) {
+            if let Some(Staged(leading)) = leading {
+                header.leading = leading;
+            }
+        }
+        if let Some(Staged(controls)) = controls {
+            self.controls = controls;
+        }
+        if let Some(Staged(rail)) = rail {
+            self.rail = rail;
+        }
+        self.reset_fit();
+    }
+
+    /// Forget how the actions fit: new actions are measured afresh.
+    fn reset_fit(&mut self) {
+        let inputs = self.inputs.borrow();
+        let mut fit = inputs.fit.borrow_mut();
+        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+            let capable: Vec<bool> = header
+                .actions
+                .iter_mut()
+                .map(|action| {
+                    action
+                        .as_any()
+                        .and_then(|any| any.downcast_ref::<Button>())
+                        .is_some_and(Button::compacts_to_icon)
+                })
+                .collect();
+            let compact_now: Vec<bool> = header
+                .actions
+                .iter()
+                .map(|action| {
+                    action
+                        .as_any()
+                        .and_then(|any| any.downcast_ref::<Button>())
+                        .is_some_and(Button::is_compact_presentation)
+                })
+                .collect();
+            if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
+                *slot = ColumnFit {
+                    full: vec![None; capable.len()],
+                    capable,
+                    compact_now,
+                    compact: false,
+                    shown: None,
+                };
+            } else {
+                slot.compact_now = compact_now;
+            }
+        }
+    }
+
+    fn slots_changed(&mut self) {
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            let has = |current: bool, pending: Option<&Staged>| match pending {
+                Some(next) => next.is_some(),
+                None => current,
+            };
+            inputs.has_sidebar = has(
+                self.sidebar.is_some(),
+                at(&self.pending.bodies, Column::Sidebar).as_ref(),
+            );
+            inputs.has_overview = has(
+                self.overview.is_some(),
+                at(&self.pending.bodies, Column::Overview).as_ref(),
+            );
+            inputs.has_inspector = has(
+                self.inspector.is_some(),
+                at(&self.pending.bodies, Column::Inspector).as_ref(),
+            );
+            inputs.has_rail = has(self.rail.is_some(), self.pending.rail.as_ref());
+            inputs.has_controls = has(self.controls.is_some(), self.pending.controls.as_ref());
+            inputs.has_filter = self.filter.is_some();
+            for column in Column::ALL {
+                let header = at(&self.headers, column);
+                *at_mut(&mut inputs.titled, column) = header.title.is_shown();
+                *at_mut(&mut inputs.actions, column) = at(&self.pending.actions, column)
+                    .as_ref()
+                    .map_or(header.actions.len(), Vec::len);
+                *at_mut(&mut inputs.leading, column) = has(
+                    header.leading.is_some(),
+                    at(&self.pending.leading, column).as_ref(),
+                );
+            }
+        }
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    fn invalidate(&mut self) {
+        self.invalidation.invalidate();
+        self.layout_dirty = true;
+        self.paint_dirty = true;
+    }
+
+    // --- typed access ------------------------------------------------------
+
+    /// The sidebar as the widget the app gave it (the one waiting to be
+    /// shown, if a swap is pending), through its `Widget::as_any_mut`
+    /// (which the widget answers with `Some(self)`).
+    pub fn sidebar_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Sidebar) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => self.sidebar.as_deref_mut(),
+        };
+        downcast(slot)
+    }
+
+    /// The overview as the widget the app gave it.
+    pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Overview) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => self.overview.as_deref_mut(),
+        };
+        downcast(slot)
+    }
+
+    /// The content as the widget the app gave it.
+    pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Content) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => Some(self.content.as_mut()),
+        };
+        downcast(slot)
+    }
+
+    /// The window's filter field ([`Self::with_filter`]): its query and the
+    /// count the filtered column reports.
+    pub fn filter(&self) -> Option<&SearchField> {
+        self.filter.as_ref()
+    }
+
+    pub fn filter_mut(&mut self) -> Option<&mut SearchField> {
+        self.filter.as_mut()
+    }
+
+    // --- state -------------------------------------------------------------
+
+    /// The geometry of the last layout, in window coordinates.
+    pub fn geometry(&self) -> &NavGeometry {
+        &self.geometry
+    }
 
     pub fn has_sidebar(&self) -> bool {
-        self.sidebar.is_some()
+        self.inputs.borrow().has_sidebar
     }
 
-    pub fn mode(&self) -> ShellMode {
-        ShellMode::from_width(self.rect.width(), self.breakpoint)
+    pub fn has_overview(&self) -> bool {
+        self.inputs.borrow().has_overview
     }
 
-    pub fn content_layout(&self) -> ContentLayout {
-        if self.detail.is_none() {
-            return ContentLayout::Single;
-        }
-        match self.mode() {
-            ShellMode::Wide => ContentLayout::SideBySide,
-            ShellMode::Narrow => ContentLayout::Push,
-        }
-    }
-
-    /// Docked (wide) or Overlay (narrow); `None` when there is no sidebar.
-    pub fn sidebar_layout(&self) -> Option<SplitLayout> {
-        self.sidebar.as_ref().map(|_| self.sidebar_split_layout())
-    }
-
-    fn sidebar_split_layout(&self) -> SplitLayout {
-        match self.mode() {
-            ShellMode::Wide => SplitLayout::Docked,
-            ShellMode::Narrow => SplitLayout::Overlay,
-        }
-    }
-
-    pub fn pane(&self) -> NavPane {
-        self.pane
-    }
-
-    pub fn is_detail_shown(&self) -> bool {
-        self.detail.is_some() && self.pane == NavPane::Detail
-    }
-
+    /// Whether the sidebar shows (docked and not hidden, or a drawer that
+    /// is open, or the front push screen).
     pub fn is_sidebar_open(&self) -> bool {
-        self.has_sidebar() && self.sidebar_flap.is_open(self.sidebar_split_layout())
-    }
-
-    fn interactive_panels(&self) -> [bool; 3] {
-        let modal = self.overlay_sidebar_is_modal();
-        let pushed_detail = self.content_layout() == ContentLayout::Push && self.is_detail_shown();
-        [
-            !modal && !pushed_detail,
-            !modal
-                && self.detail.is_some()
-                && (self.content_layout() == ContentLayout::SideBySide || pushed_detail),
-            self.is_sidebar_open(),
-        ]
-    }
-
-    pub fn top_left_affordance(&self) -> Affordance {
-        if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
-            Affordance::Back
-        } else if self.has_sidebar() {
-            // Docked sidebar is permanent at this width, so no collapse chip
-            // when the host opts out; the narrow overlay still needs the
-            // hamburger to summon the drawer.
-            if self.hide_docked_toggle && self.sidebar_split_layout() == SplitLayout::Docked {
-                Affordance::None
-            } else {
-                Affordance::SidebarToggle
-            }
-        } else {
-            Affordance::None
+        if !self.has_sidebar() {
+            return false;
+        }
+        match self.geometry.sidebar {
+            SidebarPlacement::Screen => self.front_pane() == NavPane::Sidebar,
+            placement => self.inputs.borrow().sidebar.is_open(layout_of(placement)),
         }
     }
 
-    // --- runtime control -------------------------------------------------
+    /// Whether the inspector shows.
+    pub fn is_inspector_open(&self) -> bool {
+        let layout = match self.geometry.inspector {
+            InspectorPlacement::None => return false,
+            placement => inspector_layout_of(placement),
+        };
+        self.inputs.borrow().inspector.is_open(layout)
+    }
 
+    /// The front screen of the push stack (meaningful when it has more than
+    /// one screen).
+    pub fn front_pane(&self) -> NavPane {
+        self.inputs.borrow().pane
+    }
+
+    /// Show or hide the sidebar, remembering the choice for this window size
+    /// class. In [`NavMode::Push`] narrow, the sidebar is a screen: showing
+    /// it goes back to it.
     pub fn toggle_sidebar(&mut self) {
         if !self.has_sidebar() {
             return;
         }
-        self.sidebar_flap.toggle(self.sidebar_split_layout());
-        self.dirty = true;
+        if self.geometry.sidebar == SidebarPlacement::Screen {
+            self.show(NavPane::Sidebar);
+            return;
+        }
+        let layout = layout_of(self.geometry.sidebar);
+        self.inputs.borrow_mut().sidebar.toggle(layout);
+        self.after_flap_change();
     }
 
     pub fn open_sidebar(&mut self) {
-        if !self.has_sidebar() {
-            return;
+        if self.has_sidebar() && !self.is_sidebar_open() {
+            self.toggle_sidebar();
         }
-        self.sidebar_flap.open();
-        self.dirty = true;
     }
 
     pub fn close_sidebar(&mut self) {
-        if !self.has_sidebar() {
-            return;
-        }
-        self.sidebar_flap.close();
-        self.dirty = true;
-    }
-
-    /// Push the detail pane in. In the side-by-side (wide) layout both panes
-    /// are already visible, so this only sets the push target for narrow.
-    pub fn show_detail(&mut self) {
-        self.pane = NavPane::Detail;
-        self.active_pane_hint = Some(NavPane::Detail);
-        self.push.open();
-        self.dirty = true;
-    }
-
-    pub fn show_overview(&mut self) {
-        self.pane = NavPane::Overview;
-        self.active_pane_hint = Some(NavPane::Overview);
-        self.push.close();
-        self.dirty = true;
-    }
-
-    /// Optional: the shell already infers the active pane from pointer
-    /// presses and from `show_detail`/`show_overview`; a host with its own
-    /// selection model can state it directly. Only affects a later collapse
-    /// to narrow.
-    pub fn hint_active_pane(&mut self, pane: NavPane) {
-        self.active_pane_hint = Some(pane);
-    }
-
-    /// A collapse never lands on the sidebar: keeps the last-interacted
-    /// pane, falling back to the right-most (detail) when none is known.
-    fn collapse_content_pane(&self) -> NavPane {
-        self.active_pane_hint.unwrap_or(NavPane::Detail)
-    }
-
-    /// Alias for [`Self::show_overview`] — master/detail vocabulary.
-    pub fn show_master(&mut self) {
-        self.show_overview();
-    }
-
-    /// Snap **all** animation straight to its endpoint (deterministic
-    /// `--shots` / headless). Call after setting the desired state.
-    pub fn snap(&mut self) {
-        let open = self.sidebar_flap.is_open(self.sidebar_split_layout());
-        self.sidebar_flap.snap(open);
-        self.push.snap(self.pane == NavPane::Detail);
-        self.recompute_rects();
-    }
-
-    pub fn snap_sidebar(&mut self, open: bool) {
-        self.sidebar_flap.snap(open);
-        self.recompute_rects();
-    }
-
-    pub fn snap_pane(&mut self, pane: NavPane) {
-        self.pane = pane;
-        self.push.snap(pane == NavPane::Detail);
-        self.recompute_rects();
-    }
-
-    // --- resolved rects (for hit-testing) --------------------------------
-
-    pub fn sidebar_rect(&self) -> Rect {
-        self.sidebar_rect
-    }
-    pub fn overview_rect(&self) -> Rect {
-        self.overview_rect
-    }
-    pub fn detail_rect(&self) -> Rect {
-        self.detail_rect
-    }
-    pub fn scrim_rect(&self) -> Rect {
-        self.scrim_rect
-    }
-    pub fn collapse_button_rect(&self) -> Rect {
-        if self.affordance == Affordance::SidebarToggle {
-            self.affordance_rect
-        } else {
-            Rect::ZERO
-        }
-    }
-    pub fn back_button_rect(&self) -> Rect {
-        if self.affordance == Affordance::Back {
-            self.affordance_rect
-        } else {
-            Rect::ZERO
-        }
-    }
-
-    // --- geometry --------------------------------------------------------
-
-    fn recompute_rects(&mut self) {
-        let r = self.rect;
-        let w = r.width();
-        let has_sidebar = self.has_sidebar();
-        let configured_sidebar_width = if self.mode() == ShellMode::Narrow {
-            self.narrow_sidebar_width.unwrap_or(self.sidebar_width)
-        } else {
-            self.sidebar_width
-        };
-        let sw = configured_sidebar_width.min(w);
-
-        // Sidebar-plus-content: the one content pane fills the region at
-        // every width; narrow turns the sidebar into a drawer *over* it
-        // (HIG §1a) rather than promoting it to a full-screen page.
-        if self.detail.is_none() {
-            self.detail_rect = Rect::ZERO;
-            match self.mode() {
-                ShellMode::Wide => {
-                    let inset = if has_sidebar {
-                        sw * self.sidebar_flap.reveal()
-                    } else {
-                        0.0
-                    };
-                    self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
-                    self.overview_rect = Rect::new(r.x0 + inset, r.y0, r.x1, r.y1);
-                    self.scrim_rect = Rect::ZERO;
-                }
-                ShellMode::Narrow => {
-                    self.overview_rect = r;
-                    if has_sidebar {
-                        let slide = self.sidebar_flap.slide();
-                        let x0 = r.x0 - sw * (1.0 - slide);
-                        self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, r.y1);
-                        self.scrim_rect = if self.sidebar_flap.reveal() > 0.001 {
-                            r
-                        } else {
-                            Rect::ZERO
-                        };
-                    } else {
-                        self.sidebar_rect = Rect::ZERO;
-                        self.scrim_rect = Rect::ZERO;
-                    }
-                }
-            }
-            self.recompute_affordance();
-            return;
-        }
-
-        match self.mode() {
-            ShellMode::Wide => {
-                // Content is inset by the eased sidebar width so the collapse
-                // plays smoothly without overlap.
-                let inset = if has_sidebar {
-                    sw * self.sidebar_flap.reveal()
-                } else {
-                    0.0
-                };
-                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
-
-                let content_x0 = r.x0 + inset;
-                let content_w = (r.x1 - content_x0).max(0.0);
-                let ow = self
-                    .overview_width
-                    .min((content_w - self.min_detail_width).max(0.0))
-                    .max(0.0);
-                self.overview_rect = Rect::new(content_x0, r.y0, content_x0 + ow, r.y1);
-                self.detail_rect = Rect::new(content_x0 + ow, r.y0, r.x1, r.y1);
-                self.scrim_rect = Rect::ZERO;
-            }
-            ShellMode::Narrow => {
-                // Overview slides off-screen left as detail slides in right.
-                let p = self.push.slide(); // 0 = overview, 1 = detail
-                self.overview_rect = Rect::new(r.x0 - w * p, r.y0, r.x1 - w * p, r.y1);
-                self.detail_rect =
-                    Rect::new(r.x0 + w * (1.0 - p), r.y0, r.x1 + w * (1.0 - p), r.y1);
-
-                if has_sidebar {
-                    let slide = self.sidebar_flap.slide();
-                    let x0 = r.x0 - sw * (1.0 - slide);
-                    self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, r.y1);
-                    self.scrim_rect = if self.sidebar_flap.reveal() > 0.001 {
-                        r
-                    } else {
-                        Rect::ZERO
-                    };
-                } else {
-                    self.sidebar_rect = Rect::ZERO;
-                    self.scrim_rect = Rect::ZERO;
-                }
-            }
-        }
-
-        self.recompute_affordance();
-    }
-
-    fn recompute_affordance(&mut self) {
-        let r = self.rect;
-        self.affordance = self.top_left_affordance();
-        let (inset, chip) = (self.chip_inset, self.chip_size);
-        self.affordance_rect = match self.affordance {
-            Affordance::None => Rect::ZERO,
-            Affordance::SidebarToggle => Rect::new(
-                r.x0 + inset,
-                r.y0 + inset,
-                r.x0 + inset + chip,
-                r.y0 + inset + chip,
-            ),
-            Affordance::Back => Rect::new(
-                r.x0 + inset,
-                r.y0 + inset,
-                r.x0 + inset + self.back_chip_width,
-                r.y0 + inset + chip,
-            ),
-        };
-    }
-
-    fn sidebar_visible(&self) -> bool {
-        self.has_sidebar() && self.sidebar_flap.reveal() > 0.001
-    }
-
-    /// An overlay drawer is modal: the painted detail pane is retained only as
-    /// backdrop continuity, never as an input or accessibility target.
-    fn overlay_sidebar_is_modal(&self) -> bool {
-        self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay
-    }
-
-    /// [`Self::sidebar_rect`] less the affordance chip's band while the
-    /// sidebar is an **overlay drawer**: it slides in under the chip, so its
-    /// first row must not start beneath it. The panel fill still uses the
-    /// full rect, so the band reads as sidebar-coloured, not a notch.
-    ///
-    /// **Docked**, the chip sits in the sidebar's own header row, which
-    /// clears it horizontally (the `nav_shell_shots` fixture indents its
-    /// title; mail's sidebar reserves `CHIP_CLEARANCE`), and the sidebar
-    /// keeps its full height — so its header lines up with the overview
-    /// and detail headers beside it instead of starting one chip band
-    /// (60 px at 1×) lower (F1 round one, V-01).
-    pub fn sidebar_content_rect(&self) -> Rect {
-        let r = self.sidebar_rect;
-        if self.affordance != Affordance::SidebarToggle
-            || r.height() <= 0.0
-            || self.sidebar_split_layout() == SplitLayout::Docked
+        if self.has_sidebar()
+            && self.is_sidebar_open()
+            && self.geometry.sidebar != SidebarPlacement::Screen
         {
-            return r;
+            self.toggle_sidebar();
         }
-        let band = self.chip_band();
-        Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
     }
 
-    /// `r` with the affordance chip's band reserved when the chip floats
-    /// over that pane. Resolved here, in the same pass that positions the
-    /// chip, rather than by the host: a host re-deriving it from last
-    /// frame's rect would see the content shift by a frame once the shell is
-    /// measured, and a moving target is one the pointer can't hit.
-    fn content_child_rect(&self, r: Rect) -> Rect {
-        if self.affordance == Affordance::None || r.width() <= 0.0 || r.height() <= 0.0 {
-            return r;
-        }
-        let chip = self.affordance_rect;
-        if chip.x1 <= r.x0 || chip.x0 >= r.x1 {
-            return r;
-        }
-        let band = self.chip_band();
-        Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
+    /// Show or hide the inspector, remembering the choice for this window
+    /// size class (also while the app takes the inspector away and gives it
+    /// back).
+    pub fn toggle_inspector(&mut self) {
+        let layout = match self.geometry.inspector {
+            InspectorPlacement::None => return,
+            placement => inspector_layout_of(placement),
+        };
+        self.inputs.borrow_mut().inspector.toggle(layout);
+        self.after_flap_change();
     }
 
-    pub fn overview_content_rect(&self) -> Rect {
-        self.content_child_rect(self.overview_rect)
+    pub fn open_inspector(&mut self) {
+        if !self.is_inspector_open() {
+            self.toggle_inspector();
+        }
     }
 
-    pub fn detail_content_rect(&self) -> Rect {
-        self.content_child_rect(self.detail_rect)
+    pub fn close_inspector(&mut self) {
+        if self.is_inspector_open() {
+            self.toggle_inspector();
+        }
     }
 
-    /// The drawer slides *over* live content, so without this fill the
-    /// content reads straight through it. Drawn under the child so a sidebar
-    /// that paints its own background simply covers this.
-    fn fill_panel(scene: &mut Scene, transform: Affine, theme: &Theme, r: Rect) {
-        if r.width() <= 0.0 || r.height() <= 0.0 {
-            return;
+    fn after_flap_change(&mut self) {
+        if self.layout_theme.reduce_motion {
+            self.fade = 0.0;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &r);
+        self.animating = true;
+        self.structure_dirty = true;
+        self.update_toggle_names();
+        self.publish_open_states();
+        self.invalidate();
     }
 
-    fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-        let o_node = self.overview.build_layout(&mut taffy, theme, &mut map);
-        let d_node = self
-            .detail
-            .as_mut()
-            .map(|d| d.build_layout(&mut taffy, theme, &mut map));
-        let s_node = self
-            .sidebar
-            .as_mut()
-            .map(|s| s.build_layout(&mut taffy, theme, &mut map));
-
-        let sidebar_child_rect = self.sidebar_content_rect();
-        let overview_child_rect = self.content_child_rect(self.overview_rect);
-        let detail_child_rect = self.content_child_rect(self.detail_rect);
-        let mut jobs: Vec<(NodeId, Rect)> = vec![(o_node, overview_child_rect)];
-        if let Some(dn) = d_node {
-            jobs.push((dn, detail_child_rect));
+    /// Write the sidebar's and inspector's openness to bound states.
+    fn publish_open_states(&mut self) {
+        let sidebar = self.is_sidebar_open();
+        let inspector = self.is_inspector_open();
+        if let Some(state) = self.sidebar_state.as_mut()
+            && state.wanted.is_none()
+        {
+            state.binding.publish(&sidebar);
         }
-        if let Some(sn) = s_node {
-            jobs.push((sn, sidebar_child_rect));
+        if let Some(state) = self.inspector_state.as_mut()
+            && state.wanted.is_none()
+        {
+            state.binding.publish(&inspector);
         }
-        for (node, rect) in jobs {
-            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+    }
+
+    /// Bring the sidebar and inspector in line with bound states that
+    /// changed, once the layout knows where they stand.
+    fn apply_open_states(&mut self) {
+        for sidebar in [true, false] {
+            let slot = if sidebar {
+                &mut self.sidebar_state
+            } else {
+                &mut self.inspector_state
+            };
+            let Some(state) = slot.as_mut() else {
+                continue;
+            };
+            if let Some(value) = state.binding.poll() {
+                state.wanted = Some(value);
+            }
+            let Some(wanted) = state.wanted else {
+                continue;
+            };
+            let placed = if sidebar {
+                self.geometry.sidebar != SidebarPlacement::None
+            } else {
+                self.geometry.inspector != InspectorPlacement::None
+            };
+            if !placed {
                 continue;
             }
-            let _ = taffy.compute_layout_with_measure(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(to_f32(rect.width())),
-                    height: taffy::AvailableSpace::Definite(to_f32(rect.height())),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, text_renderer) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            );
-        }
-
-        self.apply_child_layout(&taffy, o_node, d_node, s_node);
-        self.inner_taffy = Some(taffy);
-        self.inner_extents = Some(self.child_extents());
-        self.overview_node = Some(o_node);
-        self.detail_node = d_node;
-        self.sidebar_node = s_node;
-    }
-
-    fn child_extents(&self) -> [(f64, f64); 3] {
-        [
-            self.content_child_rect(self.overview_rect),
-            self.content_child_rect(self.detail_rect),
-            self.sidebar_content_rect(),
-        ]
-        .map(|rect| (rect.width(), rect.height()))
-    }
-
-    /// Whether the panes need a full solve rather than a re-apply of the
-    /// cached tree: no tree yet, a pane's extent moved, or a pane that is
-    /// actually laid out asks to be re-measured. A pane with no extent
-    /// cannot be solved, so a child parked in a collapsed pane never forces
-    /// a solve — and a font-system load — every frame.
-    fn panes_need_resolve(&self) -> bool {
-        if self.inner_taffy.is_none() || self.overview_node.is_none() {
-            return true;
-        }
-        let extents = self.child_extents();
-        if self.inner_extents != Some(extents) {
-            return true;
-        }
-        let laid_out = |(w, h): (f64, f64)| w > 0.0 && h > 0.0;
-        (laid_out(extents[0]) && self.overview.layout_needs_measure())
-            || (laid_out(extents[1])
-                && self
-                    .detail
-                    .as_ref()
-                    .is_some_and(|pane| pane.layout_needs_measure()))
-            || (laid_out(extents[2])
-                && self
-                    .sidebar
-                    .as_ref()
-                    .is_some_and(|pane| pane.layout_needs_measure()))
-    }
-
-    /// Solve the panes with the theme the outer tree was built with and a
-    /// renderer at its text scale — the path for hosts that solve with plain
-    /// taffy and call `apply_layout` directly. The shared host solver
-    /// reaches `adjust_layout_with_measure` first and never lands here.
-    fn resolve_panes_fallback(&mut self) {
-        let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
-            self.place_children(&theme, tr)
-        });
-    }
-
-    fn apply_child_layout(
-        &mut self,
-        taffy: &TaffyTree<()>,
-        o_node: NodeId,
-        d_node: Option<NodeId>,
-        s_node: Option<NodeId>,
-    ) {
-        let sidebar_child_rect = self.sidebar_content_rect();
-        let overview_child_rect = self.content_child_rect(self.overview_rect);
-        let detail_child_rect = self.content_child_rect(self.detail_rect);
-        self.overview.apply_layout(
-            taffy,
-            o_node,
-            Point::new(overview_child_rect.x0, overview_child_rect.y0),
-        );
-        if let (Some(d), Some(dn)) = (self.detail.as_mut(), d_node) {
-            d.apply_layout(
-                taffy,
-                dn,
-                Point::new(detail_child_rect.x0, detail_child_rect.y0),
-            );
-        }
-        if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
-            sb.apply_layout(
-                taffy,
-                sn,
-                Point::new(sidebar_child_rect.x0, sidebar_child_rect.y0),
-            );
-        }
-    }
-
-    /// Driven from the draw path, never `update` (which `tilo_ui::App` never
-    /// calls), so the slides play and settle to no frames at rest
-    /// (HIG §5).
-    fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
-        if theme.reduce_motion {
-            let sidebar_before = self.sidebar_flap.reveal();
-            let push_before = self.push.reveal();
-            self.sidebar_flap.settle(self.sidebar_split_layout());
-            self.push.settle(SplitLayout::Docked);
-            self.animating = false;
-            self.last_tick = Some(crate::time::now());
-            if self.sidebar_flap.reveal().to_bits() != sidebar_before.to_bits()
-                || self.push.reveal().to_bits() != push_before.to_bits()
-            {
-                self.recompute_rects();
-                self.place_children(theme, text_renderer);
+            if let Some(state) = if sidebar {
+                self.sidebar_state.as_mut()
+            } else {
+                self.inspector_state.as_mut()
+            } {
+                state.wanted = None;
             }
-            return;
+            let open = if sidebar {
+                self.is_sidebar_open()
+            } else {
+                self.is_inspector_open()
+            };
+            if open != wanted {
+                if sidebar {
+                    self.toggle_sidebar();
+                } else {
+                    self.toggle_inspector();
+                }
+            }
         }
+    }
+
+    /// Bring `pane` to the front of a narrow window's push stack. In a wide
+    /// window every pane is already showing; this records which one a later
+    /// collapse keeps in front.
+    pub fn show(&mut self, pane: NavPane) {
+        let pane = match pane {
+            NavPane::Sidebar if !self.has_sidebar() => NavPane::Content,
+            NavPane::Overview if !self.has_overview() => NavPane::Content,
+            pane => pane,
+        };
+        if pane != NavPane::Sidebar {
+            self.active_hint = Some(pane);
+        }
+        self.pane_chosen = true;
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            if inputs.pane == pane {
+                return;
+            }
+            let stack = &self.geometry.stack;
+            let from = inputs
+                .push_pos
+                .unwrap_or_else(|| f64_of_usize(stack_index(stack, inputs.pane)));
+            inputs.pane = pane;
+            inputs.push_from = Some(from);
+            inputs.push_progress = 0.0;
+            if self.layout_theme.reduce_motion || stack.is_empty() {
+                inputs.push_pos = None;
+                inputs.push_progress = 1.0;
+            }
+        }
+        if let Some(binding) = self.pane_binding.as_mut() {
+            binding.publish(&pane);
+        }
+        self.animating = true;
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    /// Go back one screen: the app's page stack first ([`Self::with_back`]),
+    /// then a narrow window's push stack. Returns whether it did.
+    pub fn back(&mut self) -> bool {
+        if self.inputs.borrow().content_back
+            && self.geometry.back_column == Some(Column::Content)
+            && let Some(back) = self.content_back.as_mut()
+        {
+            (back.go_back)();
+            self.refresh_content_back();
+            return true;
+        }
+        self.pop_push_stack()
+    }
+
+    fn pop_push_stack(&mut self) -> bool {
+        let stack = self.geometry.stack.clone();
+        let front = stack_index(&stack, self.front_pane());
+        let Some(previous) = front.checked_sub(1).and_then(|i| stack.get(i).copied()) else {
+            return false;
+        };
+        self.show(previous);
+        true
+    }
+
+    /// Ask the app's page stack whether it can go back.
+    fn refresh_content_back(&mut self) {
+        let Some(back) = self.content_back.as_ref() else {
+            return;
+        };
+        let can = (back.can_go_back)();
+        self.set_can_go_back(can);
+    }
+
+    /// Snap every animation to its end (deterministic shots and tests).
+    pub fn snap(&mut self) {
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            let layout = layout_of(self.geometry.sidebar);
+            let open = inputs.sidebar.is_open(layout);
+            inputs.sidebar.snap(open);
+            let layout = inspector_layout_of(self.geometry.inspector);
+            let open = inputs.inspector.is_open(layout);
+            inputs.inspector.snap(open);
+            inputs.push_pos = None;
+            inputs.push_from = None;
+            inputs.push_progress = 1.0;
+        }
+        self.fade = 1.0;
+        self.animating = false;
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    fn update_toggle_names(&mut self) {
+        let shortcut = HostShortcut::Sidebar
+            .shortcut(self.conventions)
+            .label(self.conventions);
+        let sidebar_open = self.is_sidebar_open();
+        let name = if sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        };
+        self.toggle.set_accessible_name(name);
+        self.toggle
+            .set_tooltip(Some(format!("{name} ({shortcut})")));
+        let name = if self.is_inspector_open() {
+            "Hide inspector"
+        } else {
+            "Show inspector"
+        };
+        self.inspector_toggle.set_accessible_name(name);
+        self.inspector_toggle.set_tooltip(Some(name.to_owned()));
+    }
+
+    // --- parts -------------------------------------------------------------
+
+    fn part(&self, part: Part) -> Option<&dyn Widget> {
+        match part {
+            Part::Body(Column::Sidebar) => self.sidebar.as_deref(),
+            Part::Body(Column::Overview) => self.overview.as_deref(),
+            Part::Body(Column::Content) => Some(self.content.as_ref()),
+            Part::Body(Column::Inspector) => self.inspector.as_deref(),
+            Part::Rail => self.rail.as_deref(),
+            Part::Title(column) => self
+                .headers
+                .get(column.index())
+                .map(|header| &header.title as &dyn Widget),
+            Part::Leading(column) => self
+                .headers
+                .get(column.index())
+                .and_then(|header| header.leading.as_deref()),
+            Part::Action(column, i) => self
+                .headers
+                .get(column.index())
+                .and_then(|header| header.actions.get(i))
+                .map(AsRef::as_ref),
+            Part::More(column) => self
+                .headers
+                .get(column.index())
+                .map(|header| &header.more as &dyn Widget),
+            Part::Controls => self.controls.as_deref(),
+            Part::Filter => self.filter.as_ref().map(|f| f as &dyn Widget),
+            Part::Toggle => Some(&self.toggle),
+            Part::Back => Some(&self.back),
+            Part::InspectorToggle => Some(&self.inspector_toggle),
+            Part::History(false) => Some(&self.history_open),
+            Part::History(true) => Some(&self.history_close),
+        }
+    }
+
+    fn part_mut(&mut self, part: Part) -> Option<&mut (dyn Widget + 'static)> {
+        match part {
+            Part::Body(Column::Sidebar) => self.sidebar.as_deref_mut(),
+            Part::Body(Column::Overview) => self.overview.as_deref_mut(),
+            Part::Body(Column::Content) => Some(self.content.as_mut()),
+            Part::Body(Column::Inspector) => self.inspector.as_deref_mut(),
+            Part::Rail => self.rail.as_deref_mut(),
+            Part::Title(column) => self
+                .headers
+                .get_mut(column.index())
+                .map(|header| &mut header.title as &mut dyn Widget),
+            Part::Leading(column) => self
+                .headers
+                .get_mut(column.index())
+                .and_then(|header| header.leading.as_deref_mut()),
+            Part::Action(column, i) => self
+                .headers
+                .get_mut(column.index())
+                .and_then(|header| header.actions.get_mut(i))
+                .map(AsMut::as_mut),
+            Part::More(column) => self
+                .headers
+                .get_mut(column.index())
+                .map(|header| &mut header.more as &mut dyn Widget),
+            Part::Controls => self.controls.as_deref_mut(),
+            Part::Filter => self.filter.as_mut().map(|f| f as &mut dyn Widget),
+            Part::Toggle => Some(&mut self.toggle),
+            Part::Back => Some(&mut self.back),
+            Part::InspectorToggle => Some(&mut self.inspector_toggle),
+            Part::History(false) => Some(&mut self.history_open),
+            Part::History(true) => Some(&mut self.history_close),
+        }
+    }
+
+    /// Every element the shell owns, shown or not: sync, update and wake
+    /// reach parts the shell is not showing.
+    fn all_parts(&self) -> Vec<Part> {
+        let mut parts = vec![
+            Part::Body(Column::Overview),
+            Part::Body(Column::Content),
+            Part::Body(Column::Inspector),
+            Part::Body(Column::Sidebar),
+            Part::Rail,
+        ];
+        for column in [
+            Column::Overview,
+            Column::Content,
+            Column::Inspector,
+            Column::Sidebar,
+        ] {
+            let header = at(&self.headers, column);
+            if header.leading.is_some() {
+                parts.push(Part::Leading(column));
+            }
+            for i in 0..header.actions.len() {
+                parts.push(Part::Action(column, i));
+            }
+            if !header.actions.is_empty() {
+                parts.push(Part::More(column));
+            }
+        }
+        parts.extend([
+            Part::Controls,
+            Part::Filter,
+            Part::Toggle,
+            Part::Back,
+            Part::InspectorToggle,
+            Part::History(false),
+            Part::History(true),
+        ]);
+        parts
+    }
+
+    fn for_each_owned(&self, mut visit: impl FnMut(&dyn Widget)) {
+        for part in self.all_parts() {
+            if let Some(widget) = self.part(part) {
+                visit(widget);
+            }
+        }
+    }
+
+    fn for_each_owned_mut(&mut self, mut visit: impl FnMut(&mut (dyn Widget + 'static))) {
+        for part in self.all_parts() {
+            if let Some(widget) = self.part_mut(part) {
+                visit(widget);
+            }
+        }
+    }
+
+    /// How many of `column`'s actions stand in the row.
+    fn shown_actions(&self, column: Column) -> usize {
+        let count = at(&self.headers, column).actions.len();
+        at(&self.inputs.borrow().fit.borrow(), column)
+            .shown
+            .map_or(count, |shown| shown.min(count))
+    }
+
+    /// A part the layout put away: an action in the More menu, or the More
+    /// button while everything fits.
+    fn part_hidden(&self, part: Part) -> bool {
+        match part {
+            Part::Action(column, i) => i >= self.shown_actions(column),
+            Part::More(column) => {
+                self.shown_actions(column) >= at(&self.headers, column).actions.len()
+            }
+            _ => false,
+        }
+    }
+
+    /// A part under an open drawer's scrim: laid out and painted, but it
+    /// takes no input and is not exposed. The header row stays live.
+    fn part_inert(&self, part: Part) -> bool {
+        let g = &self.geometry;
+        // Both screens remain laid out during a push animation, but only
+        // the chosen screen is operable. AT and keyboard routing must switch
+        // immediately, without waiting for the outgoing pixels to slide away.
+        let column = match part {
+            Part::Body(column)
+            | Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => Some(column),
+            Part::Rail | Part::Controls => Some(Column::Overview),
+            Part::Filter => g.filter_column(&self.inputs.borrow()),
+            _ => None,
+        };
+        if !g.stack.is_empty()
+            && let Some(column) = column
+        {
+            // `side_by_side` describes only overview/content. A sidebar
+            // can still push that pair as one screen, including when no
+            // overview exists. Use the actual stack for admission.
+            let pane = match column {
+                Column::Sidebar => Some(NavPane::Sidebar),
+                Column::Overview if g.side_by_side => Some(NavPane::Content),
+                Column::Overview => Some(NavPane::Overview),
+                Column::Content => Some(NavPane::Content),
+                Column::Inspector => None,
+            };
+            let front = g
+                .stack
+                .get(stack_index(&g.stack, self.inputs.borrow().pane))
+                .copied();
+            if pane.is_some_and(|pane| g.stack.contains(&pane) && front != Some(pane)) {
+                return true;
+            }
+        }
+        if !g.modal() {
+            return false;
+        }
+        match part {
+            Part::Body(column) => !g.in_drawer(column),
+            Part::Filter => self
+                .geometry
+                .filter_column(&self.inputs.borrow())
+                .is_none_or(|column| !g.in_drawer(column)),
+            Part::Controls | Part::Rail => true,
+            _ => false,
+        }
+    }
+
+    /// What the host meets for `part`: the part, or a stand-in while it is
+    /// under a drawer's scrim, so a walk that pairs children with the
+    /// tree's nodes never reaches an inert column.
+    fn exposed(&self, part: Part) -> Option<&dyn Widget> {
+        if self.part_inert(part) {
+            return Some(&INERT_PART);
+        }
+        self.part(part)
+    }
+
+    /// The parts the host walks: those in the host tree once it is built,
+    /// in its order (the host pairs them with the tree's nodes), and every
+    /// owned part before the first build, when there is no tree for their
+    /// order to disagree with. A part under a drawer's scrim answers as an
+    /// [`InertPart`]; an action in the More menu stays, so its door is still
+    /// published.
+    fn exposed_parts(&self) -> Vec<Part> {
+        if self.built {
+            self.host_parts.clone()
+        } else {
+            let history = self.inputs.borrow().history.map(HistoryControl::is_open);
+            self.all_parts()
+                .into_iter()
+                .filter(|part| self.part(*part).is_some())
+                .filter(|part| match part {
+                    Part::Toggle => self.has_sidebar(),
+                    Part::InspectorToggle => self.inspector.is_some(),
+                    Part::Back | Part::More(_) => false,
+                    Part::History(open) => history == Some(*open),
+                    _ => true,
+                })
+                .collect()
+        }
+    }
+
+    /// Which column's theme a part draws with.
+    fn part_column(&self, part: Part) -> Option<Column> {
+        match part {
+            Part::Body(column)
+            | Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => Some(column),
+            Part::Rail | Part::Controls => Some(Column::Overview),
+            Part::Filter => self.geometry.filter_column(&self.inputs.borrow()),
+            Part::Toggle => self.geometry.toggle_column,
+            Part::Back => self.geometry.back_column,
+            Part::InspectorToggle => self.geometry.inspector_toggle_column,
+            Part::History(_) => self.geometry.history_column,
+        }
+    }
+
+    fn column_theme(&self, theme: &Theme, column: Option<Column>) -> Theme {
+        match column {
+            Some(Column::Sidebar) => match self.geometry.sidebar {
+                SidebarPlacement::Drawer => theme.on_ground(crate::chrome::panel_ground(theme)),
+                _ => theme.in_region(crate::surface::Region::Sidebar),
+            },
+            Some(Column::Inspector) => match self.geometry.inspector {
+                InspectorPlacement::Drawer => theme.on_ground(crate::chrome::panel_ground(theme)),
+                _ => theme.in_region(crate::surface::Region::Inspector),
+            },
+            Some(Column::Overview | Column::Content) | None => theme.clone(),
+        }
+    }
+
+    fn take_requests(&mut self) -> bool {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
+            self.toggle_sidebar();
+        }
+        if self.requests.back.replace(false) {
+            acted |= self.back();
+        }
+        if self.requests.inspector.replace(false) {
+            self.toggle_inspector();
+            acted = true;
+        }
+        acted
+    }
+
+    /// Open a More menu whose button was pressed, with the actions that did
+    /// not fit.
+    fn open_more_menus(&mut self) {
+        let viewport = self.rect;
+        for column in Column::ALL {
+            let shown = self.shown_actions(column);
+            let header = at_mut(&mut self.headers, column);
+            if !header.more.take_open_request() {
+                continue;
+            }
+            let items = header
+                .actions
+                .iter()
+                .skip(shown)
+                .map(|action| {
+                    let node = action.accessibility();
+                    let name = node
+                        .as_ref()
+                        .and_then(|node| node.name.clone())
+                        .unwrap_or_default();
+                    let mut item = crate::widget::context_menu::MenuItem::selection(name)
+                        .with_enabled(node.as_ref().is_none_or(|node| !node.state.disabled));
+                    if let Some(checked) = node.as_ref().and_then(|node| node.state.checked) {
+                        item = item.with_checked(checked);
+                    }
+                    item
+                })
+                .collect();
+            header.more.open(items, viewport);
+            self.paint_dirty = true;
+        }
+    }
+
+    /// Activate the action the person chose in a More menu: from the event
+    /// that chose it, so its invocation leaves with that event.
+    fn take_more_choices(
+        &mut self,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let mut acted = false;
+        for column in Column::ALL {
+            let shown = self.shown_actions(column);
+            let header = at_mut(&mut self.headers, column);
+            if let Some(row) = header.more.take_choice()
+                && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
+            {
+                action.perform_action(&crate::a11y::Action::Activate, &[], state, path);
+                acted = true;
+            }
+        }
+        acted
+    }
+
+    /// Poll the bound content title and the app's page stack.
+    fn poll_bindings(&mut self) {
+        let mut titles = Vec::new();
+        for column in Column::ALL {
+            if let Some(binding) = at_mut(&mut self.headers, column).binding.as_mut()
+                && let Some(title) = binding.poll()
+            {
+                titles.push((column, title));
+            }
+        }
+        for (column, title) in titles {
+            self.set_title(column, title);
+        }
+        self.refresh_content_back();
+    }
+
+    /// Carry the filter field's query to the column it filters.
+    fn sync_filter(&mut self) {
+        let Some(column) = self.geometry.filter_column(&self.inputs.borrow()) else {
+            return;
+        };
+        let target = match column {
+            Column::Sidebar => self.sidebar.as_deref_mut(),
+            Column::Overview => self.overview.as_deref_mut(),
+            Column::Content => Some(self.content.as_mut()),
+            Column::Inspector => self.inspector.as_deref_mut(),
+        };
+        if let (Some(field), Some(target)) = (self.filter.as_mut(), target) {
+            crate::widget::sync_filter(field, target);
+        }
+    }
+
+    /// The person chose a destination in the sidebar or a row of the
+    /// overview: a narrow window moves on to what they chose.
+    fn follow_navigation(&mut self) -> bool {
+        let from_sidebar = self
+            .sidebar
+            .as_deref_mut()
+            .is_some_and(|sidebar| crate::widget::nav_list::take_navigation(sidebar));
+        let from_rail = self
+            .rail
+            .as_deref_mut()
+            .is_some_and(|rail| crate::widget::nav_list::take_navigation(rail));
+        let from_overview = self
+            .overview
+            .as_deref_mut()
+            .is_some_and(|overview| crate::widget::nav_list::take_navigation(overview));
+        if from_sidebar {
+            if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
+                self.toggle_sidebar();
+            }
+            if self.geometry.sidebar == SidebarPlacement::Screen {
+                let next = if self.has_overview() && !self.geometry.side_by_side {
+                    NavPane::Overview
+                } else {
+                    NavPane::Content
+                };
+                self.show(next);
+            }
+        }
+        if (from_overview || from_rail)
+            && !self.geometry.stack.is_empty()
+            && !self.geometry.side_by_side
+        {
+            self.show(NavPane::Content);
+        }
+        from_sidebar || from_rail || from_overview
+    }
+
+    /// Advance the slides by the time since the last frame.
+    fn tick(&mut self, theme: &Theme) {
         let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
         });
         self.last_tick = Some(now);
+        let base = theme.tokens.motion.durations.base();
+        let reduce = theme.reduce_motion;
+        let sidebar_layout = layout_of(self.geometry.sidebar);
+        let inspector_layout = inspector_layout_of(self.geometry.inspector);
+        let stack = self.geometry.stack.clone();
+        let mut moving = false;
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            if reduce {
+                inputs.sidebar.settle(sidebar_layout);
+                inputs.inspector.settle(inspector_layout);
+            } else {
+                moving |= inputs.sidebar.tick(sidebar_layout, dt, base);
+                moving |= inputs.inspector.tick(inspector_layout, dt, base);
+            }
+            if stack.is_empty() || (inputs.push_progress >= 1.0 && inputs.push_pos.is_none()) {
+                inputs.push_pos = None;
+                inputs.push_progress = 1.0;
+            } else {
+                let target = f64_of_usize(stack_index(&stack, inputs.pane));
+                if reduce || base.as_secs_f64() <= 0.0 {
+                    inputs.push_progress = 1.0;
+                } else if inputs.push_progress < 1.0 {
+                    inputs.push_progress =
+                        (inputs.push_progress + dt / base.as_secs_f64()).min(1.0);
+                }
+                let eased = crate::ease_out(inputs.push_progress);
+                let from = inputs.push_from.unwrap_or(target);
+                if inputs.push_progress >= 1.0 {
+                    // Settled: the front screen's index, exactly.
+                    inputs.push_pos = None;
+                    inputs.push_from = None;
+                } else {
+                    inputs.push_pos = Some(from + (target - from) * eased);
+                    moving = true;
+                }
+            }
+        }
+        if reduce && self.fade < 1.0 {
+            let fast = theme.tokens.motion.durations.fast().as_secs_f64();
+            self.fade = if fast <= 0.0 {
+                1.0
+            } else {
+                (self.fade + dt / fast).min(1.0)
+            };
+            self.paint_dirty = true;
+            self.animating = self.fade < 1.0;
+            return;
+        }
+        if moving {
+            self.invalidate();
+        } else if self.animating {
+            // The last frame of a slide may hide a part.
+            self.structure_dirty = true;
+            self.invalidate();
+        }
+        self.animating = moving;
+    }
 
-        let a = self.sidebar_flap.tick(self.sidebar_split_layout(), dt);
-        let b = self.push.tick(SplitLayout::Docked, dt);
-        self.animating = a || b;
-        if self.animating {
-            self.recompute_rects();
-            self.place_children(theme, text_renderer);
+    fn refresh_geometry(&mut self) {
+        let local = plan(&self.inputs.borrow(), self.rect.width(), self.rect.height());
+        self.geometry = local.translated(Vec2::new(self.rect.x0, self.rect.y0));
+    }
+
+    /// Note a change of size class: the sidebar's choice for the new class
+    /// applies, and a collapse keeps the pane the person worked in. An
+    /// inspector the app took away keeps the choice made for it.
+    fn reconcile_size_class(&mut self) {
+        let layout = layout_of(self.geometry.sidebar);
+        let stack = self.geometry.stack.clone();
+        let previous = self.last_stack.replace(stack.clone());
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            inputs.sidebar.reconcile(layout);
+            if self.geometry.inspector != InspectorPlacement::None {
+                inputs
+                    .inspector
+                    .reconcile(inspector_layout_of(self.geometry.inspector));
+            }
+        }
+        if previous.as_ref() != Some(&stack) {
+            // The first layout opens on the stack's first screen unless the
+            // app chose one; a later collapse keeps the pane the person
+            // worked in.
+            let keep = match (previous, self.pane_chosen) {
+                (None, false) => stack.first().copied().unwrap_or(NavPane::Content),
+                (None, true) => self.front_pane(),
+                (Some(_), _) => self.active_hint.unwrap_or(NavPane::Content),
+            };
+            let mut inputs = self.inputs.borrow_mut();
+            inputs.pane = if stack.is_empty() || stack.contains(&keep) {
+                keep
+            } else {
+                NavPane::Content
+            };
+            inputs.push_pos = None;
+            inputs.push_from = None;
+            inputs.push_progress = 1.0;
+            drop(inputs);
+            self.structure_dirty = true;
+            self.update_toggle_names();
+            self.invalidate();
         }
     }
 
-    // --- chrome painting -------------------------------------------------
-
-    /// The glyph is always a hamburger, a chevron, or a back-arrow —
-    /// structurally never an `X`.
-    fn draw_affordance(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.affordance == Affordance::None {
-            return;
-        }
-        let rect = self.affordance_rect;
-
-        // Neutral control face (HIG §9.5): its fill with a crisp derived edge.
-        crate::surface::card(
-            scene,
-            transform,
-            rect,
-            theme.radius_standard,
-            theme.bg_primary,
-        );
-
-        // The glyph is icon-sized: the 1× chip square grown with `ui_scale`
-        // (never the text), centred on the chip's leading edge however tall
-        // the text has made the chip; the glyph itself fills half that side.
-        let glyph_side = CHIP_SIZE * f64::from(theme.ui_scale);
-        let glyph_box = Rect::from_center_size(
-            (rect.x0 + glyph_side / 2.0, rect.center().y),
-            (glyph_side, glyph_side),
-        );
-        let glyph_inset = glyph_side / 4.0;
-        match self.affordance {
-            Affordance::None => {}
-            Affordance::Back => {
-                draw_icon(
-                    scene,
-                    transform,
-                    glyph_box.inflate(-glyph_inset, -glyph_inset),
-                    Icon::ChevronLeft,
-                    theme.text_primary,
-                    1.75,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    "Back",
-                    14.0,
-                    theme.text_primary,
-                    transform.pre_translate(Vec2::new(
-                        glyph_box.x1 - 2.0,
-                        rect.y0 + self.chip_size / 2.0 - 9.0,
-                    )),
-                    None,
-                );
-            }
-            Affordance::SidebarToggle => {
-                if self.is_sidebar_open() {
-                    draw_icon(
-                        scene,
-                        transform,
-                        glyph_box.inflate(-glyph_inset, -glyph_inset),
-                        Icon::ChevronLeft,
-                        theme.text_primary,
-                        1.75,
-                    );
-                } else {
-                    Self::draw_hamburger(scene, transform, glyph_box, theme.text_primary);
+    /// Show each column's actions with their labels or their icons alone,
+    /// as the layout decided.
+    fn apply_fit(&mut self) {
+        let fit = Rc::clone(&self.inputs.borrow().fit);
+        let mut fit = fit.borrow_mut();
+        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+            let shown = slot.shown.unwrap_or(header.actions.len());
+            header.more.set_shown(shown < header.actions.len());
+            for (i, action) in header.actions.iter_mut().enumerate() {
+                if !slot.capable.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+                let want = slot.compact;
+                if slot.compact_now.get(i).copied() == Some(want) {
+                    continue;
+                }
+                if let Some(button) = action
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Button>())
+                {
+                    button.set_compact_toolbar_presentation(want);
+                    if let Some(now) = slot.compact_now.get_mut(i) {
+                        *now = want;
+                    }
                 }
             }
         }
     }
 
-    /// Three bars filling half the glyph box's width (9 px half-width and a
-    /// 5.5 px gap in the 1× 36 px box), so they follow `ui_scale` with it.
-    fn draw_hamburger(scene: &mut Scene, transform: Affine, box_rect: Rect, color: Color) {
-        let cx = box_rect.center().x;
-        let cy = box_rect.center().y;
-        let half_w = box_rect.width() / 4.0;
-        let gap = box_rect.width() * (5.5 / CHIP_SIZE);
-        let stroke = Stroke::new(2.0)
-            .with_caps(Cap::Round)
-            .with_join(Join::Round);
-        for dy in [-gap, 0.0, gap] {
-            let line = Line::new(
-                Point::new(cx - half_w, cy + dy),
-                Point::new(cx + half_w, cy + dy),
+    // --- painting ----------------------------------------------------------
+
+    fn paint(&mut self, f: &mut Frame<'_>) {
+        let g = self.geometry.clone();
+        // Under reduced motion a sidebar or drawer that just appeared fades
+        // in instead of sliding.
+        let fade = unit_f32(self.fade);
+
+        // Docked regions under their columns.
+        if g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0 {
+            crate::surface::region(
+                f.scene,
+                f.transform,
+                g.inspector_column,
+                crate::surface::Region::Inspector,
+                f.theme,
             );
-            scene.stroke(&stroke, transform, color, None, &line);
+        }
+        let sidebar_region = matches!(
+            g.sidebar,
+            SidebarPlacement::Docked | SidebarPlacement::Screen
+        ) && g.sidebar_column.width() > 0.0;
+
+        if self.built_has(Part::Rail) && g.rail.width() > 0.0 {
+            let local = self.column_theme(f.theme, Some(Column::Overview));
+            f.draw(self.part_mut(Part::Rail), &local);
+        }
+        // Columns standing in the window, back to front.
+        for column in [
+            Column::Overview,
+            Column::Content,
+            Column::Inspector,
+            Column::Sidebar,
+        ] {
+            if g.floating(column) {
+                continue;
+            }
+            let faded = column == Column::Sidebar && sidebar_region && fade < 1.0;
+            if faded {
+                f.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    fade,
+                    f.transform,
+                    &g.sidebar_column,
+                );
+            }
+            if column == Column::Sidebar && sidebar_region {
+                crate::surface::region(
+                    f.scene,
+                    f.transform,
+                    g.sidebar_column,
+                    crate::surface::Region::Sidebar,
+                    f.theme,
+                );
+            }
+            self.paint_column(f, column);
+            if faded {
+                f.scene.pop_layer();
+            }
+        }
+        self.paint_rules(f.scene, f.transform, f.theme, &g);
+
+        // Drawers over the columns, behind their scrim, under the header
+        // row; the row's buttons stay above everything.
+        let open_drawer = g.floating(Column::Sidebar) && g.sidebar_column.width() > 0.0
+            || g.floating(Column::Inspector) && g.inspector_column.width() > 0.0;
+        if open_drawer {
+            let faded = fade < 1.0;
+            if faded {
+                f.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    fade,
+                    f.transform,
+                    &self.rect,
+                );
+            }
+            if g.scrim.width() > 0.0 {
+                crate::overlay::scrim::modal(
+                    f.scene,
+                    f.transform,
+                    g.scrim,
+                    g.scrim_openness,
+                    f.theme,
+                );
+            }
+            for column in [Column::Inspector, Column::Sidebar] {
+                let rect = g.column(column);
+                if !g.floating(column) || rect.width() <= 0.0 {
+                    continue;
+                }
+                crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
+                self.paint_column(f, column);
+            }
+            if faded {
+                f.scene.pop_layer();
+            }
+        }
+        let history = self
+            .inputs
+            .borrow()
+            .history
+            .map(|control| Part::History(control.is_open()));
+        for part in [Part::Back, Part::InspectorToggle, Part::Toggle]
+            .into_iter()
+            .chain(history)
+        {
+            self.paint_part(f, part);
+        }
+        self.paint_sync_status(f);
+    }
+
+    /// The sync status, in the header of the column History stands in (the
+    /// one reaching the window's trailing edge): after its title and before
+    /// its trailing controls, wherever the row has room.
+    fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
+        self.status_slot = Rect::ZERO;
+        let g = &self.geometry;
+        let column = g.history_column.unwrap_or(Column::Content);
+        let row = g.header(column);
+        if row.width() <= 0.0 || row.height() <= 0.0 || g.column(column).width() <= 0.0 {
+            self.sync_status
+                .paint(f.scene, f.transform, f.text, f.theme, row, 0.0, 0.0);
+            return;
+        }
+        let gap = f64::from(f.theme.tokens.spacing.s3);
+        let in_row = |rect: Rect| {
+            rect.width() > 0.0 && rect.y0 < row.y1 && rect.y1 > row.y0 && rect.x0 >= row.x0
+        };
+        let actions = at(&self.headers, column).actions.len();
+        let mut trailing: Vec<Rect> = (0..actions)
+            .map(|i| Part::Action(column, i))
+            .chain([Part::More(column)])
+            .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+            .filter_map(|part| self.exposed(part).map(|widget| widget.get_rect()))
+            .collect();
+        trailing.extend([g.history, g.inspector_toggle]);
+        let x1 = trailing
+            .into_iter()
+            .filter(|rect| in_row(*rect))
+            .map(|rect| rect.x0)
+            .fold(row.x1, f64::min)
+            - gap;
+        let x0 = [
+            Part::Title(column),
+            Part::Leading(column),
+            Part::Toggle,
+            Part::Back,
+        ]
+        .into_iter()
+        .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+        .filter_map(|part| match part {
+            Part::Toggle => Some(g.toggle),
+            Part::Back => Some(g.back),
+            _ => self.exposed(part).map(|widget| widget.get_rect()),
+        })
+        .filter(|rect| in_row(*rect))
+        .map(|rect| rect.x1)
+        .fold(row.x0, f64::max)
+            + gap;
+        self.sync_status
+            .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
+        let said = self.sync_status.get_rect();
+        let x1 = if said.is_zero_area() {
+            x1
+        } else {
+            said.x0 - gap
+        };
+        if x1 > x0 {
+            self.status_slot = Rect::new(x0, row.y0, x1, row.y1);
+        }
+    }
+
+    /// Where a document's transient status goes in the header row that
+    /// carries the sync status: after the title and before the trailing
+    /// controls and the sync status, the row's height. Empty until the
+    /// shell paints, and when the row has no room. A save status shown
+    /// here covers none of the document.
+    #[must_use]
+    pub fn header_status_slot(&self) -> Rect {
+        self.status_slot
+    }
+
+    /// Whether `part` is in the host tree this frame: only those were laid
+    /// out, so only those paint.
+    fn built_has(&self, part: Part) -> bool {
+        self.host_parts.contains(&part)
+    }
+
+    fn paint_column(&mut self, f: &mut Frame<'_>, column: Column) {
+        let rect = self.geometry.column(column);
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let local = self.column_theme(f.theme, Some(column));
+        let clip = rect.intersect(self.rect);
+        f.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            f.transform,
+            &clip,
+        );
+        let mut parts = vec![
+            Part::Body(column),
+            Part::Title(column),
+            Part::Leading(column),
+        ];
+        let actions = at(&self.headers, column).actions.len();
+        parts.extend((0..actions).map(|i| Part::Action(column, i)));
+        parts.push(Part::More(column));
+        if self.geometry.filter_column(&self.inputs.borrow()) == Some(column) {
+            parts.push(Part::Filter);
+        }
+        if column == Column::Overview {
+            parts.push(Part::Controls);
+        }
+        for part in parts {
+            if self.built_has(part) && !self.part_hidden(part) {
+                f.draw(self.part_mut(part), &local);
+            }
+        }
+        f.scene.pop_layer();
+    }
+
+    fn paint_part(&mut self, f: &mut Frame<'_>, part: Part) {
+        let rect = match part {
+            Part::Toggle => self.geometry.toggle,
+            Part::Back => self.geometry.back,
+            Part::InspectorToggle => self.geometry.inspector_toggle,
+            Part::History(_) => self.geometry.history,
+            _ => return,
+        };
+        if rect.width() <= 0.0 || !self.built_has(part) {
+            return;
+        }
+        let local = self.column_theme(f.theme, self.part_column(part));
+        f.draw(self.part_mut(part), &local);
+    }
+
+    /// The hairline under the header row over the content columns, and the
+    /// rule between the overview (or its rail) and the content. Regions are
+    /// told apart by tone, not lines.
+    fn paint_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme, g: &NavGeometry) {
+        for column in [Column::Overview, Column::Content, Column::Inspector] {
+            let header = g.header(column);
+            if header == Rect::ZERO || g.floating(column) {
+                continue;
+            }
+            let local = self.column_theme(theme, Some(column));
+            crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row)
+                .paint_rule(scene, transform, &local);
+        }
+        let lead = if g.overview_column.width() > 0.0 {
+            g.overview_column
+        } else {
+            g.rail
+        };
+        if g.side_by_side && lead.width() > 0.0 && g.content_column.width() > 0.0 {
+            let x = lead.x1;
+            let rule = Rect::new(x - 1.0, g.content_column.y0, x, lead.y1);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+                None,
+                &rule,
+            );
         }
     }
 }
 
-impl Widget for NavShell {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+fn downcast<'a, T: Widget + 'static>(
+    slot: Option<&'a mut (dyn Widget + 'static)>,
+) -> Option<&'a mut T> {
+    slot.and_then(|widget| widget.as_any_mut())
+        .and_then(|any| any.downcast_mut::<T>())
+}
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.overview.sync(state, path);
-        if let Some(d) = self.detail.as_mut() {
-            d.sync(state, path);
+/// What one paint pass draws into.
+struct Frame<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+}
+
+impl Frame<'_> {
+    /// Draw one of the shell's children with the theme of the ground it
+    /// stands on.
+    fn draw(&mut self, widget: Option<&mut (dyn Widget + 'static)>, theme: &Theme) {
+        if let Some(widget) = widget {
+            crate::widget::draw_child(
+                widget,
+                self.scene,
+                self.transform,
+                self.text,
+                theme,
+                self.presence,
+            );
         }
-        if let Some(s) = self.sidebar.as_mut() {
-            s.sync(state, path);
+    }
+}
+
+/// The layout policy the host runs: place every built part at the rect the
+/// plan gives it, and lay each header row out from what its parts measure.
+fn place_parts(
+    inputs: &Inputs,
+    ctx: &mut ManualContext<'_>,
+) -> Result<Size<f32>, WidgetLayoutError> {
+    let size = ctx.available();
+    let g = plan(inputs, f64::from(size.width), f64::from(size.height));
+    let mut placed: Vec<Option<Rect>> = vec![None; inputs.parts.len()];
+    for (index, part) in inputs.parts.iter().enumerate() {
+        let rect = match part {
+            Part::Body(column) => Some(g.body(*column)),
+            Part::Rail => Some(g.rail),
+            Part::Filter => Some(g.filter),
+            Part::Toggle => Some(g.toggle),
+            Part::Back => Some(g.back),
+            Part::InspectorToggle => Some(g.inspector_toggle),
+            Part::History(_) => Some(g.history),
+            Part::Controls => {
+                let band = g.controls;
+                if band.width() <= 0.0 {
+                    Some(Rect::ZERO)
+                } else {
+                    // Its own width (the band's when it has none of its
+                    // own), a control's height: the band is one control tall.
+                    let measured = measure(ctx, index, Some(band.width()))?;
+                    let w = if measured.0 > 0.0 {
+                        measured.0.min(band.width())
+                    } else {
+                        band.width()
+                    };
+                    let h = if measured.1 > 0.0 {
+                        measured.1.min(band.height())
+                    } else {
+                        band.height()
+                    };
+                    let y0 = band.center().y - h / 2.0;
+                    Some(Rect::new(band.x0, y0, band.x0 + w, y0 + h))
+                }
+            }
+            Part::Title(_) | Part::Leading(_) | Part::Action(..) | Part::More(_) => None,
+        };
+        if let (Some(slot), Some(rect)) = (placed.get_mut(index), rect) {
+            *slot = Some(rect);
         }
+    }
+    for column in Column::ALL {
+        place_header(inputs, &g, column, ctx, &mut placed)?;
+    }
+    for (index, rect) in placed.into_iter().enumerate() {
+        let rect = rect.unwrap_or(Rect::ZERO);
+        let rect = if rect.width() < 0.0 || rect.height() < 0.0 {
+            Rect::ZERO
+        } else {
+            rect
+        };
+        ctx.place(index, rect)?;
+    }
+    Ok(size)
+}
+
+/// A part's natural size, within `width` when given.
+///
+/// The natural size comes first: a bounded proposal replaces the part's own
+/// width with `auto`, so a control that states a fixed size and measures
+/// nothing (a switch) would come back zero wide. Only a part wider than
+/// `width` is measured again within it, so a label can wrap or shrink.
+fn measure(
+    ctx: &mut ManualContext<'_>,
+    index: usize,
+    width: Option<f64>,
+) -> Result<(f64, f64), WidgetLayoutError> {
+    let natural = ManualContext::measure(
+        ctx,
+        index,
+        Size {
+            width: MeasureConstraint::Intrinsic,
+            height: MeasureConstraint::Intrinsic,
+        },
+    )?
+    .size;
+    let natural = (f64::from(natural.width), f64::from(natural.height));
+    let Some(bound) = width.map(|w| w.max(0.0)) else {
+        return Ok(natural);
+    };
+    if natural.0 <= bound {
+        return Ok(natural);
+    }
+    let proposal = Size {
+        width: MeasureConstraint::AtMost(f32_of_f64(bound)),
+        height: MeasureConstraint::Intrinsic,
+    };
+    let measured = ManualContext::measure(ctx, index, proposal)?.size;
+    Ok((f64::from(measured.width), f64::from(measured.height)))
+}
+
+/// Lay out one header row: the title at its measured width after the
+/// leading buttons, the actions trailing (labelled buttons collapsing to
+/// their icons, then the rest moving into the More menu when they do not
+/// fit), and the leading fill between them.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one row's layout is one ordered decision: title, actions, overflow, leading"
+)]
+fn place_header(
+    inputs: &Inputs,
+    g: &NavGeometry,
+    column: Column,
+    ctx: &mut ManualContext<'_>,
+    placed: &mut [Option<Rect>],
+) -> Result<(), WidgetLayoutError> {
+    let header = g.header(column);
+    let ci = column.index();
+    let index_of = |part: Part| inputs.parts.iter().position(|p| *p == part);
+    if header == Rect::ZERO || header.width() <= 0.0 {
+        return Ok(());
+    }
+    let m = &inputs.metrics;
+    let cy = header.center().y;
+    let lead = g.lead_end(column, m);
+    let trail = g.trail_start(column, m).max(lead);
+    let avail = trail - lead;
+    let gap = m.gap;
+    let centred = |x0: f64, w: f64, h: f64| -> Rect {
+        let h = h.min(header.height()).max(0.0);
+        Rect::new(x0, cy - h / 2.0, x0 + w.max(0.0), cy + h / 2.0)
+    };
+
+    // The actions, at their natural sizes.
+    let count = inputs.actions.get(ci).copied().unwrap_or(0);
+    let mut items: Vec<(usize, f64, f64)> = Vec::with_capacity(count);
+    for i in 0..count {
+        if let Some(index) = index_of(Part::Action(column, i)) {
+            let (w, h) = measure(ctx, index, Some(avail))?;
+            items.push((index, w, h));
+        }
+    }
+    let fit_cell = Rc::clone(&inputs.fit);
+    let mut fits = fit_cell.borrow_mut();
+    let fit = at_mut(&mut fits, column);
+    if fit.capable.len() != items.len() {
+        fit.capable.resize(items.len(), false);
+        fit.compact_now.resize(items.len(), false);
+        fit.full.resize(items.len(), None);
+    }
+    let mut full = Vec::with_capacity(items.len());
+    let mut compact = Vec::with_capacity(items.len());
+    for (i, (_, w, h)) in items.iter().enumerate() {
+        let capable = fit.capable.get(i).copied().unwrap_or(false);
+        let now = fit.compact_now.get(i).copied().unwrap_or(false);
+        if capable && now {
+            full.push(fit.full.get(i).copied().flatten().unwrap_or(*w));
+            compact.push(*w);
+        } else {
+            if let Some(slot) = fit.full.get_mut(i) {
+                *slot = Some(*w);
+            }
+            full.push(*w);
+            compact.push(if capable { w.min(*h) } else { *w });
+        }
+    }
+    let run = |widths: &[f64]| -> f64 {
+        if widths.is_empty() {
+            0.0
+        } else {
+            widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
+        }
+    };
+    let reserve = run(&compact);
+
+    // The title: its measured width, never pushing the actions past their
+    // icons, and keeping a third of the row however many actions there are.
+    let mut start = lead;
+    if let Some(index) = index_of(Part::Title(column)) {
+        let (tw, th) = measure(ctx, index, None)?;
+        let room = if reserve > 0.0 {
+            avail - reserve - gap
+        } else {
+            avail
+        };
+        let width = tw.min(room.max(tw.min(avail / 3.0))).clamp(0.0, avail);
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(centred(lead, width, th));
+        }
+        if width > 0.0 {
+            start = lead + width + gap;
+        }
+    }
+    let band = (trail - start).max(0.0);
+
+    // Labels, icons, or the More menu.
+    let more = index_of(Part::More(column));
+    let (use_compact, shown) = if run(&full) <= band {
+        (false, items.len())
+    } else if run(&compact) <= band {
+        (true, items.len())
+    } else {
+        let more_w = match more {
+            Some(index) => measure(ctx, index, None)?.0,
+            None => 0.0,
+        };
+        let mut k = items.len();
+        while k > 0 {
+            let used = run(compact.get(..k).unwrap_or(&[])) + gap + more_w;
+            if used <= band {
+                break;
+            }
+            k = k.saturating_sub(1);
+        }
+        (true, k)
+    };
+    fit.compact = use_compact;
+    fit.shown = Some(shown);
+    let widths = if use_compact { &compact } else { &full };
+    let overflow = shown < items.len();
+    let more_size = match (overflow, more) {
+        (true, Some(index)) => Some((index, measure(ctx, index, None)?)),
+        _ => None,
+    };
+    let mut total = run(widths.get(..shown).unwrap_or(&[]));
+    if let Some((_, (mw, _))) = more_size {
+        total += if shown > 0 { gap + mw } else { mw };
+    }
+    let mut x = (trail - total).max(start.min(trail));
+    let actions_x0 = if total > 0.0 { x } else { trail };
+    for (k, (index, _, h)) in items.iter().enumerate() {
+        let rect = if k < shown {
+            let w = widths.get(k).copied().unwrap_or(0.0);
+            let rect = centred(x, w, *h);
+            x += w + gap;
+            rect
+        } else {
+            Rect::ZERO
+        };
+        if let Some(slot) = placed.get_mut(*index) {
+            *slot = Some(rect);
+        }
+    }
+    if let Some(index) = more {
+        let rect = match more_size {
+            Some((_, (mw, mh))) => centred(x, mw, mh),
+            None => Rect::ZERO,
+        };
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(rect);
+        }
+    }
+    drop(fits);
+
+    // The leading fill: its own width, or what is left when it needs more.
+    if let Some(index) = index_of(Part::Leading(column)) {
+        let end = if total > 0.0 { actions_x0 - gap } else { trail };
+        let room = (end - start).max(0.0);
+        let (lw, lh) = measure(ctx, index, Some(room))?;
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(centred(start, lw.min(room), lh));
+        }
+    }
+    Ok(())
+}
+
+impl Widget for NavShell {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn WindowHeader
+    );
+
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.conventions = conventions;
+        self.update_toggle_names();
+        self.for_each_owned_mut(|child| child.set_platform_conventions(conventions));
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.for_each_owned_mut(|child| child.set_interaction_environment(environment));
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let next = self.pane_binding.as_mut().and_then(LocalBinding::poll);
+        if let Some(pane) = next {
+            self.show(pane);
+        }
+        self.poll_bindings();
+        if self.built {
+            self.apply_open_states();
+        }
+        self.take_requests();
+        self.open_more_menus();
+        self.follow_navigation();
+        self.for_each_owned_mut(|child| child.sync(state, path));
+        self.sync_filter();
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = self.take_requests();
+        self.for_each_owned_mut(|child| changed |= child.update(state, path));
+        changed |= self.follow_navigation();
+        changed || self.animating
     }
 
     fn build_layout(
@@ -1095,144 +3389,99 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The host is building a new tree: what waited for it goes in now.
+        self.apply_pending();
+        self.slots_changed();
         self.layout_theme = theme.clone();
-        self.resolve_inputs(theme);
-        self.inner_taffy = None;
-        // Register the real panels in the host tree so accessibility actions
-        // and keyboard focus have dispatch destinations. As with ModalDialog,
-        // place_children still resolves their final overlay/push geometry.
-        self.host_structure_dirty = false;
-        self.host_interactive_panels = self.interactive_panels();
-        let mut children = Vec::new();
-        if self.host_interactive_panels[0] {
-            children.push(self.overview.build_layout(taffy, theme, node_map));
-        }
-        if self.host_interactive_panels[1]
-            && let Some(detail) = self.detail.as_mut()
-        {
-            children.push(detail.build_layout(taffy, theme, node_map));
-        }
-        if self.host_interactive_panels[2]
-            && let Some(sidebar) = self.sidebar.as_mut()
-        {
-            children.push(sidebar.build_layout(taffy, theme, node_map));
-        }
-        for child in &children {
-            if let Ok(style) = taffy.style(*child) {
-                let mut style = style.clone();
-                style.position = taffy::Position::Absolute;
-                let _ = taffy.set_style(*child, style);
+        let size = if self.rect.width() > 0.0 {
+            (self.rect.width(), self.rect.height())
+        } else {
+            // Before the first layout, assume a regular window.
+            (
+                f64::from(theme.tokens.metrics.compact_breakpoint) * 4.0,
+                f64::from(theme.tokens.metrics.compact_breakpoint),
+            )
+        };
+        let parts = {
+            let mut inputs = self.inputs.borrow_mut();
+            inputs.metrics = Metrics::resolve(theme);
+            let g = plan(&inputs, size.0, size.1);
+            let parts = g.visible_parts(&inputs);
+            inputs.parts.clone_from(&parts);
+            parts
+        };
+        self.update_toggle_names();
+        let mut nodes = Vec::with_capacity(parts.len());
+        for part in &parts {
+            if let Some(widget) = self.part_mut(*part) {
+                nodes.push(widget.build_layout(taffy, theme, node_map));
             }
         }
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.baseline = nodes
+            .iter()
+            .map(|&node| (node, taffy.style(node).cloned().unwrap_or_default()))
+            .collect();
+        self.host_parts = parts;
+        self.built = true;
+        self.structure_dirty = false;
+        self.invalidation.invalidate();
+        let style = Style {
+            size: Self::region_size(),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &nodes, node_map, self)
+    }
+
+    fn manual_layout_policy(&self) -> Option<ManualPolicy> {
+        Some(ManualPolicy::for_children(
+            Rc::clone(&self.policy),
+            Self::region_size(),
+            self.baseline.clone(),
+            self.invalidation.clone(),
+        ))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        // A resize crossing the breakpoint drops a stale sidebar preference
-        // so it returns to auto behaviour.
-        self.sidebar_flap.reconcile(self.sidebar_split_layout());
-
-        let mode = self.mode();
-        if self.last_mode == Some(ShellMode::Wide)
-            && mode == ShellMode::Narrow
-            && self.has_sidebar()
-            && self.has_detail()
-        {
-            self.pane = self.collapse_content_pane();
-            // A structural jump, not a user push — snap rather than animate.
-            self.push.snap(self.pane == NavPane::Detail);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.refresh_geometry();
+        self.reconcile_size_class();
+        self.refresh_geometry();
+        let child_origin = Point::new(self.rect.x0, self.rect.y0);
+        let child_nodes = taffy.children(node).unwrap_or_default();
+        let parts = self.host_parts.clone();
+        for (part, child) in parts.iter().zip(child_nodes) {
+            if let Some(widget) = self.part_mut(*part) {
+                widget.apply_layout(taffy, child, child_origin);
+            }
         }
-        self.last_mode = Some(mode);
-
-        self.recompute_rects();
-        // Scroll-only frames reuse solved sizes throughout the framework.
-        // Apply them again so descendant scroll offsets and translated origins
-        // reach hit testing, without rebuilding trees or loading system fonts.
-        // A resize, rebuilt outer tree, swapped pane, or measure-dirty child
-        // takes the full measurement path below — unless the shared host
-        // solver already ran it with its own renderer in
-        // `adjust_layout_with_measure`, in which case this is a re-apply too.
-        // Modal traversal intentionally exposes only the sidebar for input
-        // and accessibility, but all retained backdrop panes still sync/draw.
-        let host_solved = std::mem::take(&mut self.host_solved);
-        let cached_extents_match =
-            self.inner_taffy.is_some() && self.inner_extents == Some(self.child_extents());
-        if ((host_solved && cached_extents_match) || !self.panes_need_resolve())
-            && let Some(o_node) = self.overview_node
-            && let Some(taffy) = self.inner_taffy.take()
-        {
-            self.apply_child_layout(&taffy, o_node, self.detail_node, self.sidebar_node);
-            self.inner_taffy = Some(taffy);
-            return;
+        self.apply_fit();
+        self.invalidation.acknowledge_applied();
+        self.layout_dirty = false;
+        self.apply_open_states();
+        self.publish_open_states();
+        let visible = self.geometry.visible_parts(&self.inputs.borrow());
+        if visible != self.host_parts || !self.pending.is_empty() {
+            self.structure_dirty = true;
         }
-        self.resolve_panes_fallback();
     }
 
-    /// Solve the panes with the **host's** renderer while the host solver
-    /// still has it in hand: the allocation is known here (only the origin
-    /// is not, and the inner solve depends on extents alone), so the panes
-    /// are measured with the same fonts and text scale as everything else
-    /// on screen and `apply_layout` only re-applies the cached tree. The
-    /// host tree is untouched and no style changes, so this returns `false`.
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        let Ok(l) = taffy.layout(node) else {
-            return false;
-        };
-        self.rect = Rect::from_origin_size(
-            (self.rect.x0, self.rect.y0),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
-        self.sidebar_flap.reconcile(self.sidebar_split_layout());
-        self.recompute_rects();
-        // The settle loop calls this up to eight times a pass; once the
-        // panes are solved at these extents the later iterations are no-ops
-        // even though the just-measured children still read as dirty.
-        let already_solved_this_pass = self.host_solved
-            && self.inner_taffy.is_some()
-            && self.inner_extents == Some(self.child_extents());
-        if !already_solved_this_pass && self.panes_need_resolve() {
-            let theme = self.layout_theme.clone();
-            self.place_children(&theme, text);
+    fn layout_needs_measure(&self) -> bool {
+        let mut dirty = self.invalidation.is_pending();
+        // Hidden headers and controls may never have been measured. They
+        // must not invalidate an unrelated visible pane on every scroll.
+        // Revealing a part changes host_parts and invalidates the shell.
+        for part in &self.host_parts {
+            if let Some(child) = self.part(*part) {
+                dirty |= child.layout_needs_measure();
+            }
         }
-        self.host_solved = true;
-        false
+        dirty
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        // Slides advance from the draw path (`self_tick`). The admitted
-        // primary-frame update forwards model/momentum updates to every pane.
-        let mut any = self.overview.update(state, path);
-        if let Some(d) = self.detail.as_mut() {
-            any |= d.update(state, path);
-        }
-        if let Some(s) = self.sidebar.as_mut() {
-            any |= s.update(state, path);
-        }
-        any || self.sidebar_flap.is_animating(self.sidebar_split_layout())
-            || self.push.is_animating(SplitLayout::Docked)
+    fn is_layout_dirty(&self) -> bool {
+        let mut dirty = self.layout_dirty || self.invalidation.is_pending();
+        self.for_each_owned(|child| dirty |= child.is_layout_dirty());
+        dirty
     }
 
     fn draw(
@@ -1243,1844 +3492,654 @@ impl Widget for NavShell {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.self_tick(theme, text_renderer);
-
-        // Content first, behind the overlay drawer; off-screen push panes
-        // simply fall outside the framebuffer.
-        self.overview
-            .draw(scene, transform, text_renderer, theme, presence);
-        if let Some(d) = self.detail.as_mut() {
-            d.draw(scene, transform, text_renderer, theme, presence);
-        }
-        if self.sidebar_visible()
-            && let Some(s) = self.sidebar.as_mut()
-        {
-            // Scrim must sit between content and the drawer.
-            if self.scrim_rect.width() > 0.0 {
-                let alpha = to_f32(self.sidebar_flap.reveal() * 0.5);
-                let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
-                scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
-            }
-            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
-            s.draw(scene, transform, text_renderer, theme, presence);
-        }
-        // Scrim already drawn above; this only adds dividers + affordance.
-        self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
+        self.paint(&mut Frame {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+            presence,
+        });
+        self.tick(theme);
     }
 
-    fn draw_with_presence(
+    fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
     ) {
-        self.self_tick(theme, text_renderer);
-        if presence.should_cull(self.get_rect()) {
-            return;
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.overview.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        if let Some(d) = self.detail.as_mut() {
-            d.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-        if self.sidebar_visible() {
-            if self.scrim_rect.width() > 0.0 {
-                let alpha = to_f32(self.sidebar_flap.reveal() * 0.5);
-                let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
-                scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
-            }
-            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
-            if let Some(s) = self.sidebar.as_mut() {
-                s.draw_with_presence(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
-        }
-        self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
+        self.toasts.advance(crate::time::now());
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.toasts
+            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
+        let mut painted = Scene::new();
+        self.toasts
+            .draw(&mut painted, transform, text_renderer, theme, presence);
+        scene.append(&painted, None);
+        self.toasts_scene = painted;
+        self.toasts_painted = self.toasts.painted_bounds(theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        if !self.toasts.is_empty() {
+            let before = (self.toasts.len(), self.toasts.is_hovered());
+            self.toasts.handle_event(event, ctx);
+            // The dismiss control's hover shows too.
+            self.toasts_dirty |= *ctx.handled
+                || before != (self.toasts.len(), self.toasts.is_hovered())
+                || matches!(event, WindowEvent::CursorMoved { .. });
+            if *ctx.handled {
+                return;
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                // Dismiss the overlay drawer, else pop the pushed detail.
-                if self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay {
-                    self.close_sidebar();
-                    *ctx.handled = true;
-                    return;
-                }
-                if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
-                    self.show_overview();
-                    *ctx.handled = true;
-                    return;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                // 1. The top-left affordance owns its chip.
-                if self.affordance != Affordance::None
-                    && self.affordance_rect.contains(self.last_cursor)
-                {
-                    match self.affordance {
-                        Affordance::SidebarToggle => self.toggle_sidebar(),
-                        Affordance::Back => self.show_overview(),
-                        Affordance::None => {}
-                    }
-                    *ctx.handled = true;
-                    return;
-                }
-                // 2. A scrim click dismisses the overlay drawer.
-                if self.is_sidebar_open()
-                    && self.sidebar_split_layout() == SplitLayout::Overlay
-                    && self.scrim_rect.width() > 0.0
-                    && self.scrim_rect.contains(self.last_cursor)
-                    && !self.sidebar_rect.contains(self.last_cursor)
-                {
-                    self.close_sidebar();
-                    *ctx.handled = true;
-                    return;
-                }
-                // 3. Record which content pane the user engaged (a press over
-                //    an open sidebar drawer is navigation, not content).
-                if self.detail.is_some()
-                    && !(self.sidebar_visible() && self.sidebar_rect.contains(self.last_cursor))
-                {
-                    if self.detail_rect.width() > 0.0 && self.detail_rect.contains(self.last_cursor)
-                    {
-                        self.active_pane_hint = Some(NavPane::Detail);
-                    } else if self.overview_rect.width() > 0.0
-                        && self.overview_rect.contains(self.last_cursor)
-                    {
-                        self.active_pane_hint = Some(NavPane::Overview);
-                    }
-                }
-            }
-            _ => {}
         }
-        if *ctx.handled {
+        if self.handle_own_event(event, ctx) {
+            *ctx.handled = true;
             return;
         }
         self.route_event_to_children(event, ctx);
+        self.take_requests();
+        self.take_more_choices(&mut ctx.state, ctx.path);
+        self.open_more_menus();
+        self.follow_navigation();
+        self.sync_filter();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if self.overlay_sidebar_is_modal() {
-            return self
-                .sidebar
-                .as_deref()
-                .into_iter()
-                .collect::<Vec<&dyn Widget>>();
+        let mut children: Vec<&dyn Widget> = self
+            .exposed_parts()
+            .iter()
+            .filter_map(|part| self.exposed(*part))
+            .collect();
+        if self.sync_status.text().is_some() {
+            children.push(&self.sync_status);
         }
-        let mut v: Vec<&dyn Widget> = vec![self.overview.as_ref()];
-        if let Some(d) = self.detail.as_ref() {
-            v.push(d.as_ref());
+        if !self.toasts.is_empty() {
+            children.push(&self.toasts);
         }
-        if let Some(s) = self.sidebar.as_ref() {
-            v.push(s.as_ref());
-        }
-        v
+        children
     }
 
+    // A showing notice is the last child, so assistive technology announces
+    // it as a live region.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if self.overlay_sidebar_is_modal() {
-            if let Some(sidebar) = &self.sidebar {
-                visitor(sidebar.as_ref());
+        for part in self.exposed_parts() {
+            if let Some(widget) = self.exposed(part) {
+                visitor(widget);
             }
-            return;
         }
-        visitor(self.overview.as_ref());
-        if let Some(detail) = &self.detail {
-            visitor(detail.as_ref());
+        if self.sync_status.text().is_some() {
+            visitor(&self.sync_status);
         }
-        if let Some(sidebar) = &self.sidebar {
-            visitor(sidebar.as_ref());
+        if !self.toasts.is_empty() {
+            visitor(&self.toasts);
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.overlay_sidebar_is_modal() {
-            let mut modal_children: Vec<&mut (dyn Widget + '_)> = Vec::new();
-            if let Some(sidebar) = self.sidebar.as_mut() {
-                modal_children.push(sidebar.as_mut());
+        let parts = self.exposed_parts();
+        let inert: Vec<bool> = parts.iter().map(|part| self.part_inert(*part)).collect();
+        self.inert_parts.resize_with(parts.len(), || InertPart);
+        let NavShell {
+            sidebar,
+            overview,
+            content,
+            inspector,
+            rail,
+            filter,
+            controls,
+            headers,
+            toggle,
+            back,
+            inspector_toggle,
+            history_open,
+            history_close,
+            inert_parts,
+            toasts,
+            sync_status,
+            ..
+        } = self;
+        let mut stubs = inert_parts.iter_mut();
+        let mut bodies: [Option<&mut (dyn Widget + 'static)>; 4] = [
+            sidebar.as_deref_mut(),
+            overview.as_deref_mut(),
+            Some(content.as_mut()),
+            inspector.as_deref_mut(),
+        ];
+        let mut rail = rail.as_deref_mut();
+        let mut filter = filter.as_mut().map(|f| f as &mut dyn Widget);
+        let mut controls = controls.as_deref_mut();
+        let mut titles: Vec<Option<&mut dyn Widget>> = Vec::with_capacity(4);
+        let mut leadings: Vec<Option<&mut (dyn Widget + 'static)>> = Vec::with_capacity(4);
+        let mut mores: Vec<Option<&mut dyn Widget>> = Vec::with_capacity(4);
+        let mut actions: Vec<Vec<Option<&mut (dyn Widget + 'static)>>> = Vec::with_capacity(4);
+        for header in headers.iter_mut() {
+            let Header {
+                title,
+                actions: list,
+                more,
+                leading,
+                ..
+            } = header;
+            titles.push(Some(title as &mut dyn Widget));
+            leadings.push(leading.as_deref_mut());
+            mores.push(Some(more as &mut dyn Widget));
+            actions.push(list.iter_mut().map(|a| Some(a.as_mut())).collect());
+        }
+        let mut toggle = Some(toggle as &mut dyn Widget);
+        let mut back = Some(back as &mut dyn Widget);
+        let mut inspector_toggle = Some(inspector_toggle as &mut dyn Widget);
+        let mut history_open = Some(history_open as &mut dyn Widget);
+        let mut history_close = Some(history_close as &mut dyn Widget);
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());
+        for (part, inert) in parts.into_iter().zip(inert) {
+            let stub = stubs.next();
+            if inert {
+                if let Some(stub) = stub {
+                    out.push(stub);
+                }
+                continue;
             }
-            return modal_children;
+            let next: Option<&mut (dyn Widget + '_)> = match part {
+                Part::Body(column) => bodies
+                    .get_mut(column.index())
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::Rail => rail.take().map(|w| w as &mut dyn Widget),
+                Part::Title(column) => titles.get_mut(column.index()).and_then(Option::take),
+                Part::Leading(column) => leadings
+                    .get_mut(column.index())
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::Action(column, i) => actions
+                    .get_mut(column.index())
+                    .and_then(|list| list.get_mut(i))
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::More(column) => mores.get_mut(column.index()).and_then(Option::take),
+                Part::Controls => controls.take().map(|w| w as &mut dyn Widget),
+                Part::Filter => filter.take(),
+                Part::Toggle => toggle.take(),
+                Part::Back => back.take(),
+                Part::InspectorToggle => inspector_toggle.take(),
+                Part::History(false) => history_open.take(),
+                Part::History(true) => history_close.take(),
+            };
+            if let Some(widget) = next {
+                out.push(widget);
+            }
         }
-        let mut v: Vec<&mut (dyn Widget + '_)> = vec![self.overview.as_mut()];
-        if let Some(d) = self.detail.as_mut() {
-            v.push(d.as_mut());
+        if sync_status.text().is_some() {
+            out.push(sync_status);
         }
-        if let Some(s) = self.sidebar.as_mut() {
-            v.push(s.as_mut());
+        if !toasts.is_empty() {
+            out.push(toasts);
         }
-        v
+        out
     }
 
     fn name(&self) -> &'static str {
         "NavShell"
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.resize.is_some() || self.geometry.resize_handle.contains(point))
+            .then_some(winit::window::CursorIcon::ColResize)
+    }
+
+    /// The window's group: keyed by the shell's id, so what stands under a
+    /// titled column keeps its identity on the agent surface while titles
+    /// come and go. The column titles are its headings (the title parts).
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let key = self.id.as_deref().unwrap_or("nav-shell");
+        Some(AccessNode::new(Role::Group).with_semantic_key(format!("{key}.window")))
+    }
+
     fn next_wake_deadline(&self) -> Option<Instant> {
-        // Modal traversal hides backdrop panes from interaction/accessibility,
-        // but those retained panes still draw and must wake for timed changes.
-        self.overview
-            .next_wake_deadline()
-            .into_iter()
-            .chain(
-                self.detail
-                    .as_ref()
-                    .and_then(|pane| pane.next_wake_deadline()),
-            )
-            .chain(
-                self.sidebar
-                    .as_ref()
-                    .and_then(|pane| pane.next_wake_deadline()),
-            )
-            .min()
+        let mut earliest = self.toasts.next_wake_deadline();
+        self.for_each_owned(|child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // Hidden drawers retain their controls, but their entrance animations
+        // cannot advance until the drawer is painted. Only painted parts ask
+        // the host for frames; background wakes still visit every owned part.
         self.animating
-            || self.sidebar_flap.is_animating(self.sidebar_split_layout())
-            || self.push.is_animating(SplitLayout::Docked)
-            || self.overview.needs_animation_frame()
+            || self.fade < 1.0
             || self
-                .detail
-                .as_ref()
-                .is_some_and(|d| d.needs_animation_frame())
-            || self
-                .sidebar
-                .as_ref()
-                .is_some_and(|s| s.needs_animation_frame())
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut d = std::mem::take(&mut self.host_structure_dirty)
-            || self.host_interactive_panels != self.interactive_panels();
-        d |= self.overview.take_structure_dirty();
-        if let Some(det) = self.detail.as_mut() {
-            d |= det.take_structure_dirty();
-        }
-        if let Some(s) = self.sidebar.as_mut() {
-            d |= s.take_structure_dirty();
-        }
-        if d {
-            self.inner_taffy = None;
-        }
-        d
+                .host_parts
+                .iter()
+                .any(|part| self.part(*part).is_some_and(Widget::needs_animation_frame))
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.animating
-            || self.overview.needs_idle_sync()
-            || self.detail.as_ref().is_some_and(|d| d.needs_idle_sync())
-            || self.sidebar.as_ref().is_some_and(|s| s.needs_idle_sync())
+        let mut needed = self.animating
+            || self.content_back.is_some()
+            || self.headers.iter().any(|header| header.binding.is_some())
+            || self.sidebar_state.is_some()
+            || self.inspector_state.is_some();
+        self.for_each_owned(|child| needed |= child.needs_idle_sync());
+        needed
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.paint_dirty
+            || self.toasts_dirty
+            || self.toasts_expired()
+            || self.animating
+            || self.fade < 1.0
+            || self
+                .host_parts
+                .iter()
+                .any(|part| self.part(*part).is_some_and(Widget::needs_redraw))
+    }
+
+    fn mark_drawn(&mut self) {
+        self.paint_dirty = false;
+        self.toasts_dirty = false;
+        self.toasts_drawn = self.toasts_painted;
+        self.toasts_drawn_scene.clone_from(&self.toasts_scene);
+        self.for_each_owned_mut(|child| child.mark_drawn());
+        // The shell paints its titles and notices itself, so they learn
+        // here what it painted: as children they would otherwise ask for
+        // a frame forever.
+        for header in &mut self.headers {
+            header.title.mark_drawn();
+        }
+        self.toasts.mark_drawn();
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // The shell's own geometry, materials and transitions can change
+        // outside a child's box. A settled shell can preserve local control
+        // damage rather than rasterising every pane for a hover.
+        if self.paint_dirty || self.animating || self.fade < 1.0 {
+            regions.push(self.rect);
+        } else {
+            self.for_each_owned(|child| child.collect_damage(regions));
+            // The notices where they were and are, shadows included.
+            if self.toasts_changed() {
+                regions.extend(
+                    [self.toasts_drawn, self.toasts_painted]
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.take_requests();
+        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        self.for_each_owned_mut(|child| dirty |= child.take_structure_dirty());
+        dirty
+    }
+
+    /// A part whose overlay holds the pointer (a popover a header button
+    /// owns, an open More menu) first; then the default.
+    fn modal_capture(&self) -> Option<Rect> {
+        let mut capture = None;
+        for part in self.exposed_parts() {
+            if capture.is_none()
+                && let Some(widget) = self.exposed(part)
+            {
+                capture = widget.modal_capture();
+            }
+        }
+        capture
+    }
+}
+
+/// Controls in a column the shell is not showing (a hidden sidebar, a
+/// closed drawer, a screen pushed away) still belong to the window: custody,
+/// invocations and availability reach every part the shell owns.
+impl WindowHeader for NavShell {
+    fn set_history_control(&mut self, control: Option<HistoryControl>) {
+        if self.inputs.borrow().history == control {
+            return;
+        }
+        self.inputs.borrow_mut().history = control;
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
+        if self.sync_status.set(status) {
+            self.paint_dirty = true;
+            self.invalidation.invalidate();
+        }
+        true
     }
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = crate::widget::controls::has_action_control_bindings(child);
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        crate::widget::controls::children_action_control_bindings(self)
+    }
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.for_each_owned_mut(|child| {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        });
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        let mut taken = None;
+        self.for_each_owned_mut(|child| {
+            if taken.is_none() {
+                taken = crate::widget::controls::take_control_invocation(child);
             }
         });
-        found
+        taken
+    }
+
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        self.for_each_owned_mut(|child| {
+            if !child.has_separate_document_owner() {
+                crate::widget::controls::on_control_invocation_result(child, address, result);
+            }
+        });
+    }
+
+    fn has_action_control_bindings(&self) -> bool {
+        crate::widget::controls::children_have_action_control_bindings(self)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.for_each_owned_mut(|child| {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        });
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        let mut pending = false;
+        self.for_each_owned(|child| {
+            pending |= crate::widget::controls::has_pending_control_invocation(child);
+        });
+        pending
     }
 }
 
 impl NavShell {
-    /// Routes `event` to child panes in front-to-back order: an open overlay
-    /// drawer is topmost so it routes first; otherwise the front content
-    /// pane (for narrow push) routes before the back one. `d_node` is absent
-    /// for a sidebar-plus-content shell but must not stop the sidebar/
-    /// overview panes from being routed to. Split out of `handle_event` to
-    /// keep that under the line cap.
+    /// The shell fills the window it is given.
+    fn region_size() -> Size<taffy::Dimension> {
+        Size::from_percent(1.0, 1.0)
+    }
+
+    /// What the shell itself answers: the sidebar shortcut, Escape, Ctrl+F,
+    /// a scrim press, and the resize drag. Returns whether it consumed
+    /// `event`.
+    fn handle_own_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = ctx.logical(position);
+                if let Some(resize) = self.resize {
+                    self.drag_sidebar_to(resize, self.last_cursor.x);
+                    return true;
+                }
+                false
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if self.modal_capture().is_some() {
+                    return false;
+                }
+                self.handle_key(logical_key, ctx)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self
+                    .modal_capture()
+                    .is_some_and(|rect| rect.contains(self.last_cursor))
+                {
+                    return false;
+                }
+                self.handle_press()
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.resize.take().is_some() {
+                    self.structure_dirty = true;
+                    self.invalidate();
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_key(&mut self, key: &Key, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+        let modifiers = ctx.modifiers.state();
+        let command = self.conventions.command_modifier_down(modifiers);
+        if command && let Key::Character(c) = key {
+            if HostShortcut::resolve(self.conventions, c, modifiers.shift_key())
+                == Some(HostShortcut::Sidebar)
+                && self.has_sidebar()
+            {
+                self.toggle_sidebar();
+                return true;
+            }
+            if c.eq_ignore_ascii_case("f") && !modifiers.shift_key() {
+                let index = self
+                    .host_parts
+                    .iter()
+                    .position(|part| *part == Part::Filter);
+                if let Some(node) = index.and_then(|i| {
+                    ctx.taffy
+                        .children(ctx.node_id)
+                        .ok()
+                        .and_then(|children| children.get(i).copied())
+                }) {
+                    if self.geometry.sidebar == SidebarPlacement::Drawer && !self.is_sidebar_open()
+                    {
+                        self.toggle_sidebar();
+                    }
+                    *ctx.focus_target = Some(node);
+                    return true;
+                }
+            }
+        }
+        if *key == Key::Named(NamedKey::Escape) {
+            if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
+                self.toggle_sidebar();
+                return true;
+            }
+            if self.geometry.inspector == InspectorPlacement::Drawer && self.is_inspector_open() {
+                self.toggle_inspector();
+                return true;
+            }
+            if self.pop_push_stack() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_press(&mut self) -> bool {
+        let p = self.last_cursor;
+        let g = &self.geometry;
+        if g.resize_handle.contains(p) {
+            self.resize = Some(Resize {
+                start_x: p.x,
+                start_width: g.sidebar_column.width(),
+            });
+            return true;
+        }
+        if g.scrim.width() > 0.0 && g.scrim.contains(p) {
+            let in_sidebar = g.sidebar_modal() && g.sidebar_column.contains(p);
+            let in_inspector = g.inspector_modal() && g.inspector_column.contains(p);
+            if !in_sidebar && !in_inspector {
+                if g.sidebar_modal() {
+                    self.toggle_sidebar();
+                } else if g.inspector_modal() {
+                    self.toggle_inspector();
+                }
+                return true;
+            }
+        }
+        // Remember which content pane the person works in.
+        if g.content_column.contains(p) {
+            self.active_hint = Some(NavPane::Content);
+        } else if g.overview_column.contains(p) || g.rail.contains(p) {
+            self.active_hint = Some(NavPane::Overview);
+        }
+        false
+    }
+
+    fn drag_sidebar_to(&mut self, resize: Resize, x: f64) {
+        let width = resize.start_width + (x - resize.start_x);
+        let (min, scale) = {
+            let inputs = self.inputs.borrow();
+            (inputs.metrics.sidebar_min, inputs.metrics.scale)
+        };
+        if width < min * 0.75 {
+            // Dragged past its minimum: the sidebar hides.
+            if self.is_sidebar_open() {
+                let mut inputs = self.inputs.borrow_mut();
+                inputs.sidebar.snap(false);
+            }
+        } else {
+            let mut inputs = self.inputs.borrow_mut();
+            if !inputs.sidebar.is_open(SplitLayout::Docked) {
+                inputs.sidebar.snap(true);
+            }
+            inputs.user_sidebar = Some(width.max(min) / scale.max(f64::EPSILON));
+        }
+        self.update_toggle_names();
+        self.publish_open_states();
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    /// The rect a pointer event over `part` lands in.
+    fn part_area(&self, part: Part) -> Rect {
+        let g = &self.geometry;
+        match part {
+            Part::Toggle => g.toggle,
+            Part::Back => g.back,
+            Part::InspectorToggle => g.inspector_toggle,
+            Part::History(_) => g.history,
+            Part::Filter => g.filter,
+            Part::Controls => g.controls,
+            Part::Rail => g.rail,
+            Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => g.header(column),
+            Part::Body(column) => g.body(column).union(g.column(column)),
+        }
+    }
+
+    /// Route `event` to the live parts, front to back. A part whose overlay
+    /// holds the pointer (a popover a header button owns) hears pointer
+    /// events first; then pointer events go to the part under the pointer,
+    /// so a release or a wheel lands where it happened and never on a column
+    /// beside it. Parts under a drawer's scrim and actions in the More menu
+    /// hear nothing.
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        enum Which {
-            Sidebar,
-            Overview,
-            Detail,
-        }
-
-        let (Some(taffy), Some(o_node)) = (self.inner_taffy.as_ref(), self.overview_node) else {
+        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
-        let d_node = self.detail_node;
-        let sidebar_first = self.overlay_sidebar_is_modal();
-
-        let mut order: Vec<(Which, NodeId)> = Vec::new();
-        if sidebar_first && let Some(sn) = self.sidebar_node {
-            order.push((Which::Sidebar, sn));
-        }
-        if !sidebar_first {
-            // Front content pane first for narrow push; harmless order in wide.
-            match (self.pane, d_node) {
-                (NavPane::Detail, Some(dn)) => {
-                    order.push((Which::Detail, dn));
-                    order.push((Which::Overview, o_node));
+        let pointer = matches!(
+            event,
+            WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::Touch(_)
+        );
+        let mut order: Vec<(Part, NodeId)> = self
+            .host_parts
+            .iter()
+            .copied()
+            .zip(child_nodes)
+            .rev()
+            .filter(|(part, _)| !self.part_inert(*part) && !self.part_hidden(*part))
+            .collect();
+        if pointer {
+            let p = self.last_cursor;
+            let rank = |part: &Part| -> u8 {
+                if self
+                    .part(*part)
+                    .is_some_and(|w| w.modal_capture().is_some())
+                {
+                    0
+                } else if self.part_area(*part).contains(p) {
+                    1
+                } else {
+                    2
                 }
-                (_, Some(dn)) => {
-                    order.push((Which::Overview, o_node));
-                    order.push((Which::Detail, dn));
-                }
-                (_, None) => order.push((Which::Overview, o_node)),
-            }
-            if let Some(sn) = self.sidebar_node {
-                order.push((Which::Sidebar, sn));
-            }
+            };
+            order.sort_by_key(|(part, _)| rank(part));
         }
-
-        for (which, child_node) in order {
+        for (part, node) in order {
             if *ctx.handled {
                 break;
             }
-            let target: &mut dyn Widget = match which {
-                Which::Sidebar => match self.sidebar.as_mut() {
-                    Some(s) => s.as_mut(),
-                    None => continue,
-                },
-                Which::Overview => self.overview.as_mut(),
-                Which::Detail => match self.detail.as_mut() {
-                    Some(d) => d.as_mut(),
-                    None => continue,
-                },
-            };
-            target.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    taffy,
-                    ..ctx.reborrow(ctx.path, child_node)
-                },
-            );
-        }
-    }
-
-    /// Scrim is painted inline between content and the drawer in each draw
-    /// path instead, so its z-order is correct.
-    fn draw_chrome_no_scrim(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.mode() == ShellMode::Wide {
-            // Pane dividers derive from the surface they are painted on (HIG
-            // §9.5), centred on the last pixel column of the pane they close:
-            // the sidebar's on `fill_panel`'s `bg_primary`, the overview's on
-            // the shell's base ground, which is what a content pane sits on
-            // unless it paints its own.
-            let stroke = Stroke::new(1.0);
-            if self.sidebar_visible() {
-                let x = self.sidebar_rect.x1 - 0.5;
-                scene.stroke(
-                    &stroke,
-                    transform,
-                    crate::surface::edge_on(theme.bg_primary),
-                    None,
-                    &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
-                );
+            let path = ctx.path;
+            if let Some(widget) = self.part_mut(part) {
+                widget.handle_event(event, &mut ctx.reborrow(path, node));
             }
-            let x = self.overview_rect.x1 - 0.5;
-            scene.stroke(
-                &stroke,
-                transform,
-                crate::surface::edge_on(theme.tokens.colors.surfaces.base),
-                None,
-                &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
-            );
         }
-        self.draw_affordance(scene, transform, text_renderer, theme);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widget::Text;
-    use automerge::AutoCommit;
-    use vello_encoding::DrawTag;
-
-    /// A leaf pane that proves which retained pane received an input event.
-    /// The shell's overlay drawer is modal, so it is important this is a
-    /// routing assertion rather than only a geometry assertion.
-    struct EventProbe {
-        id: &'static str,
-        deadline: Option<Instant>,
-        events: std::rc::Rc<std::cell::Cell<usize>>,
-        rect: Rect,
-    }
-
-    impl EventProbe {
-        fn new(id: &'static str, events: std::rc::Rc<std::cell::Cell<usize>>) -> Self {
-            Self {
-                id,
-                deadline: None,
-                events,
-                rect: Rect::ZERO,
-            }
-        }
-    }
-
-    impl Widget for EventProbe {
-        fn next_wake_deadline(&self) -> Option<Instant> {
-            self.deadline
-        }
-
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x,
-                origin.y,
-                origin.x + f64::from(layout.size.width),
-                origin.y + f64::from(layout.size.height),
-            );
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
-        fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
-            self.events.set(self.events.get().saturating_add(1));
-        }
-
-        fn name(&self) -> &'static str {
-            "EventProbe"
-        }
-
-        fn test_id(&self) -> Option<&str> {
-            Some(self.id)
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
-    }
-
-    fn shell(w: f64, with_sidebar: bool) -> NavShell {
-        let mut ns = if with_sidebar {
-            NavShell::new(
-                Box::new(Text::new("overview")),
-                Box::new(Text::new("detail")),
-            )
-            .with_sidebar(Box::new(Text::new("sidebar")))
-        } else {
-            NavShell::new(
-                Box::new(Text::new("overview")),
-                Box::new(Text::new("detail")),
-            )
-        };
-        lay_out(&mut ns, w, 640.0);
-        ns
-    }
-
-    #[test]
-    fn host_registration_and_presence_track_modal_drawers() {
-        // Case `host_registration_tracks_modal_drawers_and_replaced_panels`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.close_sidebar();
-            ns.show_overview();
-            ns.snap();
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut map);
-            let children = taffy.children(node).unwrap();
-            assert_eq!(
-                children.len(),
-                1,
-                "hidden panels must not enter host focus order"
-            );
-            assert!(std::ptr::addr_eq(
-                map[&children[0]],
-                ns.overview.as_ref() as *const dyn Widget
-            ));
-            assert!(!ns.take_structure_dirty());
-
-            ns.show_detail();
-            assert!(
-                ns.take_structure_dirty(),
-                "push navigation changes host focus targets"
-            );
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut map);
-            let children = taffy.children(node).unwrap();
-            assert_eq!(children.len(), 1);
-            assert!(std::ptr::addr_eq(
-                map[&children[0]],
-                ns.detail.as_deref().unwrap() as *const dyn Widget
-            ));
-            assert!(!ns.take_structure_dirty());
-
-            ns.open_sidebar();
-            ns.snap();
-            assert!(ns.take_structure_dirty());
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut map);
-            let children = taffy.children(node).unwrap();
-            assert_eq!(children.len(), 1);
-            let sidebar = ns.sidebar.as_deref().unwrap();
-            assert!(std::ptr::addr_eq(
-                map[&children[0]],
-                sidebar as *const dyn Widget
-            ));
-            assert!(!ns.take_structure_dirty());
-
-            ns.set_overview(Box::new(Text::new("replacement")));
-            assert!(ns.take_structure_dirty());
-            ns.close_sidebar();
-            assert!(ns.take_structure_dirty());
-        }
-
-        // Case `opaque_hold_deadline_reaches_host_through_modal_nav_shell`.
-        {
-            let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
-            let mut content = EventProbe::new("content", Default::default());
-            content.deadline = Some(deadline);
-            let mut ns =
-                NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
-            lay_out(&mut ns, 420.0, 500.0);
-            ns.snap_sidebar(true);
-            assert!(ns.overlay_sidebar_is_modal());
-            assert_eq!(
-                ns.next_wake_deadline(),
-                Some(deadline),
-                "a live backdrop must still wake for its fade"
-            );
-        }
-
-        // Case `control_presence_modal_exposure_matches_full_inventory`.
-        {
-            let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
-                tilo_actions::ActionSpec::operation(
-                    "go",
-                    "Go",
-                    tilo_actions::OperationKind::View,
-                    "test.go",
-                    &(),
-                )
-                .unwrap(),
-            );
-            let button = crate::widget::Button::new("go", "Go", None)
-                .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
-            let mut ns =
-                NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
-            lay_out(&mut ns, 420.0, 500.0);
-            for open in [false, true, false] {
-                ns.snap_sidebar(open);
-                let inventory = crate::widget::controls::control_action_bindings(&ns)
-                    .iter()
-                    .any(|b| matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
-                assert_eq!(
-                    crate::widget::controls::has_action_control_bindings(&ns),
-                    inventory
-                );
-                assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
-            }
-        }
-    }
-
-    fn lay_out(ns: &mut NavShell, w: f64, h: f64) {
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(to_f32(w)),
-                    height: taffy::AvailableSpace::Definite(to_f32(h)),
-                },
-            )
-            .unwrap();
-        ns.apply_layout(&taffy, node, Point::ZERO);
-    }
-
-    #[test]
-    fn measured_panes_are_reused_until_scale_theme_size_or_children_change() {
-        // Case `translated_scroll_layout_reuses_measured_child_tree_without_new_fonts`.
-        {
-            use crate::widget::Scrollable;
-            let content = Scrollable::new_vertical().with_child(Box::new(Text::new(
-                &"file row with a measured label\n".repeat(100),
-            )));
-            let mut ns = NavShell::sidebar_over_content(
-                Box::new(Text::new("Places\nHome\nDownloads")),
-                Box::new(content),
-            );
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut map);
-            taffy
-                .compute_layout(
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(1000.0),
-                        height: taffy::AvailableSpace::Definite(500.0),
-                    },
-                )
-                .unwrap();
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            ns.mark_drawn();
-            let old_child = ns.overview.children()[0].get_rect();
-            let old_node = ns.overview_node;
-            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-            for _ in 1..=4 {
-                ns.overview
-                    .as_any_mut()
-                    .unwrap()
-                    .downcast_mut::<Scrollable>()
-                    .unwrap()
-                    .scroll_by(0.0, 20.0);
-                assert!(ns.is_layout_dirty(), "scroll must reposition children");
-                assert!(
-                    !ns.layout_needs_measure(),
-                    "scroll leaves intrinsic sizes intact"
-                );
-                ns.apply_layout(&taffy, node, Point::new(12.0, 7.0));
-                ns.mark_drawn();
-            }
-            let child = ns.overview.children()[0].get_rect();
-            assert_eq!(child.x0, old_child.x0 + 12.0);
-            assert_eq!(child.y0, old_child.y0 + 7.0 - 80.0);
-            assert_eq!(ns.overview_node, old_node);
-            assert_eq!(
-                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
-                0,
-                "translation-only layout must not reload system fonts"
-            );
-        }
-
-        // Case `modal_drawer_remeasures_changed_backdrop_panes`.
-        {
-            use automerge::transaction::Transactable;
-            let mut doc = AutoCommit::new();
-            doc.put(automerge::ROOT, "label", "first line").unwrap();
-            let mut ns = NavShell::sidebar_over_content(
-                Box::new(Text::new("places")),
-                Box::new(Text::from_document_string("label")),
-            );
-            ns.sync(&mut doc, &automerge::ROOT);
-            lay_out(&mut ns, 420.0, 500.0);
-            ns.snap_sidebar(true);
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut HashMap::new());
-            taffy
-                .compute_layout(
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(420.0),
-                        height: taffy::AvailableSpace::Definite(500.0),
-                    },
-                )
-                .unwrap();
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            ns.overview.mark_drawn();
-            ns.sidebar.as_mut().unwrap().mark_drawn();
-            let before = ns.overview.get_rect();
-            doc.put(
-                automerge::ROOT,
-                "label",
-                "first line\nsecond line\nthird line",
-            )
-            .unwrap();
-            ns.sync(&mut doc, &automerge::ROOT);
-            assert!(ns.overlay_sidebar_is_modal());
-            assert!(ns.overview.layout_needs_measure());
-            assert!(
-                !ns.layout_needs_measure(),
-                "modal traversal exposes only the clean sidebar"
-            );
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            let reused = ns.overview.get_rect();
-            assert!(
-                reused.height() > before.height(),
-                "live backdrop must receive changed text geometry"
-            );
-            // Force the authoritative full path and compare its complete rectangle.
-            ns.inner_taffy = None;
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            assert_eq!(reused, ns.overview.get_rect());
-        }
-
-        // Case `measured_shell_rebuilds_after_theme_resize_and_child_replacement`.
-        {
-            let mut ns = NavShell::new(
-                Box::new(Text::new("overview")),
-                Box::new(Text::new("detail")),
-            );
-            lay_out(&mut ns, 1000.0, 500.0);
-            ns.mark_drawn();
-            let original = ns.overview.get_rect();
-            let mut theme = Theme::dark();
-            theme.text_scale = 1.5;
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = ns.build_layout(&mut taffy, &theme, &mut map);
-            taffy
-                .compute_layout(
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(1200.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            assert!(ns.overview.get_rect().height() > original.height());
-            let mut fresh = NavShell::new(
-                Box::new(Text::new("overview")),
-                Box::new(Text::new("detail")),
-            );
-            let mut fresh_taffy = TaffyTree::new();
-            let fresh_node = fresh.build_layout(&mut fresh_taffy, &theme, &mut HashMap::new());
-            fresh_taffy
-                .compute_layout(
-                    fresh_node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(1200.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-            fresh.apply_layout(&fresh_taffy, fresh_node, Point::ZERO);
-            assert_eq!(ns.overview.get_rect(), fresh.overview.get_rect());
-            ns.mark_drawn();
-            // Swapping a previously laid-out, clean pane must invalidate the
-            // retained tree even though the incoming widget needs no measurement.
-            let mut replacement = NavShell::new(
-                Box::new(Text::new("replacement\nsecond line")),
-                Box::new(Text::new("detail")),
-            );
-            lay_out(&mut replacement, 1200.0, 600.0);
-            replacement.mark_drawn();
-            assert!(!replacement.overview.layout_needs_measure());
-            ns.set_overview(replacement.overview);
-            assert!(!ns.layout_needs_measure());
-            ns.apply_layout(&taffy, node, Point::ZERO);
-            assert!(ns.overview.get_rect().height() > fresh.overview.get_rect().height());
-        }
-
-        // Case `panes_measure_at_the_host_text_scale_without_loading_fonts`.
-        // The panes are solved with the theme the outer tree was built with and
-        // the host's renderer, so a `Text` in a pane is twice as tall at 2× and
-        // the shared-host path loads no font system of its own.
-        {
-            let height_at = |scale: f32| {
-                let theme = Theme::dark().with_text_scale(scale);
-                let mut renderer = crate::font_catalog::fixture_renderer();
-                renderer.set_text_scale(scale);
-                let mut ns = NavShell::new(
-                    Box::new(Text::new("overview")),
-                    Box::new(Text::new("detail")),
-                );
-                let mut taffy = TaffyTree::<()>::new();
-                let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let root = ns.build_layout(&mut taffy, &theme, &mut nodes);
-                let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
-                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-                // SAFETY: the tree and maps come from this exact live build and
-                // `ns` is exclusively owned for the whole solve.
-                unsafe {
-                    bindings.rebuild(&ns, &taffy, root, &nodes);
-                    crate::widget::compute_widget_layout(
-                        &mut taffy,
-                        root,
-                        Size {
-                            width: taffy::AvailableSpace::Definite(1200.0),
-                            height: taffy::AvailableSpace::Definite(600.0),
-                        },
-                        &nodes,
-                        &bindings,
-                        &mut renderer,
-                    )
-                    .unwrap();
-                }
-                ns.apply_layout(&taffy, root, Point::ZERO);
-                assert_eq!(
-                    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
-                    0,
-                    "the host path must measure with the host's renderer, not load fonts of its own"
-                );
-                ns.overview.get_rect().height()
-            };
-            let one = height_at(1.0);
-            let two = height_at(2.0);
-            assert!(one > 0.0);
-            assert!(
-                (two / one - 2.0).abs() < 0.05,
-                "an overview Text line is {two} px at 2× against {one} px at 1×; it must double"
-            );
-        }
-
-        // Case `mutable_children_match_immutable_children_in_logical_order`.
-        {
-            let mut ns = NavShell::new(
-                Box::new(Text::new("overview").with_id("overview")),
-                Box::new(Text::new("detail").with_id("detail")),
-            )
-            .with_sidebar(Box::new(Text::new("sidebar").with_id("sidebar")));
-
-            let immutable: Vec<String> = Widget::children(&ns)
-                .into_iter()
-                .map(|child| child.test_id().unwrap_or_default().to_string())
-                .collect();
-            let mutable: Vec<String> = Widget::children_mut(&mut ns)
-                .into_iter()
-                .map(|child| child.test_id().unwrap_or_default().to_string())
-                .collect();
-
-            assert_eq!(immutable, vec!["overview", "detail", "sidebar"]);
-            assert_eq!(mutable, immutable);
-        }
-    }
-
-    fn sidebar_content_shell(w: f64) -> NavShell {
-        let mut ns = NavShell::sidebar_over_content(
-            Box::new(Text::new("places")),
-            Box::new(Text::new("files")),
-        );
-        lay_out(&mut ns, w, 640.0);
-        // Flap is open-when-docked, so a first narrow frame is mid-easing;
-        // snap to the settled frame every assertion here is about.
-        ns.snap();
-        ns
-    }
-
-    // --- the chip's band over the content --------------------------------
-
-    #[test]
-    fn content_rects_clear_the_floating_chip_and_follow_the_responsive_scale() {
-        // Case `narrow_content_starts_below_the_chip_that_floats_over_it`.
-        {
-            let ns = sidebar_content_shell(600.0);
-            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-            let pane = ns.overview_rect();
-            let child = ns.content_child_rect(pane);
-            assert_eq!(
-                child.y0,
-                pane.y0 + CHIP_INSET * 2.0 + CHIP_SIZE,
-                "the content has to start below the chip, not under it",
-            );
-            assert!(
-                child.y0 >= ns.affordance_rect.y1,
-                "the reserved band must clear the chip's own rect ({:?})",
-                ns.affordance_rect,
-            );
-            assert_eq!(
-                (child.x0, child.x1),
-                (pane.x0, pane.x1),
-                "the band is vertical only",
-            );
-        }
-
-        // Case `the_public_content_rects_are_what_the_layout_uses`.
-        {
-            for width in [600.0_f64, 1200.0] {
-                let ns = sidebar_content_shell(width);
-                assert_eq!(
-                    ns.overview_content_rect(),
-                    ns.content_child_rect(ns.overview_rect()),
-                    "overview accessor disagrees with the laid-out child at {width}",
-                );
-                assert_eq!(
-                    ns.detail_content_rect(),
-                    ns.content_child_rect(ns.detail_rect()),
-                    "detail accessor disagrees with the laid-out child at {width}",
-                );
-            }
-        }
-
-        // Case `wide_content_keeps_its_full_height_because_the_sidebar_holds_the_corner`.
-        {
-            let ns = sidebar_content_shell(1200.0);
-            assert_eq!(ns.mode(), ShellMode::Wide);
-            let pane = ns.overview_rect();
-            assert_eq!(
-                ns.content_child_rect(pane),
-                pane,
-                "a docked sidebar owns the top-left corner; the content is untouched",
-            );
-        }
-
-        // Case `docked_sidebar_keeps_its_full_height_so_its_header_aligns_with_the_content_panes`.
-        // F1 round one V-01: docked, the sidebar's header started one chip band
-        // (60 px) below the overview and detail headers because the band was
-        // reserved above the sidebar even though the chip sits in its header
-        // row (which the fixture and mail clear horizontally). Docked keeps the
-        // sidebar's full height; the overlay drawer still starts under the chip.
-        {
-            let wide = shell(1200.0, true);
-            assert_eq!(wide.top_left_affordance(), Affordance::SidebarToggle);
-            assert_eq!(
-                wide.sidebar_content_rect(),
-                wide.sidebar_rect(),
-                "the docked sidebar's content starts at the pane top, level with the overview",
-            );
-            assert_eq!(
-                wide.sidebar_content_rect().y0,
-                wide.overview_content_rect().y0,
-                "the three panes' headers share one top edge",
-            );
-            assert!(
-                wide.collapse_button_rect().y1 <= wide.sidebar_rect().y0 + wide.chip_band(),
-                "the chip still lives in the sidebar's header row",
-            );
-
-            let mut narrow = shell(600.0, true);
-            narrow.open_sidebar();
-            narrow.snap();
-            assert_eq!(narrow.sidebar_layout(), Some(SplitLayout::Overlay));
-            let drawer = narrow.sidebar_rect();
-            assert_eq!(
-                narrow.sidebar_content_rect().y0,
-                drawer.y0 + narrow.chip_band(),
-                "an overlay drawer slides in under the chip, so its first row starts below the band",
-            );
-        }
-
-        // Case `authored_inputs_and_chip_follow_the_responsive_scale`.
-        // HIG §9.6: breakpoint and text-sized pane widths are authored at 1×
-        // and resolved by the shell (`× ui_scale × text_scale.max(1.0)`); the
-        // token defaults follow the `ui_scale`d metrics; an icon rail follows
-        // `ui_scale` only; the chip grows with the body line, not the scale.
-        {
-            let authored = || {
-                NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-                    .with_sidebar(Box::new(Text::new("s")))
-                    .with_breakpoint(860.0)
-                    .with_sidebar_width(260.0)
-                    .with_overview_width(340.0)
-            };
-            let mut one = authored();
-            lay_out_with(&mut one, &Theme::dark(), 1400.0, 700.0);
-            assert_eq!(
-                (one.breakpoint(), one.sidebar_width(), one.overview_width()),
-                (860.0, 260.0, 340.0),
-                "1× is the authored geometry",
-            );
-            assert_eq!(
-                (one.chip_inset, one.chip_size, one.back_chip_width),
-                (12.0, 36.0, 104.0)
-            );
-            assert_eq!(one.mode(), ShellMode::Wide);
-
-            let two = Theme::dark().with_text_scale(2.0);
-            let mut large = authored();
-            lay_out_with(&mut large, &two, 1400.0, 700.0);
-            assert_eq!(
-                (
-                    large.breakpoint(),
-                    large.sidebar_width(),
-                    large.overview_width()
-                ),
-                (1720.0, 520.0, 680.0),
-            );
-            assert_eq!(
-                large.mode(),
-                ShellMode::Narrow,
-                "a 1400 px window at 2× has the room a 700 px window has at 1×",
-            );
-            let grown = crate::widget::text_control_height(CHIP_SIZE, &two);
-            assert!(
-                grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE,
-                "chip grows by the line, not 2×"
-            );
-            assert_eq!(large.chip_size, grown);
-            assert_eq!(large.chip_inset, 12.0, "the inset is spacing, not text");
-            assert_eq!(
-                large.back_chip_width,
-                grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0
-            );
-            assert_eq!(
-                large.collapse_button_rect().height(),
-                grown,
-                "the hit rect is the grown chip"
-            );
-
-            let mut rail = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-                .with_icon_overview_width(68.0);
-            lay_out_with(&mut rail, &two, 1400.0, 700.0);
-            assert_eq!(
-                rail.overview_width(),
-                68.0,
-                "an icon rail never grows with the text"
-            );
-
-            let mut defaults = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-                .with_sidebar(Box::new(Text::new("s")));
-            lay_out_with(
-                &mut defaults,
-                &Theme::dark().with_ui_scale(1.5),
-                2000.0,
-                700.0,
-            );
-            let metrics = Theme::dark().with_ui_scale(1.5).tokens.metrics;
-            assert!((defaults.sidebar_width() - f64::from(metrics.sidebar_width)).abs() < 1e-6);
-            assert!((defaults.overview_width() - f64::from(metrics.overview_width)).abs() < 1e-6);
-            assert!(
-                (defaults.breakpoint() - 1050.0).abs() < 1e-6,
-                "700 authored × ui 1.5"
-            );
-            assert!((defaults.chip_inset - 18.0).abs() < 1e-6, "s3 at ui 1.5");
-        }
-    }
-
-    // --- sidebar + single content pane (HIG §1a, no §1b split) -----------
-
-    #[test]
-    fn sidebar_over_content_docks_wide_and_overlays_narrow() {
-        // Case `narrow_sidebar_over_content_keeps_the_content_full_width`.
-        {
-            let ns = sidebar_content_shell(600.0);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(ns.content_layout(), ContentLayout::Single);
-            assert_eq!(
-                ns.overview_rect().width(),
-                600.0,
-                "the content pane must span the whole narrow window",
-            );
-            assert_eq!(
-                ns.overview_rect().x0,
-                0.0,
-                "and start at the window's left edge, not offset by a sidebar",
-            );
-            assert!(!ns.is_detail_shown(), "there is no detail pane to push in");
-            assert_eq!(
-                ns.detail_rect(),
-                Rect::ZERO,
-                "no detail pane means no detail geometry",
-            );
-        }
-
-        // Case `narrow_sidebar_starts_closed_and_opens_as_an_overlay_drawer`.
-        {
-            let mut ns = sidebar_content_shell(600.0);
-            assert!(!ns.is_sidebar_open(), "the drawer is closed by default");
-            assert_eq!(
-                ns.scrim_rect(),
-                Rect::ZERO,
-                "no scrim while the drawer is closed",
-            );
-            assert_eq!(
-                ns.top_left_affordance(),
-                Affordance::SidebarToggle,
-                "the corner offers the hamburger, never a Back arrow",
-            );
-
-            ns.open_sidebar();
-            ns.snap();
-            assert!(ns.is_sidebar_open());
-            assert!(ns.sidebar_rect().width() > 0.0, "the drawer is on screen");
-            assert_eq!(
-                ns.overview_rect().width(),
-                600.0,
-                "the drawer draws OVER the content — the content does not shrink \
-             or slide away",
-            );
-            assert!(
-                ns.scrim_rect().width() > 0.0,
-                "an open drawer dims the content behind a scrim",
-            );
-        }
-
-        // Case `open_overlay_drawer_exposes_and_routes_only_its_sidebar`.
-        {
-            let sidebar_events = std::rc::Rc::new(std::cell::Cell::new(0));
-            let content_events = std::rc::Rc::new(std::cell::Cell::new(0));
-            let mut ns = NavShell::sidebar_over_content(
-                Box::new(EventProbe::new(
-                    "sidebar",
-                    std::rc::Rc::clone(&sidebar_events),
-                )),
-                Box::new(EventProbe::new(
-                    "content",
-                    std::rc::Rc::clone(&content_events),
-                )),
-            );
-            lay_out(&mut ns, 600.0, 640.0);
-            ns.open_sidebar();
-            ns.snap();
-
-            let visible_children: Vec<&str> = Widget::children(&ns)
-                .into_iter()
-                .filter_map(Widget::test_id)
-                .collect();
-            assert_eq!(visible_children, vec!["sidebar"]);
-
-            let mut handled = false;
-            let drawer_center = ns.sidebar_rect().center();
-            dispatch(&mut ns, &cursor_at(drawer_center), &mut handled);
-            assert!(sidebar_events.get() > 0, "drawer child receives its input");
-            assert_eq!(
-                content_events.get(),
-                0,
-                "the covered content must not receive pointer or assistive traversal input"
-            );
-        }
-
-        // Case `narrow_drawer_width_can_exceed_the_docked_sidebar_without_shrinking_content`.
-        {
-            let mut ns = NavShell::sidebar_over_content(
-                Box::new(Text::new("places")),
-                Box::new(Text::new("files")),
-            )
-            .with_sidebar_width(200.0)
-            .with_narrow_sidebar_width(320.0);
-            lay_out(&mut ns, 390.0, 640.0);
-            ns.snap();
-            assert_eq!(
-                ns.overview_rect().width(),
-                390.0,
-                "closed content stays full width"
-            );
-            ns.open_sidebar();
-            ns.snap();
-            assert_eq!(ns.sidebar_rect().width(), 320.0);
-            assert_eq!(
-                ns.overview_rect().width(),
-                390.0,
-                "the overlay drawer never displaces the live content pane"
-            );
-            lay_out(&mut ns, 1200.0, 640.0);
-            ns.snap();
-            assert_eq!(
-                ns.sidebar_rect().width(),
-                200.0,
-                "desktop docking stays compact"
-            );
-        }
-
-        // Case `wide_sidebar_over_content_docks_beside_a_full_height_content_pane`.
-        {
-            let ns = sidebar_content_shell(1200.0);
-            assert_eq!(ns.mode(), ShellMode::Wide);
-            assert_eq!(ns.content_layout(), ContentLayout::Single);
-            assert!(ns.sidebar_rect().width() > 0.0, "the sidebar is docked");
-            assert_eq!(
-                ns.overview_rect().x0,
-                ns.sidebar_rect().x1,
-                "the content starts where the sidebar ends",
-            );
-            assert_eq!(
-                ns.overview_rect().x1,
-                1200.0,
-                "and runs to the window's right edge",
-            );
-            assert_eq!(ns.detail_rect(), Rect::ZERO);
-        }
-
-        // Case `sidebar_over_content_reflows_across_the_breakpoint_both_ways`.
-        {
-            let mut ns = sidebar_content_shell(1200.0);
-            assert_eq!(ns.mode(), ShellMode::Wide);
-            for w in [600.0, 1200.0, 480.0, 900.0] {
-                lay_out(&mut ns, w, 640.0);
-                ns.snap();
-                assert_eq!(
-                    ns.overview_rect().x1,
-                    w,
-                    "the content pane must reach the right edge at width {w}",
-                );
-                assert!(
-                    ns.overview_rect().width() > 0.0,
-                    "the content pane must never be laid out to zero width at {w}",
-                );
-            }
-        }
-    }
-
-    // --- mode resolution -------------------------------------------------
-
-    #[test]
-    fn breakpoint_selects_side_by_side_or_push_mode() {
-        // Case `breakpoint_boundary_is_inclusive_wide`.
-        {
-            assert_eq!(ShellMode::from_width(700.0, 700.0), ShellMode::Wide);
-            assert_eq!(ShellMode::from_width(699.0, 700.0), ShellMode::Narrow);
-        }
-
-        // Case `wide_is_side_by_side_with_docked_sidebar`.
-        {
-            let ns = shell(1200.0, true);
-            assert_eq!(ns.mode(), ShellMode::Wide);
-            assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
-            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Docked));
-            assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
-            assert!(ns.sidebar_rect().width() > 1.0, "docked sidebar has width");
-            assert!(
-                ns.overview_rect().x0 >= ns.sidebar_rect().x1 - 0.5,
-                "overview sits right of the sidebar"
-            );
-            assert!(
-                ns.detail_rect().x0 >= ns.overview_rect().x1 - 0.5,
-                "detail sits right of the overview"
-            );
-            assert!(ns.detail_rect().width() >= MIN_DETAIL_WIDTH - 1.0);
-            assert_eq!(ns.scrim_rect(), Rect::ZERO, "no scrim in wide mode");
-        }
-
-        // Case `narrow_is_push_with_overlay_sidebar`.
-        {
-            let ns = shell(420.0, true);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(ns.content_layout(), ContentLayout::Push);
-            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-            assert!(
-                !ns.is_sidebar_open(),
-                "overlay sidebar is closed by default"
-            );
-            assert!(
-                (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-                "overview is full-width by default"
-            );
-            assert!(
-                ns.detail_rect().x0 >= ns.get_rect().x1 - 1.0,
-                "detail is parked off-screen to the right until pushed"
-            );
-        }
-
-        // Case `content_only_shell_has_no_sidebar`.
-        {
-            let ns = shell(1200.0, false);
-            assert!(!ns.has_sidebar());
-            assert_eq!(ns.sidebar_layout(), None);
-            assert!(!ns.is_sidebar_open());
-            assert!((ns.overview_rect().x0 - ns.get_rect().x0).abs() < 0.5);
-        }
-
-        // Case `resize_across_breakpoint_returns_sidebar_to_auto`.
-        {
-            // wide+open, user collapses, resize narrow (auto closed), resize
-            // back wide (auto open again — stale preference dropped).
-            let mut ns = shell(1200.0, true);
-            ns.toggle_sidebar();
-            assert!(!ns.is_sidebar_open());
-            lay_out(&mut ns, 420.0, 640.0);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert!(!ns.is_sidebar_open(), "narrow default is closed");
-            lay_out(&mut ns, 1200.0, 640.0);
-            assert!(
-                ns.is_sidebar_open(),
-                "crossing the breakpoint drops the stale collapse preference"
-            );
-        }
-    }
-
-    // --- push / pop ------------------------------------------------------
-
-    #[test]
-    fn push_navigation_shows_detail_narrow_and_both_panes_wide() {
-        // Case `narrow_push_shows_detail_then_pops_back`.
-        {
-            let mut ns = shell(420.0, true);
-            assert_eq!(ns.pane(), NavPane::Overview);
-            ns.show_detail();
-            ns.snap_pane(NavPane::Detail);
-            assert_eq!(ns.pane(), NavPane::Detail);
-            assert!(ns.is_detail_shown());
-            assert!(
-                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-                "pushed detail occupies the pane"
-            );
-            assert!(
-                ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
-                "overview slid off-screen left"
-            );
-            ns.show_overview();
-            ns.snap_pane(NavPane::Overview);
-            assert_eq!(ns.pane(), NavPane::Overview);
-            assert!(
-                (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-                "overview back in place"
-            );
-        }
-
-        // Case `wide_shows_both_content_panes_regardless_of_push_target`.
-        {
-            let mut ns = shell(1200.0, true);
-            ns.show_detail(); // sets target, but wide keeps both abreast
-            ns.snap();
-            assert!(
-                ns.overview_rect().width() > 1.0,
-                "overview still visible wide"
-            );
-            assert!(ns.detail_rect().width() > 1.0, "detail still visible wide");
-        }
-
-        // Case `swapping_panes_preserves_push_state_and_relayouts_new_child`.
-        {
-            let mut ns = shell(420.0, false);
-            ns.snap_pane(NavPane::Detail);
-            assert!(ns.is_detail_shown(), "pushed to detail before the swap");
-
-            ns.set_overview(Box::new(Text::new("new-overview")));
-            ns.set_detail(Box::new(Text::new("new-detail")));
-            assert!(
-                ns.is_detail_shown(),
-                "the swap kept the shell showing the detail"
-            );
-
-            lay_out(&mut ns, 420.0, 640.0);
-            ns.snap_pane(NavPane::Detail);
-            assert!(
-                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-                "the swapped-in detail is laid out in the pane"
-            );
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let perms = crate::permissions::PermissionContext::permissive();
-            let mut scene = Scene::new();
-            ns.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &perms,
-            );
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(fills >= 1, "the swapped children paint after the swap");
-        }
-    }
-
-    // --- affordance is a collapse control, NEVER an X --------------------
-
-    #[test]
-    fn navigation_affordance_matches_mode_and_push_state() {
-        // Case `affordance_is_sidebar_toggle_in_wide_with_sidebar`.
-        {
-            let ns = shell(1200.0, true);
-            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-            assert!(ns.collapse_button_rect().width() > 0.0);
-            assert_eq!(ns.back_button_rect(), Rect::ZERO);
-        }
-
-        // Case `affordance_is_hamburger_to_summon_narrow_drawer`.
-        {
-            let ns = shell(420.0, true);
-            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-            assert!(
-                !ns.is_sidebar_open(),
-                "glyph should be the hamburger (closed)"
-            );
-        }
-
-        // Case `affordance_becomes_back_when_detail_pushed_narrow`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.snap_pane(NavPane::Detail);
-            assert_eq!(ns.top_left_affordance(), Affordance::Back);
-            assert!(ns.back_button_rect().width() > 0.0);
-            assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
-        }
-
-        // Case `content_only_wide_has_no_affordance`.
-        {
-            let ns = shell(1200.0, false);
-            assert_eq!(ns.top_left_affordance(), Affordance::None);
-            assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
-            assert_eq!(ns.back_button_rect(), Rect::ZERO);
-        }
-    }
-
-    // --- collapse -------------------------------------------------------
-
-    #[test]
-    fn toggles_escape_scrim_and_buttons_open_dismiss_and_pop() {
-        // Case `toggle_collapses_docked_sidebar_and_reclaims_width`.
-        {
-            let mut ns = shell(1200.0, true);
-            let overview_x_open = ns.overview_rect().x0;
-            ns.toggle_sidebar();
-            ns.snap_sidebar(false);
-            assert!(!ns.is_sidebar_open());
-            assert!(
-                ns.overview_rect().x0 < overview_x_open - 1.0,
-                "collapsing the docked sidebar reclaims its width for content"
-            );
-            assert_eq!(
-                ns.scrim_rect(),
-                Rect::ZERO,
-                "docked collapse shows no scrim"
-            );
-        }
-
-        // Case `toggle_opens_narrow_drawer_with_scrim`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.toggle_sidebar();
-            ns.snap_sidebar(true);
-            assert!(ns.is_sidebar_open());
-            assert!(
-                ns.scrim_rect().width() > 0.0,
-                "open drawer dims the content"
-            );
-            assert!(
-                (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-                "revealed drawer sits flush at the left edge"
-            );
-        }
-
-        // Case `esc_dismisses_open_narrow_drawer`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.open_sidebar();
-            ns.snap_sidebar(true);
-            assert!(ns.is_sidebar_open());
-            let mut handled = false;
-            dispatch(&mut ns, &esc_event(), &mut handled);
-            assert!(handled, "Esc on an open drawer is consumed");
-            assert!(!ns.is_sidebar_open(), "Esc closes the drawer");
-        }
-
-        // Case `esc_pops_pushed_detail`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.snap_pane(NavPane::Detail);
-            let mut handled = false;
-            dispatch(&mut ns, &esc_event(), &mut handled);
-            assert!(handled, "Esc on a pushed detail is consumed");
-            assert_eq!(ns.pane(), NavPane::Overview, "Esc pops back to overview");
-        }
-
-        // Case `scrim_click_dismisses_narrow_drawer`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.open_sidebar();
-            ns.snap_sidebar(true);
-            // Click to the right of the drawer, in the scrim.
-            let pt = Point::new(ns.get_rect().x1 - 20.0, 320.0);
-            let mut handled = false;
-            dispatch(&mut ns, &cursor_at(pt), &mut handled);
-            dispatch(&mut ns, &left_press(), &mut handled);
-            assert!(handled, "scrim click is consumed");
-            assert!(!ns.is_sidebar_open(), "scrim click closes the drawer");
-        }
-
-        // Case `collapse_button_click_toggles_sidebar`.
-        {
-            let mut ns = shell(1200.0, true);
-            assert!(ns.is_sidebar_open());
-            let c = ns.collapse_button_rect().center();
-            let mut handled = false;
-            dispatch(&mut ns, &cursor_at(c), &mut handled);
-            dispatch(&mut ns, &left_press(), &mut handled);
-            assert!(handled, "the collapse chip owns its click");
-            assert!(
-                !ns.is_sidebar_open(),
-                "clicking the collapse button collapses the sidebar"
-            );
-        }
-
-        // Case `back_button_click_pops_detail`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.snap_pane(NavPane::Detail);
-            let c = ns.back_button_rect().center();
-            let mut handled = false;
-            dispatch(&mut ns, &cursor_at(c), &mut handled);
-            dispatch(&mut ns, &left_press(), &mut handled);
-            assert!(handled, "the back chip owns its click");
-            assert_eq!(ns.pane(), NavPane::Overview, "Back pops to overview");
-        }
-    }
-
-    // --- self-routing ----------------------------------------------------
-
-    // --- breakpoint reconcile -------------------------------------------
-
-    // --- rendering -------------------------------------------------------
-
-    #[test]
-    fn push_and_drawer_animate_or_snap_deterministically() {
-        // Case `draw_emits_fills`.
-        {
-            let mut ns = shell(1200.0, true);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let perms = crate::permissions::PermissionContext::permissive();
-            let mut scene = Scene::new();
-            ns.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &perms,
-            );
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(fills >= 1, "a laid-out shell must paint something");
-        }
-
-        // Case `push_slides_across_frames_then_settles`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.snap_pane(NavPane::Overview);
-            ns.show_detail();
-
-            draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
-            assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
-
-            elapse(&mut ns, 16);
-            draw_frame(&mut ns);
-            let r = ns.push.reveal();
-            assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
-            assert!(
-                ns.needs_animation_frame(),
-                "mid-slide keeps requesting frames"
-            );
-
-            for _ in 0..240 {
-                elapse(&mut ns, 16);
-                draw_frame(&mut ns);
-                if !ns.push.is_animating(SplitLayout::Docked) {
-                    break;
-                }
-            }
-            assert!(
-                (ns.push.reveal() - 1.0).abs() < 0.01,
-                "slide settles fully in"
-            );
-            assert!(
-                !ns.needs_animation_frame(),
-                "a settled shell requests no frames"
-            );
-        }
-
-        // Case `reduced_motion_snaps_push_and_drawer_to_their_targets`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.snap_pane(NavPane::Overview);
-            ns.show_detail();
-            ns.open_sidebar();
-
-            let theme = Theme::dark().with_reduce_motion(true);
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let permissions = crate::permissions::PermissionContext::permissive();
-            let mut scene = Scene::new();
-            ns.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permissions,
-            );
-
-            assert_eq!(ns.push.reveal(), 1.0);
-            assert_eq!(ns.sidebar_flap.reveal(), 1.0);
-            assert!(!ns.needs_animation_frame());
-        }
-
-        // Case `snap_stays_deterministic_through_draw`.
-        {
-            let mut ns = shell(420.0, true);
-            ns.show_detail();
-            ns.snap();
-            assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
-            elapse(&mut ns, 20);
-            draw_frame(&mut ns);
-            assert_eq!(
-                ns.push.reveal(),
-                1.0,
-                "a snapped shell must not drift on draw"
-            );
-            assert!(
-                !ns.needs_animation_frame(),
-                "a settled shell requests no frames"
-            );
-        }
-    }
-
-    // --- three-pane collapse keeps content, never the sidebar -----------
-
-    #[test]
-    fn collapse_keeps_the_hinted_or_last_interacted_pane() {
-        // Case `three_pane_cold_collapse_keeps_the_rightmost_content_and_overlays_the_sidebar`.
-        {
-            let mut ns = shell(1200.0, true); // wide, sidebar + overview + detail
-            assert_eq!(ns.mode(), ShellMode::Wide);
-            assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
-
-            // Resize narrow, then settle the reveal easing to the frame
-            // `--shots` / headless renders.
-            lay_out(&mut ns, 520.0, 640.0);
-            ns.snap();
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(ns.content_layout(), ContentLayout::Push);
-
-            assert_eq!(
-                ns.pane(),
-                NavPane::Detail,
-                "a cold collapse keeps the right-most content, not the sidebar"
-            );
-            assert!(
-                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0
-                    && (ns.detail_rect().width() - ns.get_rect().width()).abs() < 1.0,
-                "the content pane spans the whole narrow window",
-            );
-            assert!(
-                ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
-                "the overview is pushed off-screen to the left",
-            );
-
-            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-            assert!(
-                !ns.is_sidebar_open(),
-                "the sidebar collapses to a closed drawer, not the shown pane"
-            );
-            assert_eq!(ns.scrim_rect(), Rect::ZERO, "a closed drawer lays no scrim");
-            // `Back` wins the top-left while detail is pushed, so summon by call.
-            ns.toggle_sidebar();
-            ns.snap();
-            assert!(
-                ns.is_sidebar_open(),
-                "the collapsed sidebar is still summonable as a drawer"
-            );
-        }
-
-        // Case `three_pane_collapse_hint_overview_overrides_the_rightmost_default`.
-        {
-            let mut ns = shell(1200.0, true);
-            ns.hint_active_pane(NavPane::Overview);
-            lay_out(&mut ns, 520.0, 640.0);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(
-                ns.pane(),
-                NavPane::Overview,
-                "the hinted master content overrides the right-most default"
-            );
-            assert!(
-                (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0
-                    && (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-                "the overview spans the whole narrow window",
-            );
-            assert!(
-                !ns.is_sidebar_open(),
-                "the sidebar is still a closed overlay drawer"
-            );
-        }
-
-        // Case `three_pane_collapse_keeps_the_last_interacted_pane`.
-        {
-            let mut ns = shell(1200.0, true);
-            let ov = ns.overview_rect();
-            assert!(
-                ov.width() > 1.0,
-                "wide side-by-side shows an overview column"
-            );
-            let pt = Point::new(ov.x0.midpoint(ov.x1), ov.y0.midpoint(ov.y1));
-            let mut handled = false;
-            dispatch(&mut ns, &cursor_at(pt), &mut handled);
-            dispatch(&mut ns, &left_press(), &mut handled);
-
-            lay_out(&mut ns, 520.0, 640.0);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(
-                ns.pane(),
-                NavPane::Overview,
-                "the pane the user last engaged survives the collapse, overriding the right-most default",
-            );
-            assert!(
-                (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-                "the overview fills the narrow window",
-            );
-        }
-
-        // Case `content_only_collapse_keeps_the_overview_first_default`.
-        {
-            let mut ns = shell(1200.0, false); // no sidebar
-            lay_out(&mut ns, 520.0, 640.0);
-            assert_eq!(ns.mode(), ShellMode::Narrow);
-            assert_eq!(
-                ns.pane(),
-                NavPane::Overview,
-                "a sidebar-less master/detail collapses to the overview, unchanged",
-            );
-        }
-    }
-
-    // --- scaffolding -----------------------------------------------------
-
-    /// Pretend `ms` of wall clock passed since the last drawn frame, so the
-    /// next draw advances the animations by exactly that step.
-    fn elapse(ns: &mut NavShell, ms: u64) {
-        ns.last_tick = crate::time::now().checked_sub(crate::time::Duration::from_millis(ms));
-    }
-
-    fn draw_frame(ns: &mut NavShell) {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        ns.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-    }
-
-    use winit::event::DeviceId;
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-    fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn esc_event() -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn dispatch(ns: &mut NavShell, event: &WindowEvent, handled: &mut bool) {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        ns.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-    }
-
-    // --- F1 round two: theme-resolved inputs, host-renderer measuring ------
-
-    fn lay_out_with(ns: &mut NavShell, theme: &Theme, w: f64, h: f64) {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = ns.build_layout(&mut taffy, theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(to_f32(w)),
-                    height: taffy::AvailableSpace::Definite(to_f32(h)),
-                },
-            )
-            .unwrap();
-        ns.apply_layout(&taffy, node, Point::ZERO);
-    }
-}
+mod tests;

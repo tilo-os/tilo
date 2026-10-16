@@ -2,6 +2,7 @@
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
+use collab_types::CommitNamed as _;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -37,7 +38,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         collab_types::document_artifact_id(APP, peer.room(), RECORD),
         author,
         collab_types::document_attestation_id(APP, peer.room(), RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         peer_time(),
         seq,
         collab_types::EncryptionMetadata::mls_application(1, channel),
@@ -78,7 +79,7 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
         record: RECORD.into(),
     }]
         .sealed
-        .clone()
+        .to_vec()
 }
 
 #[test]
@@ -218,7 +219,7 @@ fn a_full_sealed_history_refuses_rather_than_evicts() {
         record: RECORD.into(),
     };
     let first = held(&host)[0].clone();
-    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS];
+    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
     assert!(
         host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
             .unwrap_err()
@@ -266,7 +267,7 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
     let mut op = held(&host)[0].clone();
     op.encryption = None;
     collab_types::sign_op(&mut op, &b).unwrap();
-    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op];
+    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op].into();
     assert!(
         restore(&cleartext, now).is_err(),
         "sealed history cannot carry plaintext"
@@ -292,7 +293,7 @@ fn edit(peer: &StatePeer, value: &str) -> Vec<u8> {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "value", value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     DocumentMutation::Incremental(doc.save_after(&heads))
         .encode()
         .unwrap()
@@ -312,12 +313,61 @@ fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
     let plaintext = edit(&holder, "opened by its key holder");
     let envelope = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
     holder
-        .admit_new_opened_local_document(APP, RECORD, envelope, &mut |_| Ok(plaintext.clone()), now)
+        .admit_new_opened_local_document(
+            APP,
+            RECORD,
+            envelope.clone(),
+            &mut |_| Ok(plaintext.clone()),
+            now,
+        )
         .unwrap();
     assert_eq!(value(&holder), "\"opened by its key holder\"");
     assert_eq!(holder.incomplete_reason(), None);
     let mut restored = restore(&holder, now).unwrap();
     assert_eq!(value(&restored), "\"opened by its key holder\"");
+    let original = holder.durable().unwrap();
+    let bounded = crate::BoundedStatePeer::restore(
+        &original,
+        holder.room(),
+        holder.authority(),
+        std::slice::from_ref(holder.authority()),
+        &tilo_user_identity::RevocationList::new(),
+        now,
+        &crate::PeerLimits::default(),
+    )
+    .unwrap();
+    let mut opened = 0;
+    let capture = bounded
+        .read()
+        .capture_document(
+            a.verifying_key().to_bytes(),
+            (APP, RECORD),
+            now,
+            1024 * 1024,
+            &mut |retained| {
+                assert_eq!(
+                    retained, &envelope,
+                    "original signed ciphertext must survive restore"
+                );
+                opened += 1;
+                Ok(plaintext.clone())
+            },
+        )
+        .unwrap();
+    assert_eq!(opened, 1);
+    let mut replayed = automerge::AutoCommit::load(&capture.into_bytes()).unwrap();
+    let mut admitted = automerge::AutoCommit::load(&holder.document(APP, RECORD).unwrap()).unwrap();
+    assert_eq!(
+        replayed.get_heads(),
+        admitted.get_heads(),
+        "the original change graph is replayed"
+    );
+    assert_eq!(
+        holder.durable().unwrap(),
+        original,
+        "a read does not publish or rewrite state"
+    );
+
     assert!(
         restored
             .publish_incremental(APP, RECORD, Vec::new(), &a, now)
@@ -444,18 +494,21 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
         .unwrap();
     assert!(
         member
+            .outbox()
             .lookup_retained_local_document(&write, author)
             .unwrap()
             .is_some()
     );
     assert!(
         !member
+            .outbox()
             .retained_local_document_retired(&write, author)
             .unwrap(),
         "only the governor's signed watermark retires it"
     );
     let later = now.checked_add(Duration::from_secs(600)).unwrap();
     let queue = member
+        .outbox_mut()
         .reconcile_local_outbox(std::slice::from_ref(&write), &b, later)
         .unwrap();
     assert_eq!(
@@ -465,6 +518,7 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
     );
     assert!(
         member
+            .outbox()
             .reserve_local_recovery(std::slice::from_ref(&write), None, author)
             .unwrap()
             .entries()

@@ -19,7 +19,7 @@ function Get-TiloWindowsAppBuildPlan {
     if ('clocks' -in $applications) {
         $notificationBuild = [ordered]@{
             executable = 'cargo'
-            arguments = @($common) + @('-p', 'ui', '--example', 'windows-host', '--features', 'notifications')
+            arguments = @($common) + @('-p', 'ui-examples', '--example', 'windows-host')
         }
     }
     [pscustomobject]@{

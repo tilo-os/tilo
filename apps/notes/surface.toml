@@ -1,0 +1,150 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "notes.notebook"
+label = "Notebook"
+version = 1
+fields = [
+  { path = "pages", type = "Collection<Page>", stored = "collection" },
+  { path = "pages.*.title", type = "String", label = true, readonly = true },
+  { path = "pages.*.parent", type = "Option<Id>", readonly = true },
+  { path = "pages.*.body", type = "RichText", ops = "sha256:1ce89d3350d639da" },
+  { path = "pages.*.tags", type = "Set<Id>" },
+  { path = "tags", type = "Collection<Tag>", stored = "collection" },
+  { path = "tags.*.name", type = "Atom", label = true },
+  { path = "images", type = "Map<Bytes>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "new-note"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "new-child"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rename"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-note"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+  { name = "before", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "move-up"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-down"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "indent"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "outdent"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "duplicate"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "new-tag"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "tag"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-tag"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "tag", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "keep-image"
+kind = "undoable"
+params = [
+  { name = "bytes", required = true, schema = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } },
+]
+
+[[resources.verbs]]
+id = "place-image"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "bytes", required = true, schema = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } },
+  { name = "alt", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "create-page"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "markdown", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "import-markdown"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "markdown", required = true, schema = { type = "string" } },
+  { name = "images", required = true, schema = { type = "array", items = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } } },
+  { name = "note", required = false, schema = { type = ["string", "null"] } },
+]
+

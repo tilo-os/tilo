@@ -172,17 +172,9 @@ fn is_libvirt_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
-fn is_uuid(value: &str) -> bool {
-    if value.len() != 36 {
-        return false;
-    }
-    value.bytes().enumerate().all(|(index, byte)| {
-        if matches!(index, 8 | 13 | 18 | 23) {
-            byte == b'-'
-        } else {
-            byte.is_ascii_hexdigit()
-        }
-    })
+/// A hyphenated UUID, the only 36-character form `uuid` parses.
+pub(crate) fn is_uuid(value: &str) -> bool {
+    value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]

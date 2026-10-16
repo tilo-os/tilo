@@ -31,8 +31,9 @@ pdf = ["dep:tilo-pdf"]
 video = ["dep:media", "media/decode"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Crash-safe replacement of on-disk thumbnails.
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.
@@ -42,10 +43,11 @@ blake3.workspace = true
 # The system content store the encoded previews are kept in.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
 # The per-user preview cache location.
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
+# The staged compute request a batch job reads.
+serde_json.workspace = true
 
 # Optional decoders — see [features] above.
 tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf", optional = true }

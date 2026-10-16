@@ -15,6 +15,16 @@
 #   the split rootfs, so the composefs digest it embeds is the digest of what
 #   will actually be mounted) -> final (split rootfs + the UKI under /boot,
 #   which is outside the digest).
+#
+# The tools and uki stages are intentionally independent of the production
+# sealer (os/Containerfile `uki-tools`/`uki`, os/dev/uki.sh), which
+# tools/policy/check_uki_pipeline.py keeps identical across the shipped images.
+# The probe's build context is this directory, not the repository, and its
+# uki.sh can sign the UKI in the build with tilo-crypto (SIGN), which
+# os/dev/uki.sh does not, and its negative control (SEAL_GENERATION) leaves the generation out of the kargs
+# rather than skipping an assertion. A probe result therefore speaks for the
+# mechanism, not for os/dev/uki.sh; re-check a production change in a real
+# image build.
 ARG BASE_REF
 ARG RPMS_REF
 ARG GENERATION=1
@@ -30,6 +40,8 @@ FROM ${RPMS_REF} AS rpms
 FROM ${BASE_REF} AS rootfs
 ARG GENERATION
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # systemd-boot comes out of the digest-pinned RPM snapshot, not the network, so
 # this stage builds the same way the desktop image does — and stays buildable
 # when Fedora's `updates` metalink is serving repodata checksums that 404 on
@@ -37,8 +49,8 @@ ARG GENERATION
 #
 # Nothing else needs installing: the Fedora bootc base already ships tpm2-tools
 # (so PCRs and the TPM event log can be read), openssh-server, sudo,
-# shadow-utils and a python3 with tomllib. The one thing the snapshot does not
-# carry is systemd-ukify — see the tools stage.
+# shadow-utils and a python3 with tomllib. ukify comes from the snapshot too,
+# but only in the throwaway tools stage.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
         systemd-boot-unsigned \
@@ -175,14 +187,16 @@ RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output
 
 # --- uki: build (and optionally sign) the Unified Kernel Image ---------------
 FROM ${BASE_REF} AS tools
-# systemd-ukify is not in the frozen snapshot, so this stage does need the
-# network. `updates` is disabled because its metadata is not reliably
-# downloadable, and the downgrades that causes are harmless here: this is a
-# throwaway builder that ships nothing. The UKI is self-contained — its stub
-# comes from this stage's systemd-boot-unsigned and does not have to match the
-# systemd in the rootfs.
-RUN dnf install -y --disablerepo=updates --disablerepo=updates-archive \
-        systemd-ukify binutils \
+# The frozen snapshot carries the same tools the production sealer installs
+# (os/dev/uki-tools.packages, outside this build context), so this throwaway
+# builder no longer reaches the network either. The UKI is self-contained — its
+# stub comes from this stage's systemd-boot-unsigned and does not have to match
+# the systemd in the rootfs.
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
+        systemd-ukify systemd-boot-unsigned binutils \
     && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
 COPY stage/tree/usr/bin/tilo-crypto /usr/local/bin/tilo-crypto

@@ -18,7 +18,7 @@ if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/loc
   exit 1
 fi
 grep -Fq 'plymouth-plugin-script' "$containerfile"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$root/os/scripts/build-initramfs.sh" \
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
   exit 1
@@ -30,6 +30,25 @@ grep -Fq 'if (!global.dialog)' "$script"
 grep -Fq 'global.dialog.heading = Sprite' "$script"
 grep -Fq 'global.dialog.entry = Sprite' "$script"
 grep -Fq 'global.dialog.ready = 1' "$script"
+# The splash starts on the firmware framebuffer and moves to the GPU driver's
+# native mode mid-boot. Positions computed for the first screen would leave
+# the splash off-centre on the second, so a display change lays it out again.
+grep -Fq 'Plymouth.SetDisplayHotplugFunction(display_hotplug)' "$script"
+python3 - "$script" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+def body(name):
+    match = re.search(r"^fun " + name + r"\(.*?^  }$", text, re.S | re.M)
+    assert match, f"tilo.script has no {name}()"
+    return match.group(0)
+assert "place_dialog();" in body("display_password"), \
+    "the unlock prompt must be positioned for the current screen each time it is shown"
+assert "SetPosition" not in body("setup_dialog"), \
+    "setup_dialog() creates sprites; place_dialog() positions them for the current screen"
+hotplug = body("display_hotplug")
+assert "display_password" in hotplug and "display_normal" in hotplug, \
+    "a display change must re-run the layout of whichever screen is showing"
+PY
 if grep -Eq '^[[:space:]]+dialog\.(heading|help|entry|lock|bullet_image)[[:space:]]*=' "$script"; then
   printf 'Plymouth dialog state must be assigned globally from callbacks\n' >&2
   exit 1
@@ -46,8 +65,9 @@ for arg in quiet splash plymouth.ignore-serial-consoles loglevel=3 systemd.show_
   }
 done
 
-mkdir -p "$root/target"
-tmp="$(mktemp -d "$root/target/boot-ux.XXXXXX")"
+scratch="${CARGO_TARGET_DIR:-$root/target}"
+mkdir -p "$scratch"
+tmp="$(mktemp -d "$scratch/boot-ux.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 python3 "$root/os/dev/make-boot-splash.py" "$tmp/splash.bmp"
 python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth"
@@ -55,8 +75,19 @@ python3 - "$tmp/splash.bmp" <<'PY'
 import struct, sys
 data = open(sys.argv[1], "rb").read()
 assert data[:2] == b"BM"
-assert struct.unpack_from("<ii", data, 18) == (1024, 768)
+width, height = struct.unpack_from("<ii", data, 18)
+assert (width, height) == (1024, 768)
 assert len(set(data[54:])) > 24, "splash is visually empty"
+# systemd-stub clears the screen to black and centres this tile at the
+# firmware's mode; a non-black edge shows as a box on any larger panel.
+stride = (width * 3 + 3) & ~3
+def pixel(x, y):
+    at = 54 + (height - 1 - y) * stride + x * 3
+    return tuple(data[at:at + 3])
+edge = [pixel(x, y) for x in range(width) for y in (0, height - 1)]
+edge += [pixel(x, y) for y in range(height) for x in (0, width - 1)]
+assert all(value == (0, 0, 0) for value in edge), \
+    "the UKI splash tile must be black at its edge, like the stub's fill around it"
 PY
 grep -Fq "Tilo's three-dot mark" "$root/os/dev/make-boot-splash.py"
 grep -Fq 'for index, center_x in enumerate((56.0, 110.0, 164.0))' \
@@ -70,7 +101,8 @@ python3 - "$tmp/plymouth" <<'PY'
 import pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
 expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
-            "unlock-heading.png", "unlock-help.png",
+            "unlock-heading.png", "unlock-help.png", "unlock-retry.png",
+            "starting-tilo.png", "shutting-down.png", "startup-help.png",
             "progress-background.png", "progress-fill.png"}
 assert {path.name for path in root.iterdir()} == expected
 for path in root.iterdir():
@@ -79,5 +111,9 @@ for path in root.iterdir():
     width, height = struct.unpack(">II", data[16:24])
     assert width > 0 and height > 0, path
 PY
+
+# Every image build boots its own UKI on a panel larger than the firmware's
+# mode and films the splash through the disk unlock.
+grep -Fq 'os/dev/check-boot-splash.py' "$root/.forgejo/workflows/build-image.yml"
 
 printf 'boot UX invariants hold\n'

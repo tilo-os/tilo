@@ -15,7 +15,7 @@ use std::{
     io,
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -23,29 +23,99 @@ use std::{
 use tilo_action_broker::{
     channel_encryption::{
         ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider,
+        ChannelKeyProvider, GovernanceTransport,
     },
     collab_core::BrokerChannels,
 };
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_lock::MutexRecover as _;
 
 /// Sealed channel state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
-const PUMP_INTERVAL: Duration = Duration::from_millis(100);
+/// How often governance is pumped while a channel is live: steward
+/// reconciliation and redelivery run on deadlines, as on the desktop's
+/// drainer. With no channel the pump parks until woken.
+const LIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The running channel service; stops when dropped.
 pub(super) struct Channels {
     pub(super) keys: ChannelKeyProvider,
+    _pump: Pump,
+}
+
+/// Wakes the governance pump: a frame arrived, an endpoint opened a channel,
+/// or the service stops. A poke that arrives before the pump waits is kept,
+/// so a frame queued just before it parks is not left behind.
+#[derive(Default)]
+pub(super) struct PumpWake {
+    pending: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl PumpWake {
+    pub(super) fn poke(&self) {
+        let mut pending = self.pending.lock_recover();
+        *pending = true;
+        drop(pending);
+        self.ready.notify_one();
+    }
+
+    /// Sleep until poked, or for at most `timeout` when there is one.
+    fn wait(&self, timeout: Option<Duration>) {
+        let pending = self.pending.lock_recover();
+        let mut pending = match timeout {
+            Some(timeout) => {
+                self.ready
+                    .wait_timeout_while(pending, timeout, |pending| !*pending)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+            None => self
+                .ready
+                .wait_while(pending, |pending| !*pending)
+                .unwrap_or_else(PoisonError::into_inner),
+        };
+        *pending = false;
+    }
+}
+
+/// The `tilo-runtime-channels` thread; stops when dropped.
+struct Pump {
+    wake: Arc<PumpWake>,
     stop: Arc<AtomicBool>,
 }
 
-impl Drop for Channels {
+impl Drop for Pump {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.wake.poke();
     }
+}
+
+/// Run `access`'s governance over `transport` on its own thread: once per
+/// [`LIVE_INTERVAL`] while a channel is live, otherwise only when `wake` is
+/// poked.
+fn spawn_pump(
+    access: ChannelKeyAccess,
+    transport: Arc<dyn GovernanceTransport + Send + Sync>,
+    wake: Arc<PumpWake>,
+) -> io::Result<Pump> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let woken = Arc::clone(&wake);
+    std::thread::Builder::new()
+        .name("tilo-runtime-channels".into())
+        .spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                access.pump(&*transport);
+                let timeout = access.has_live_channels().then_some(LIVE_INTERVAL);
+                woken.wait(timeout);
+            }
+        })?;
+    Ok(Pump { wake, stop })
 }
 
 /// Open this device's channel state in `profile` and run its governance
@@ -72,20 +142,13 @@ pub(super) fn open(
         }),
         broker,
     )?;
-    let access = ChannelKeyAccess::new(service);
-    let keys = ChannelKeyProvider::default();
+    let wake = joined.governance_wake();
+    let poke = Arc::clone(&wake);
+    let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
+    let keys = joined.channel_keys();
     keys.set(Some(access.clone()));
-    let stop = Arc::new(AtomicBool::new(false));
-    let stopped = Arc::clone(&stop);
-    std::thread::Builder::new()
-        .name("tilo-runtime-channels".into())
-        .spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
-                access.pump(&*joined);
-                std::thread::sleep(PUMP_INTERVAL);
-            }
-        })?;
-    Ok(Channels { keys, stop })
+    let pump = spawn_pump(access, joined, wake)?;
+    Ok(Channels { keys, _pump: pump })
 }
 
 struct Directory {
@@ -104,8 +167,15 @@ impl ChannelDirectory for Directory {
     }
 
     /// Only the steward asks; this device stewards only its own room, which
-    /// it alone reads.
-    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<Ed25519PublicKey> {
+    /// it alone reads, every record of it: no other person is in it to be
+    /// denied one.
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        _channel: collab_types::ChannelId,
+        _route: Option<&collab_types::ChannelRoute>,
+        _now: u64,
+    ) -> BTreeSet<Ed25519PublicKey> {
         if room == self.own_room {
             BTreeSet::from([self.device])
         } else {
@@ -127,7 +197,7 @@ fn vault_key(profile: &Path, room: RoomId, storage: IdentityStorage) -> io::Resu
         return Ok(VaultKey::new(key));
     }
     let key = random_key();
-    atomic_file::write_with_mode(&file, &key, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&file, &key, 0o600)?;
     Ok(VaultKey::new(key))
 }
 

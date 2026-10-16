@@ -12,9 +12,9 @@ on:
       - "crates/session/shell/src/collab/**"
       - "crates/session/shell/src/network/**"
       - "crates/session/shell/src/shell/network.rs"
-      - "crates/session/shell/src/shell/overlay_host.rs"
+      - "crates/session/shell/src/shell/overlay_host/**"
       - "crates/session/shell/src/shell/peer_view.rs"
-      - "crates/session/shell/src/shell/state/shared_surfaces.rs"
+      - "crates/session/desktop-model/src/shared_surfaces.rs"
       - "crates/sdk/ui-core/src/input.rs"
       - "crates/sdk/ui-core/src/interaction.rs"
       - "crates/sdk/ui-core/src/widget/group_row.rs"
@@ -23,24 +23,7 @@ on:
       - ".forgejo/actions/prepare-rust-build/**"
       - ".forgejo/workflows/ci-legacy-apps.yml"
       - ".forgejo/workflows/resolve-builder.yml"
-  # Capacity relief: main-push validation is covered by nightly/manual runs.
-  # push:
-  #   branches: ["main"]
-  #   paths:
-  #     - "crates/session/shell/src/compositor/**"
-  #     - "crates/session/shell/src/collab/**"
-  #     - "crates/session/shell/src/network/**"
-  #     - "crates/session/shell/src/shell/network.rs"
-  #     - "crates/session/shell/src/shell/overlay_host.rs"
-  #     - "crates/session/shell/src/shell/peer_view.rs"
-  #     - "crates/session/shell/src/shell/state/shared_surfaces.rs"
-  #     - "crates/sdk/ui-core/src/input.rs"
-  #     - "crates/sdk/ui-core/src/interaction.rs"
-  #     - "crates/sdk/ui-core/src/widget/group_row.rs"
-  #     - "scripts/legacy-app-caret-e2e.py"
-  #     - ".forgejo/actions/restore-cargo-downloads/**"
-  #     - ".forgejo/actions/prepare-rust-build/**"
-  #     - ".forgejo/workflows/ci-legacy-apps.yml"
+  # Main pushes are not gated here: nightly and manual runs cover them.
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
@@ -61,7 +44,6 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -72,8 +54,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -107,7 +87,7 @@ jobs:
 
       - name: Upload screenshots and process logs
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: legacy-app-e2e-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/legacy-app-e2e

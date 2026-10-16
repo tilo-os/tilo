@@ -175,21 +175,6 @@ impl Page {
             Rotation::CounterClockwise => DynamicImage::ImageRgba8(imageops::rotate270(&cropped)),
         }
     }
-
-    /// Runs OCR on the current rendered page and retains the result.
-    ///
-    /// # Errors
-    ///
-    /// Propagates OCR engine or decoding errors.
-    pub fn recognize(&mut self, language: &str) -> Result<&Document, tilo_ocr::Error> {
-        let recognition = tilo_ocr::recognize_detailed(&self.rendered(), language)?;
-        self.ocr = Some(recognition.document);
-        self.ocr_deskew_degrees = recognition.deskew_degrees;
-        // Set immediately above and retained by `self`.
-        self.ocr
-            .as_ref()
-            .ok_or_else(|| tilo_ocr::Error::Engine("OCR result was lost".into()))
-    }
 }
 
 #[derive(Default)]
@@ -202,24 +187,6 @@ impl ScanSession {
     pub fn add_page(&mut self, image: DynamicImage) {
         self.pages.push(Page::new(image));
         self.selected = self.pages.len().saturating_sub(1);
-    }
-    /// Capture from the system's typed SANE boundary and append only after the
-    /// complete PNG has decoded. A failed page never corrupts the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scanning fails or the scanner response is not a
-    /// valid PNG image.
-    pub fn capture_from_sane(
-        &mut self,
-        device: &str,
-        settings: tilo_capture::scanner::ScanSettings,
-    ) -> Result<(), String> {
-        let bytes = tilo_capture::scanner::scan_page(device, settings)?;
-        let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-            .map_err(|error| format!("scanner returned an invalid PNG: {error}"))?;
-        self.add_page(image);
-        Ok(())
     }
     pub fn move_page(&mut self, from: usize, to: usize) -> bool {
         if from >= self.pages.len() || to >= self.pages.len() || from == to {
@@ -238,15 +205,6 @@ impl ScanSession {
         self.selected = self.selected.min(self.pages.len().saturating_sub(1));
         true
     }
-    #[must_use]
-    pub fn searchable_text(&self) -> String {
-        self.pages
-            .iter()
-            .filter_map(|page| page.ocr.as_ref())
-            .map(Document::plain_text)
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    }
 
     /// Render the current page order, edits, and OCR layers into a searchable
     /// PDF. Pages without recognized text remain valid image-only pages; the
@@ -258,7 +216,7 @@ impl ScanSession {
             .iter()
             .map(|page| {
                 let image = page.rendered().to_rgb8();
-                qdoc_pdf::ScannedPdfPage {
+                tilo_doc_pdf::ScannedPdfPage {
                     width: image.width(),
                     height: image.height(),
                     rgb: image.into_raw(),
@@ -269,7 +227,7 @@ impl ScanSession {
                 }
             })
             .collect::<Vec<_>>();
-        qdoc_pdf::render_scanned_pdf(&pages)
+        tilo_doc_pdf::render_scanned_pdf(&pages)
     }
 }
 

@@ -12,6 +12,7 @@ fn proof(
     now: SystemTime,
 ) -> crate::join::VerifiedMembership {
     let challenge = peer
+        .governance()
         .membership_challenge(
             7,
             cert,
@@ -37,13 +38,17 @@ fn owner_bootstrap_current_owner_is_distinct_from_collaborator_refresh() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().0,
+        peer.permissions(cert.device_public_key, now).unwrap().role,
         Role::Owner
     );
-    peer.verify_owner_refresh(&membership, now).unwrap();
-    peer.verify_current_owner(&cert, now).unwrap();
+    peer.governance()
+        .verify_owner_refresh(&membership, now)
+        .unwrap();
+    peer.governance().verify_current_owner(&cert, now).unwrap();
     assert_eq!(
-        peer.verify_member_refresh(&membership, now).unwrap_err(),
+        peer.governance()
+            .verify_member_refresh(&membership, now)
+            .unwrap_err(),
         "structural owner does not use collaborator refresh"
     );
     let restored = StatePeer::restore(
@@ -55,14 +60,19 @@ fn owner_bootstrap_current_owner_is_distinct_from_collaborator_refresh() {
         now,
     )
     .unwrap();
-    restored.verify_current_owner(&cert, now).unwrap();
+    restored
+        .governance()
+        .verify_current_owner(&cert, now)
+        .unwrap();
 }
 
 #[test]
 fn owner_bootstrap_proof_scope_and_exact_certificate_cannot_be_substituted() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
-    peer.verify_owner_refresh(&membership, now).unwrap();
+    peer.governance()
+        .verify_owner_refresh(&membership, now)
+        .unwrap();
     for (room, authority) in [
         (
             "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -90,12 +100,20 @@ fn owner_bootstrap_proof_scope_and_exact_certificate_cannot_be_substituted() {
             now_ns(now),
         )
         .unwrap();
-        assert!(peer.verify_owner_refresh(&verified, now).is_err());
+        assert!(
+            peer.governance()
+                .verify_owner_refresh(&verified, now)
+                .is_err()
+        );
     }
     let mut changed = cert;
     changed.device_label.push('!');
     tilo_user_identity::sign_device_cert(&mut changed, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    assert!(peer.verify_current_owner(&changed, now).is_err());
+    assert!(
+        peer.governance()
+            .verify_current_owner(&changed, now)
+            .is_err()
+    );
 }
 
 #[test]
@@ -124,14 +142,19 @@ fn owner_bootstrap_current_host_expiry_cannot_be_hidden_by_live_owner_device() {
         )
         .unwrap();
     let verified = proof(&current, &cert, &key, now);
-    current.verify_owner_refresh(&verified, now).unwrap();
+    current
+        .governance()
+        .verify_owner_refresh(&verified, now)
+        .unwrap();
     assert!(
         current
+            .governance()
             .verify_owner_refresh(&verified, now + Duration::from_nanos(100))
             .is_err()
     );
     assert!(
         current
+            .governance()
             .verify_current_owner(&cert, now + Duration::from_nanos(100))
             .is_err()
     );
@@ -189,26 +212,44 @@ fn owner_bootstrap_all_collaborator_roles_remain_refreshable_and_never_owner() {
         now_ns(now),
     )
     .unwrap();
-    peer.admit_invited_member(&redemption, &host_key, now)
+    peer.governance_mut()
+        .admit_invited_member(&redemption, &host_key, now)
         .unwrap();
     for role in [
         MemberRole::Viewer,
         MemberRole::Commenter,
         MemberRole::Editor,
     ] {
-        peer.set_member_role(cert.user_public_key, role, &host_key, now)
+        peer.governance_mut()
+            .set_member_role(cert.user_public_key, role, &host_key, now)
             .unwrap();
         let verified = proof(&peer, &cert, &key, now);
-        assert_eq!(peer.verify_member_refresh(&verified, now).unwrap(), role);
-        assert!(peer.verify_owner_refresh(&verified, now).is_err());
-        assert!(peer.verify_current_owner(&cert, now).is_err());
+        assert_eq!(
+            peer.governance()
+                .verify_member_refresh(&verified, now)
+                .unwrap(),
+            role
+        );
+        assert!(
+            peer.governance()
+                .verify_owner_refresh(&verified, now)
+                .is_err()
+        );
+        assert!(peer.governance().verify_current_owner(&cert, now).is_err());
     }
     let verified = proof(&peer, &cert, &key, now);
-    peer.remove_member(cert.user_public_key, &host_key, now)
+    peer.governance_mut()
+        .remove_member(cert.user_public_key, &host_key, now)
         .unwrap();
     assert_eq!(
-        peer.verify_member_refresh(&verified, now).unwrap_err(),
+        peer.governance()
+            .verify_member_refresh(&verified, now)
+            .unwrap_err(),
         "member has been removed"
     );
-    assert!(peer.verify_owner_refresh(&verified, now).is_err());
+    assert!(
+        peer.governance()
+            .verify_owner_refresh(&verified, now)
+            .is_err()
+    );
 }

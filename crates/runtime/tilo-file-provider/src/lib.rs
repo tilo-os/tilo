@@ -12,16 +12,6 @@
 //! the caller frees with [`tilo_fp_string_free`]; `macos/TiloFileProvider.h`
 //! declares the functions.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod session;
 
 use serde::Serialize;
@@ -49,7 +39,7 @@ fn home_directory() -> Option<PathBuf> {
     // strings `entry` points into, and `found` is only read afterwards.
     let status = unsafe {
         libc::getpwuid_r(
-            libc::getuid(),
+            rustix::process::getuid().as_raw(),
             entry.as_mut_ptr(),
             buffer.as_mut_ptr(),
             buffer.len(),

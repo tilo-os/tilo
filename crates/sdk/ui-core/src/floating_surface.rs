@@ -53,13 +53,133 @@ pub enum FloatingRole {
     ActiveCall,
     Navigation,
     LiveActivity,
+    /// Interactive conversation content retained by its original app.
+    Conversation,
 }
 
-/// Version of the app ↔ shell floating-surface lifecycle wire contract.
-/// Geometry is encoded as plain logical-pixel arrays rather than renderer
-/// types so sandbox services, Wayland protocol shims, and test transports can
-/// all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
+impl FloatingRole {
+    /// Whether interactive content stays rendered by its owning app rather
+    /// than becoming a compositor-owned capture mirror.
+    pub const fn uses_app_owned_host(self) -> bool {
+        match self {
+            Self::ActiveCall | Self::Navigation | Self::Conversation => true,
+            Self::PictureInPicture | Self::LiveActivity => false,
+        }
+    }
+}
+
+/// What a floating surface's body is made of. A surface names its material;
+/// the toolkit and compositor decide how it renders — the blur radius, the
+/// tint and the opaque fallback are never the caller's
+/// (`docs/design-language.md`, "Material and transparency").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// Floating chrome — palette, menus, popovers, quick settings, sheets,
+    /// notifications, and chrome over media: the blurred backdrop tinted
+    /// with `surfaces.overlay`. Opaque `surfaces.overlay` where the renderer
+    /// cannot blur, and under reduced transparency or forced colours.
+    #[default]
+    Floating,
+    /// Always opaque `surfaces.overlay`: a surface whose backdrop must not
+    /// show through, such as a prompt for a secret over content the user
+    /// does not own.
+    Opaque,
+}
+
+/// Paint a floating surface's body: `shape` filled with `material`. Edges,
+/// shadows and content are drawn by the caller on top, exactly as on an
+/// opaque surface.
+pub fn paint_material(
+    scene: &mut vello::Scene,
+    transform: Affine,
+    shape: &impl vello::kurbo::Shape,
+    material: Material,
+    theme: &crate::theme::Theme,
+) {
+    crate::backdrop::fill(scene, transform, shape, material, theme);
+}
+
+/// The native allocation around retained interactive content, including the
+/// shared floating silhouette, its rim and the themed elevation. Content
+/// geometry stays unchanged: the extra pixels are a transparent frame gutter,
+/// not padding inserted into the app's layout or input coordinates.
+#[must_use]
+pub fn app_owned_content_window_rect(
+    content_rect: Rect,
+    shadow: &crate::tokens::Shadow,
+    rim_width: f64,
+) -> Rect {
+    use vello::kurbo::Shape;
+
+    let frame = crate::surface::soft_outline(content_rect)
+        .bounding_box()
+        .inflate(rim_width / 2.0, rim_width / 2.0)
+        .union(content_rect);
+    crate::surface::shadow_bounds(content_rect, shadow).map_or(frame, |bounds| frame.union(bounds))
+}
+
+/// Paint the framework-owned frame around one interactive app-owned surface.
+///
+/// Retained app content stands on the ordinary opaque Object ground, not a
+/// translucent Panel material. The shared floating silhouette clips every app
+/// paint, and its rim is drawn last so square app backgrounds cannot erase the
+/// frame. The native allocation remains transparent outside the silhouette and
+/// its shadow; hosts allocate it with [`app_owned_content_window_rect`].
+pub fn paint_app_owned_content(
+    scene: &mut vello::Scene,
+    transform: Affine,
+    content_rect: Rect,
+    theme: &crate::theme::Theme,
+    draw: impl FnOnce(&mut vello::Scene) -> bool,
+) -> bool {
+    use vello::kurbo::Stroke;
+    use vello::peniko::{BlendMode, Fill};
+
+    let body = crate::surface::soft_outline(content_rect);
+    crate::surface::shadow(
+        scene,
+        transform,
+        content_rect,
+        f64::from(theme.tokens.radii.tile),
+        &theme.tokens.elevation.floating,
+    );
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &body,
+    );
+    // The shared soft silhouette has a slight outward bow. Its framework
+    // ground may occupy that frame, but app paints still cannot escape the
+    // authenticated content rectangle.
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        transform,
+        &content_rect,
+    );
+    let drawn = draw(scene);
+    scene.pop_layer();
+    scene.pop_layer();
+    scene.stroke(
+        &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+        transform,
+        theme.tokens.colors.window_edge(),
+        None,
+        &body,
+    );
+    drawn
+}
+
+/// Version of the app ↔ shell wire contract on the shell-ui channel:
+/// floating-surface lifecycle and the window's appearance. Geometry is
+/// encoded as plain logical-pixel arrays rather than renderer types so
+/// sandbox services, Wayland protocol shims, and test transports can all
+/// carry the same messages.
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 5;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -91,11 +211,15 @@ pub enum FloatingSurfaceProtocolSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Roles are additive wire values: an older peer refuses an unknown role;
+/// it must never reinterpret interactive content as a capture mirror. Adding
+/// a role preserves the existing framing, geometry, and legacy role values.
 pub enum FloatingSurfaceProtocolRole {
     PictureInPicture,
     ActiveCall,
     Navigation,
     LiveActivity,
+    Conversation,
 }
 
 /// Starting mode for an app-requested session-shell chooser. The request only
@@ -133,6 +257,23 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// Complete primary-surface marker inventory from a successfully presented
+    /// SDK frame. The host resolves surface and room from launch custody.
+    ActionMarkers {
+        markers: Vec<crate::PaintedActionMarker>,
+    },
+    /// A typed Settings request on the existing authenticated app connection.
+    MoveDeviceDisplay {
+        request: u64,
+        placement: settings_store::device_displays::DeviceDisplayMove,
+    },
+    /// Bounded response to a trusted owner operation on this same connection.
+    DeviceShellOutcome {
+        request: u64,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Terminal asks for the existing host-shell permission prompt.
+    AllowHostShell,
     /// Ask the trusted session shell to show its ordinary user-confirmed
     /// chooser. This shares the same authenticated channel as floating
     /// surfaces so a separately hosted app and an embedded app have identical
@@ -155,6 +296,9 @@ pub enum FloatingSurfaceClientMessage {
         rect: [f64; 4],
         /// Shared placement/hit geometry inside that transparent window.
         content_rect: [f64; 4],
+        /// Interactive frame excluding shadow; absent means legacy window input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_rect: Option<[f64; 4]>,
     },
     /// The primary window has presented a frame with the transferred pixels
     /// removed. The shell may now move its proxy/native surface away from the
@@ -183,7 +327,63 @@ pub enum FloatingSurfaceClientMessage {
     /// later too, and drops it when this connection closes.
     SetCaptureProtection {
         protected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<u64>,
     },
+    /// One frame of the page this app's window shows, as a paint stream
+    /// (`tilo_paint_stream::wire::Payload`, base64): the session shares it
+    /// with web members as a display list they draw, instead of as video.
+    /// `page` is where the page sits in the window, in logical pixels, and
+    /// `scale` the window's buffer scale, so the session can place input.
+    /// Sent only while the shell has asked for it ([`FloatingSurfaceHostMessage::PaintKeyframe`]).
+    PaintStream {
+        payload: String,
+        page: [f64; 4],
+        scale: f64,
+    },
+    /// This app can stream its window's page (sent once): the shell may ask
+    /// it to with [`FloatingSurfaceHostMessage::PaintKeyframe`].
+    PaintCapable,
+    /// Open another instance of this app as a desktop tab right after this
+    /// app's own tab (see [`crate::shell_tabs`]). `target` is a URI the app's
+    /// manifest declares, or `None` for an empty instance. `instance` is the
+    /// record instance the shell launched this process for; the shell only
+    /// uses it to find a tab that already shows this same app.
+    OpenTabBeside {
+        target: Option<String>,
+        background: bool,
+        instance: Option<u64>,
+    },
+    /// Close this app's own tab through the desktop's tab lifecycle.
+    CloseTab {
+        instance: Option<u64>,
+    },
+    /// Reopen the workspace's most recently closed tab.
+    ReopenClosedTab,
+    /// The next window this app maps lands as a tab right after this one.
+    PlaceNextWindowBeside {
+        background: bool,
+        instance: Option<u64>,
+    },
+}
+
+/// Owner-only operations on Terminal's existing device-shell PTY.
+/// Every input/read operation is bound to the exact currently open local session.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeviceShellOperation {
+    Select,
+    Inspect,
+    Run { session: String, command: String },
+    Read { session: String },
+}
+
+/// Sanitized host network hints. Unknown is distinct from known unmetered;
+/// this carries no connection name, device, address or network permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNetworkStatus {
+    pub available: Option<bool>,
+    pub metered: Option<bool>,
 }
 
 /// Shell → app lifecycle. The shell supplies one authoritative combined
@@ -192,9 +392,34 @@ pub enum FloatingSurfaceClientMessage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// Admission/delivery result. The owner's published topology confirms application.
+    DeviceDisplayMoveResult {
+        request: u64,
+        result: Result<(), String>,
+    },
+    /// The authenticated device owner selected Terminal's device-shell target.
+    /// This requests its ordinary permission flow; it is not a grant.
+    DeviceShellOperation {
+        request: u64,
+        operation: DeviceShellOperation,
+    },
+    /// Sent only after the compositor has installed the requested policy.
+    CaptureProtectionApplied {
+        generation: u64,
+        protected: bool,
+    },
+    /// The trusted desktop's answer, after supervisor admission.
+    HostShellAllowed {
+        allowed: bool,
+    },
     DesktopBounds {
         bounds: [f64; 4],
     },
+    /// Someone started watching this app's window: send its page as a paint
+    /// stream, starting from a whole frame.
+    PaintKeyframe,
+    /// Nobody watches the window any more: stop capturing the page.
+    PaintStop,
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
     /// never gain overlay authority.
@@ -229,6 +454,92 @@ pub enum FloatingSurfaceHostMessage {
     Closed {
         id: String,
     },
+    /// Where and for whom the app's window is shown
+    /// ([`crate::theme::WindowAppearance`]): the temperature of the
+    /// workspace holding it and the person's colour. Sent when the app
+    /// connects and again whenever either changes — a workspace switch, a
+    /// new wallpaper, a window moved to another workspace, a colour chosen
+    /// in Settings.
+    Appearance {
+        /// The host's configured palette; apps cannot read its settings file
+        /// through their private sandbox configuration directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<crate::theme_document::ThemeDocument>,
+        /// Absent on older hosts or launches without network access.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_status: Option<HostNetworkStatus>,
+        /// OKLCH degrees; absent while the workspace has no temperature.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_hue: Option<f32>,
+        /// A presence hue by its stored name (`PresenceHue::id`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        your_colour: Option<String>,
+    },
+}
+
+impl FloatingSurfaceHostMessage {
+    /// The message that tells a window `appearance`.
+    #[must_use]
+    pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
+        Self::Appearance {
+            theme: None,
+            network_status: None,
+            workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
+            your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
+        }
+    }
+
+    /// The host's configured theme and the window's workspace appearance.
+    #[must_use]
+    pub fn appearance_with_theme(
+        appearance: &crate::theme::WindowAppearance,
+        theme: &crate::Theme,
+    ) -> Self {
+        let mut message = Self::appearance(appearance);
+        if let Self::Appearance {
+            theme: document, ..
+        } = &mut message
+        {
+            *document = Some(theme.document.clone());
+        }
+        message
+    }
+
+    /// Validate the host's authored palette before applying it.
+    #[must_use]
+    pub fn configured_theme(&self) -> Option<crate::Theme> {
+        let Self::Appearance {
+            theme: Some(document),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        crate::Theme::from_document(document)
+    }
+
+    /// What an [`Self::Appearance`] message says, `None` for any other. A
+    /// colour this build does not name, or a hue that is not a number,
+    /// counts as unsaid.
+    #[must_use]
+    pub fn window_appearance(&self) -> Option<crate::theme::WindowAppearance> {
+        let Self::Appearance {
+            workspace_hue,
+            your_colour,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(crate::theme::WindowAppearance {
+            workspace_hue: workspace_hue
+                .filter(|hue| hue.is_finite())
+                .map(|hue| hue.rem_euclid(360.0)),
+            your_colour: your_colour
+                .as_deref()
+                .and_then(crate::tokens::PresenceHue::from_id),
+        })
+    }
 }
 
 /// Non-blocking app-side connection to the session shell. The launcher hands
@@ -243,19 +554,88 @@ pub struct FloatingSurfaceServiceClient {
     outgoing: VecDeque<Vec<u8>>,
     outgoing_offset: usize,
     outgoing_bytes: usize,
+    /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
+    /// has read; dropping it stops the watcher.
+    #[cfg(any(test, feature = "local-daemons"))]
+    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
 }
 
 #[cfg(unix)]
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
+    /// The inherited descriptor belongs to one app launch. Transport loss is
+    /// terminal for this client; only a fresh launcher-mediated launch supplies
+    /// a new connection. Discovery never opens a privileged host socket.
     #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
         // The inherited service descriptor belongs to this one client. Lift
         // it exactly once; dropping the client closes it cleanly.
         let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-        Self::from_stream(UnixStream::from(owned)).ok()
+        // The shell writes unprompted (a workspace switch changes the
+        // window's appearance), so an idle app must wake to read it.
+        let wake = crate::wake::WakeHandle::new();
+        Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
+    }
+
+    /// [`Self::from_stream`], calling `wake` whenever the shell has written
+    /// something the app has not read yet: one wake, then nothing until the
+    /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
+    /// it. Dropping the client stops the watcher within one poll interval.
+    #[cfg(any(test, feature = "local-daemons"))]
+    fn from_stream_waking(
+        stream: UnixStream,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd as _;
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+        // Its own descriptor for the same socket: closing the client's never
+        // leaves the watcher polling a number the process reused.
+        let watched = stream.try_clone()?;
+        let (rearm, armed) = std::sync::mpsc::channel::<()>();
+        tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
+            loop {
+                let mut readable = libc::pollfd {
+                    fd: watched.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
+                // SAFETY: one valid pollfd for a descriptor this thread owns.
+                let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+                if ready < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                }
+                if ready == 0 {
+                    // Idle: stop once the client is gone. A rearm that
+                    // arrives while armed means nothing.
+                    match armed.try_recv() {
+                        Err(TryRecvError::Disconnected) => return,
+                        Ok(()) | Err(TryRecvError::Empty) => continue,
+                    }
+                }
+                wake();
+                if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return;
+                }
+                loop {
+                    match armed.recv_timeout(POLL) {
+                        Ok(()) => break,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                while armed.try_recv().is_ok() {}
+            }
+        })?;
+        let mut client = Self::from_stream(stream)?;
+        client.rearm_wake = Some(rearm);
+        Ok(client)
     }
 
     /// Without the local daemons there is no inherited session service.
@@ -264,8 +644,16 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
-    #[cfg(any(test, feature = "local-daemons"))]
-    fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
+    /// Construct an explicit fixture connection through the production stream adapter.
+    /// # Errors
+    /// Returns the same stream configuration failures as native service admission.
+    #[cfg(feature = "test-support")]
+    pub fn from_test_stream(stream: UnixStream) -> std::io::Result<Self> {
+        Self::from_stream(stream)
+    }
+
+    #[cfg(any(test, feature = "local-daemons", feature = "test-support"))]
+    pub(crate) fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
@@ -273,6 +661,8 @@ impl FloatingSurfaceServiceClient {
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
             outgoing_bytes: 0,
+            #[cfg(any(test, feature = "local-daemons"))]
+            rearm_wake: None,
         })
     }
 
@@ -333,6 +723,10 @@ impl FloatingSurfaceServiceClient {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(format!("read floating-surface service: {error}")),
             }
+        }
+        #[cfg(any(test, feature = "local-daemons"))]
+        if let Some(rearm) = &self.rearm_wake {
+            let _ = rearm.send(());
         }
 
         let mut messages = Vec::new();
@@ -426,6 +820,9 @@ pub struct FloatingSurfacePresentation {
     pub id: String,
     pub content_rect: Rect,
     pub window_rect: Rect,
+    /// Includes interactive chrome, not just media; excludes shadow.
+    /// `None` preserves legacy whole-window hit testing.
+    pub input_rect: Option<Rect>,
     /// The pointer crossed back into the parent app, but the shell still owns
     /// the visible pixels until it acknowledges suspension. Keeping this
     /// presentation alive for that interval supplies the exact final geometry
@@ -497,6 +894,7 @@ impl From<FloatingRole> for FloatingSurfaceProtocolRole {
             FloatingRole::ActiveCall => Self::ActiveCall,
             FloatingRole::Navigation => Self::Navigation,
             FloatingRole::LiveActivity => Self::LiveActivity,
+            FloatingRole::Conversation => Self::Conversation,
         }
     }
 }
@@ -508,6 +906,7 @@ impl From<FloatingSurfaceProtocolRole> for FloatingRole {
             FloatingSurfaceProtocolRole::ActiveCall => Self::ActiveCall,
             FloatingSurfaceProtocolRole::Navigation => Self::Navigation,
             FloatingSurfaceProtocolRole::LiveActivity => Self::LiveActivity,
+            FloatingSurfaceProtocolRole::Conversation => Self::Conversation,
         }
     }
 }
@@ -596,6 +995,31 @@ pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
     Ok(Rect::new(x0, y0, x1, y1))
 }
 
+/// Validate optional interactive geometry without enlarging the native window.
+///
+/// # Errors
+/// Returns an error for malformed geometry or an input region outside `window`.
+pub fn protocol_input_rect(window: Rect, coords: Option<[f64; 4]>) -> Result<Option<Rect>, String> {
+    coords
+        .map(|coords| {
+            let rect = protocol_rect(coords)?;
+            if !rect.width().is_finite()
+                || !rect.height().is_finite()
+                || rect.intersect(window) != rect
+            {
+                return Err("floating input rect must be contained in its window".into());
+            }
+            Ok(rect)
+        })
+        .transpose()
+}
+
+/// Move a declared interactive region with its host geometry.
+#[must_use]
+pub fn translate_input_rect(input: Option<Rect>, from: Point, to: Point) -> Option<Rect> {
+    input.map(|rect| rect + (to - from))
+}
+
 /// Where the floating surface currently belongs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Attachment {
@@ -667,11 +1091,17 @@ pub struct FloatingPlacement {
     handoff_rect: Option<Rect>,
     drag: Option<Drag>,
     preferred_size: Size,
+    /// Inline app elements may fill their ordinary layout region before
+    /// detaching; activity overlays leave this unset and use the inset home.
+    attached_region: Option<Rect>,
     /// Visual chrome surrounding the content rect while it belongs to an app.
     /// Keeping this here makes the *complete* soft surface stay inside its
     /// parent, while desktop geometry can continue to identify the stable
     /// content region used by the native-surface protocol.
     attached_chrome: [f64; 4],
+    /// Bands of the app the surface keeps clear of while attached (the
+    /// window's header row), as `[left, top, right, bottom]`.
+    safe_insets: [f64; 4],
     /// Translation between the app's local widget space and the shell's
     /// desktop space while a native surface owns presentation.
     desktop_coordinate_offset: Vec2,
@@ -683,6 +1113,14 @@ pub struct FloatingPlacement {
 }
 
 impl FloatingPlacement {
+    /// Whether an attached surface has crossed the shared detach boundary.
+    ///
+    /// Hosts can use this before constructing a retained surface so the
+    /// pre-creation gesture follows the same threshold as [`Self::update_drag`].
+    pub fn is_beyond_detach_boundary(pointer: Point, app: Rect) -> bool {
+        !app.inflate(28.0, 28.0).contains(pointer)
+    }
+
     pub fn attached(preferred_size: Size) -> Self {
         Self {
             attachment: Attachment::App { offset: Vec2::ZERO },
@@ -692,7 +1130,9 @@ impl FloatingPlacement {
             handoff_rect: None,
             drag: None,
             preferred_size,
+            attached_region: None,
             attached_chrome: [0.0; 4],
+            safe_insets: [0.0; 4],
             desktop_coordinate_offset: Vec2::ZERO,
             handoff_motion: None,
             handoff_progress_override: None,
@@ -720,14 +1160,52 @@ impl FloatingPlacement {
         self.return_pending
     }
 
+    /// Ask the host to return an adopted surface without painting a second
+    /// source copy before its `Suspended` acknowledgement.
+    pub fn request_app_return(&mut self) {
+        if self.desktop_adopted && matches!(self.attachment, Attachment::Desktop { .. }) {
+            self.return_pending = true;
+            self.drag = None;
+        }
+    }
+
     pub fn set_preferred_size(&mut self, size: Size) {
         self.preferred_size = size;
+    }
+
+    /// Bind placement to the exact current app-local region of an inline
+    /// element. This is lifecycle geometry, not an independent layout system.
+    pub fn set_attached_region(&mut self, region: Option<Rect>) {
+        match region {
+            None => self.attached_region = None,
+            Some(rect) if protocol_rect([rect.x0, rect.y0, rect.x1, rect.y1]).is_ok() => {
+                self.attached_region = Some(rect);
+            }
+            Some(_) => {}
+        }
     }
 
     /// Declare app-owned decoration around the placement's content rect as
     /// `[left, top, right, bottom]` logical pixels.
     pub fn set_attached_chrome(&mut self, chrome: [f64; 4]) {
         self.attached_chrome = chrome.map(|value| value.max(0.0));
+    }
+
+    /// Keep the attached surface clear of bands of the app as `[left, top,
+    /// right, bottom]` logical pixels: its home sits inside them and a drag
+    /// inside the app does not slide it under them. A host with a header
+    /// row passes `[0.0, header_height, 0.0, 0.0]`. Separate from
+    /// [`Self::set_attached_chrome`], which is the surface's own decoration.
+    pub fn set_safe_insets(&mut self, insets: [f64; 4]) {
+        self.safe_insets = insets.map(|value| value.max(0.0));
+    }
+
+    /// The part of `app` an attached surface may stand in.
+    fn safe_area(&self, app: Rect) -> Rect {
+        let [left, top, right, bottom] = self.safe_insets;
+        let x0 = (app.x0 + left).min(app.x1);
+        let y0 = (app.y0 + top).min(app.y1);
+        Rect::new(x0, y0, (app.x1 - right).max(x0), (app.y1 - bottom).max(y0))
     }
 
     /// Restore only app-local presentation; never restore desktop surface authority.
@@ -874,12 +1352,6 @@ impl FloatingPlacement {
         self.desktop_covered = false;
     }
 
-    /// Convenience for non-drag programmatic adoption.
-    pub fn adopt_desktop_rect(&mut self, rect: Rect) {
-        self.prepare_desktop_rect(rect);
-        self.confirm_desktop_adoption();
-    }
-
     pub fn is_handoff_animating(&self) -> bool {
         (self.handoff_progress_override.is_none()
             && self
@@ -962,6 +1434,10 @@ impl FloatingPlacement {
     }
 
     fn attached_home_rect(&self, app: Rect) -> Rect {
+        if let Some(region) = self.attached_region {
+            return region;
+        }
+        let app = self.safe_area(app);
         let [left, top, right, bottom] = self.attached_chrome;
         let w = self
             .preferred_size
@@ -1029,7 +1505,7 @@ impl FloatingPlacement {
             Attachment::App { .. } => app,
         };
         match self.attachment {
-            Attachment::App { .. } if !app.inflate(28.0, 28.0).contains(pointer) => {
+            Attachment::App { .. } if Self::is_beyond_detach_boundary(pointer, app) => {
                 self.attachment = Attachment::Desktop { rect: moved };
                 self.handoff_rect = Some(moved);
                 self.handoff_progress_override = None;
@@ -1062,8 +1538,16 @@ impl FloatingPlacement {
             }
             Attachment::App { .. } => {
                 let home = self.attached_home_rect(app);
+                // Within the app, the surface never slides under the bands
+                // its host keeps clear (the header row).
+                let top = self.safe_area(app).y0 + self.attached_chrome[1];
+                let y0 = if self.safe_insets[1] > 0.0 {
+                    moved.y0.max(top)
+                } else {
+                    moved.y0
+                };
                 self.attachment = Attachment::App {
-                    offset: Vec2::new(moved.x0 - home.x0, moved.y0 - home.y0),
+                    offset: Vec2::new(moved.x0 - home.x0, y0 - home.y0),
                 };
                 Handoff::None
             }
@@ -1071,8 +1555,12 @@ impl FloatingPlacement {
     }
 
     pub fn end_drag(&mut self, desktop: Rect) {
-        let release_velocity = self.drag.take().map_or(Vec2::ZERO, |drag| drag.velocity);
+        let released = self.drag.take();
+        let release_velocity = released.map_or(Vec2::ZERO, |drag| drag.velocity);
         if let Attachment::Desktop { rect } = self.attachment {
+            if self.return_pending {
+                return;
+            }
             let from = clamp_rect(rect, desktop, 64.0);
             let to = snap_to_edges(from, desktop, 16.0);
             self.attachment = Attachment::Desktop { rect: to };
@@ -1141,10 +1629,66 @@ fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 mod tests {
     use super::*;
 
+    #[test]
+    fn optional_input_geometry_never_expands_the_host_window() {
+        let window = Rect::new(100.0, 80.0, 500.0, 400.0);
+        assert_eq!(protocol_input_rect(window, None).unwrap(), None);
+        let input = [108.0, 88.0, 492.0, 392.0];
+        assert_eq!(
+            protocol_input_rect(window, Some(input)).unwrap(),
+            Some(Rect::new(108.0, 88.0, 492.0, 392.0))
+        );
+        for invalid in [
+            [99.0, 88.0, 492.0, 392.0],
+            [108.0, 88.0, 501.0, 392.0],
+            [108.0, 88.0, 108.0, 392.0],
+            [108.0, 88.0, f64::NAN, 392.0],
+            [108.0, 88.0, 492.0, f64::INFINITY],
+        ] {
+            assert!(protocol_input_rect(window, Some(invalid)).is_err());
+        }
+        let translated =
+            translate_input_rect(Some(window), window.origin(), Point::new(200.0, 180.0));
+        assert_eq!(translated, Some(window + Vec2::new(100.0, 100.0)));
+    }
+
     fn instant_ago(duration: crate::time::Duration) -> crate::time::Instant {
         crate::time::now()
             .checked_sub(duration)
             .unwrap_or_else(crate::time::now)
+    }
+
+    #[test]
+    fn repeated_float_return_keeps_independent_conversation_ownership() {
+        let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+        let desktop = Rect::new(-800.0, 0.0, 1600.0, 900.0);
+        let inline = Rect::new(300.0, 120.0, 840.0, 660.0);
+        let detached = Rect::new(-700.0, 150.0, -160.0, 690.0);
+        let mut conversation = FloatingPlacement::attached(inline.size());
+        conversation.set_attached_region(Some(inline));
+        let mut sibling = FloatingPlacement::attached(inline.size());
+        sibling.detach_to_desktop(Rect::new(940.0, 120.0, 1480.0, 660.0));
+        sibling.confirm_desktop_adoption();
+        let sibling_rect = sibling.rect(app, desktop);
+        for _ in 0..3 {
+            conversation.detach_to_desktop(detached);
+            assert!(!conversation.is_desktop_adopted());
+            conversation.prepare_desktop_rect_with_offset(detached, Vec2::new(-1000.0, 30.0));
+            assert_eq!(conversation.rect(app, desktop), detached);
+            conversation.confirm_desktop_adoption();
+            conversation.request_app_return();
+            assert!(conversation.is_return_pending());
+            assert!(matches!(
+                conversation.attachment(),
+                Attachment::Desktop { .. }
+            ));
+            conversation.confirm_app_adoption(app);
+            assert!(matches!(conversation.attachment(), Attachment::App { .. }));
+            assert!(!conversation.is_desktop_adopted());
+            assert!(!conversation.is_return_pending());
+            assert!(sibling.is_desktop_adopted());
+            assert_eq!(sibling.rect(app, desktop), sibling_rect);
+        }
     }
 
     #[test]
@@ -1157,6 +1701,60 @@ mod tests {
             let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
             assert_eq!(b.x0 - a.x0, 140.0);
             assert_eq!(b.y0 - a.y0, 40.0);
+        }
+
+        // Case `inline_attached_region_is_the_single_source_geometry`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+            let inline = Rect::new(310.0, 120.0, 840.0, 660.0);
+            let mut p = FloatingPlacement::attached(inline.size());
+            p.set_attached_region(Some(inline));
+            assert_eq!(p.rect(app, desk), inline);
+            p.set_attached_region(Some(Rect::new(f64::NAN, 0.0, 2.0, 2.0)));
+            assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
+        }
+
+        // Case `programmatic_return_requires_confirmed_desktop_ownership`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            p.request_app_return();
+            assert!(!p.is_return_pending());
+            p.detach_to_desktop(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+            p.request_app_return();
+            assert!(
+                !p.is_return_pending(),
+                "a request is not proof that desktop pixels were adopted"
+            );
+            p.prepare_desktop_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+            p.confirm_desktop_adoption();
+            p.request_app_return();
+            assert!(p.is_return_pending());
+            p.reattach_to_app(app, desk);
+            assert!(!p.is_return_pending());
+        }
+
+        // Case `safe_insets_keep_the_home_and_a_drag_below_the_header_row`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            let plain = p.rect(app, desk);
+            p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
+            let home = p.rect(app, desk);
+            assert!(
+                (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
+                "home clears the header row"
+            );
+            p.begin_drag(home.center(), app, desk);
+            p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
+            let dragged = p.rect(app, desk);
+            assert!(
+                dragged.y0 >= app.y0 + 56.0 - 1e-9,
+                "a drag stays below it: {dragged:?}"
+            );
         }
 
         // Case `attached_chrome_keeps_the_complete_surface_inside_its_app`.
@@ -1187,6 +1785,15 @@ mod tests {
             let before = p.rect(app, desk);
             p.begin_drag(pointer, app, desk);
             let outside = Point::new(940.0, 150.0);
+            assert!(!FloatingPlacement::is_beyond_detach_boundary(
+                Point::new(app.x1 + 27.0, app.y0),
+                app
+            ));
+            assert!(FloatingPlacement::is_beyond_detach_boundary(
+                Point::new(app.x1 + 28.0, app.y0),
+                app
+            ));
+            assert!(FloatingPlacement::is_beyond_detach_boundary(outside, app));
             assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
             assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
             assert_eq!(
@@ -1426,7 +2033,10 @@ mod tests {
     #[test]
     fn capture_protection_request_has_a_stable_wire_form() {
         for protected in [true, false] {
-            let message = FloatingSurfaceClientMessage::SetCaptureProtection { protected };
+            let message = FloatingSurfaceClientMessage::SetCaptureProtection {
+                protected,
+                generation: None,
+            };
             let json = serde_json::to_string(&message).unwrap();
             assert_eq!(
                 json,
@@ -1522,6 +2132,7 @@ mod tests {
                 id: "call".into(),
                 rect: [192.0, 72.0, 588.0, 328.0],
                 content_rect: [200.0, 80.0, 580.0, 320.0],
+                input_rect: Some([200.0, 80.0, 580.0, 320.0]),
             };
             let json = serde_json::to_string(&geometry).unwrap();
             assert_eq!(
@@ -1785,5 +2396,89 @@ mod tests {
             });
             assert_eq!(received, vec![inbound]);
         }
+    }
+
+    #[test]
+    fn a_window_appearance_round_trips_and_unknown_values_are_unsaid() {
+        use crate::theme::WindowAppearance;
+        use crate::tokens::PresenceHue;
+
+        let told = WindowAppearance {
+            workspace_hue: Some(40.0),
+            your_colour: Some(PresenceHue::Violet),
+        };
+        let message = FloatingSurfaceHostMessage::appearance(&told);
+        let wire = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"type": "appearance", "workspace_hue": 40.0, "your_colour": "violet"})
+        );
+        let back: FloatingSurfaceHostMessage = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.window_appearance(), Some(told));
+
+        let neutral: FloatingSurfaceHostMessage =
+            serde_json::from_value(serde_json::json!({"type": "appearance"})).unwrap();
+        assert_eq!(
+            neutral.window_appearance(),
+            Some(WindowAppearance::default()),
+            "no temperature and no colour said"
+        );
+        let unknown: FloatingSurfaceHostMessage = serde_json::from_value(
+            serde_json::json!({"type": "appearance", "workspace_hue": 400.0, "your_colour": "chartreuse"}),
+        )
+        .unwrap();
+        assert_eq!(
+            unknown.window_appearance(),
+            Some(WindowAppearance {
+                workspace_hue: Some(40.0),
+                your_colour: None,
+            })
+        );
+        assert_eq!(
+            FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_client_wakes_once_per_arrival() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        let mut client = FloatingSurfaceServiceClient::from_stream_waking(app_side, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+        let send = |shell_side: &mut UnixStream| {
+            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
+                &crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: None,
+                },
+            ))
+            .unwrap();
+            bytes.push(b'\n');
+            shell_side.write_all(&bytes).unwrap();
+        };
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the shell's write wakes the app", || {
+            wakes.load(Ordering::SeqCst) >= 1
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "unread bytes wake the app once, not in a loop"
+        );
+        assert_eq!(client.pump().unwrap().len(), 1);
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the next arrival wakes it again", || {
+            wakes.load(Ordering::SeqCst) >= 2
+        });
+        assert_eq!(client.pump().unwrap().len(), 1);
     }
 }

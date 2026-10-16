@@ -1,13 +1,22 @@
-//! An in-memory replica of one resource: the harness for replay-based tests.
+//! An in-memory replica of one resource: the harness for replay-based tests,
+//! and a resource document held apart from any window — the contents of a
+//! file an app saves its resource to and opens it from ([`Replica::load`],
+//! [`Replica::save`]).
 //!
-//! A replica applies actions exactly as the host does — built from the same
-//! declarations the palette and agents use, applied by the same executor with
-//! the same pinned actor and time — so a test written against it proves the
-//! behaviour every surface gets. Fork two replicas to test collaboration;
-//! replay one replica's log into a fresh one to prove determinism.
+//! A replica applies actions exactly as the host does: it publishes the
+//! resource's tree, and every invocation goes through the action door —
+//! resolved against what is published, checked for availability and
+//! confirmation, built from the same declarations the palette and agents
+//! use, decoded through the registry a peer would replay with, and committed
+//! with its history entry. A test written against it proves the behaviour
+//! every surface gets. Fork two replicas to test collaboration; replay one
+//! replica's log into a fresh one to prove determinism.
 
 use automerge::ChangeHash;
-use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry, EncodedAction};
+use tilo_actions::door::{self, InvocationProvenance};
+use tilo_actions::{
+    ActionAddress, ActionEnvelope, ActionError, ActionRegistry, DoorError, LocalTransport,
+};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::Invoke;
@@ -21,7 +30,18 @@ pub struct Replica<R: Resource> {
     doc: Doc,
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
-    author: Option<Vec<u8>>,
+    author: Option<String>,
+    /// The person the author acts for, when the author is an agent.
+    acting_for: Option<String>,
+    /// What kind of actor the author is while it acts for someone.
+    acting_kind: tilo_actions::ActorKind,
+    /// Who invokes from this replica when it acts as its own device
+    /// ([`Self::as_invoker`]).
+    invoker: Option<String>,
+    /// The app later actions are in (id, label), as a host names it.
+    app: Option<(String, String)>,
+    /// What a bot shows for later actions instead of its own name.
+    appearance: Option<tilo_actions::Appearance>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -48,31 +68,101 @@ impl<R: Resource> Replica<R> {
     pub fn new() -> Self {
         let mut doc = Doc::new();
         R::initialize(&mut doc).expect("resource initializer");
-        doc.commit();
+        // What a brand-new record starts with names itself as its genesis.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+        );
         Self::from_doc(doc)
     }
 
     /// A replica of an existing document.
     #[must_use]
     pub fn from_doc(doc: Doc) -> Self {
-        let mut registry = ActionRegistry::new();
-        crate::group::register::<R>(&mut registry);
+        let registry = ActionRegistry::with(crate::group::register::<R>);
         Self {
             doc,
             registry,
             log: Vec::new(),
             author: None,
+            acting_for: None,
+            acting_kind: tilo_actions::ActorKind::Agent,
+            invoker: None,
+            app: None,
+            appearance: None,
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
         }
     }
 
+    /// A replica of a document [saved](Self::save) as bytes: a file's
+    /// contents.
+    ///
+    /// # Errors
+    /// Returns [`ModelError::Automerge`] when the bytes hold no document.
+    pub fn load(bytes: &[u8]) -> Result<Self, ModelError> {
+        Ok(Self::from_doc(Doc::load(bytes)?))
+    }
+
+    /// The document as bytes, for a file that carries the resource whole.
+    pub fn save(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
     /// Attribute later actions to `author`, as the host does for a signed-in
     /// collaborator.
     #[must_use]
     pub fn as_author(mut self, author: &str) -> Self {
-        self.author = Some(author.as_bytes().to_vec());
+        self.author = Some(author.to_owned());
+        self
+    }
+
+    /// Attribute later actions to `author` invoking from this replica, as
+    /// the host does for a person at one of their devices: what a verb reads
+    /// as [`ActionCx::author`](crate::ActionCx::author), while the changes
+    /// stay this replica's own, so the same person on two replicas makes
+    /// changes that merge.
+    #[must_use]
+    pub fn as_invoker(mut self, author: &str) -> Self {
+        self.invoker = Some(author.to_owned());
+        self
+    }
+
+    /// Attribute later actions to the agent `agent` acting for `person`, as
+    /// a host does for an agent's calls.
+    #[must_use]
+    pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
+        self.author = Some(agent.to_owned());
+        self.acting_for = Some(person.to_owned());
+        self.acting_kind = tilo_actions::ActorKind::Agent;
+        self
+    }
+
+    /// Attribute later actions to the bot installation `installation`
+    /// acting for `installer`, as a bot host does for a bot's calls.
+    #[must_use]
+    pub fn as_bot_for(mut self, installation: &str, installer: &str) -> Self {
+        self.author = Some(format!("bot:{installation}"));
+        self.acting_for = Some(installer.to_owned());
+        self.acting_kind = tilo_actions::ActorKind::Bot;
+        self
+    }
+
+    /// Show `appearance` for the bot's later actions, as a bot host admits
+    /// a bridge's post under another name.
+    #[must_use]
+    pub fn showing(mut self, appearance: tilo_actions::Appearance) -> Self {
+        self.appearance = Some(appearance);
+        self
+    }
+
+    /// Name `id` (labelled `label`) as the app later actions are in, as the
+    /// host running the app does: every member decides them against that
+    /// app's surface.
+    #[must_use]
+    pub fn in_app(mut self, id: &str, label: &str) -> Self {
+        self.app = Some((id.to_owned(), label.to_owned()));
         self
     }
 
@@ -81,59 +171,125 @@ impl<R: Resource> Replica<R> {
         self.now_ms = now_ms;
     }
 
-    /// Invoke a declared action by name, exactly as a control, the palette,
-    /// an agent or a script does.
+    /// The tree the resource publishes now: what the door resolves against.
     ///
     /// # Errors
-    /// Returns a refusal, an argument error or a document error.
-    pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, ActionError> {
-        let Invoke { id, arguments, .. } = invoke;
-        if id == crate::GROUP {
-            let group = crate::group::build_group::<R>(&arguments, self.now_ms)
-                .map_err(ActionError::Refused)?;
-            let encoded = EncodedAction::encode(crate::group::group_type::<R>(), &group)?;
-            return self.apply_encoded(&group, encoded, id);
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn published(&self) -> Result<tilo_actions::Resource, ModelError> {
+        Ok(resource::publish::<R>(
+            R::KIND,
+            R::LABEL,
+            &R::read(&self.doc)?,
+        ))
+    }
+
+    /// Invoke a published action exactly as a control, the palette, an
+    /// agent or a script does: through the door, which refuses one that
+    /// asks for confirmation ([`Self::apply_confirmed`]).
+    ///
+    /// # Errors
+    /// Returns the door's refusal: unknown, unavailable, invalid arguments,
+    /// confirmation required, or the action's own refusal.
+    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke.into(), false)
+    }
+
+    /// [`Self::apply`] after the person confirmed it.
+    ///
+    /// # Errors
+    /// As [`Self::apply`], without asking for confirmation.
+    pub fn apply_confirmed(
+        &mut self,
+        invoke: impl Into<Invoke<R>>,
+    ) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke.into(), true)
+    }
+
+    /// Apply one typed action value, the path a custom surface takes once
+    /// its person confirmed what it does: the generic
+    /// [`APPLY`](crate::APPLY) action, through the door.
+    ///
+    /// # Errors
+    /// Returns the door's refusal or the action's own.
+    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, DoorError> {
+        let invoke = Invoke::apply(action)
+            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        self.invoke(invoke, true)
+    }
+
+    fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
-        let action = resource::build_action::<R>(id, &arguments, self.now_ms)
-            .map_err(ActionError::Refused)?;
-        let label = R::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map_or_else(|| id.to_owned(), |decl| decl.label);
-        self.apply_action(&action, &label)
-    }
-
-    /// Apply one typed action value (the path a custom surface takes).
-    ///
-    /// # Errors
-    /// Returns a refusal or a document error.
-    pub fn apply_action(
-        &mut self,
-        action: &R::Action,
-        label: &str,
-    ) -> Result<&ActionEnvelope, ActionError> {
-        let encoded = resource::encode::<R>(action)?;
-        self.apply_encoded(action, encoded, label)
-    }
-
-    fn apply_encoded(
-        &mut self,
-        action: &dyn tilo_actions::Action,
-        encoded: EncodedAction,
-        label: &str,
-    ) -> Result<&ActionEnvelope, ActionError> {
-        let context = ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL);
-        let envelope = tilo_actions::apply_local_with_context(
-            &mut self.doc,
-            action,
-            encoded,
-            self.author.as_deref(),
-            context,
-        )?;
-        self.log.push(envelope);
+        let Invoke { id, arguments, .. } = invoke;
+        // Published from the state kept current change by change, so an
+        // action costs what it touched, not a whole read of the record.
+        let tree = self
+            .live()
+            .map(|state| resource::publish::<R>(R::KIND, R::LABEL, state))
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        let address = ActionAddress::new(tree.id.as_str(), id);
+        // Without an author, the replica's own actor: every replica is a
+        // device of its own.
+        let actor = self.author.as_ref().map_or_else(
+            || self.doc.get_actor().to_bytes().to_vec(),
+            |author| author.as_bytes().to_vec(),
+        );
+        // An author is also the invoker a verb reads (`ActionCx::author`), as
+        // the host pins the signed-in person.
+        let ambient = self
+            .author
+            .as_ref()
+            .or(self.invoker.as_ref())
+            .map(|author| {
+                let invoker = tilo_actions::ActionInvoker::actor(author.clone());
+                let invoker = match &self.acting_for {
+                    Some(person) => invoker
+                        .with_kind(self.acting_kind)
+                        .acting_for(person.clone()),
+                    None => invoker,
+                };
+                let invoker = invoker.with_appearance(self.appearance.clone());
+                tilo_actions::ActionContext::default().with_invoker(invoker)
+            });
+        let ambient = match &self.app {
+            Some((id, label)) => Some(ambient.unwrap_or_default().with_app(id, label)),
+            None => ambient,
+        };
+        let mut transport = LocalTransport::new();
+        let (doc, registry) = (&mut self.doc, &self.registry);
+        let dispatched = resource::with_origin_clock(self.now_ms, || {
+            let resources = std::slice::from_ref(&tree);
+            let provenance = match &ambient {
+                Some(ambient) => InvocationProvenance::caller(&actor).within(ambient),
+                None => InvocationProvenance::caller(&actor),
+            };
+            if confirmed {
+                door::invoke_json_confirmed(
+                    doc,
+                    resources,
+                    &address,
+                    &arguments,
+                    provenance,
+                    registry,
+                    &mut transport,
+                )
+            } else {
+                door::invoke_json(
+                    doc,
+                    resources,
+                    &address,
+                    &arguments,
+                    provenance,
+                    registry,
+                    &mut transport,
+                )
+            }
+        })?;
+        self.log.push(dispatched.envelope().clone());
         self.log
             .last()
-            .ok_or_else(|| ActionError::Refused("no envelope".into()))
+            .ok_or_else(|| DoorError::Failed("no envelope".into()))
     }
 
     /// Replay an envelope authored on another replica.
@@ -163,7 +319,7 @@ impl<R: Resource> Replica<R> {
     /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn live(&mut self) -> Result<&R::State, ModelError> {
         if let Some(reader) = &mut self.reader {
-            reader.sync(&mut self.doc)?;
+            reader.sync(&self.doc)?;
         } else {
             self.reader = Some(Reader::open(&mut self.doc)?);
         }

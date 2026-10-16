@@ -26,15 +26,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
-
 use crate::shell::device_fabric::{DeviceFabric, FabricStamp, PersonalFabricAction};
 use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
-    SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberState, SpeakerMembership,
+    SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
     SpeakerRole, SpeakerTrim,
 };
 
@@ -525,7 +522,7 @@ impl SpeakerGroupCore {
             .iter()
             .zip(states)
             .zip(channels)
-            .filter(|((_, state), _)| *state == SpeakerMemberState::Ready)
+            .filter(|((_, state), _)| *state == SpeakerMemberStatus::Ready)
             .map(|((member, _), channel)| SessionMember {
                 route: member_route_id(session_id, &member.device, member.output),
                 device: member.device.clone(),
@@ -914,7 +911,7 @@ impl SpeakerGroupCore {
                 .into_iter()
                 .zip(&group.members)
                 .filter(|(state, member)| {
-                    *state == SpeakerMemberState::AwaitingConsent && online(&member.device)
+                    *state == SpeakerMemberStatus::AwaitingConsent && online(&member.device)
                 })
                 .map(|(_, member)| member.device.clone())
                 .collect::<BTreeSet<_>>();
@@ -1378,7 +1375,7 @@ pub struct SpeakerMemberView {
     pub output_label: Option<String>,
     pub role: SpeakerRole,
     pub trim: SpeakerTrim,
-    pub state: SpeakerMemberState,
+    pub state: SpeakerMemberStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1397,7 +1394,7 @@ impl SpeakerGroupView {
     pub fn ready_members(&self) -> usize {
         self.members
             .iter()
-            .filter(|member| member.state == SpeakerMemberState::Ready)
+            .filter(|member| member.state == SpeakerMemberStatus::Ready)
             .count()
     }
 }
@@ -1525,18 +1522,6 @@ impl SpeakerConsentView {
         crate::shell::i18n::t(self.key("a11y-speaker-join-decline", "a11y-speaker-listen-decline"))
     }
 
-    /// What answering did, for the confirmation toast.
-    #[must_use]
-    pub fn outcome(&self, approved: bool) -> String {
-        let key = match (self.scope, approved) {
-            (SpeakerConsentScope::Play(_), true) => "host-fabric-speaker-joined",
-            (SpeakerConsentScope::Play(_), false) => "host-fabric-speaker-declined",
-            (SpeakerConsentScope::Listen, true) => "host-fabric-speaker-listen-allowed",
-            (SpeakerConsentScope::Listen, false) => "host-fabric-speaker-listen-declined",
-        };
-        crate::shell::i18n::t_args(key, &self.args())
-    }
-
     /// Title of the allow or decline action search offers.
     #[must_use]
     pub fn action_title(&self, approved: bool) -> String {
@@ -1606,18 +1591,6 @@ impl SpeakerMembershipView {
             "a11y-speaker-membership-description",
             "a11y-speaker-listener-description",
         ))
-    }
-
-    /// What withdrawing did, for the confirmation toast.
-    #[must_use]
-    pub fn left(&self) -> String {
-        crate::shell::i18n::t_args(
-            self.key(
-                "host-fabric-speaker-left",
-                "host-fabric-speaker-listen-stopped",
-            ),
-            &self.args(str::to_string),
-        )
     }
 
     #[must_use]
@@ -1830,16 +1803,6 @@ fn core() -> &'static Mutex<SpeakerGroupCore> {
     CORE.get_or_init(|| Mutex::new(SpeakerGroupCore::default()))
 }
 
-pub(crate) fn random_nonzero_16() -> [u8; 16] {
-    loop {
-        let mut value = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-        if value != [0; 16] {
-            return value;
-        }
-    }
-}
-
 fn unavailable() -> String {
     crate::shell::i18n::t("speaker-error-unavailable")
 }
@@ -1961,7 +1924,7 @@ pub(crate) fn handle_action(
             &envelope.source,
             &envelope.action,
             Instant::now(),
-            &mut random_nonzero_16,
+            &mut crate::random::nonzero::<16>,
         )
     };
     match out {
@@ -2346,7 +2309,7 @@ pub fn create_group(
     members: &[MemberSpec],
 ) -> Result<SpeakerGroupId, String> {
     with_core(network, |core, fabric, local| {
-        let id = SpeakerGroupId(random_nonzero_16());
+        let id = SpeakerGroupId(crate::random::nonzero::<16>());
         let out = core.create_group(fabric, local, id, name, members, Instant::now())?;
         Ok((id, out))
     })
@@ -2492,7 +2455,7 @@ pub fn start_session(
     source: GroupAudioSource,
 ) -> Result<[u8; 16], String> {
     with_core(network, |core, fabric, local| {
-        let session_id = random_nonzero_16();
+        let session_id = crate::random::nonzero::<16>();
         let out = core.start_session(fabric, local, group, source, session_id, Instant::now())?;
         Ok((session_id, out))
     })

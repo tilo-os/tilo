@@ -11,14 +11,9 @@ homepage.workspace = true
 [features]
 default = ["broker-transport"]
 broker-transport = ["ui-core/broker-transport"]
-# Kept for compatibility; Linux builds always use the portals (below).
-portal = []
 mpris = ["ui-core/mpris"]
-# Kept for compatibility; `tilo-notify` selects each target's notifications.
-notifications = []
 gpu-video = ["ui-core/gpu-video"]
 dmabuf-import = ["ui-core/dmabuf-import"]
-webview-wpe = ["ui-core/webview-wpe"]
 webview-adblock = ["ui-core/webview-adblock"]
 presentation-feedback = ["ui-core/presentation-feedback"]
 dx12-shader-cache = ["ui-core/dx12-shader-cache"]

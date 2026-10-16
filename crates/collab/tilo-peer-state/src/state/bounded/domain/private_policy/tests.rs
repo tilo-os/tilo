@@ -1,41 +1,44 @@
 use super::*;
 use crate::BoundedPeerInvalid;
-use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
 use crate::StatePeer;
 use crate::TransportOrigin;
+use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    for (index, expiry) in [
-        Expiry::AtUnix(8),
-        Expiry::AtUnix(7),
-        Expiry::AtUnix(7),
+    let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+    for (index, lifetime) in [
+        Lifetime::Until(8_000),
+        Lifetime::Until(7_000),
+        Lifetime::Until(7_000),
         if nonpersistent {
-            Expiry::AfterUse
+            Lifetime::Once
         } else {
-            Expiry::AtUnix(3)
+            Lifetime::Until(3_000)
         },
     ]
     .into_iter()
     .enumerate()
     {
-        let cap = CapOverride::grant(
-            Subject::Role(collab_types::Role::Editor),
-            Scope::Workspace,
-            Verb::Read,
+        let grant = Grant::new(
+            "editor-reads",
+            Subject::Role(Role::Editor),
+            TreePath::room(peer.room()),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::Role(Role::Owner),
         )
-        .expiring(expiry);
+        .with_lifetime(lifetime);
         room.put(
             &caps,
             index.to_string(),
-            ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+            ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
         )
         .unwrap();
     }
@@ -55,26 +58,14 @@ fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     .unwrap();
     (peer, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        limits,
-    )
-    .unwrap()
-}
 #[test]
 fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
     let (peer, now) = fixture(false);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(
         basis.revision(),
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(basis.next_expiry_after(0), Some(3));
     assert_eq!(basis.next_expiry_after(3), Some(7));
@@ -84,7 +75,7 @@ fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
 #[test]
 fn actual_private_basis_rejects_nonpersistent_governed_caps() {
     let (peer, now) = fixture(true);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     assert!(matches!(
         native.read().private_policy_basis(),
         Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
@@ -97,7 +88,7 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
     use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut peer, now) = fixture(false);
     let root = SigningKey::from_bytes(&[1; 32]);
-    let original = crate::owner_commit::governance_revision(&peer).unwrap();
+    let original = crate::legacy_policy::governance_revision(&peer).unwrap();
     let mut enrollment = Vec::new();
     for byte in [92, 17] {
         let key = SigningKey::from_bytes(&[byte; 32]);
@@ -137,11 +128,11 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
         now,
     )
     .unwrap();
-    let expected = crate::owner_commit::governance_revision(&peer).unwrap();
+    let expected = crate::legacy_policy::governance_revision(&peer).unwrap();
     assert_ne!(expected, original);
     assert_eq!(peer.certificates().len(), 4);
     assert_eq!(peer.revocations().len(), 2);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(basis.revision(), expected);
 }
@@ -164,12 +155,12 @@ fn private_basis_missing_room_and_closed_decode_limits_preserve_typed_refusals()
         } else {
             limits.governance_collection_bytes = 1;
         }
-        let empty = restore(&empty, now, &limits);
+        let empty = restore_bounded(&empty, now, &limits);
         assert!(matches!(
             empty.read().private_policy_basis(),
             Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
         ));
-        let native = restore(&source, now, &limits);
+        let native = restore_bounded(&source, now, &limits);
         let result = native.read().private_policy_basis();
         if decode {
             assert!(matches!(result, Err(BoundedPeerError::Decode(_))));

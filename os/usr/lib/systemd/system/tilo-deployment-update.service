@@ -1,7 +1,7 @@
 [Unit]
 Description=Fetch and stage the current image
 Documentation=file:///usr/share/doc/tilo/recovery.md
-RequiresMountsFor=/boot
+RequiresMountsFor=/boot /boot/efi
 After=local-fs.target network.target
 
 [Service]

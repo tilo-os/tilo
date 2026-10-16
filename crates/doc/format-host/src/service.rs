@@ -22,15 +22,25 @@ impl FormatRouterService {
     }
 }
 
+/// Run a provider call on the blocking pool, so a call that runs until its
+/// fuel budget is spent doesn't stall the capnp event loop.
+async fn blocking<T: Send + 'static>(
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Error> {
+    tokio::task::spawn_blocking(call)
+        .await
+        .map_err(|e| Error::failed(format!("join: {e}")))
+}
+
+// capnp-rpc's generated `Results`/`Params` types are `Rc`-based and never
+// `Send` by design — this whole server runs on capnp-rpc's own
+// single-threaded local executor, with `spawn_blocking` the only bridge to a
+// worker thread. There is no Send-safe alternative shape.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
+)]
 impl format_router::Server for FormatRouterService {
-    // capnp-rpc's generated `Results`/`Params` types are `Rc`-based and
-    // never `Send` by design — this whole server runs on capnp-rpc's own
-    // single-threaded local executor, with `spawn_blocking` below the only
-    // bridge to a worker thread. There is no Send-safe alternative shape.
-    #[allow(
-        clippy::future_not_send,
-        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
-    )]
     fn detect(
         self: capnp::capability::Rc<Self>,
         params: format_router::DetectParams,
@@ -38,21 +48,10 @@ impl format_router::Server for FormatRouterService {
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let router = self.router.clone();
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let head = p
-                .get_head()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let hint = p
-                .get_hint()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_str()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string();
-            let (detected, provider_id) =
-                tokio::task::spawn_blocking(move || router.detect(&head, &hint))
-                    .await
-                    .map_err(|e| Error::failed(format!("join: {e}")))?;
+            let p = params.get()?;
+            let head = p.get_head()?.to_vec();
+            let hint = p.get_hint()?.to_str()?.to_string();
+            let (detected, provider_id) = blocking(move || router.detect(&head, &hint)).await?;
             let mut out = results.get().init_detected();
             let mut conf = out.reborrow().init_confidence();
             conf.set_tier(detected.confidence.tier);
@@ -64,10 +63,6 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
-    #[allow(
-        clippy::future_not_send,
-        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
-    )]
     fn import_as(
         self: capnp::capability::Rc<Self>,
         params: format_router::ImportAsParams,
@@ -75,30 +70,17 @@ impl format_router::Server for FormatRouterService {
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let router = self.router.clone();
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let bytes = p
-                .get_bytes()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let provider_id = p
-                .get_provider_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_str()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string();
-            let out = tokio::task::spawn_blocking(move || router.import_as(&bytes, &provider_id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(format!("{}: {}", e.kind, e.message)))?;
+            let p = params.get()?;
+            let bytes = p.get_bytes()?.to_vec();
+            let provider_id = p.get_provider_id()?.to_str()?.to_string();
+            let out = blocking(move || router.import_as(&bytes, &provider_id))
+                .await?
+                .map_err(|e| Error::failed(e.to_string()))?;
             results.get().set_canonical(&out);
             Ok(())
         }
     }
 
-    #[allow(
-        clippy::future_not_send,
-        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
-    )]
     fn export_as(
         self: capnp::capability::Rc<Self>,
         params: format_router::ExportAsParams,
@@ -106,31 +88,17 @@ impl format_router::Server for FormatRouterService {
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let router = self.router.clone();
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let canonical = p
-                .get_canonical()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let provider_id = p
-                .get_provider_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_str()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string();
-            let out =
-                tokio::task::spawn_blocking(move || router.export_as(&canonical, &provider_id))
-                    .await
-                    .map_err(|e| Error::failed(format!("join: {e}")))?
-                    .map_err(|e| Error::failed(format!("{}: {}", e.kind, e.message)))?;
+            let p = params.get()?;
+            let canonical = p.get_canonical()?.to_vec();
+            let provider_id = p.get_provider_id()?.to_str()?.to_string();
+            let out = blocking(move || router.export_as(&canonical, &provider_id))
+                .await?
+                .map_err(|e| Error::failed(e.to_string()))?;
             results.get().set_bytes(&out);
             Ok(())
         }
     }
 
-    #[allow(
-        clippy::future_not_send,
-        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
-    )]
     fn list(
         self: capnp::capability::Rc<Self>,
         _params: format_router::ListParams,

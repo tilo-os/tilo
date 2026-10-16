@@ -1,0 +1,116 @@
+name: Browser / authentication
+
+# Getting in, end to end, on the stack the web entry and the room service
+# images ship: crates/hosting/tilo-room-service/dev/auth-e2e.mjs starts them
+# with dev/run.py and drives headless Chrome through a person's first visit,
+# reloads, tabs, a damaged link, a stolen invitation, a host that forgot its
+# room, a stale link, a membership the host pruned after an absence and a
+# person the room's moderator removed. Before it, dev/limits-e2e.py checks
+# the persistent room's enabled limits and what it keeps across a restart
+# over plain HTTP. Release binaries with the image workflow's flags,
+# so they come from the same compiler cache. Nightly and on demand; pull
+# requests run it only when the check itself changes.
+on:
+  schedule:
+    - cron: "45 2 * * *"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/hosting/tilo-room-service/dev/**"
+      - ".forgejo/workflows/browser-auth-e2e.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: browser-auth-e2e-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  authentication:
+    needs: [builder]
+    runs-on: runner
+    timeout-minutes: 150
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare verified fonts for the desktop bundle
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Relay and room service, as the room service image builds them
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "relay build" -- \
+            cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
+          bash scripts/ci-run.sh "room service build" -- \
+            cargo build --locked --release -p tilo-room-service
+
+      # No browser and no bundle: the persistent room's caps, join windows,
+      # restart and snapshot bound over plain HTTP, with the same binaries.
+      - name: Enabled limits and kept state of the persistent room
+        run: |
+          set -euo pipefail
+          python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
+            --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+            --out "$RUNNER_TEMP/limits-e2e"
+
+      - name: Release desktop bundle, as the web entry image builds it
+        run: |
+          set -euo pipefail
+          # build.sh reads the workspace metadata offline; crates new since
+          # the download cache was saved must be fetched first.
+          cargo fetch --locked
+          # Outside the checkout, which must stay clean: the bundle records
+          # whether it was built from a dirty tree, and the check refuses one.
+          bundle="$RUNNER_TEMP/auth-bundle"
+          bash scripts/ci-run.sh "release desktop bundle build" -- \
+            crates/browser/tilo-browser-runtime/scripts/build.sh "$bundle" --bundle desktop
+          echo "AUTH_BUNDLE=$bundle" >> "$GITHUB_ENV"
+
+      - name: Headless Chrome for Testing
+        run: |
+          set -euo pipefail
+          command -v node || dnf install -y nodejs
+          bash tools/ci/ensure-browser-dependencies.sh
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: First visit, return and refusal
+        run: |
+          set -euo pipefail
+          node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle "$AUTH_BUNDLE" \
+            --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+            --out "$RUNNER_TEMP/auth-e2e" --expect-revision "$(git rev-parse HEAD)"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: browser-auth-e2e
+          path: ${{ runner.temp }}/auth-e2e/
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: room-limits-e2e
+          path: |
+            ${{ runner.temp }}/limits-e2e/
+            !${{ runner.temp }}/limits-e2e/scratch/
+          if-no-files-found: warn

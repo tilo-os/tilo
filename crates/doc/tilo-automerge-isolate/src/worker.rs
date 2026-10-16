@@ -32,6 +32,9 @@ pub(crate) const REQUEST_FD: i32 = 3;
 pub(crate) const REPLY_FD: i32 = 4;
 /// How many recently consumed and shared states a worker remembers.
 const REMEMBERED_STATES: usize = 32;
+/// Most change hashes a load's reply carries: 8 MiB of them, well inside
+/// [`wire::MAX_REPLY_BYTES`].
+const MAX_LOADED_HASHES: usize = 256 * 1024;
 
 /// What bounds a worker's cache and lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +197,7 @@ impl Cache {
 
     /// The document at `key`, for a request that will move it forward.
     fn take(&mut self, key: &Key) -> Option<AutoCommit> {
+        key.complete_heads()?;
         if key.is_blank() {
             return Some(AutoCommit::new());
         }
@@ -216,6 +220,9 @@ impl Cache {
     /// documents share, as a base the next document at that state can start
     /// from.
     fn keep_base(&mut self, key: &Key, doc: &AutoCommit, rebuilt: bool) {
+        if key.complete_heads().is_none() {
+            return;
+        }
         if (rebuilt || self.shared.contains(key)) && !self.entries.iter().any(|e| e.key == *key) {
             self.entries.push(Entry {
                 key: key.clone(),
@@ -227,6 +234,9 @@ impl Cache {
 
     fn keep(&mut self, mut doc: AutoCommit) {
         let key = Key::of(&mut doc);
+        if key.complete_heads().is_none() {
+            return;
+        }
         self.entries.retain(|e| e.key != key);
         self.entries.push(Entry {
             key,
@@ -279,9 +289,14 @@ impl Cache {
             Request::Load { incoming } => {
                 self.rebuilt = true;
                 match engine::load(incoming) {
-                    Ok(doc) => {
+                    Ok(mut doc) => {
+                        let mut hashes = engine::document_change_hashes(incoming, &mut doc);
+                        if hashes.len() > MAX_LOADED_HASHES {
+                            // The caller computes them itself.
+                            hashes = Vec::new();
+                        }
                         self.keep(doc);
-                        Reply::Applied(Applied::Changed(true))
+                        Reply::Loaded(hashes)
                     }
                     Err(error) => invalid(error),
                 }

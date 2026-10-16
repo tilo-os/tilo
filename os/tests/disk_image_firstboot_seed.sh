@@ -36,6 +36,8 @@ EOF
 cat >"$work/bin/python3" <<'EOF'
 #!/bin/bash
 if [[ ${1:-} == -u && ${2:-} == */hold-loop-partition-nodes.py ]]; then shift; fi
+if [[ ${1:-} == */check-composefs-verity.py ]]; then exit 0; fi
+if [[ ${1:-} == */check-disk-sectors.py ]]; then exit 0; fi
 if [[ ${1:-} == */hold-loop-partition-nodes.py ]]; then
   printf 'READY\n'
   read -r release
@@ -46,6 +48,7 @@ fi
 EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
+[ "${1:-}" != -o ] || shift 2
 case "${1:-}" in
   /dev/loop-testp2)
     mkdir -p "$2/state/deploy/test/etc"
@@ -61,6 +64,7 @@ cat >"$work/bin/podman" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" TILO_DISTROBOX= \

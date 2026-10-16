@@ -11,13 +11,17 @@ name = "tilo_agent_participant"
 path = "src/lib.rs"
 
 [dependencies]
-# Apps run headless through the same component runtime a window or the
-# browser mounts; the resource tree (declared + semantic) is the door.
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Each record is a framework participant of its app's resource kind; the
+# published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { path = "../../collab/actions" }
-# Installs a record that arrived from the session into the agent's profile.
-tilo-app-state = { path = "../../system/app-state" }
-durable-store = { path = "../../system/durable-store" }
+# A bot's record events: the dispatcher's event shape and its reader of
+# recorded entries, shared with the shell.
+tilo-automation = { path = "../../collab/automation" }
+# Purpose-specific receipt validation; app projection remains confined.
+tilo-desktop = { path = "../../session/desktop" }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
 agent = { path = "../../../apps/agent" }
@@ -28,15 +32,17 @@ api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar" }
 camera = { path = "../../../apps/camera" }
+canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
+chip-design = { path = "../../../apps/chip-design" }
 clocks = { path = "../../../apps/clocks" }
 contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
-image-editor = { path = "../../../apps/image-editor" }
 maps = { path = "../../../apps/maps" }
+messages = { path = "../../../apps/messages" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
@@ -59,13 +65,15 @@ word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
 iroh-base.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+# The shared desktop an agent puts the views it works in on.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,18 +83,35 @@ getrandom.workspace = true
 # An OpenAI-compatible model endpoint, called from the agent's own thread,
 # shaped for its target (a plain provider or Tilo Cloud's metered endpoint).
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
-tilo-model-gateway = { path = "../model-gateway" }
+tilo-model-gateway = { path = "../model-gateway", default-features = false }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tempfile.workspace = true
-percent-encoding = "2"
 tracing.workspace = true
-# Each agent's apps get a profile and secret store of their own.
-tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-secrets = { path = "../../platform/tilo-secrets" }
 workspace-hack = { version = "0.1" }
+# App workers: an app's code runs in a confined process of this executable,
+# spoken to over framed messages; what it returns is admitted through the
+# isolate before the host signs it.
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+
+[target.'cfg(unix)'.dependencies]
+# The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
+tilo-sandbox = { path = "../../platform/tilo-sandbox" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The worker's Landlock ruleset and seccomp filters, from the shared
+# primitives every confinement path uses.
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+seccompiler.workspace = true
+libc.workspace = true
+# A connector app, mounted only where a room's host runs its worker.
+discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
+tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
+accounts = { path = "../../system/accounts", features = ["person"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tempfile.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
@@ -102,11 +127,15 @@ sha2.workspace = true
 bytes.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["full"] }
-tilo-clock = { path = "../../platform/tilo-clock" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+postcard = { workspace = true, features = ["use-std"] }
+# Reads the links the host mints back the way a page does.
+tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tokio-rustls"]
 
 [lints]
 workspace = true

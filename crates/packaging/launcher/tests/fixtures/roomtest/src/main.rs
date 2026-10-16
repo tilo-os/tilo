@@ -5,7 +5,9 @@
 //   write <relative path> <contents>   write inside $TILO_APP_DIR
 //   writeabs <path> <contents>         write to an absolute path
 //   read  <path>                       read it, print OK/ERR
+//   elf <path>                         read the ELF magic bytes
 //   readdir <path>                     list it, print OK/ERR
+//   rename <from> <to>                 rename(2) it, print RENAMED/ERR
 //   env   <name>                       print the variable's value
 //   envall                             print every variable name it has
 //
@@ -50,6 +52,17 @@ fn main() {
             Ok(s) => writeln!(out, "OK {} {}", &args[1], s.trim()).unwrap(),
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
         },
+        Some("elf") => match std::fs::File::open(&args[1]) {
+            Ok(mut file) => {
+                use std::io::Read;
+                let mut magic = [0; 4];
+                match file.read_exact(&mut magic) {
+                    Ok(()) => writeln!(out, "ELF {} {:?}", &args[1], magic).unwrap(),
+                    Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+                }
+            }
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
         Some("readdir") => match std::fs::read_dir(&args[1]) {
             Ok(entries) => {
                 let mut names: Vec<String> = entries
@@ -59,6 +72,10 @@ fn main() {
                 names.sort();
                 writeln!(out, "OK {} {}", &args[1], names.join(",")).unwrap()
             }
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
+        Some("rename") => match std::fs::rename(&args[1], &args[2]) {
+            Ok(()) => writeln!(out, "RENAMED {} {}", &args[1], &args[2]).unwrap(),
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
         },
         Some("env") => {
@@ -90,6 +107,7 @@ impl KindStr for std::io::Error {
         match self.raw_os_error() {
             Some(libc_enoent) if libc_enoent == 2 => "ENOENT".into(),
             Some(13) => "EACCES".into(),
+            Some(16) => "EBUSY".into(),
             Some(30) => "EROFS".into(),
             Some(other) => format!("errno{other}"),
             None => format!("{:?}", self.kind()),

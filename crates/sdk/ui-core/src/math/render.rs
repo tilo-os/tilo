@@ -4,7 +4,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Stroke};
 use vello::peniko::Color;
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
+use crate::text_render::TextRenderer;
 
 use super::layout::{Box2d, BoxKind, Layout};
 
@@ -31,18 +31,6 @@ pub fn draw_layout(
     }
 }
 
-/// `transform` shifted to `(x, y)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 fn draw_box(
     scene: &mut Scene,
     transform: Affine,
@@ -60,9 +48,9 @@ fn draw_box(
                 scene,
                 text,
                 color,
-                translated(transform, origin_x + math_box.x, origin_y + math_box.y),
+                transform.pre_translate((origin_x + math_box.x, origin_y + math_box.y).into()),
                 None,
-                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
+                &super::layout::math_style(*size),
             );
         }
         BoxKind::Name { text, size } => {
@@ -70,9 +58,9 @@ fn draw_box(
                 scene,
                 text,
                 color,
-                translated(transform, origin_x + math_box.x, origin_y + math_box.y),
+                transform.pre_translate((origin_x + math_box.x, origin_y + math_box.y).into()),
                 None,
-                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
+                &super::layout::math_style(*size),
             );
         }
         BoxKind::Paren { open, size } => {

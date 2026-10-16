@@ -6,14 +6,15 @@ mod cursor;
 
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
-use tilo_relay::{RelayClient, RelayCoeditSession};
+use tilo_peer_state::{Reseal, TransportOrigin, join::TransportHint};
+use tilo_relay_session::{RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// An enrolled room to hold a session for.
@@ -178,19 +179,42 @@ impl Scope {
         })
     }
     /// Reconcile the owner's outgoing custody and send, once per session,
-    /// every entry it may send now.
+    /// every entry it may send now. Sealed writes that expired in custody
+    /// are not renewed: see [`Self::publish_renewing`].
     ///
     /// # Errors
     /// The session closed, its pin, the owner or custody changed, or the
     /// session refuses a frame; unsent entries stay in durable custody.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
-    )]
     pub fn publish(
         &self,
         session: &RelayCoeditSession,
         identity: &HostIdentity,
+    ) -> Result<(), String> {
+        self.send(session, identity, None)
+    }
+    /// [`Self::publish`], first renewing this device's sealed writes that
+    /// expired in custody through `reseal`, the channels' key holder (see
+    /// [`NativeWorkspaceOwner::renew_outgoing`]).
+    ///
+    /// # Errors
+    /// As [`Self::publish`].
+    pub fn publish_renewing(
+        &self,
+        session: &RelayCoeditSession,
+        identity: &HostIdentity,
+        reseal: &mut Reseal<'_>,
+    ) -> Result<(), String> {
+        self.send(session, identity, Some(reseal))
+    }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
+    )]
+    fn send(
+        &self,
+        session: &RelayCoeditSession,
+        identity: &HostIdentity,
+        reseal: Option<&mut Reseal<'_>>,
     ) -> Result<(), String> {
         let live = self
             .live
@@ -211,6 +235,16 @@ impl Scope {
             std::time::SystemTime::now(),
         ) {
             tracing::debug!(%error,"native publication reconciliation blocked");
+        }
+        if let Some(reseal) = reseal
+            && let Err(error) = self.connect.owner.renew_outgoing(
+                self.connect.room,
+                &identity.device_signing_key,
+                reseal,
+                std::time::SystemTime::now(),
+            )
+        {
+            tracing::debug!(%error, "native sealed write renewal blocked");
         }
         self.connect.owner.with_outgoing(
             self.connect.room,
@@ -233,6 +267,7 @@ impl Scope {
                     .lock()
                     .map_err(|_| "native publication cursor poisoned")?;
                 cursor.drive(
+                    outgoing.queued(),
                     outgoing.entries().map(|entry| {
                         (
                             entry.id(),
@@ -243,12 +278,14 @@ impl Scope {
                     }),
                     |bytes, channel, retention| {
                         match retention {
-                            tilo_peer_state::transport::Retention::Delta => {
+                            neighbour_wire::Retention::Delta => {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
                             // Members never republish a governor checkpoint with
-                            // their own relay author, even if a producer errs.
-                            tilo_peer_state::transport::Retention::Checkpoint => {
+                            // their own relay author, even if a producer errs. A
+                            // sealed checkpoint already arrives here as a delta
+                            // (`publication::member_publishes_as_delta`).
+                            neighbour_wire::Retention::Checkpoint => {
                                 return Err("native member checkpoint publication refused".into());
                             }
                         }
@@ -295,6 +332,16 @@ impl Input {
     pub fn retained(&self) -> bool {
         self.retained
     }
+    /// Observe the actual committed owner generation, without granting admission.
+    ///
+    /// # Errors
+    /// The enrolled room is unavailable or fenced.
+    pub fn generation(&self) -> Result<u64, String> {
+        self.scope
+            .connect
+            .owner
+            .with_current(self.room(), |view| Ok(view.generation()))
+    }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
     ///
@@ -332,15 +379,16 @@ impl Input {
             std::time::SystemTime::now(),
         )
     }
-    /// The author's current role in the room.
+    /// The author's current standing in the room: the room's policy, and
+    /// the bound on a device not theirs.
     ///
     /// # Errors
     /// The room is fenced or the author is not a member.
-    pub fn role(&self) -> Result<collab_types::Role, String> {
+    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
         self.scope.connect.owner.with_current(self.room(), |view| {
             view.peer()
                 .permissions(self.author, std::time::SystemTime::now())
-                .map(|(role, _, _)| role)
+                .map(tilo_peer_state::MemberAuthority::standing)
         })
     }
 }

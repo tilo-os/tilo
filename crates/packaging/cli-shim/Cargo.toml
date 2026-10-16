@@ -14,6 +14,10 @@ description = "Tiny PATH shim binary — resolves its sidecar, execvs tilo-launc
 # shim is intentionally minimal (no allocator-heavy deps, no
 # tokio) so the boot cost is close to the launcher's fork+exec.
 
+[lib]
+name = "cli_shim"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tilo-cli-shim"
 path = "src/main.rs"

@@ -16,7 +16,8 @@
 //! of application secrets are never named.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
 /// Bookmarks kept in the file, Tilo's and other applications' together.
 pub const MAX_BOOKMARKS: usize = 500;
@@ -184,19 +185,19 @@ pub fn record(xbel: &Path, home: &Path, path: &Path, now: &str) -> std::io::Resu
     if let Some(parent) = xbel.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    atomic_file::write_with_mode(xbel, render(&merged).as_bytes(), 0o600)?;
+    tilo_files::native::atomic::write_with_mode(xbel, render(&merged).as_bytes(), 0o600)?;
     Ok(true)
 }
 
 /// Where the session's bookmark file lives.
 pub fn xbel_path() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home().map(|dir| dir.join("recently-used.xbel"))
+    tilo_paths::xdg::data_home().map(|dir| dir.join("recently-used.xbel"))
 }
 
 /// Publish a document the person just opened. Written off the compositor
 /// thread; concurrent opens are serialised so none overwrites another.
 pub fn note_opened(path: &Path) {
-    let (Some(xbel), Some(home)) = (xbel_path(), xdg_paths::home()) else {
+    let (Some(xbel), Some(home)) = (xbel_path(), tilo_paths::home()) else {
         return;
     };
     let Ok(path) = path.canonicalize() else {
@@ -209,7 +210,7 @@ pub fn note_opened(path: &Path) {
         .name("recent-files".into())
         .spawn(move || {
             static WRITER: Mutex<()> = Mutex::new(());
-            let _serial = WRITER.lock().unwrap_or_else(PoisonError::into_inner);
+            let _serial = WRITER.lock_recover();
             if let Err(error) = record(&xbel, &home, &path, &now) {
                 tracing::warn!(%error, "could not update recently-used.xbel");
             }

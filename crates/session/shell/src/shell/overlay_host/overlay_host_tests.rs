@@ -3,7 +3,8 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue, Value};
+use automerge::ReadDoc as _;
+use ui::widget::TaffyTreeExt;
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -194,7 +195,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([1; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Govern,
+            entry_kind: ui::widget::EntryKind::Access,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: std::time::SystemTime::now(),
             summary: "5 permission changes".into(),
@@ -213,7 +214,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([2; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: "+4 -1 chars".into(),
@@ -222,7 +223,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "finance:q2",
                     "sheet",
                     "Q2 finance report",
@@ -240,7 +240,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let make_entry = |id, purpose: &str| ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([id; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: purpose.into(),
@@ -249,7 +249,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     format!("resource:{id}"),
                     "document",
                     purpose,
@@ -301,7 +300,15 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         {
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
-            h.host.room_activity_mut().refresh(&mut *tree);
+            // Bootstrap writes are setup/layout and omitted from the feed;
+            // rename so the explorer has a Change row to show.
+            let tree = &mut *tree;
+            if let Some(ws) = tree.desktop.workspaces.first_mut() {
+                ws.name = format!("{} · live", ws.name);
+            }
+            tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+            tilo_resource::history::commit_stamped(&mut tree.doc);
+            h.host.room_activity_mut().refresh(tree);
         }
         h.host
             .room_activity_mut()
@@ -314,7 +321,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert!(
             !h.host.room_activity().entries().is_empty(),
-            "a bootstrapped workspace tree has already written to its room document"
+            "a renamed workspace should appear in the activity feed"
         );
         let names: Vec<&str> = h
             .host
@@ -377,7 +384,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         let outside = Point::new(20.0, 400.0);
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(outside), mods);
-        let _ = pump(&mut h, &left_button_pressed(), mods);
+        let _ = pump(&mut h, &mouse_press(), mods);
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -455,6 +462,20 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         };
 
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
+        // The open is queued off the compositor thread: its refusal arrives
+        // as a launch event that the host settles on its next drain.
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while chrome.borrow().notifications().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the queued refusal never reached the host"
+            );
+            if !host.drain_launch_events() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
 
         assert!(
             crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
@@ -490,12 +511,81 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
     history_open_distinguishes_files_links_and_semantic_ids();
     room_activity_preflight_failure_clears_placement_and_emits_one_notice();
 }
+
+/// Painting frames in which nothing changed does not refresh the passive
+/// Activity awareness (no tree write lock, no record reads), and a change to
+/// the workspace document refreshes it again.
+#[test]
+fn activity_refresh_skips_unchanged_frames() {
+    /// Counts the pane's refreshes: each asks once for the review snapshot.
+    #[derive(Default)]
+    struct CountingHost {
+        refreshes: std::cell::Cell<usize>,
+    }
+    impl tilo_desktop::activity::ActivityHost for CountingHost {
+        fn task_review_snapshot(
+            &self,
+            _room: &str,
+        ) -> Option<Result<Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
+            self.refreshes.set(self.refreshes.get().saturating_add(1));
+            None
+        }
+    }
+
+    let mut h = build_harness();
+    let host = std::rc::Rc::new(CountingHost::default());
+    h.host.room_activity_mut().set_host(host.clone());
+    assert!(
+        h.host.activity_window_rect().is_none(),
+        "the Activity window is closed: only the passive awareness refreshes"
+    );
+    paint(&mut h);
+    let settled = host.refreshes.get();
+    assert!(settled >= 1, "the first frame refreshes the awareness");
+
+    let started = Instant::now();
+    for _ in 0..10 {
+        paint(&mut h);
+    }
+    // Only the once-a-second fallback may refresh while nothing changes: at
+    // most once, plus once per further second the frames took to paint.
+    let fallbacks = started
+        .elapsed()
+        .as_millis()
+        .checked_div(ACTIVITY_AWARENESS_FALLBACK.as_millis())
+        .and_then(|seconds| usize::try_from(seconds).ok())
+        .expect("a fallback interval");
+    let idle = host.refreshes.get().saturating_sub(settled);
+    assert!(
+        idle <= fallbacks.saturating_add(1),
+        "{idle} refreshes over 10 unchanged frames painted in {:?}",
+        started.elapsed()
+    );
+
+    {
+        let state = h.chrome.borrow();
+        let mut tree = state.tree_mut();
+        let tree = &mut *tree;
+        if let Some(workspace) = tree.desktop.workspaces.first_mut() {
+            workspace.name = format!("{} · renamed", workspace.name);
+        }
+        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+    }
+    let before = host.refreshes.get();
+    paint(&mut h);
+    assert_eq!(
+        host.refreshes.get(),
+        before.saturating_add(1),
+        "a changed workspace document refreshes the awareness once"
+    );
+}
+
 use std::collections::HashMap as StdHashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -647,43 +737,16 @@ impl Widget for StubContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
+    ui::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "StubContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -710,7 +773,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
 
-        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        host.sync(&AutoCommit::new(), &automerge::ROOT);
 
         assert!(host.onboarding_active());
         assert!(
@@ -782,7 +845,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
         let mut document = AutoCommit::new();
-        host.sync(&mut document, &automerge::ROOT);
+        host.sync(&document, &automerge::ROOT);
         let mut h = build_harness_with_host(host, chrome);
 
         let next = h
@@ -798,8 +861,8 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let mut focus = None;
         for event in [
             cursor_moved_at(next.center()),
-            left_button_pressed(),
-            left_button_released(),
+            mouse_press(),
+            mouse_release(),
         ] {
             let mut handled = false;
             h.host.handle_event(
@@ -807,7 +870,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut document,
+                    state: ui::widget::Edits::lend(&mut document),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -817,11 +880,23 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
-        assert!(matches!(
-            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        ));
+        assert!(
+            matches!(
+                document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+                Ok(None)
+            ),
+            "a click is a view action, never a document write"
+        );
+        h.host.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("the tour stays open")
+                .tour_step(),
+            Some(2),
+            "Continue advances the tour"
+        );
     }
 
     onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed();
@@ -885,6 +960,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1035,10 +1111,7 @@ fn build_harness_with_host(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[child],
@@ -1177,11 +1250,11 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
 
     fn typed_session_actions_run_through_the_power_flyouts_executor() {
         let mut h = build_harness();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Lock);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome.borrow_mut().take_session_lock_request(),
             "a typed lock reaches the compositor lock edge the flyout's Lock row does"
@@ -1190,7 +1263,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Suspend);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome
                 .borrow()
@@ -1504,7 +1577,10 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("a".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("a".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
 
@@ -1526,17 +1602,16 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.capture_studio.is_open());
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("b".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("b".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
+        assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
         assert_eq!(
-            h.chrome
-                .borrow()
-                .quick_settings
-                .wifi_password
-                .as_ref()
-                .map(|prompt| prompt.password.as_str()),
-            Some("ab"),
+            h.host.wifi_password_input.value(),
+            "ab",
             "after capture closes, the original credential field must regain its text focus and selection"
         );
 
@@ -1637,8 +1712,9 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforex"),
-            "the Save name field owns text input before capture opens"
+            Some("x"),
+            "the Save name field owns text input before capture opens (typing replaces \
+             the preset name, which opens selected)"
         );
 
         assert!(pump(
@@ -1667,7 +1743,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforexy"),
+            Some("xy"),
             "after capture closes, the exact prior Save field must regain keyboard input"
         );
     }
@@ -1675,7 +1751,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.desktop_tour = true;
-        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        h.host.sync(&AutoCommit::new(), &automerge::ROOT);
         let before = h
             .host
             .onboarding
@@ -1745,10 +1821,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
     fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
         use crate::shell::chrome_state::{OpenTarget, SearchScope};
@@ -1808,72 +1880,141 @@ fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
 }
 
 fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    pump_at_scale(h, event, modifiers, 1.0)
+}
+
+fn pump_at_scale(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers, scale: f64) -> bool {
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .scale_factor(scale)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 /// Builds a `KeyEvent` over a zeroed buffer — winit 0.30's
 /// `KeyEventExtra` is `pub(crate)`, so a struct literal isn't possible.
 /// Only the pub fields the host reads (`logical_key`, `state`) are
 /// overwritten.
+/// An app's Save that names a file already in the folder: the chooser asks
+/// before anything is chosen, and the question is in the semantic tree with a
+/// Replace an assistive technology or an agent can press.
+#[test]
+fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
+    use crate::portal::FilePickerSpawner as _;
+
+    fn find<'a>(
+        node: &'a ui::a11y::AccessNode,
+        pred: &dyn Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if pred(node) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, pred))
+    }
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let photo = folder.path().join("labrador.jpg");
+    std::fs::write(&photo, b"original").unwrap();
+
+    let mut h = build_harness();
+    let pickers = crate::portal::FilePickerQueue::new();
+    h.host.set_portal_queues(
+        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+        pickers.clone(),
+    );
+    let workspace = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .expect("demo desktop has an active workspace")
+        .id;
+    let (reply, mut received) = tokio::sync::oneshot::channel();
+    pickers.spawn(crate::portal::FilePickerRequest {
+        caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+        title: "Export a picture".to_string(),
+        save: true,
+        directory: false,
+        multiple: false,
+        accept_label: Some("Export".to_string()),
+        current_name: Some("labrador.jpg".to_string()),
+        filters: Vec::new(),
+        scope: Some(crate::portal::PickerScope {
+            initial_dir: folder.path().to_path_buf(),
+            roots: vec![folder.path().to_path_buf()],
+            home: None,
+        }),
+        reply,
+    });
+    assert!(h.host.pump_file_picker());
+
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Enter)),
+        Modifiers::default()
+    ));
+    h.host.pump_file_picker();
+    assert!(
+        received.try_recv().is_err(),
+        "nothing is chosen before the answer"
+    );
+
+    let semantics = h.host.accessibility().expect("shell semantics");
+    let prompt = find(&semantics, &|node| {
+        node.name.as_deref()
+            == Some("A file named \u{201c}labrador.jpg\u{201d} already exists here. Replace it?")
+    })
+    .expect("the replace question is published");
+    assert!(prompt.state.modal);
+    let replace = find(prompt, &|node| node.name.as_deref() == Some("Replace"))
+        .and_then(|node| node.action_target.clone())
+        .expect("Replace carries an action target");
+    assert!(h.host.perform_semantic_action(
+        &replace,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert!(h.host.pump_file_picker());
+    assert_eq!(received.try_recv().unwrap(), Some(vec![photo.clone()]));
+    assert!(h.host.file_picker().is_none());
+    assert_eq!(
+        std::fs::read(&photo).unwrap(),
+        b"original",
+        "the app writes, not the chooser"
+    );
+}
+
 fn key_press(logical_key: Key) -> WindowEvent {
-    // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
-    // bit pattern (`logical_key` is overwritten below, `text` is
-    // `Option<…>` whose niche-optimised `None` is the all-zero
-    // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
-    // inspected by winit-internal code that the host never reaches).
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
+    // A character key carries its text, as a real keyboard's does; text
+    // fields type from it.
+    let text = match &logical_key {
+        Key::Character(text) => Some(text.clone()),
+        _ => None,
+    };
     ev.logical_key = logical_key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ev.text = text;
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 /// Paint one frame, which is what populates every cached hit rect.
 fn paint(h: &mut Harness) {
@@ -1908,8 +2049,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(row.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled);
+        assert!(
+            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+                .is_none()
+        );
+        assert!(pump(&mut h, &mouse_release(), mods));
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -1982,8 +2128,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(invite.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
+        assert!(
+            h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
+            "the press remains cancellable"
+        );
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2008,8 +2159,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(join.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
+        assert!(
+            h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
+            "the press remains cancellable"
+        );
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2116,7 +2272,7 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
     let panel = h.host.collaborators_overlay.panel_rect();
     let mods = Modifiers::default();
     let _ = pump(h, &cursor_moved_at(panel.center()), mods);
-    let _ = pump(h, &left_button_pressed(), mods);
+    let _ = pump(h, &mouse_press(), mods);
     assert!(
         h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
         "a click in a panel with no buttons queued no peer-sync work"
@@ -2125,13 +2281,9 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     /// Opening the palette with a stale query must both focus the input
-    /// and clear it. Drives the configured Super+K path through
+    /// and clear it. Drives the configured Super+Space path through
     /// `handle_event`.
     fn toggle_palette_focuses_input() {
         let mut h = build_harness();
@@ -2145,16 +2297,16 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
         let mods = Modifiers::from(ModifiersState::SUPER);
-        let handled = pump(&mut h, &key_press(Key::Character("k".into())), mods);
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods);
 
-        assert!(handled, "Super+K must be consumed by the overlay host");
+        assert!(handled, "Super+Space must be consumed by the overlay host");
         assert!(
             h.host.palette_visible(),
-            "Super+K must open the global-search palette"
+            "Super+Space must open the global-search palette"
         );
         assert!(
             h.host.palette.is_focused(),
-            "opening the palette via Super+K must focus its input \
+            "opening the palette via Super+Space must focus its input \
              (so the very first keystroke after open lands in the search box)"
         );
         assert_eq!(
@@ -2184,16 +2336,16 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
-        // Super+K is the default Search action.  Any rebind goes through the
+        // Super+Space is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(
             h.chrome.borrow().search_scope,
             SearchScope::All,
-            "Super+K searches the machine"
+            "Super+Space searches the machine"
         );
         h.host.palette.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
@@ -2202,7 +2354,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // one publishes its immutable snapshot and refreshes the visible rows.
         let index_started = std::time::Instant::now();
         while index_started.elapsed() < HANG_BOUND {
-            h.host.update(&mut doc, &automerge::ROOT);
+            h.host.update(&doc, &automerge::ROOT);
             if h.host
                 .search_results
                 .iter()
@@ -2236,82 +2388,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `Welcome` appears only in the note's body, so
-    /// a provider looking it up by tab id rather than by document
-    /// answers nothing.
-    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::notes_app::NotesApp;
-
-        let mut h = build_harness();
-        h.host
-            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
-            .unwrap();
-        let doc = AutoCommit::new();
-        // The document as `TileHost::sync` hands it to the app every
-        // frame: the tab's own record.
-        let notes_tab =
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
-        let store = h.chrome.borrow().records().clone();
-        store.open_record(&record);
-        store.with(&record.id, |d| {
-            let mut notes = NotesApp::with_seed(
-                "Welcome to tilo.\n\nThese notes sync live with anyone \
-                 invited to this workspace.",
-            );
-            notes.sync(d, &automerge::ROOT);
-        });
-
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
-
-        h.host.palette.set_query("Welcome");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-
-        let hit = h
-            .host
-            .search_results
-            .iter()
-            .find(|r| r.provider_id == "notes")
-            .unwrap_or_else(|| {
-                panic!(
-                    "searching inside Notes for a word from its own body \
-                     must offer the note; got {:?}",
-                    h.host
-                        .search_results
-                        .iter()
-                        .map(|r| (&r.provider_id, &r.title))
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            hit.subtitle.as_deref().unwrap_or_default().contains("tilo"),
-            "the row must show the matching line, not a bare title: {:?}",
-            hit.subtitle
-        );
-        // And it is a row the palette actually paints, with that snippet
-        // as its description.
-        let painted =
-            h.host.palette.visible_entries().iter().any(|e| {
-                e.label == hit.title && e.description.as_deref() == hit.subtitle.as_deref()
-            });
-        assert!(
-            painted,
-            "the hit must reach the palette's own rows: {:?}",
-            h.host
-                .palette
-                .visible_entries()
-                .iter()
-                .map(|e| (&e.label, &e.description))
-                .collect::<Vec<_>>()
-        );
-    }
-
     /// A room starting empty is only workable if moving one of your own
-    /// records into it costs one step: Super+K, type the name, and a
+    /// records into it costs one step: Super+Space, type the name, and a
     /// record from *another* room is among the answers — labelled with
     /// where it lives — and Enter brings it here.
     #[allow(
@@ -2358,7 +2436,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         let mut doc = AutoCommit::new();
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
         h.host.palette.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
@@ -2408,7 +2486,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         // Enter on that row.
         h.host.palette.set_cursor(idx);
-        h.host.activate_selected_result(&mut doc, &automerge::ROOT);
+        h.host
+            .activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
 
         let records = h.host.room_records();
         let records = records.borrow();
@@ -2476,7 +2555,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
     toggle_palette_focuses_input();
     configured_search_reaches_installed_apps();
-    configured_search_finds_a_word_that_only_appears_in_the_notes_body();
     super_k_finds_a_record_from_another_room_and_enter_brings_it_here();
     app_scope_pill_names_the_app_as_an_app();
 }
@@ -2490,9 +2568,11 @@ fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
     let manifest_path = payload.join("manifest.toml");
     std::fs::write(
         &manifest_path,
-        format!(
-            "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-             version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+        crate::shell::test_support::canonical_manifest(
+            &format!(
+                "id = \"{package_id}\"\nname = \"{name}\"\nversion = \"1.2.3\"\nkind = \"app\""
+            ),
+            "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n",
         ),
     )
     .unwrap();
@@ -2539,7 +2619,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
         // MouseInput carries no position; seed `last_cursor` via CursorMoved first.
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(p), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
 
         assert!(
             handled,
@@ -2561,7 +2641,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(close.center()), mods);
-        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
         assert!(!h.chrome.borrow().overlays.ws_settings);
     }
 
@@ -2582,59 +2662,26 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
 
 #[test]
 fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
-    /// Without the design's 1px backdrop blur, perceived dimming drops
-    /// below intent, so the rendered alpha compensates. `0.45` is
-    /// empirically where a non-blurred scrim reads like the blurred 0.30.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_scrim_alpha_matches_concept() {
-        // `MODAL_SCRIM_ALPHA` already satisfies this today, so clippy sees
-        // a compile-time-constant condition — but the point is to catch a
-        // future edit that lowers it back toward the un-blurred 0.20. A
-        // `const` assertion can't carry this message: `f32` isn't
-        // const-`Display`-able, and the value belongs in the panic text.
-        assert!(
-            MODAL_SCRIM_ALPHA >= 0.45,
-            "MODAL_SCRIM_ALPHA must be >= 0.45 to compensate for the \
-             missing 1-px backdrop blur from concept §4.1; the un-blurred \
-             0.20 scrim let the desktop bleed through the modal so the \
-             palette / WS-settings surfaces never read as the focused \
-             layer (got {MODAL_SCRIM_ALPHA})"
-        );
-    }
-
-    /// The palette scrim must actually dim bright window content — same
-    /// compensation [`MODAL_SCRIM_ALPHA`] documents. At 0.30 a `bg-white`
-    /// card behind the palette stays at 178 grey; at 0.45 it drops to
-    /// 141. Asserted as a lower bound so the next person can't satisfy
-    /// the letter of it by re-lowering an exact pin.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_scrim_alpha_reads_like_the_blurred_concept() {
-        // Same rationale as `palette_scrim_alpha_matches_concept`: a
-        // regression guard on a design constant that's currently true by
-        // construction, kept as a runtime assert because the panic
-        // message interpolates an `f32`.
-        assert!(
-            PALETTE_SCRIM_ALPHA >= 0.45,
-            "PALETTE_SCRIM_ALPHA must be >= 0.45 to compensate for the \
-             missing backdrop blur — below that a white window card behind \
-             the palette stays bright and the card's edge reads as a hard \
-             cut (got {PALETTE_SCRIM_ALPHA})"
-        );
-        // The brightest thing the shell paints must come out clearly
-        // darker than the surface it sits behind.
-        let card = 255.0;
-        let dimmed = card * (1.0 - PALETTE_SCRIM_ALPHA);
-        assert!(
-            dimmed <= 145.0,
-            "a bg-white window card behind the palette lands at {dimmed} — \
-             still a bright field next to a slate-900 card"
-        );
+    /// The shell's scrims (palette, overview, modal sheets) are the
+    /// toolkit's one scrim at the theme's strength: a white window card
+    /// behind the palette comes out clearly dimmed in every theme, and the
+    /// overview's cached-frame scrim carries the same strength.
+    fn shell_scrims_are_the_toolkit_scrim() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let strength = theme.tokens.colors.surfaces.scrim_strength;
+            assert!(
+                strength >= 0.45,
+                "{}: a scrim under 0.45 lets the desktop bleed through the \
+                 palette (got {strength})",
+                theme.name
+            );
+            let card = ui::chrome::scrim_maps(255, strength, &theme);
+            assert!(
+                card <= 210,
+                "{}: a bg-white window card behind the palette lands at {card}",
+                theme.name
+            );
+        }
     }
 
     /// The scrim's colour comes from the theme, not a literal — both
@@ -2664,31 +2711,8 @@ fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
         }
     }
 
-    /// Legibility against a busy desktop backdrop wins over tint depth:
-    /// [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90` so the palette reads as
-    /// solid chrome with just a hint of the wallpaper's tint.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_surface_alpha_lifts_off_desktop() {
-        // Same rationale as `palette_scrim_alpha_matches_concept`: a
-        // regression guard on a design constant that's currently true by
-        // construction, kept as a runtime assert because the panic
-        // message interpolates an `f32`.
-        assert!(
-            MODAL_SURFACE_ALPHA >= 0.90,
-            "MODAL_SURFACE_ALPHA must stay >= 0.90 so the palette + \
-             workspace-settings modal read as opaque chrome; a lower \
-             alpha reintroduces the 2026-07-09 legibility complaint \
-             (got {MODAL_SURFACE_ALPHA})"
-        );
-    }
-
-    palette_scrim_alpha_matches_concept();
-    palette_scrim_alpha_reads_like_the_blurred_concept();
+    shell_scrims_are_the_toolkit_scrim();
     scrim_hue_comes_from_the_theme_and_darkens_in_both();
-    palette_surface_alpha_lifts_off_desktop();
 }
 
 #[test]
@@ -2738,4 +2762,1462 @@ fn pick_group_at_hits_only_containing_non_empty_rects() {
     pick_group_at_returns_containing_group();
     pick_group_at_none_outside_all_rects();
     pick_group_at_skips_zero_area_rects();
+}
+
+/// First login in one session: the desktop's Home workspace exists before the
+/// identity does, so it is owned by the account name. Finishing setup must make
+/// the minted identity its owner, or every app opened next is refused its
+/// collaboration route and exits before drawing.
+#[test]
+fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CODECS_SKIP, KEY_CREATE,
+        KEY_FINISH, KEY_UNDERSTOOD,
+    };
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    let home = tempfile::tempdir().expect("home");
+    let identity_root = home.path().join("identity-root");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", home.path());
+    env.set("XDG_CONFIG_HOME", home.path().join(".config"));
+    env.set("TILO_IDENTITY_ROOT", &identity_root);
+    env.set("USER", "quickuser");
+    env.remove("TILO_USER_ID");
+
+    let mut tree = WorkspaceTree::default();
+    let mut workspace = Workspace::new(WorkspaceId(1), "Home");
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+    let room = workspace.room;
+    tree.desktop.active = workspace.id;
+    tree.desktop.workspaces.push(workspace);
+    let chrome = ChromeState::new(tree);
+    assert_eq!(
+        chrome.borrow().tree().desktop.workspaces[0]
+            .owner()
+            .map(String::as_str),
+        Some("quickuser"),
+        "before setup the session acts as the account"
+    );
+
+    // The ceremony mints the root key; provisioning records its public half
+    // where the session reads its own principal.
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_bytes();
+    let paths = tilo_user_identity::persist::IdentityPaths::under(&identity_root);
+    let record_dir = home.path().join("identity");
+    let view = crate::onboarding_view::OnboardingView::with_minter(Box::new(move || {
+        std::fs::create_dir_all(paths.user_pubkey.parent().expect("parent")).expect("dir");
+        std::fs::write(&paths.user_pubkey, root_key).expect("user public key");
+        Ok(crate::onboarding::MintedIdentity {
+            fingerprint: hex::encode(root_key),
+            path: record_dir.join("primary.json"),
+        })
+    }));
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+    let view = view.with_codec_setup(crate::onboarding_view::CodecSetup::with(
+        std::sync::Arc::new(os_actions::codec_pack::CodecPackStatus::default),
+        std::sync::Arc::new(|_| panic!("skipping the offer must not install codecs")),
+    ));
+    host.enable_test_onboarding(view);
+
+    let mut doc = AutoCommit::new();
+    for key in [
+        KEY_BEGIN,
+        KEY_UNDERSTOOD,
+        KEY_CREATE,
+        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        KEY_BACKUP_CONTINUE,
+        KEY_CODECS_SKIP,
+        KEY_FINISH,
+    ] {
+        let args = if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            serde_json::json!({"checked":true})
+        } else {
+            serde_json::json!({})
+        };
+        invoke_setup(&mut host, &chrome, &mut doc, &(key, args));
+    }
+    assert!(!host.onboarding_active(), "setup released the desktop");
+
+    // What the collaboration broker admits an app's join by.
+    let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(root_key);
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let home = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|w| w.room == room)
+        .expect("home");
+    assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
+    assert_eq!(home.role_of("quickuser"), None);
+    assert_eq!(state.local_user_id, principal);
+}
+
+fn roster_follow_fixture() -> Harness {
+    let mut h = build_harness();
+    {
+        let mut chrome = h.chrome.borrow_mut();
+        chrome.overlays.collaborators = true;
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators = vec![
+            crate::shell::state::Collaborator::new("ada", "Ada"),
+            crate::shell::state::Collaborator::new("bob", "Bob"),
+        ];
+    }
+    paint(&mut h);
+    h
+}
+
+#[test]
+fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("painted Ada Follow");
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .swap(0, 1);
+    }
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "the intended person is only armed"
+    );
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(
+        h.host.followed_peer.as_deref(),
+        Some("ada"),
+        "the painted Ada control must not follow Bob's replacement index"
+    );
+}
+
+#[test]
+fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .remove(0);
+    }
+    let mut handled = false;
+    assert!(h.host.handle_collaborators_keyboard(
+        &Key::Named(NamedKey::Enter),
+        false,
+        &mut handled
+    ));
+    assert!(handled);
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a stale Ada control must never follow Bob"
+    );
+}
+
+#[test]
+fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .swap(0, 1);
+    }
+    paint(&mut h);
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a second explicit activation stops Ada"
+    );
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    paint(&mut h);
+    assert!(
+        h.host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[3])
+            .is_none()
+    );
+
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "reopening must not resurrect old focus"
+    );
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("Bob Follow after reordering");
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(h.host.followed_peer.is_none());
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("bob"));
+    paint(&mut h);
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert_eq!(
+        h.host.followed_peer.as_deref(),
+        Some("bob"),
+        "Stop remains cancellable"
+    );
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a repeated completed click stops Bob"
+    );
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+}
+
+#[test]
+fn people_completed_click_defers_follow_until_release() {
+    let mut h = roster_follow_fixture();
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("painted Ada Follow");
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    capture_people_completed(&mut h, "pressed");
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a press must remain cancellable"
+    );
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+}
+
+#[test]
+fn people_completed_click_cancels_after_reorder_and_focus_loss() {
+    for lose_focus in [false, true] {
+        let mut h = roster_follow_fixture();
+        let target = h
+            .host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[3])
+            .expect("painted Ada Follow");
+        let mods = Modifiers::default();
+        assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
+        if lose_focus {
+            let _ = pump(&mut h, &WindowEvent::Focused(false), mods);
+        } else {
+            {
+                let chrome = h.chrome.borrow_mut();
+                chrome
+                    .tree_mut()
+                    .desktop
+                    .active_workspace_mut()
+                    .expect("fixture workspace")
+                    .collaborators
+                    .swap(0, 1);
+            }
+            paint(&mut h);
+        }
+        assert!(pump(&mut h, &mouse_release(), mods));
+        capture_people_completed(
+            &mut h,
+            if lose_focus {
+                "focus-lost"
+            } else {
+                "reordered-cancel"
+            },
+        );
+        assert!(
+            h.host.followed_peer.is_none(),
+            "the interrupted gesture follows nobody"
+        );
+    }
+}
+
+#[test]
+fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "the first local key releases Follow"
+    );
+    let mut repeat = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &repeat, mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "holding Enter must not undo the local handoff"
+    );
+}
+
+fn capture_people_completed(h: &mut Harness, name: &str) {
+    let Some(directory) = std::env::var_os("TILO_PEOPLE_ARTIFACTS") else {
+        return;
+    };
+    let out = std::path::Path::new(&directory);
+    std::fs::create_dir_all(out).expect("owned artifact directory");
+    for (variant, theme) in [
+        ("light", Theme::light()),
+        ("dark125", Theme::dark().with_text_scale(1.25)),
+    ] {
+        let mut scene = Scene::new();
+        let flags = h.chrome.borrow().overlays;
+        h.host.draw_collaborators_dropdown(
+            &mut scene,
+            Affine::translate((800.0 - h.host.rect.x1, -h.host.rect.y0)),
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::empty(),
+            flags,
+        );
+        let panel = h.host.collaborators_overlay.panel_rect();
+        let translated =
+            Affine::translate((800.0 - h.host.rect.x1, -h.host.rect.y0)).transform_rect_bbox(panel);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        assert!(
+            viewport.contains(translated.origin())
+                && viewport.contains(Point::new(translated.x1, translated.y1)),
+            "the capture must observe the whole People panel"
+        );
+        let mut renderer = ui::offscreen::OffscreenRenderer::new(800, 600);
+        renderer.render_png(
+            &scene,
+            theme.tokens.colors.surfaces.base,
+            out.join(format!("{variant}-{name}.png")),
+        );
+    }
+}
+
+#[test]
+fn people_completed_submit_release_stays_owned_after_activity_opens() {
+    let mut h = roster_follow_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::End)), mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    let mut release = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(
+        pump(&mut h, &release, mods),
+        "People owns the submit key-up after opening Activity"
+    );
+}
+
+#[test]
+fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
+    let mut h = roster_follow_fixture();
+    let mods = Modifiers::default();
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("Ada");
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    paint(&mut h);
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(h.host.followed_peer.is_none());
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+}
+
+#[test]
+fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
+    let mut h = roster_follow_fixture();
+    let mods = Modifiers::default();
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("Ada");
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    let ada = {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .remove(0)
+    };
+    paint(&mut h);
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .insert(0, ada);
+    }
+    paint(&mut h);
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(h.host.followed_peer.is_none());
+}
+
+#[test]
+fn people_completed_resize_does_not_move_an_armed_click() {
+    let mut h = roster_follow_fixture();
+    let mods = Modifiers::default();
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("Ada");
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+    paint(&mut h);
+    let moved = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[3])
+        .expect("Ada after resize");
+    assert_ne!(target, moved);
+    assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(h.host.followed_peer.is_none());
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+}
+
+fn people_status_fixture() -> Harness {
+    let mut h = roster_follow_fixture();
+    h.host.local_status = Some("Reviewing draft".into());
+    h.host.local_status_origin = ui::StatusOrigin::Manual;
+    paint(&mut h);
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    let mut release = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(pump(&mut h, &release, mods));
+    assert!(h.host.status_editing);
+    h
+}
+
+#[test]
+fn people_status_dismissal_cancels_the_hidden_editor_before_reopen() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert_eq!(h.host.status_draft, "Reviewing draftx");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(100.0, 300.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    capture_people_completed(&mut h, "status-reopened");
+    assert!(
+        !h.host.status_editing,
+        "dismissed draft cannot reopen as an active editor"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_releases_keyboard_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    let mods = Modifiers::default();
+    assert!(
+        !pump(&mut h, &key_press(Key::Character("x".into())), mods),
+        "closed People releases the next key"
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim the next key"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_releases_ime_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    assert!(
+        !pump(
+            &mut h,
+            &WindowEvent::Ime(winit::event::Ime::Commit("hidden text".into())),
+            Modifiers::default(),
+        ),
+        "closed People releases the IME commit",
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim an IME commit"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_cancels_the_editor_at_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    paint(&mut h);
+    assert!(
+        !h.host.status_editing,
+        "a hidden paint must end the edit lifecycle"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+}
+
+#[test]
+fn people_status_visible_shared_editing_submits_once_and_escape_discards() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    assert!(pump(&mut h, &key_press(Key::Character("a".into())), ctrl));
+    assert!(pump(
+        &mut h,
+        &WindowEvent::Ime(winit::event::Ime::Commit("  Editing café  ".into())),
+        mods,
+    ));
+    assert_eq!(h.host.status_draft, "  Editing café  ");
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    assert_eq!(h.host.status_selection.cursor, 0);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::End)), mods));
+    assert_eq!(h.host.status_selection.cursor, h.host.status_draft.len());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(!h.host.status_editing);
+    assert_eq!(
+        h.chrome.borrow_mut().take_presence_requests(),
+        vec![
+            crate::shell::chrome_state::PresenceRequest::SetManualStatus(Some(
+                "Editing café".into()
+            ))
+        ],
+        "one explicit submit queues one normalized status request",
+    );
+    let mut repeat = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &repeat, mods));
+    assert!(!h.host.status_editing);
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
+    assert!(
+        h.chrome.borrow().overlays.collaborators,
+        "first Escape leaves the editor"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(
+        !h.chrome.borrow().overlays.collaborators,
+        "second Escape dismisses People"
+    );
+}
+
+#[test]
+fn people_status_activity_transition_discards_only_the_unpublished_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(h.host.status_editing, "press is still cancellable");
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    assert!(!h.host.status_editing);
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(
+        crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+            .is_some()
+    );
+}
+
+fn people_viewport_probe_fixture() -> Harness {
+    let mut h = roster_follow_fixture();
+    adopt_rooms(&h);
+    {
+        let mut state = h.chrome.borrow_mut();
+        state.peer_sync_enabled = true;
+        state
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture room")
+            .collaborators = (0_usize..13)
+            .map(|i| {
+                crate::shell::state::Collaborator::new(
+                    format!("fixture-{i}"),
+                    format!("Participant {}", i.saturating_add(1)),
+                )
+            })
+            .collect();
+    }
+    paint(&mut h);
+    h
+}
+
+#[test]
+fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+    paint(&mut h);
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::End)),
+        Modifiers::default()
+    ));
+    let tree = h.host.collaborators_overlay.accessibility_snapshot();
+    assert!(tree.children.last().expect("Activity").state.focused);
+    assert!(
+        h.host
+            .rect
+            .contains(h.host.collaborators_overlay.activity_rect().center()),
+        "End selects Activity outside the visible output"
+    );
+}
+
+#[test]
+fn people_status_pointer_reentry_preserves_the_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let expected = h.host.status_draft.clone();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(
+        h.host.status_draft, expected,
+        "clicking the active field must not reload the saved status"
+    );
+    assert!(
+        h.host.status_selection.cursor < expected.len(),
+        "TextInput places the caret at the pointer"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_viewport_keyboard_reaches_everyone_and_returns_to_status() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    let mut reached = std::collections::BTreeSet::new();
+    for _ in 0..60 {
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::ArrowRight)),
+            mods
+        ));
+        paint(&mut h);
+        let tree = h.host.collaborators_overlay.accessibility_snapshot();
+        let focused = tree
+            .children
+            .iter()
+            .position(|node| node.state.focused)
+            .expect("keyboard focus survives scrolling");
+        let rect = h
+            .host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[focused])
+            .expect("focused target");
+        assert!(
+            h.host.rect.contains(rect.center()),
+            "the list scrolls the focused control into view"
+        );
+        if let Some(CollaboratorsHit::ToggleFollow(index)) = h
+            .host
+            .collaborators_overlay
+            .key(&Key::Named(NamedKey::Enter), false)
+        {
+            reached.insert(index);
+        }
+    }
+    assert_eq!(
+        reached.len(),
+        13,
+        "every person is reachable without pages: {reached:?}"
+    );
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(h.host.rect.contains(rect.origin()));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
+}
+
+#[test]
+fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(center), mods));
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
+    assert!(pump(&mut h, &wheel, mods));
+    let scrolled = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    assert_ne!(initial, scrolled);
+    let result = h
+        .host
+        .apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End);
+    assert!(matches!(
+        result,
+        ui::widget::PrimaryScrollResult::Changed(_) | ui::widget::PrimaryScrollResult::Unchanged(_)
+    ));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(h.host.rect.contains(activity.center()));
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+}
+
+#[test]
+fn people_status_pointer_drag_selection_edits_the_host_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(rect.x1 - 8.0, rect.center().y)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_ne!(
+        h.host.status_selection.anchor,
+        h.host.status_selection.cursor
+    );
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café".into())),
+        mods
+    ));
+    assert_eq!(h.host.status_draft, "café");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+}
+
+#[test]
+fn people_status_pointer_places_unicode_caret_at_physical_scale_two() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café👩‍💻".into())),
+        mods
+    ));
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    let point = Point::new(
+        (rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5) * 2.0,
+        rect.center().y * 2.0,
+    );
+    assert!(pump_at_scale(&mut h, &cursor_moved_at(point), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_press(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_release(), mods, 2.0));
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::collapsed(0)
+    );
+    assert!(pump(&mut h, &key_press(Key::Character("✓".into())), mods));
+    assert_eq!(h.host.status_draft, "✓Reviewing draftcafé👩‍💻");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let rect = h.host.collaborators_overlay.panel_rect();
+    let lane_x = rect.x1 - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter) / 2.0;
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
+        mods
+    ));
+    let scrolled = h
+        .host
+        .primary_vertical_scroll()
+        .expect("drag scrolls People");
+    assert_ne!(scrolled, initial);
+    assert!(
+        h.host
+            .rect
+            .contains(h.host.collaborators_overlay.activity_rect().center())
+    );
+    pump(&mut h, &WindowEvent::Focused(false), mods);
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert_eq!(
+        h.host.primary_vertical_scroll(),
+        Some(scrolled),
+        "focus loss ends the shared scrollbar drag"
+    );
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(h.host.followed_peer.is_none());
+}
+
+#[test]
+fn people_viewport_reopen_scrolls_under_a_stationary_pointer() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    paint(&mut h);
+    pump(&mut h, &cursor_moved_at(center), Modifiers::default());
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
+    assert!(pump(&mut h, &wheel, Modifiers::default()));
+    assert_ne!(
+        h.host.primary_vertical_scroll(),
+        Some(initial),
+        "reopened People must use the host's existing pointer position without waiting for movement"
+    );
+}
+
+#[test]
+fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let rect = h.host.collaborators_overlay.panel_rect();
+    let lane_x = rect.x1 - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter) / 2.0;
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+    paint(&mut h);
+    let after_resize = h.host.primary_vertical_scroll().expect("resized People");
+    let rect = h.host.collaborators_overlay.panel_rect();
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
+        mods
+    ));
+    assert_eq!(
+        h.host.primary_vertical_scroll(),
+        Some(after_resize),
+        "resize cancels the old thumb drag"
+    );
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(h.host.followed_peer.is_none());
+}
+
+#[test]
+fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(center), mods));
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
+    assert!(pump(&mut h, &wheel, mods));
+    let deadline = h
+        .host
+        .wake_deadline_sources(Instant::now())
+        .into_iter()
+        .find(|(name, _)| *name == "people")
+        .expect("People contributes its child widget deadline")
+        .1;
+    assert!(
+        deadline.is_some(),
+        "the shared scrollbar fade must wake an otherwise idle compositor"
+    );
+    assert!(
+        !h.host.collaborators_overlay.needs_animation_frame(),
+        "the idle interval before a scroll fade uses a deadline rather than busy frames"
+    );
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Escape)),
+        Modifiers::default()
+    ));
+    paint(&mut h);
+    assert!(h.host.collaborators_overlay.next_wake_deadline().is_none());
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    assert!(
+        h.host
+            .wake_deadline_sources(Instant::now())
+            .into_iter()
+            .find(|(name, _)| *name == "people")
+            .expect("People deadline source")
+            .1
+            .is_none()
+    );
+}
+
+#[test]
+fn a_slow_host_update_names_the_step_that_took_the_time() {
+    let mut steps = UpdateSteps::start();
+    steps.mark("peer-sync");
+    steps.steps[0].1 = Duration::from_millis(3);
+    steps.mark("search-index");
+    steps.steps[1].1 = Duration::from_millis(900);
+    assert!(
+        steps
+            .report(SLOW_HOST_UPDATE.saturating_sub(Duration::from_millis(1)))
+            .is_none(),
+        "an update inside the budget is not reported"
+    );
+    let line = steps
+        .report(Duration::from_millis(903))
+        .expect("an update past the budget is reported");
+    assert!(line.starts_with("SLOW-HOST-UPDATE total=903ms ("), "{line}");
+    assert!(line.contains("search-index=900ms"), "{line}");
+    assert!(line.contains("peer-sync=3ms"), "{line}");
+}
+
+/// Exercise the real catalogue callback and widget action-host/reducer, never
+/// a synthetic press or direct write to an acknowledgement gate.
+fn invoke_setup(
+    host: &mut ShellOverlayHost,
+    chrome: &crate::shell::chrome_state::Chrome,
+    doc: &mut AutoCommit,
+    invocation: &(&str, serde_json::Value),
+) {
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    if invocation.0 == crate::onboarding_view::KEY_BACKUP_SKIP_ACKNOWLEDGED {
+        let catalog = host.action_catalog("", &chrome.borrow(), doc, &automerge::ROOT, &AllVisible);
+        for blocked in [
+            crate::onboarding_view::KEY_BACKUP_CONTINUE,
+            crate::onboarding_view::KEY_FINISH,
+        ] {
+            assert!(
+                !catalog.contains(&ResourceRef::new("onboarding", blocked)),
+                "Backup cannot continue or release the desktop before the explicit decision"
+            );
+        }
+    }
+    let ticket = queue_setup(host, chrome, doc, invocation);
+    assert!(ticket().expect("pending").is_none());
+    host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    host.sync(doc, &automerge::ROOT);
+    assert!(ticket().expect("normal reducer completed").is_some());
+}
+
+fn queue_setup(
+    host: &ShellOverlayHost,
+    chrome: &crate::shell::chrome_state::Chrome,
+    doc: &mut AutoCommit,
+    invocation: &(&str, serde_json::Value),
+) -> crate::shell::search::PendingInvocation {
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let resource = ResourceRef::new("onboarding", invocation.0);
+    let catalog = host.exact_action_catalog(
+        "onboarding",
+        invocation.0,
+        &chrome.borrow(),
+        doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let selected = catalog.select(&resource).unwrap_or_else(|| {
+        panic!(
+            "current typed setup action {} (owner={}, screen={:?})",
+            invocation.0,
+            is_active_workspace_owner(&chrome.borrow()),
+            host.onboarding.as_ref().map(|view| view.flow().screen())
+        )
+    });
+    let disposition = selected
+        .invoke_json_disposition(
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+            chrome,
+            invocation.1.as_object().unwrap(),
+        )
+        .expect("admitted");
+    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("an identity effect cannot succeed before the normal reducer handles it");
+    };
+    ticket
+}
+
+#[test]
+fn onboarding_semantic_phase_and_argument_gates_revalidate_the_live_ceremony() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            Err("storage unavailable".into())
+        })));
+    let mut doc = AutoCommit::new();
+    let initial =
+        h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible);
+    assert!(!initial.contains(&ResourceRef::new("onboarding", KEY_CREATE)));
+    let begin = initial
+        .select(&ResourceRef::new("onboarding", KEY_BEGIN))
+        .unwrap();
+    assert!(
+        begin
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &h.chrome,
+                serde_json::json!({"skip_identity":true})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err()
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_BEGIN, serde_json::json!({})),
+    );
+    assert!(
+        begin
+            .invoke_nullary(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &h.chrome
+            )
+            .is_err(),
+        "a previously enumerated Intro action cannot run at Protection"
+    );
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
+    );
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE)),
+        "unticking closes the creation gate"
+    );
+}
+
+#[test]
+fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            Err("storage unavailable".into())
+        })));
+    let mut doc = AutoCommit::new();
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_BEGIN, serde_json::json!({})),
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    );
+    let create = h.host.exact_action_catalog(
+        "onboarding",
+        KEY_CREATE,
+        &h.chrome.borrow(),
+        &doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let disposition = create
+        .select(&ResourceRef::new("onboarding", KEY_CREATE))
+        .unwrap()
+        .invoke_nullary(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &h.chrome,
+        )
+        .unwrap();
+    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("pending mint");
+    };
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(
+        ticket().is_err(),
+        "a failed identity write is not a successful semantic action"
+    );
+    assert!(h.host.onboarding_active());
+    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    h.chrome.borrow_mut().set_session_locked(true);
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
+    );
+}
+
+#[test]
+fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            panic!("the normal creation guard must keep this minter unreachable")
+        })));
+    let mut doc = AutoCommit::new();
+    for invocation in [
+        (KEY_BEGIN, serde_json::json!({})),
+        (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    ] {
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
+    }
+    let create = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    let untick = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
+    );
+    assert!(create().unwrap().is_none());
+    h.host
+        .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(untick().unwrap().is_some());
+    assert!(
+        create().is_err(),
+        "a sync that consumed a now-invalid creation is not success"
+    );
+    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(
+        create().is_err(),
+        "an unrelated later sync must not fabricate completion"
+    );
+}
+
+fn semantic_codecs_fixture(setup: crate::onboarding_view::CodecSetup) -> (Harness, AutoCommit) {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD,
+        OnboardingView,
+    };
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host.enable_test_onboarding(
+        OnboardingView::with_minter(Box::new(|| {
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "test-public-identity".into(),
+                path: std::path::PathBuf::from("/unused/public-record"),
+            })
+        }))
+        .with_codec_setup(setup),
+    );
+    let mut doc = AutoCommit::new();
+    for key in [
+        KEY_BEGIN,
+        KEY_UNDERSTOOD,
+        KEY_CREATE,
+        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        KEY_BACKUP_CONTINUE,
+    ] {
+        let args = if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            serde_json::json!({"checked":true})
+        } else {
+            serde_json::json!({})
+        };
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &(key, args));
+    }
+    (h, doc)
+}
+
+fn semantic_codec_worker_receipt(result: Result<(), String>) {
+    use crate::onboarding_view::{CodecSetup, KEY_CODECS_INSTALL};
+    use std::sync::{Arc, Mutex, mpsc};
+    let success = result.is_ok();
+    let (release, gate) = mpsc::channel::<Result<(), String>>();
+    let gate = Mutex::new(gate);
+    let (started_tx, started) = mpsc::channel();
+    let started_tx = Mutex::new(started_tx);
+    let status = Arc::new(Mutex::new(
+        os_actions::codec_pack::CodecPackStatus::default(),
+    ));
+    let reader = Arc::clone(&status);
+    let writer = Arc::clone(&status);
+    let setup = CodecSetup::with(
+        Arc::new(move || reader.lock().unwrap().clone()),
+        Arc::new(move |_| {
+            started_tx.lock().unwrap().send(()).unwrap();
+            let result = gate.lock().unwrap().recv().unwrap();
+            if result.is_ok() {
+                writer.lock().unwrap().state = os_actions::codec_pack::PackState::Installed;
+            }
+            result
+        }),
+    );
+    let (mut h, mut doc) = semantic_codecs_fixture(setup);
+    let ticket = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CODECS_INSTALL, serde_json::json!({})),
+    );
+    h.host.sync(&doc, &automerge::ROOT);
+    started
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("actual worker started");
+    for _ in 0..3 {
+        h.host.sync(&doc, &automerge::ROOT);
+        assert!(
+            ticket().unwrap().is_none(),
+            "unrelated frames do not finish a blocked install"
+        );
+    }
+    release.send(result).unwrap();
+    let waiting_since = std::time::Instant::now();
+    loop {
+        h.host.sync(&doc, &automerge::ROOT);
+        match ticket() {
+            Ok(None) => assert!(
+                waiting_since.elapsed() < std::time::Duration::from_secs(2),
+                "worker result must arrive"
+            ),
+            Ok(Some(_)) => {
+                assert!(success, "failed worker cannot complete successfully");
+                break;
+            }
+            Err(_) => {
+                assert!(!success, "successful installed worker cannot be refused");
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn onboarding_semantic_codec_receipt_waits_for_actual_worker_success() {
+    semantic_codec_worker_receipt(Ok(()));
+}
+
+#[test]
+fn onboarding_semantic_codec_receipt_refuses_actual_worker_failure() {
+    semantic_codec_worker_receipt(Err("installer refused".into()));
+}
+
+#[test]
+fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let (release, gate) = mpsc::channel();
+    let gate = Mutex::new(gate);
+    let (started_tx, started) = mpsc::channel();
+    let started_tx = Mutex::new(started_tx);
+    let returned = Arc::new(AtomicBool::new(false));
+    let marker = Arc::clone(&returned);
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(move || {
+            started_tx.lock().unwrap().send(()).unwrap();
+            gate.lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            marker.store(true, Ordering::Release);
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "test-public-identity".into(),
+                path: std::path::PathBuf::from("/unused/public-record"),
+            })
+        })));
+    let mut doc = AutoCommit::new();
+    for invocation in [
+        (KEY_BEGIN, serde_json::json!({})),
+        (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    ] {
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
+    }
+    let ticket = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    assert!(ticket().unwrap().is_none());
+    assert!(!returned.load(Ordering::Acquire));
+    let unblock = std::thread::spawn(move || {
+        started
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("normal minter entered");
+        release.send(()).unwrap();
+    });
+    h.host.sync(&doc, &automerge::ROOT);
+    unblock.join().unwrap();
+    assert!(
+        returned.load(Ordering::Acquire),
+        "the actual synchronous minter must return first"
+    );
+    assert!(h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(ticket().unwrap().is_some());
 }

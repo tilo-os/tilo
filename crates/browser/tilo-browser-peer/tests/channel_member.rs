@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use channel_crypto::{ChannelSteward, VaultKey};
 use collab_types::{
     ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, MlsAccessRequestV1,
-    OpClass, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
+    OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::{Host, PeerEvent, PeerStore as _};
@@ -114,7 +114,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
             artifact,
             Ed25519PublicKey::from_bytes(laptop_device),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::now(),
             seq,
             metadata,
@@ -129,6 +129,52 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
         }
     };
     publish(&session, &seal(&steward, 1, "from the laptop"));
+
+    // Publishing only queues the frames for the host. Until it retains the
+    // genesis, the room's replay names no governor and reads as ungoverned,
+    // so let a fresh member's replay prove all three are held first.
+    let observer = enrol(&root, "observer", DeviceCapabilities::member());
+    let observer_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let observer_client = RelayClient::connect(
+        observer_endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        observer.cert.clone(),
+        observer.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let observer_session = RelayCoeditSession::join(
+        observer_client,
+        workspace(),
+        observer.key.verifying_key().to_bytes(),
+    )
+    .unwrap();
+    let (mut hello, mut genesis, mut sealed) = (false, false, false);
+    let retained_by = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !(hello && genesis && sealed) {
+        let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
+            .await
+            .expect("the host to retain the laptop's frames")
+            .expect("observer session open");
+        let Inbound::Delta { author, data } = inbound else {
+            continue;
+        };
+        if author != laptop_device {
+            continue;
+        }
+        match postcard::from_bytes::<NeighbourMsg>(&data) {
+            Ok(NeighbourMsg::IdentityHello { .. }) => hello = true,
+            Ok(NeighbourMsg::MlsGovernance { .. }) => genesis = true,
+            Ok(NeighbourMsg::AppDocument { .. }) => sealed = true,
+            _ => {}
+        }
+    }
+    observer_session.close().await;
 
     // The browser joins the room over HTTPS and opens the note.
     let peer = start_peer(
@@ -172,7 +218,11 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         publish(
                             &session,
                             &NeighbourMsg::MlsGovernance {
@@ -230,6 +280,73 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     })
     .await;
     assert_eq!(opened, vec!["from the laptop", "after the welcome"]);
+
+    // Another device is admitted and the laptop writes under the new epoch
+    // at once. The edit reaches the browser before the commit that carries
+    // that epoch's key: it waits for the key instead of being refused.
+    let phone = enrol(&root, "phone", DeviceCapabilities::member());
+    let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
+    let phone_dir = tempfile::tempdir().unwrap();
+    let mut phone_member = channel_crypto::ChannelMember::open(
+        phone_dir.path(),
+        channel,
+        phone_device,
+        Ed25519PublicKey::from_bytes(laptop_device),
+        &vault,
+    )
+    .unwrap();
+    let phone_request = phone_member
+        .access_request(&phone.key, 1, &vault)
+        .unwrap()
+        .unwrap();
+    requests.insert(phone_device, phone_request);
+    let allowed = BTreeSet::from([
+        Ed25519PublicKey::from_bytes(laptop_device),
+        browser_device,
+        phone_device,
+    ]);
+    let epoch = steward.epoch();
+    steward.reconcile(&allowed, &requests, &vault).unwrap();
+    assert!(steward.epoch() > epoch);
+    publish(&session, &seal(&steward, 3, "under the new epoch"));
+    for outgoing in steward.outbox() {
+        if outgoing.recipient == browser_device {
+            for frame in outgoing
+                .frames
+                .into_iter()
+                .flat_map(|frame| frame.into_deliveries().unwrap())
+            {
+                publish(
+                    &session,
+                    &NeighbourMsg::MlsGovernance {
+                        room: ROOM.into(),
+                        frame: Box::new(frame),
+                        delivery: 3,
+                    },
+                );
+            }
+        }
+    }
+    wait_for(
+        "the edit under the new epoch to open in the browser",
+        || {
+            for event in events.drain() {
+                match event {
+                    PeerEvent::Document(document) => {
+                        if let Some(DocumentMutation::Incremental(bytes)) = document.mutation() {
+                            opened.push(String::from_utf8(bytes).unwrap());
+                        }
+                    }
+                    PeerEvent::DocumentRejected(reason) => panic!("rejected: {reason}"),
+                    _ => {}
+                }
+            }
+            let done = (opened.len() >= 3).then(|| opened.clone());
+            async move { done }
+        },
+    )
+    .await;
+    assert_eq!(opened.last().unwrap(), "under the new epoch");
     peer.close();
     host.relay.shutdown().await;
 }
@@ -342,7 +459,11 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         publish(
                             &session,
                             &NeighbourMsg::MlsGovernance {
@@ -377,12 +498,12 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     host.relay.shutdown().await;
 }
 
-/// A page that joined before the steward announced the channel (the room
-/// looked ungoverned after the host's replay, so its first edit went out in
-/// the clear) asks for access once the genesis arrives live, and seals from
-/// then on.
+/// A page that joined before the steward announced the channel cannot tell
+/// the room is governed: its replay names no governor. Its edit waits, and
+/// once the genesis arrives live it asks for access and seals the edit. No
+/// document leaves it in the clear.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_that_joined_first_asks_for_access_when_the_genesis_arrives() {
+async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -397,9 +518,10 @@ async fn a_page_that_joined_first_asks_for_access_when_the_genesis_arrives() {
     .await;
     let route = route();
     let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let vault = VaultKey::new([7; 32]);
     let steward_dir = tempfile::tempdir().unwrap();
-    let steward =
+    let mut steward =
         ChannelSteward::open_or_create(steward_dir.path(), channel, laptop.key.clone(), &vault)
             .unwrap();
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -449,14 +571,16 @@ async fn a_page_that_joined_first_asks_for_access_when_the_genesis_arrives() {
             delivery: 1,
         },
     );
-    let browser_device = browser.key.verifying_key().to_bytes();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
+    let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
+    let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
+    let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let edit = loop {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await
             .unwrap_or_else(|_| {
                 panic!(
-                    "no access request after the genesis; the page's channels:\n{}",
+                    "no sealed edit after the genesis; the page's channels:\n{}",
                     peer.status().channels
                 )
             })
@@ -464,12 +588,53 @@ async fn a_page_that_joined_first_asks_for_access_when_the_genesis_arrives() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = postcard::from_bytes(&data) {
-            assert_eq!(author, browser_device);
-            assert_eq!(request.channel, channel);
-            break;
+        match postcard::from_bytes::<NeighbourMsg>(&data) {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+                assert_eq!(author, *browser_device.as_bytes());
+                assert_eq!(request.channel, channel);
+                requests.insert(request.device, *request);
+                steward.reconcile(&allowed, &requests, &vault).unwrap();
+                for outgoing in steward.outbox() {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
+                        publish(
+                            &session,
+                            &NeighbourMsg::MlsGovernance {
+                                room: ROOM.into(),
+                                frame: Box::new(frame),
+                                delivery: 2,
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(NeighbourMsg::MlsGovernanceAck { ack, .. }) => {
+                steward.acknowledge(&ack).unwrap();
+            }
+            Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+                assert_eq!(author, *browser_device.as_bytes());
+                let metadata = envelope
+                    .encryption
+                    .expect("an edit written before the genesis never goes out in the clear");
+                break steward
+                    .content_keys()
+                    .unwrap()
+                    .open_content(artifact, &metadata, &envelope.payload)
+                    .unwrap()
+                    .to_vec();
+            }
+            _ => {}
         }
-    }
+    };
+    assert_eq!(
+        DocumentFrame::decode(&edit).unwrap(),
+        DocumentFrame::Whole(DocumentMutation::Incremental(
+            b"before the genesis".to_vec()
+        ))
+    );
     peer.close();
     host.relay.shutdown().await;
 }

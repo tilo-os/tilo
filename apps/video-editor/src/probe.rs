@@ -147,13 +147,15 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
     if data.is_empty() {
         return Err(ProbeError::Empty);
     }
-    if is_png(data) {
-        let (w, h) = png_dimensions(data).unwrap_or((0, 0));
-        return Ok(image_probe(w, h, "png"));
-    }
-    if is_jpeg(data) {
-        let (w, h) = jpeg_dimensions(data).unwrap_or((0, 0));
-        return Ok(image_probe(w, h, "jpeg"));
+    if let Some(format) = ui::framework::content::image_format(data)
+        && let Some(codec) = match format.extension {
+            "png" => Some("png"),
+            "jpg" => Some("jpeg"),
+            _ => None,
+        }
+    {
+        let (w, h) = ui::framework::content::image_size(data).map_or((0, 0), |(_, w, h)| (w, h));
+        return Ok(image_probe(w, h, codec));
     }
     if is_wav(data)
         && let Some(p) = parse_wav(data)
@@ -357,12 +359,6 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
 
 // ---- magic-byte sniffers --------------------------------------------------
 
-fn is_png(d: &[u8]) -> bool {
-    d.starts_with(b"\x89PNG\r\n\x1a\n")
-}
-fn is_jpeg(d: &[u8]) -> bool {
-    d.starts_with(&[0xFF, 0xD8, 0xFF])
-}
 fn is_wav(d: &[u8]) -> bool {
     d.starts_with(b"RIFF") && d.get(8..12) == Some(b"WAVE".as_slice())
 }
@@ -405,7 +401,7 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .any(|(i, &b)| b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0))
 }
 
-// ---- PNG / JPEG dimensions ------------------------------------------------
+// ---- byte readers ---------------------------------------------------------
 
 /// Big-endian `u32` at `at`, or `None` if the buffer is too short.
 ///
@@ -416,52 +412,6 @@ fn be_u32(d: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;
     Some(u32::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
-fn be_u16(d: &[u8], at: usize) -> Option<u16> {
-    let end = at.checked_add(2)?;
-    Some(u16::from_be_bytes(d.get(at..end)?.try_into().ok()?))
-}
-
-fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
-    // IHDR is the first chunk: [len:4][ "IHDR" ][ width:4 ][ height:4 ]... at
-    // byte 8. Width/height are big-endian at offsets 16 and 20.
-    if d.len() < 24 || d.get(12..16) != Some(b"IHDR".as_slice()) {
-        return None;
-    }
-    Some((be_u32(d, 16)?, be_u32(d, 20)?))
-}
-
-fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
-    // Scan the marker segments for a Start-Of-Frame (SOF0..SOF15, excluding the
-    // non-frame markers C4/C8/CC), whose payload holds height then width.
-    let mut i = 2usize; // skip SOI (FFD8)
-    while i + 9 < d.len() {
-        // `i + 9 < d.len()`, so both of the marker's bytes are in range.
-        let (Some(&lead), Some(&marker)) = (d.get(i), d.get(i + 1)) else {
-            return None;
-        };
-        if lead != 0xFF {
-            i += 1;
-            continue;
-        }
-        // Standalone markers (RSTn, SOI, EOI, TEM) have no length.
-        if (0xD0..=0xD9).contains(&marker) || marker == 0x01 {
-            i += 2;
-            continue;
-        }
-        let seg_len = be_u16(d, i + 2)? as usize;
-        let is_sof =
-            (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
-        if is_sof {
-            // SOF payload: precision(1) height(2) width(2) ...
-            let h = u32::from(be_u16(d, i + 5)?);
-            let w = u32::from(be_u16(d, i + 7)?);
-            return Some((w, h));
-        }
-        i += 2 + seg_len;
-    }
-    None
-}
-
 // ---- WAV ------------------------------------------------------------------
 
 fn le_u16(d: &[u8], at: usize) -> Option<u16> {
@@ -1019,12 +969,13 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
 
 fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     // Skip an ID3v2 tag if present.
-    let mut off = 0usize;
-    if d.starts_with(b"ID3")
+    let off = if d.starts_with(b"ID3")
         && let Some(size) = d.get(6..10).and_then(|s| <[u8; 4]>::try_from(s).ok())
     {
-        off = 10 + syncsafe(size);
-    }
+        10 + syncsafe(size)
+    } else {
+        0
+    };
     // Find the first valid frame sync.
     let mut header = None;
     let mut scan = off;

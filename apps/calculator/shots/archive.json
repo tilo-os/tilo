@@ -1,0 +1,32 @@
+[
+  {
+    "name": "calculator_default.png",
+    "sha256": "919231528a1d1dd2d395fa056efeba80dea6d321aa2707de7c3abc2e2dd61a92",
+    "bytes": 91947,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/919231528a1d1dd2d395fa056efeba80dea6d321aa2707de7c3abc2e2dd61a92/calculator_default.png"
+  },
+  {
+    "name": "graph2d_default.png",
+    "sha256": "1c2f40464c21ea2d226c669d8c9eeca118f9c254ff565eeddc211ba37b4d5f2e",
+    "bytes": 209133,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/1c2f40464c21ea2d226c669d8c9eeca118f9c254ff565eeddc211ba37b4d5f2e/graph2d_default.png"
+  },
+  {
+    "name": "graph3d_default.png",
+    "sha256": "9153d750ce2c10572df4815c0f16075837d9b612438c5ee518b3462444a6bfaf",
+    "bytes": 436279,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/9153d750ce2c10572df4815c0f16075837d9b612438c5ee518b3462444a6bfaf/graph3d_default.png"
+  },
+  {
+    "name": "long_formula.png",
+    "sha256": "042fb36a2c41c24d37a0f06929b50dd75e4ef77d116801f759e3be75ecf772a6",
+    "bytes": 208257,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/042fb36a2c41c24d37a0f06929b50dd75e4ef77d116801f759e3be75ecf772a6/long_formula.png"
+  },
+  {
+    "name": "long_formula_narrow.png",
+    "sha256": "6dc595fd99c450852bec72dca12bcfda50be2fd63786604a6c97e7e8354ad87c",
+    "bytes": 114480,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/6dc595fd99c450852bec72dca12bcfda50be2fd63786604a6c97e7e8354ad87c/long_formula_narrow.png"
+  }
+]

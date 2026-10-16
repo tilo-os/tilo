@@ -5,7 +5,6 @@ use crate::theme::Theme;
 use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -124,40 +123,33 @@ impl Widget for Spacer {
                 flex_shrink: 1.0,
                 ..Default::default()
             },
+            // A zero step is no gap at all: out of the flow, so the
+            // container does not put its own gap on both sides of it.
+            Some(px) if px <= 0.0 => super::when::removed_from_flow(),
             Some(px) => Style {
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: length(px),
-                    height: length(px),
-                },
+                size: taffy::Size::from_lengths(px, px),
                 ..Default::default()
             },
         };
-        let node = taffy.leaf_node(style);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.laid_out = true;
     }
 
     fn draw(
         &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
+        scene: &mut Scene,
+        transform: Affine,
         _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
     ) {
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -183,52 +175,11 @@ impl Widget for Spacer {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for Spacer {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -242,6 +193,7 @@ impl crate::permissions::capability::PermissionGated for Spacer {
 mod tests {
     use super::*;
     use crate::widget::{Column, Row, Text};
+    use taffy::style_helpers::length;
     use taffy::{AvailableSpace, Size};
 
     /// Same five-pass layout the `Column` tests use, with the real text
@@ -376,7 +328,11 @@ mod tests {
             let mut nodes = std::collections::HashMap::new();
             let mut spacer = Spacer::fixed(-8.0);
             let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-            assert_eq!(taffy.style(node).unwrap().size.width, length(0.0_f32));
+            assert_eq!(
+                taffy.style(node).unwrap().display,
+                taffy::Display::None,
+                "clamped to nothing, and out of the flow"
+            );
         }
     }
 }

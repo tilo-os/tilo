@@ -95,17 +95,18 @@ zeroize.workspace = true
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
 # out loud without garble; the alphabet is declared at compile time.
 data-encoding.workspace = true
+# The browser-computed wrap of a root envelope.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 data-encoding-macro.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-private-fs = { version = "0.1.0", path = "../../system/private-fs" }
-
-# The login Keychain keeps a Tilo runtime's device key on macOS.
-[target.'cfg(target_os = "macos")'.dependencies]
+# The login Keychain keeps a Tilo runtime's device key on macOS. On Linux a
+# process that read the device key proves it to the Secret Service, which
+# cannot read a non-dumpable process's executable.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
@@ -119,3 +120,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

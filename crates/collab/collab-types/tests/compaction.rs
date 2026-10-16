@@ -7,12 +7,7 @@
 //! validator's *public* API.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -20,7 +15,7 @@ use std::time::SystemTime;
 
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint, CompactionError,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, SignedOp, encode_compaction_payload,
+    Ed25519PublicKey, OpKind, Role, RoleAttestation, SignedOp, encode_compaction_payload,
     generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
 use ed25519_dalek::SigningKey;
@@ -79,7 +74,7 @@ fn make_signed_op(
         artifact,
         author,
         att_id,
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH
             .checked_add(std::time::Duration::from_secs(seq))
             .expect("timestamp in range"),
@@ -250,7 +245,7 @@ fn compaction_evicts_exactly_a_verified_prefix_of_one_artifact() {
         cp.artifact,
         author,
         att_id,
-        OpClass::Compaction,
+        OpKind::Compaction,
         SystemTime::UNIX_EPOCH,
         99,
     );

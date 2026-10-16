@@ -1,4 +1,4 @@
-//! `LibreOffice` Calc `.ods` import and export, through qdoc's
+//! `LibreOffice` Calc `.ods` import and export, through tilo-doc's
 //! [`OdsCodec`]: reading shares the bounded, XXE-hardened package reader and
 //! the [`SheetTable`] materialisation of [`crate::xlsx`] (formulas come back
 //! from each cell's `table:formula`, normalised to A1). Writing emits a
@@ -10,11 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
-use qdoc_codecs::OdsCodec;
-use qdoc_codecs::ods::common_styles_part;
+use tilo_doc_codecs::OdsCodec;
+use tilo_doc_codecs::ods::common_styles_part;
 
-use crate::model::{CellFormat, Currency, addr_to_a1};
+use crate::model::{CellFormat, addr_to_a1};
 use crate::xlsx::SheetTable;
+use tilo_locale::Currency;
 
 /// Read every sheet of an `.ods` document into tables.
 ///
@@ -24,7 +25,16 @@ use crate::xlsx::SheetTable;
 /// (including one over the zip-bomb bounds or carrying a DTD), or a tab
 /// spans more than [`crate::xlsx::MAX_MATERIALIZED_SLOTS`].
 pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let parsed = OdsCodec::parse(&crate::xlsx::read_file(path)?)?;
+    parse_ods(&crate::xlsx::read_file(path)?)
+}
+
+/// Read every sheet of the `.ods` document `bytes` into tables.
+///
+/// # Errors
+///
+/// As [`read_ods`], for a package that is already read.
+pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
+    let parsed = OdsCodec::parse(bytes)?;
     // ODF types dates explicitly (they arrive as ISO text), so no style marks
     // a number as a date.
     crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
@@ -37,10 +47,19 @@ pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
 /// Returns an error if the package can't be assembled or `path` can't be
 /// written.
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
+    crate::xlsx::write_file(path, &ods_bytes(tables)?)?;
+    Ok(())
+}
+
+/// Tables as the bytes of an `.ods` document, as [`write_ods`] writes it.
+///
+/// # Errors
+///
+/// Returns an error if the package can't be assembled.
+pub fn ods_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let snap = crate::xlsx::snapshot_of(tables, cell_style, to_ods_formula);
     let preserved = BTreeMap::from([("styles.xml".to_string(), common_styles_part(NUMBER_STYLES))]);
-    crate::xlsx::write_file(path, &OdsCodec::export_snapshot(&snap, &preserved)?)?;
-    Ok(())
+    Ok(OdsCodec::export_snapshot(&snap, &preserved)?)
 }
 
 /// The named cell style (declared in [`NUMBER_STYLES`]) for a numeric cell's

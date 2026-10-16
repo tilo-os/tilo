@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use automerge::ObjId;
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -48,7 +48,7 @@ pub(super) struct EventArgs<'a> {
     pub(super) event: &'a WindowEvent,
     pub(super) scale: f64,
     pub(super) modifiers: Modifiers,
-    pub(super) state: &'a mut AutoCommit,
+    pub(super) state: ui::widget::Edits<'a>,
     pub(super) root: &'a ObjId,
     pub(super) host: Rect,
     pub(super) panel: Rect,
@@ -80,9 +80,11 @@ impl StyleColorPicker {
             .map_or(0.0, |picker| picker.preferred_height(WIDTH))
     }
 
+    /// Beside the inspector it edits, kept a content gutter inside the window.
     fn anchor(host: Rect, panel: Rect, height: f64) -> Point {
-        let x = (panel.x0 - WIDTH - 12.0).max(host.x0 + 12.0);
-        let y = (panel.y0 + 150.0).min((host.y1 - height - 48.0).max(host.y0 + 60.0));
+        let gutter = f64::from(ui::tokens::Spacing::BASE.s6);
+        let x = (panel.x0 - WIDTH - gutter).max(host.x0 + gutter);
+        let y = (panel.y0 + gutter).min((host.y1 - height - gutter).max(host.y0 + gutter));
         Point::new(x, y)
     }
 
@@ -98,10 +100,7 @@ impl StyleColorPicker {
         let _ = taffy.set_style(
             node,
             Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(WIDTH)),
-                    height: Dimension::length(num::f32_of_f64(height)),
-                },
+                size: Size::from_lengths(num::f32_of_f64(WIDTH), num::f32_of_f64(height)),
                 ..Default::default()
             },
         );
@@ -134,11 +133,11 @@ impl StyleColorPicker {
         // a panel-ground card with the panel border and elevation, instead of
         // a bar-toned card with a declared border and a literal black shadow.
         let inset = f64::from(theme.tokens.spacing.s3);
-        let radius = f64::from(theme.tokens.radii.md);
         let rect = picker.get_rect();
         let card = rect.inflate(inset, inset);
-        crate::widget::paint_panel(scene, transform, theme, card, radius);
-        picker.draw(scene, transform, text_renderer, theme, presence);
+        ui::widget::floating_surface::paint(scene, transform, card, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        picker.draw(scene, transform, text_renderer, &ink, presence);
     }
 
     pub(super) fn handle_event(&mut self, args: EventArgs<'_>) -> PickerEvent {
@@ -146,7 +145,7 @@ impl StyleColorPicker {
             event,
             scale,
             modifiers,
-            state,
+            mut state,
             root,
             host,
             panel,
@@ -211,7 +210,7 @@ impl StyleColorPicker {
                     &mut ui::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: root,
                         handled: &mut handled,
                         focus_target: &mut focused,

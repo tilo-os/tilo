@@ -25,7 +25,6 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # HIG's file-access boundary), instead of a magic folder.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
 # so annotations + reading progress follow the file across paths, devices and
 # peers. Same hash family the Tilo filesystem uses.
@@ -33,11 +32,10 @@ blake3.workspace = true
 # Where a host that has no files for it (the browser) keeps an opened book's
 # bytes, by content hash; the library row names the hash.
 tilo-content = { path = "../../crates/system/content", default-features = false }
-# The Tilo ACTION model: Books' `actions` module exports its annotation-store
-# operations as replayable actions the host's Ctrl+K palette dispatches.
+# The published tree, effects and live rows the reader adds beside the library.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes and comments are rich text, written in the SDK editor.
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 serde.workspace = true
 serde_json.workspace = true

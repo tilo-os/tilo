@@ -6,8 +6,8 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
-    WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
 
@@ -32,26 +32,14 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
             active_tab: tab_id,
             width: StateWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Test".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -71,6 +59,224 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
     (tree, strip_id, group_id)
 }
 
+#[test]
+fn closing_a_window_is_quiet_and_still_reopens_its_exact_tab() {
+    let (mut tree, strip_id, group_id) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let counts = {
+        let state = chrome.borrow();
+        (
+            state.notification_count(),
+            state.notification_history().len(),
+        )
+    };
+    assert!(host.close_tab_in_group(group_id, Some(1)));
+    {
+        let state = chrome.borrow();
+        assert!(
+            state.tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty()
+        );
+        assert_eq!(
+            state.notification_count(),
+            counts.0,
+            "closing is its own feedback, not a notification"
+        );
+        assert_eq!(state.notification_history().len(), counts.1);
+    }
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("valid default shortcut configuration");
+    let modifiers =
+        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT;
+    let mut handled = false;
+    assert!(host.handle_shell_keyboard_event(
+        &winit::keyboard::Key::Character("T".into()),
+        modifiers.into(),
+        false,
+        &AutoCommit::new(),
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(
+        handled,
+        "the OS frame owns Ctrl+Shift+T before the app receives it"
+    );
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
+    assert_eq!((group.id, group.active_tab), (group_id, 1));
+    assert_eq!(
+        tree.desktop.active_strip.get(&tree.desktop.active),
+        Some(&strip_id)
+    );
+    drop(tree);
+    assert_eq!(state.notification_count(), counts.0);
+}
+
+#[test]
+fn the_last_window_keeps_only_its_close_visual_until_retirement() {
+    let (mut tree, strip_id, group_id) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let mut theme = Theme::dark();
+    // Hold the observation interval while cold mounted discovery settles. Normal
+    // base-token retirement is proved separately without this fixture override.
+    theme.tokens.motion.durations.base_ms = 3000;
+    layout_close_fixture(&mut host, &theme);
+    assert!(host.close_tab_in_group(group_id, Some(1)));
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty()
+    );
+    let group = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("a final window retains its closing visual");
+    assert!(
+        group.is_closing(),
+        "close must start before canonical resync"
+    );
+    assert_eq!(group.keyboard_input_scope(), None);
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+    assert!(
+        host.group_at_for_tests(strip_id, 0)
+            .is_some_and(|group| group.is_closing())
+    );
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty(),
+        "a visual must never resurrect canonical state"
+    );
+}
+
+fn layout_close_fixture(host: &mut ShellOverlayHost, theme: &Theme) {
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root = host.build_layout(&mut taffy, theme, &mut nodes);
+    taffy
+        .compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(1280.0),
+                height: taffy::AvailableSpace::Definite(800.0),
+            },
+        )
+        .expect("close fixture layout");
+    host.apply_layout(&taffy, root, Point::ORIGIN);
+}
+
+#[test]
+fn window_close_retires_without_input_and_undo_during_fade_is_live() {
+    let theme = Theme::dark();
+    let (mut tree, strip, group) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    layout_close_fixture(&mut host, &theme);
+    assert!(host.close_tab_in_group(group, Some(1)));
+    for _ in 0..3 {
+        host.update(&AutoCommit::new(), &automerge::ROOT);
+        let _ = host.take_structure_dirty();
+        assert!(
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
+            "a retained visual cannot be harvested as a window"
+        );
+    }
+    std::thread::sleep(
+        theme
+            .tokens
+            .motion
+            .durations
+            .base()
+            .saturating_add(Duration::from_millis(40)),
+    );
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    let _ = host.take_structure_dirty();
+    assert!(
+        host.group_at_for_tests(strip, 0).is_none(),
+        "frame ticks retire without another input"
+    );
+    assert!(chrome.borrow_mut().reopen_closed_tab().is_some());
+    let _ = host.take_structure_dirty();
+    assert!(!host.group_at_for_tests(strip, 0).unwrap().is_closing());
+    assert!(host.close_tab_in_group(group, Some(1)));
+    assert!(chrome.borrow_mut().reopen_closed_tab().is_some());
+    let _ = host.take_structure_dirty();
+    let restored = host
+        .group_at_for_tests(strip, 0)
+        .expect("restored group is visible");
+    assert!(
+        !restored.is_closing(),
+        "undo during the fade owns a fresh live host"
+    );
+    assert_eq!(restored.keyboard_input_scope(), Some(1));
+}
+
+#[test]
+fn closing_slots_animate_without_overlapping_their_live_neighbour() {
+    for mut theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+        theme.tokens.motion.durations.base_ms = 3000;
+        let (mut tree, strip, group) = one_group_seed();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(101, "Neighbour"));
+        tree.seed_doc_from_cache();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        layout_close_fixture(&mut host, &theme);
+        let before = host.group_at_for_tests(strip, 0).unwrap().layout_width_px();
+        assert!(before > 0.0, "the mounted window has a real slot");
+        assert!(host.close_tab_in_group(group, Some(1)));
+        let _ = host.take_structure_dirty();
+        layout_close_fixture(&mut host, &theme);
+        let closing = host.group_at_for_tests(strip, 0).unwrap();
+        assert_eq!(
+            closing.id, group,
+            "the closing window retains its original strip slot"
+        );
+        let width = closing.layout_width_px();
+        let closing_rect = closing.get_rect();
+        assert!(
+            width > 0.0 && width < before,
+            "closing must step the existing spring, not snap its slot: {before} -> {width}"
+        );
+        let neighbour = host.group_at_for_tests(strip, 1).unwrap();
+        assert_eq!(neighbour.id, 101);
+        assert!(
+            neighbour.get_rect().x0 >= closing_rect.x1,
+            "the real strip layout keeps the live neighbour outside the closing slot"
+        );
+        assert_eq!(
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .len(),
+            1,
+            "only the neighbour remains canonical"
+        );
+    }
+}
+
+#[test]
+fn reduced_motion_close_retires_in_the_next_frame() {
+    let (mut tree, strip, group) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    layout_close_fixture(&mut host, &Theme::light().with_reduce_motion(true));
+    assert!(host.close_tab_in_group(group, Some(1)));
+    assert!(host.group_at_for_tests(strip, 0).unwrap().close_complete());
+    let _ = host.take_structure_dirty();
+    assert!(host.group_at_for_tests(strip, 0).is_none());
+    assert!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .is_empty()
+    );
+}
+
 fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
     let tab_id = id.saturating_add(1000);
     StateGroup {
@@ -86,6 +292,7 @@ fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
         active_tab: tab_id,
         width: StateWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -113,7 +320,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             })
             .unwrap();
         assert!(store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_none());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
             "normal update must finish this exact action-owned creation after the loan ends"
@@ -168,7 +375,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                 ids
             })
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         let ready_after_first = ids
             .iter()
             .filter(|id| store.is_ready(&ui::RecordId::for_tab(**id)))
@@ -178,7 +385,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             "one ordinary update has a bounded creation budget"
         );
         for _ in 0..3 {
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
         }
         for (index, id) in ids.iter().enumerate() {
             assert_eq!(
@@ -200,8 +407,8 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
-                    "New note",
+                    AppKind::Other("Word".into()),
+                    "New document",
                     crate::shell::window_actions::Destination::Here,
                 )
             })
@@ -224,7 +431,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     .push(Strip::new(StripId::new(), "Rebuild"));
                 state.bump();
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             let group = host.group_at_for_tests(strip, 0).unwrap();
             group.bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
             let tile = group.host_for_tab_mut(new_id).unwrap();
@@ -246,7 +453,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             false,
             store,
         );
-        reopened.update(&mut AutoCommit::new(), &automerge::ROOT);
+        reopened.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             reopened
                 .group_at_for_tests(strip, 0)
@@ -313,7 +520,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.desktop.workspaces[0].room = crate::shell::state::RoomId::new();
+                    tree.desktop.workspaces[0].set_room(crate::shell::state::RoomId::new());
                 }
                 if cancellation == "app" {
                     for tab in tree
@@ -333,7 +540,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     }
                 }
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
                 cancellation == "none",
@@ -361,7 +568,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 let id = crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
+                    AppKind::Other("Word".into()),
                     "Nested",
                     crate::shell::window_actions::Destination::Here,
                 );
@@ -371,11 +578,11 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .unwrap();
         let replacement = ui::record::RecordStore::in_memory();
         chrome.borrow_mut().set_records(replacement.clone());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         old_store
             .create_record(&crate::shell::tab_documents::scratch_tab_record(new_id))
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             host.group_at_for_tests(strip, 0)
                 .unwrap()
@@ -685,7 +892,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         assert_eq!(first.active_tab_id(), 1);
 
         // The result has to be durable, not just a live widget permutation.
-        chrome.borrow().tree().flush_to_disk();
+        chrome.borrow().tree().queue_save();
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("reordered layout survives a process restart");
         let strip = restarted.desktop.workspaces[0]
@@ -767,6 +974,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     active_tab: remote_id(10),
                     width: StateWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 make_stub_group(remote_id(3), "Remote-B"),
                 make_stub_group(remote_id(4), "Remote-C"),
@@ -852,8 +1060,22 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         chrome.borrow_mut().bump();
         let _ = host.take_structure_dirty();
         assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.is_closing()),
+            "resync keeps only the dying visual, never canonical window state"
+        );
+        std::thread::sleep(
+            Theme::dark()
+                .tokens
+                .motion
+                .durations
+                .base()
+                .saturating_add(Duration::from_millis(40)),
+        );
+        let _ = host.take_structure_dirty();
+        assert!(
             host.group_at_for_tests(strip_id, 0).is_none(),
-            "resync after another revision must keep the closed group absent"
+            "the closing visual retires by its motion-token deadline"
         );
 
         // A fresh compositor must observe the same close. This catches the
@@ -977,7 +1199,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
-        tree.flush_to_disk();
+        tree.queue_save();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
@@ -1008,7 +1230,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
-        tree.flush_to_disk();
+        tree.queue_save();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let mut taffy = TaffyTree::new();
         let mut nodes = StdHashMap::new();
@@ -1096,7 +1318,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
 
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(first_group, Some(1)));
@@ -1128,6 +1350,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn group_actions_target_exactly_their_group_or_surface() {
     fn closing_one_of_two_same_app_windows_targets_only_its_surface() {
         let (mut tree, strip_id, group_id) = one_group_seed();
@@ -1153,6 +1376,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         group.active_tab = 1;
         tree.seed_doc_from_cache();
 
+        crate::shell::foreign::store().note_adopted(41);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
         assert_eq!(
@@ -1160,6 +1384,25 @@ fn group_actions_target_exactly_their_group_or_surface() {
             vec![41],
             "close requests are keyed by surface, never by shared app id"
         );
+        let _ = host.take_structure_dirty();
+        let retained = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("live close decision");
+        assert_eq!(
+            retained.active_tab_id(),
+            1,
+            "a deferred close retains focus"
+        );
+        assert_eq!(retained.tab_count(), 2, "both client hosts remain visible");
+        assert!(
+            chrome.borrow_mut().reopen_closed_tab().is_none(),
+            "no Undo before destruction"
+        );
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            41,
+        );
+        crate::shell::foreign::store().forget(41);
         let remaining = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
@@ -1176,6 +1419,68 @@ fn group_actions_target_exactly_their_group_or_surface() {
             .group_at_for_tests(strip_id, 0)
             .expect("the sibling window group remains");
         assert_eq!(group.active_tab_id(), 2);
+    }
+
+    fn a_deferred_close_click_keeps_the_window_and_animates_once_at_exit() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let _ = group_id;
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![Tab {
+            id: 1,
+            title: "Editor".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.example.Editor".into(),
+                surface_id: 51,
+            },
+        }];
+        group.active_tab = 1;
+        tree.seed_doc_from_cache();
+        crate::shell::foreign::store().note_adopted(51);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let mut theme = Theme::dark();
+        theme.tokens.motion.durations.base_ms = 40;
+        layout_close_fixture(&mut host, &theme);
+
+        // The close button: the widget starts retiring, the shell asks the
+        // client, which has not exited.
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("window")
+                .click_close_for_tests(1)
+        );
+        host.harvest_pending_tab_closes();
+        assert_eq!(chrome.borrow_mut().take_surface_close_requests(), vec![51]);
+        let group = host.group_at_for_tests(strip_id, 0).expect("window");
+        assert!(
+            !group.is_closing(),
+            "a client that has not exited keeps its window; no retirement runs"
+        );
+        assert_eq!(group.tab_count(), 1);
+
+        // The refusal period outlasts the close duration: nothing animates
+        // away, is pruned, or is rebuilt with a spawn animation.
+        std::thread::sleep(Duration::from_millis(100));
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        let group = host.group_at_for_tests(strip_id, 0).expect("still there");
+        assert!(!group.is_closing() && group.tab_count() == 1);
+
+        // The client finally exits: exactly one retirement, from the live tab.
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            51,
+        );
+        crate::shell::foreign::store().forget(51);
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.is_closing()),
+            "the destroy starts the single retirement"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = host.take_structure_dirty();
+        assert!(host.group_at_for_tests(strip_id, 0).is_none());
     }
 
     fn group_plus_is_a_workspace_scoped_app_picker_targeting_that_group() {
@@ -1202,5 +1507,6 @@ fn group_actions_target_exactly_their_group_or_surface() {
     }
 
     closing_one_of_two_same_app_windows_targets_only_its_surface();
+    a_deferred_close_click_keeps_the_window_and_animates_once_at_exit();
     group_plus_is_a_workspace_scoped_app_picker_targeting_that_group();
 }

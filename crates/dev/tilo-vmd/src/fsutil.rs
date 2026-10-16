@@ -1,7 +1,9 @@
-//! Small filesystem helpers: atomic writes and a symlink-preserving walk.
+//! Small filesystem helpers: atomic writes, tree copies and sizes.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use tilo_vm_protocol::layer_hash::walk;
 
 use crate::error::DaemonError;
 
@@ -11,25 +13,8 @@ use crate::error::DaemonError;
 /// # Errors
 /// I/O failures.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
-    atomic_file::write_creating_parent(path, bytes)
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
         .map_err(DaemonError::io(format!("write {}", path.display())))
-}
-
-/// Collect every path below `root` (relative, depth-first), not following symlinks.
-///
-/// # Errors
-/// I/O failures.
-pub fn walk(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in fs::read_dir(root.join(relative))? {
-        let entry = entry?;
-        let child = relative.join(entry.file_name());
-        let is_dir = entry.file_type()?.is_dir();
-        out.push(child.clone());
-        if is_dir {
-            walk(root, &child, out)?;
-        }
-    }
-    Ok(())
 }
 
 /// Recursively copy `source` into the existing directory `dest`, keeping
@@ -99,24 +84,15 @@ pub fn symlink(_target: &Path, link: &Path) -> std::io::Result<()> {
     )))
 }
 
+#[cfg(test)]
 #[cfg(unix)]
-pub fn is_executable(meta: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    meta.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-pub fn is_executable(_meta: &fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(all(test, unix))]
 pub fn set_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 pub fn set_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

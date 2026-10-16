@@ -1,7 +1,7 @@
 //! Keyboard editing for the chrome's inline text fields.
 //!
-//! The compositor's own surfaces — the workspace-name inline edit, the
-//! Wi-Fi password prompt — are painted immediate-mode rather than as
+//! Some of the compositor's own surfaces — the workspace-name inline edit,
+//! the presence status editor — are painted immediate-mode rather than as
 //! retained `ui` widgets, because they live inside popovers the chrome
 //! lays out by hand. What they must not do is each grow their own idea
 //! of what Backspace, Ctrl+A, Home or a paste means: that is how one
@@ -9,15 +9,13 @@
 //! not, and how a selection replacement gets fixed in one place and
 //! stays broken in the other.
 //!
-//! So the *editing* is shared here even though the *painting* is not.
-//! The selection primitives themselves come from
-//! [`ui::text_selection`], the same ones the toolkit's real text widgets
-//! use, so caret and word-boundary behaviour matches the apps.
+//! So the *editing* is shared even though the *painting* is not: every
+//! key is applied by [`ui::EditCore`], the same editing core the toolkit's
+//! text fields use, so caret, grapheme, word and input-method behaviour
+//! match the apps. This module only maps the chrome's keys onto it.
 
-use ui::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-    prev_char_boundary, prev_word_boundary,
-};
+use ui::text_selection::{Selection, clipboard_copy, clipboard_paste};
+use ui::{EditCore, Motion};
 use winit::keyboard::{Key, NamedKey};
 
 /// What the caller should do after handing a key to [`apply`].
@@ -54,160 +52,127 @@ impl Mods {
     }
 }
 
+/// Control characters never enter a buffer — invisible, unremovable by eye,
+/// and they travel into whatever the field feeds (an nmcli argument, a
+/// synced workspace name).
+fn printable(c: char) -> bool {
+    !c.is_control()
+}
+
+/// The editing core over the caller's selection.
+fn core(sel: Selection) -> EditCore {
+    let mut core = EditCore::new();
+    core.set_filter(Some(printable));
+    core.set_selection(sel.anchor, sel.cursor);
+    core
+}
+
+/// Apply `edit` to `buf` and hand the core's selection back to `sel`.
+fn finish(edit: &ui::Edit, core: &EditCore, buf: &mut String, sel: &mut Selection) -> Edit {
+    let changed = !edit.is_noop() && edit.apply(buf);
+    let moved = core.selection() != *sel;
+    *sel = core.selection();
+    if changed || moved {
+        Edit::Changed
+    } else {
+        Edit::ConsumedQuiet
+    }
+}
+
 /// Apply one key press to the caller's own `buf` / `sel`; `sel`'s anchor
-/// and cursor are byte indices into `buf`, always left on a char boundary.
+/// and cursor are byte indices into `buf`, always left on a grapheme
+/// boundary.
 pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Edit {
     let Mods { shift, ctrl } = mods;
+    let mut edit_core = core(*sel);
+    let motion = |m: Motion, core: &mut EditCore, buf: &mut String, sel: &mut Selection| {
+        core.motion(buf, m, shift);
+        finish(&ui::Edit::default(), core, buf, sel)
+    };
     match key {
         Key::Named(NamedKey::Enter) => Edit::Submit,
         Key::Named(NamedKey::Escape) => Edit::Cancel,
         Key::Named(NamedKey::ArrowLeft) => {
-            sel.cursor = if ctrl {
-                prev_word_boundary(buf, sel.cursor)
-            } else {
-                prev_char_boundary(buf, sel.cursor)
-            };
-            if !shift {
-                sel.collapse_to_cursor();
-            }
-            Edit::Changed
+            let m = if ctrl { Motion::WordLeft } else { Motion::Left };
+            motion(m, &mut edit_core, buf, sel)
         }
         Key::Named(NamedKey::ArrowRight) => {
-            sel.cursor = if ctrl {
-                next_word_boundary(buf, sel.cursor)
+            let m = if ctrl {
+                Motion::WordRight
             } else {
-                next_char_boundary(buf, sel.cursor)
+                Motion::Right
             };
-            if !shift {
-                sel.collapse_to_cursor();
-            }
-            Edit::Changed
+            motion(m, &mut edit_core, buf, sel)
         }
-        Key::Named(NamedKey::Home) => {
-            sel.cursor = 0;
-            if !shift {
-                sel.collapse_to_cursor();
-            }
-            Edit::Changed
-        }
-        Key::Named(NamedKey::End) => {
-            sel.cursor = buf.len();
-            if !shift {
-                sel.collapse_to_cursor();
-            }
-            Edit::Changed
-        }
+        Key::Named(NamedKey::Home) => motion(Motion::DocStart, &mut edit_core, buf, sel),
+        Key::Named(NamedKey::End) => motion(Motion::DocEnd, &mut edit_core, buf, sel),
         Key::Named(NamedKey::Backspace) => {
-            if sel.is_collapsed() {
-                if sel.cursor == 0 {
-                    return Edit::ConsumedQuiet;
-                }
-                let prev = if ctrl {
-                    prev_word_boundary(buf, sel.cursor)
-                } else {
-                    prev_char_boundary(buf, sel.cursor)
-                };
-                buf.replace_range(prev..sel.cursor, "");
-                *sel = Selection::collapsed(prev);
-            } else {
-                let r = sel.range();
-                buf.replace_range(r.clone(), "");
-                *sel = Selection::collapsed(r.start);
-            }
-            Edit::Changed
+            let edit = edit_core.delete_backward(buf, ctrl);
+            finish(&edit, &edit_core, buf, sel)
         }
         Key::Named(NamedKey::Delete) => {
-            if sel.is_collapsed() {
-                if sel.cursor >= buf.len() {
-                    return Edit::ConsumedQuiet;
-                }
-                let next = if ctrl {
-                    next_word_boundary(buf, sel.cursor)
-                } else {
-                    next_char_boundary(buf, sel.cursor)
-                };
-                buf.replace_range(sel.cursor..next, "");
-            } else {
-                let r = sel.range();
-                buf.replace_range(r.clone(), "");
-                *sel = Selection::collapsed(r.start);
-            }
-            Edit::Changed
+            let edit = edit_core.delete_forward(buf, ctrl);
+            finish(&edit, &edit_core, buf, sel)
         }
         Key::Named(NamedKey::Space) => {
-            let r = sel.range();
-            buf.replace_range(r.clone(), " ");
-            *sel = Selection::collapsed(r.start.saturating_add(1));
-            Edit::Changed
+            let edit = edit_core.insert(" ");
+            finish(&edit, &edit_core, buf, sel)
         }
-        Key::Character(s) if ctrl => apply_ctrl_char(s, buf, sel),
-        Key::Character(s) => apply_plain_char(s, buf, sel),
+        Key::Character(s) if ctrl => apply_ctrl_char(s, &mut edit_core, buf, sel),
+        Key::Character(s) => commit(s, buf, sel),
         _ => Edit::Ignored,
     }
 }
 
+/// Text from an input method (or a typed character): it replaces the
+/// selection at the caret. Text that is only control characters is not
+/// ours.
+pub fn commit(text: &str, buf: &mut String, sel: &mut Selection) -> Edit {
+    let mut edit_core = core(*sel);
+    let edit = edit_core.commit(text);
+    if edit.is_noop() {
+        return Edit::Ignored;
+    }
+    finish(&edit, &edit_core, buf, sel)
+}
+
 /// `Key::Character` under Ctrl/Super: select-all, copy, cut, paste, or
 /// (any other character) ignored.
-fn apply_ctrl_char(s: &str, buf: &mut String, sel: &mut Selection) -> Edit {
+fn apply_ctrl_char(
+    s: &str,
+    edit_core: &mut EditCore,
+    buf: &mut String,
+    sel: &mut Selection,
+) -> Edit {
     match s {
         "a" | "A" => {
-            sel.anchor = 0;
-            sel.cursor = buf.len();
-            Edit::ConsumedQuiet
+            // The painted selection changed, so a repaint is owed.
+            edit_core.select_all(buf);
+            finish(&ui::Edit::default(), edit_core, buf, sel)
         }
         "c" | "C" => {
-            let r = sel.range();
-            if let Some(selected) = buf.get(r) {
+            if let Some(selected) = edit_core.selected(buf) {
                 clipboard_copy(selected);
             }
             Edit::ConsumedQuiet
         }
         "x" | "X" => {
-            let r = sel.range();
-            if r.is_empty() {
-                return Edit::ConsumedQuiet;
-            }
-            let Some(selected) = buf.get(r.clone()) else {
+            let Some(selected) = edit_core.selected(buf) else {
                 return Edit::ConsumedQuiet;
             };
             clipboard_copy(selected);
-            buf.replace_range(r.clone(), "");
-            *sel = Selection::collapsed(r.start);
-            Edit::Changed
+            let edit = edit_core.delete_selection();
+            finish(&edit, edit_core, buf, sel)
         }
         "v" | "V" => match clipboard_paste() {
             Some(paste) => {
-                let r = sel.range();
-                buf.replace_range(r.clone(), &paste);
-                *sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                Edit::Changed
+                let edit = edit_core.insert(&paste);
+                finish(&edit, edit_core, buf, sel)
             }
             None => Edit::ConsumedQuiet,
         },
         _ => Edit::Ignored,
     }
-}
-
-/// An ordinary typed character (not a chord): control characters are
-/// filtered out, everything else replaces the current selection.
-fn apply_plain_char(s: &str, buf: &mut String, sel: &mut Selection) -> Edit {
-    // Control characters never enter a buffer — invisible, unremovable
-    // by eye, and travels into whatever the field feeds (an nmcli
-    // argument, a synced workspace name).
-    let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-    if filtered.is_empty() {
-        return Edit::Ignored;
-    }
-    let r = sel.range();
-    buf.replace_range(r.clone(), &filtered);
-    *sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
-    Edit::Changed
-}
-
-/// One bullet per character. Bullets over asterisks: `•` is round and even
-/// at the chrome's text size, where `*` sits high like a footnote marker.
-pub fn masked(buf: &str) -> String {
-    "•".repeat(buf.chars().count())
 }
 
 #[cfg(test)]
@@ -300,6 +265,51 @@ mod tests {
     }
 
     #[test]
+    fn characters_are_what_a_person_sees_and_input_methods_type_at_the_caret() {
+        // Phase `backspace_and_arrows_step_over_whole_clusters`.
+        {
+            let mut buf = String::new();
+            let mut sel = Selection::collapsed(0);
+            for text in ["a", "e\u{301}", "👍🏽", "🇳🇱"] {
+                assert_eq!(commit(text, &mut buf, &mut sel), Edit::Changed);
+            }
+            assert_eq!(buf, "ae\u{301}👍🏽🇳🇱");
+            apply(
+                &Key::Named(NamedKey::ArrowLeft),
+                plain(),
+                &mut buf,
+                &mut sel,
+            );
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel,
+            );
+            assert_eq!(buf, "ae\u{301}🇳🇱", "the skin-toned emoji goes whole");
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel,
+            );
+            assert_eq!(buf, "a🇳🇱", "the accented letter goes whole");
+        }
+
+        // Phase `a_commit_replaces_the_selection_and_ignores_control_text`.
+        {
+            let (mut buf, mut sel) = typed("hello world");
+            sel.anchor = 6;
+            sel.cursor = 11;
+            assert_eq!(commit("Welt", &mut buf, &mut sel), Edit::Changed);
+            assert_eq!(buf, "hello Welt");
+            assert_eq!(sel, Selection::collapsed(10));
+            assert_eq!(commit("\u{1b}", &mut buf, &mut sel), Edit::Ignored);
+            assert_eq!(buf, "hello Welt");
+        }
+    }
+
+    #[test]
     fn deletion_keys_remove_characters_and_words_or_say_nothing_changed() {
         // Phase `backspace_removes_one_character_and_a_word_under_ctrl`.
         {
@@ -346,12 +356,14 @@ mod tests {
 
     #[test]
     fn caret_keys_move_and_extend_the_selection() {
-        // Phase `select_all_spans_the_buffer_without_owing_a_repaint`.
+        // Phase `select_all_spans_the_buffer_and_repaints_its_highlight`.
         {
             let (mut buf, mut sel) = typed("abc");
+            assert_eq!(apply(&ch("a"), ctrl(), &mut buf, &mut sel), Edit::Changed);
             assert_eq!(
                 apply(&ch("a"), ctrl(), &mut buf, &mut sel),
-                Edit::ConsumedQuiet
+                Edit::ConsumedQuiet,
+                "selecting what is already selected changes nothing"
             );
             assert_eq!(sel.anchor, 0);
             assert_eq!(sel.cursor, 3);
@@ -434,16 +446,5 @@ mod tests {
             );
             assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
         }
-    }
-
-    #[test]
-    fn masking_is_one_bullet_per_character_not_per_byte() {
-        assert_eq!(masked(""), "");
-        assert_eq!(masked("abc"), "•••");
-        assert_eq!(
-            masked("é漢"),
-            "••",
-            "a masked field must not leak a password's byte length"
-        );
     }
 }
