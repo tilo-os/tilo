@@ -2640,6 +2640,8 @@ requires = ["arch=x86_64"]
 privileged = true
 writable_sources = true
 cost = "heavy"
+cpus = 8
+memory = "32G"
 timeout_secs = 14400
 default = false
 
@@ -2653,6 +2655,8 @@ requires = ["arch=arm64"]
 privileged = true
 writable_sources = true
 cost = "heavy"
+cpus = 8
+memory = "32G"
 timeout_secs = 14400
 default = false
 
@@ -2667,6 +2671,7 @@ inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 needs = ["desktop-package-amd64", "desktop-package-arm64"]
 outputs = ["/target/publish/desktop/payload.json"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
+requires = ["arch=x86_64"]
 on = ["stable"]
 secrets = ["REGISTRY_TOKEN"]
 # END generated
