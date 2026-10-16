@@ -287,21 +287,18 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
         Target::Primary,
         "private primary"
     ));
-    selection::clear_mirror(&copied, Target::Clipboard);
-    selection::set_mirror_bytes(
-        &copied,
-        Target::Clipboard,
-        selection::SECRET_MIME,
-        b"secret marker".to_vec(),
-    )
-    .unwrap();
-    selection::set_mirror_bytes(
-        &copied,
-        Target::Clipboard,
-        selection::TEXT_MIME,
-        b"private password".to_vec(),
-    )
-    .unwrap();
+    // A password copied in in-process chrome, through the toolkit's secret copy.
+    ui::host::scoped(&selection::host_services(copied.clone()), || {
+        assert!(ui::try_clipboard_copy_secret(
+            "private password",
+            std::time::Duration::from_secs(3600)
+        ));
+    });
+    assert_eq!(
+        selection::mirror_text(&copied, Target::Clipboard).as_deref(),
+        Some("private password"),
+        "the secret is the live clipboard"
+    );
     assert!(selection::set_mirror_text(
         &pasted,
         Target::Clipboard,
@@ -339,7 +336,7 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
         selection::mirror_text(&pasted, Target::Clipboard).as_deref(),
         Some("portable copy")
     );
-    for private in ["private primary", "private password", "secret marker"] {
+    for private in ["private primary", "private password"] {
         assert!(
             !selection::clipboard_history(&pasted)
                 .iter()
