@@ -28,6 +28,9 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
+#[cfg(test)]
+mod directory_disclosure_tests;
+mod directory_pagination;
 mod durable_local_invocation;
 mod file_clipboard;
 #[cfg(test)]
@@ -40,6 +43,7 @@ mod native_checkout;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
 #[cfg(test)]
@@ -2507,6 +2511,9 @@ impl CapnpBrokerState {
 /// stale eager `publishActions` snapshot.
 #[derive(Clone)]
 struct RegisteredActionDirectory {
+    pagination: directory_pagination::DirectoryPagination,
+    /// Certified publishing person, never a participant label or room role.
+    publishing_person: Option<String>,
     app_id: String,
     route: CrdtRoute,
     directory: action_directory::Client,
@@ -4669,12 +4676,22 @@ impl CapnpBrokerState {
         let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
         let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
         let max_depth = query.max_depth.min(Self::DIRECTORY_MAX_DEPTH);
+        let cursor = registered
+            .pagination
+            .source_cursor(
+                actor,
+                &query.revision,
+                &query.needle,
+                &query.parent_resource,
+                &query.cursor,
+            )
+            .map_err(|error| error.to_string())?;
         let mut request = registered.directory.query_request();
         {
             let mut wire = request.get().init_query();
             wire.set_peer_id(query.peer_id);
             wire.set_revision(&query.revision);
-            wire.set_cursor(&query.cursor);
+            wire.set_cursor(&cursor);
             wire.set_needle(&query.needle);
             wire.set_parent_resource(&query.parent_resource);
             wire.set_max_results(max_results);
@@ -4704,15 +4721,20 @@ impl CapnpBrokerState {
         }
         let page = runtime_collab::decode_action_directory_page(page)
             .map_err(|error| error.to_string())?;
-        filter_directory_page(
+        let mut page = filter_directory_page(
             self,
             cluster_id,
             actor,
             &registered.app_id,
+            registered.publishing_person.as_deref(),
             page,
             max_results,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        registered
+            .pagination
+            .shield(actor, &query.needle, &query.parent_resource, &mut page);
+        Ok(page)
     }
 
     /// Shell-local exact re-resolution. A `Found` row is policy-checked at
@@ -4769,8 +4791,15 @@ impl CapnpBrokerState {
                 revision: resolved,
             } if row.resource == resource
                 && row.action.as_deref() == Some(action)
-                && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-                    .map_err(|error| error.to_string())? =>
+                && permits_directory_row(
+                    self,
+                    cluster_id,
+                    actor,
+                    &registered.app_id,
+                    registered.publishing_person.as_deref(),
+                    &row,
+                )
+                .map_err(|error| error.to_string())? =>
             {
                 // A named revision is the one resolved; only an empty one
                 // takes the owner's word for which revision it read, and
@@ -4862,8 +4891,15 @@ impl CapnpBrokerState {
         // Resolve rechecked the current capability and actor.  Re-run the
         // validation immediately before constructing the invocation surface
         // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
+        if !permits_directory_row(
+            self,
+            cluster_id,
+            actor,
+            &registered.app_id,
+            registered.publishing_person.as_deref(),
+            &row,
+        )
+        .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
         {
             return Err(ActionDirectoryBridgeError::NotFound);
         }
@@ -6114,9 +6150,22 @@ impl CapnpBrokerState {
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the confirmation registry is unavailable".into(),
-        };
+        self.mint_confirmation_grant(peer_id, offered, argument, actor)
+            .map(Some)
+            .map_err(|reason| ActionHostError::Unavailable { reason })
+    }
+
+    /// Mint the one-use grant carrying a confirmation already decided to
+    /// the dispatch of `actor`'s invocation of `offered` on `peer_id` with
+    /// `argument`, and nothing else.
+    pub(crate) fn mint_confirmation_grant(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &BrokerActor,
+    ) -> Result<String, String> {
+        let unavailable = || "the confirmation registry is unavailable".to_owned();
         let token = uuid::Uuid::new_v4().to_string();
         let now = std::time::Instant::now();
         let expires = now
@@ -6136,7 +6185,7 @@ impl CapnpBrokerState {
             },
         );
         drop(grants);
-        Ok(Some(token))
+        Ok(token)
     }
 
     /// Record that the person `actor` acts for confirmed `actor`'s invocation
@@ -6595,10 +6644,13 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -6619,7 +6671,13 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
-        self.admit_task_action(run, lease, target, provenance, (surface, descriptor))
+        self.admit_task_action(
+            run,
+            lease,
+            target,
+            (provenance, confirmed),
+            (surface, descriptor),
+        )
     }
 
     fn admit_task_action(
@@ -6627,10 +6685,13 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -6647,14 +6708,6 @@ impl CapnpBrokerState {
         {
             return Err("task action publisher changed workspace or retired".into());
         }
-        let requirement = crate::services::NativeTaskActionRequirement {
-            binding: run.native.clone(),
-            app: surface.app_id.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
-            action: descriptor.action.clone(),
-            need: descriptor.contract.need(),
-        };
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
@@ -6662,17 +6715,29 @@ impl CapnpBrokerState {
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
-        let confirmation_required = descriptor
-            .contract
-            .confirmation_for_argument(contract_argument.as_deref().or(argument));
-        if !matches!(
-            confirmation_required,
+        let consequential = !matches!(
+            descriptor
+                .contract
+                .confirmation_for_argument(contract_argument.as_deref().or(argument)),
             tilo_actions::ConfirmationPolicy::None
-        ) {
+        );
+        // A native run pauses for its person where an action asks first
+        // (`native_task_confirmation`); an older run has nobody to ask.
+        if consequential && run.native.is_none() {
             return Err(
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
+        let requirement = crate::services::NativeTaskActionRequirement {
+            binding: run.native.clone(),
+            app: surface.app_id.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource: resource.into(),
+            action: descriptor.action.clone(),
+            need: descriptor.contract.need(),
+            consequential,
+            confirmed,
+        };
         if let Some(binding) = &run.native {
             let (caller, invocation) =
                 provenance.ok_or("native task action requires authenticated original caller")?;
@@ -6689,6 +6754,7 @@ impl CapnpBrokerState {
                         caller,
                         *invocation,
                         (surface.clone(), descriptor.clone()),
+                        confirmed || consequential,
                     )
                 })
         } else {
@@ -9973,6 +10039,12 @@ impl channel_handle::Server for CapnpChannelHandle {
             self.peer_id,
             RegisteredActionDirectory {
                 registration,
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: self
+                    .verified_identity
+                    .certificate
+                    .as_ref()
+                    .map(|cert| principal_id_for_root(cert.user_public_key)),
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -10100,6 +10172,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             HostWorkerReadGuard::for_channel(&state, self.peer_id, &self.verified_identity);
         Promise::from_future(async move {
             HostWorkerReadGuard::check(host_guard.as_ref())?;
+            let cursor = registered.pagination.source_cursor(
+                &actor,
+                &revision,
+                &needle,
+                &parent_resource,
+                &cursor,
+            )?;
             let mut forward = registered.directory.query_request();
             {
                 let mut query = forward.get().init_query();
@@ -10123,14 +10202,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ));
             }
             let page = runtime_collab::decode_action_directory_page(page)?;
-            let page = filter_directory_page(
+            let mut page = filter_directory_page(
                 &state,
                 &cluster,
                 &actor,
                 &registered.app_id,
+                registered.publishing_person.as_deref(),
                 page,
                 max_results,
             )?;
+            registered
+                .pagination
+                .shield(&actor, &needle, &parent_resource, &mut page);
             runtime_collab::write_action_directory_page(results.get().init_page(), &page)?;
             Ok(())
         })
@@ -10401,7 +10484,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        None,
+                        (None, false),
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
@@ -11268,9 +11351,13 @@ fn permits_directory_row(
     cluster_id: &str,
     actor: &BrokerActor,
     app_id: &str,
+    publishing_person: Option<&str>,
     row: &runtime_collab::ActionDirectoryRow,
 ) -> Result<bool, capnp::Error> {
     let question = directory_row_question(row)?;
+    if !question.disclosed_to(actor, publishing_person) {
+        return Ok(false);
+    }
     Ok(state
         .permits_directory_actions(cluster_id, actor, app_id, &[question])?
         .first()
@@ -11285,6 +11372,7 @@ struct DirectoryQuestion<'a> {
     action: &'a str,
     field: Option<&'a str>,
     kind: ActionKind,
+    private_view: bool,
 }
 
 impl<'a> DirectoryQuestion<'a> {
@@ -11295,6 +11383,7 @@ impl<'a> DirectoryQuestion<'a> {
         resource: &'a str,
         action: &'a str,
         contract: &'a tilo_actions::ActionContract,
+        operation: Option<tilo_actions::OperationKind>,
     ) -> Self {
         Self {
             resource_kind,
@@ -11302,7 +11391,21 @@ impl<'a> DirectoryQuestion<'a> {
             action,
             field: contract.field.as_deref(),
             kind: contract.kind,
+            // Read kind alone does not make a private UI view public.
+            // A declared document read, however, discloses document state
+            // under the caller's ordinary resource policy, not owner UI.
+            // That exception requires a known View kind: a tag alone cannot
+            // disclose resource-only metadata with an unknown governing kind.
+            private_view: (operation == Some(tilo_actions::OperationKind::View)
+                || operation.is_none())
+                && !contract.is_participant_view()
+                && !(operation == Some(tilo_actions::OperationKind::View)
+                    && contract.reads_document()),
         }
+    }
+
+    fn disclosed_to(&self, actor: &BrokerActor, publishing_person: Option<&str>) -> bool {
+        !self.private_view || (!actor.is_agent && publishing_person == Some(actor.id.as_str()))
     }
 }
 
@@ -11348,7 +11451,11 @@ fn directory_row_question(
                 || descriptor.resource_label != row.resource_label
                 || row.has_children
                 || row.visibility.as_ref().is_none_or(|visibility| {
-                    visibility.action != *action || visibility.contract != descriptor.contract
+                    visibility.action != *action
+                        || visibility.contract != descriptor.contract
+                        || visibility
+                            .governing_kind
+                            .is_some_and(|kind| kind != descriptor.operation_kind)
                 })
             {
                 return Err(capnp::Error::failed(
@@ -11401,6 +11508,7 @@ fn directory_row_question(
                 &row.resource,
                 action,
                 &descriptor.contract,
+                Some(descriptor.operation_kind),
             ))
         }
         (None, None) => {
@@ -11420,6 +11528,7 @@ fn directory_row_question(
                 &row.resource,
                 &visibility.action,
                 &visibility.contract,
+                visibility.governing_kind,
             ))
         }
         _ => Err(capnp::Error::failed(
@@ -11433,9 +11542,21 @@ fn filter_directory_page(
     cluster_id: &str,
     actor: &BrokerActor,
     app_id: &str,
+    publishing_person: Option<&str>,
     mut page: runtime_collab::ActionDirectoryPage,
     max_results: u32,
 ) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
+    validate_directory_text(
+        &page.revision,
+        "directory revision",
+        DIRECTORY_MAX_QUERY_REVISION_BYTES,
+        false,
+    )?;
+    if page.next_cursor.len() > DIRECTORY_MAX_CURSOR_BYTES {
+        return Err(capnp::Error::failed(
+            "invalid directory continuation".into(),
+        ));
+    }
     if page.rows.len() > usize::try_from(max_results).unwrap_or(usize::MAX) {
         return Err(capnp::Error::failed(
             "application exceeded directory result budget".into(),
@@ -11453,7 +11574,12 @@ fn filter_directory_page(
         .iter()
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
-    let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    let mut answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    for (answer, question) in answers.iter_mut().zip(&questions) {
+        if !question.disclosed_to(actor, publishing_person) {
+            *answer = Answer::Deny;
+        }
+    }
     drop(questions);
     // Listed when the actor may take it, or would be asked first; an action
     // asking first asks for the confirmation the person gives on their
@@ -14818,6 +14944,8 @@ pub mod tests {
             survivor,
             RegisteredActionDirectory {
                 registration: Rc::new(uuid::Uuid::new_v4()),
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: Some("fixture-owner".into()),
                 app_id: fixture.route.app_id.clone(),
                 route: fixture.route.clone(),
                 directory: fixture.directory.clone(),
@@ -14932,6 +15060,11 @@ pub mod tests {
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::view();
+            // Opening Atlas changes the invoking participant's view, not the
+            // publishing participant's private UI.
+            contract
+                .tags
+                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
@@ -14965,6 +15098,7 @@ pub mod tests {
                 descriptor: Some(descriptor),
                 has_children: false,
                 visibility: Some(runtime_collab::RowVisibility {
+                    governing_kind: Some(tilo_actions::OperationKind::View),
                     action: "open".into(),
                     contract,
                 }),
@@ -15065,9 +15199,26 @@ pub mod tests {
         pub route: CrdtRoute,
         pub peer_id: u64,
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        source_identity: Option<AdmittedJoinIdentity>,
     }
 
     impl LocalDirectoryFixture {
+        /// Install the source only after the production certificate, signature,
+        /// enrolled-device and current workspace admission checks succeed.
+        pub fn authenticate_source(&mut self, presentation: &[u8]) -> Result<CapRole, String> {
+            let source = verify_join_identity(
+                &self.route,
+                presentation,
+                self.state.membership.as_ref(),
+                self.state.trusted_devices.as_deref().map(Vec::as_slice),
+                self.state.services.native_certificates.as_deref(),
+            )?;
+            let role = source.role;
+            self.source_identity = Some(source);
+            self.reconnect_directory();
+            Ok(role)
+        }
+
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
         }
@@ -15079,6 +15230,13 @@ pub mod tests {
                 self.peer_id,
                 RegisteredActionDirectory {
                     registration: Rc::new(uuid::Uuid::new_v4()),
+                    pagination: directory_pagination::DirectoryPagination::default(),
+                    publishing_person: self.source_identity.as_ref().and_then(|source| {
+                        source
+                            .certificate
+                            .as_ref()
+                            .map(|certificate| principal_id_for_root(certificate.user_public_key))
+                    }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
                     directory: self.directory.clone(),
@@ -15101,21 +15259,23 @@ pub mod tests {
                 directories: Rc::clone(&self.directories),
                 channel_id: self.route.channel_key(),
                 peer_id: self.peer_id,
-                verified_identity: AdmittedJoinIdentity {
-                    host_scope: None,
-                    worker_registration: None,
-                    certificate: None,
-                    verified: VerifiedJoinIdentity {
-                        user_public_key: [0; 32],
-                        device_public_key: [0; 32],
-                        capped: false,
-                    },
-                    principal_id: "fixture-application".into(),
-                    display_handle: None,
-                    role: CapRole::Editor,
-                    agent_id: None,
-                    session_delegated: false,
-                },
+                verified_identity: self.source_identity.clone().unwrap_or_else(|| {
+                    AdmittedJoinIdentity {
+                        host_scope: None,
+                        worker_registration: None,
+                        certificate: None,
+                        verified: VerifiedJoinIdentity {
+                            user_public_key: [0; 32],
+                            device_public_key: [0; 32],
+                            capped: false,
+                        },
+                        principal_id: "fixture-application".into(),
+                        display_handle: None,
+                        role: CapRole::Editor,
+                        agent_id: None,
+                        session_delegated: false,
+                    }
+                }),
                 record_kind: None,
                 lease: None,
             })
@@ -15416,6 +15576,8 @@ pub mod tests {
             peer_id,
             RegisteredActionDirectory {
                 registration: Rc::new(uuid::Uuid::new_v4()),
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: None,
                 app_id: route.app_id.clone(),
                 route: route.clone(),
                 directory: directory.clone(),
@@ -15449,6 +15611,7 @@ pub mod tests {
             route,
             peer_id,
             invocation_rx,
+            source_identity: None,
         }
     }
 
@@ -15619,6 +15782,7 @@ pub mod tests {
                 descriptor: None,
                 has_children: true,
                 visibility: Some(runtime_collab::RowVisibility {
+                    governing_kind: Some(tilo_actions::OperationKind::View),
                     action: "open".into(),
                     contract: tilo_actions::ActionContract::view(),
                 }),
@@ -15706,6 +15870,7 @@ pub mod tests {
                 &fixture.cluster_id,
                 &BrokerActor::person("actor-a"),
                 &fixture.route.app_id,
+                None,
                 &row,
             )
             .is_err(),
@@ -15719,6 +15884,7 @@ pub mod tests {
                 &fixture.cluster_id,
                 &BrokerActor::person("actor-a"),
                 &fixture.route.app_id,
+                None,
                 &row,
             )
             .is_err(),
@@ -17853,6 +18019,7 @@ pub mod tests {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
                     unconfined: false,
+                    offers: Vec::new(),
                 }]
             }
             fn launch(

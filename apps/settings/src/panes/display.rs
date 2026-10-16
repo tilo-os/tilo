@@ -194,8 +194,9 @@ pub(crate) fn answer(
         } else {
             ui::collaboration::DisplayOrigin::LocalHost
         };
-        return Ok(cx.thread(
-            move |_| request_host_display(&command, original),
+        return Ok(crate::device_read::job(
+            cx,
+            move || request_host_display(&command, original),
             move |app, result, _| {
                 let model = app.displays().model();
                 let mut model = model.borrow_mut();
@@ -886,30 +887,32 @@ impl DisplayModel {
     /// thread.
     fn of_device(cx: PaneCx) -> Self {
         let (probe_tx, probe_rx) = crate::channel::channel();
-        let brightness_error = std::thread::Builder::new()
-            .name("settings-display-probe".into())
-            .spawn(move || {
+        let brightness_error = crate::device_read::thread(
+            "settings-display-probe",
+            Box::new(move || {
                 let _ = probe_tx.send((
                     os_actions::get_brightness(),
                     os_actions::has_ambient_light_sensor(),
                 ));
-            })
-            .err()
-            .map(|error| format!("the brightness probe could not start: {error}"));
+            }),
+        )
+        .err()
+        .map(|error| format!("the brightness probe could not start: {error}"));
         let control: Arc<dyn BrightnessControl> =
             Arc::new(SystemBrightness(dispatcher_or_real(None)));
         let (brightness_tx, brightness_rx) = crate::channel::channel::<f32>();
         let (result_tx, result_rx) = crate::channel::channel();
         let worker = Arc::clone(&control);
-        std::thread::Builder::new()
-            .name("settings-brightness-apply".into())
-            .spawn(move || {
+        crate::device_read::thread(
+            "settings-brightness-apply",
+            Box::new(move || {
                 while let Ok(percent) = brightness_rx.recv() {
                     let _ =
                         result_tx.send(worker.set_brightness(percent).map(|()| percent / 100.0));
                 }
-            })
-            .ok();
+            }),
+        )
+        .ok();
         let outputs = read_outputs();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
@@ -1834,13 +1837,16 @@ impl DisplayModel {
             let (sender, receiver) = crate::channel::sync_channel(1);
             self.host_probe = Some(receiver);
             let wake = ui::WakeHandle::new();
-            std::thread::spawn(move || {
-                let _ = sender.send(request_host_display(
-                    &settings_store::display_control::DisplayCommand::Inspect,
-                    ui::collaboration::DisplayOrigin::LocalHost,
-                ));
-                wake.wake();
-            });
+            let _ = crate::device_read::thread(
+                "settings-display-host-probe",
+                Box::new(move || {
+                    let _ = sender.send(request_host_display(
+                        &settings_store::display_control::DisplayCommand::Inspect,
+                        ui::collaboration::DisplayOrigin::LocalHost,
+                    ));
+                    wake.wake();
+                }),
+            );
         }
         let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
             .map_or_else(Vec::new, |snapshot| snapshot.displays);

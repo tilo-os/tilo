@@ -1256,6 +1256,7 @@ dependencies = [
  "bounded-command",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
  "zbus",
 ]
@@ -1572,6 +1573,7 @@ dependencies = [
  "test-http",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-dav",
  "tilo-document",
@@ -1929,6 +1931,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
@@ -4447,6 +4450,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-copy-lint",
  "tilo-files",
  "tilo-fs",
@@ -14086,6 +14090,7 @@ dependencies = [
  "cloud-source-onedrive",
  "collab-types",
  "desktop-policy",
+ "file-explorer",
  "hex",
  "launcher",
  "os-actions",
@@ -14124,6 +14129,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-vello",
+ "tilo-wallpapers",
  "tilo-winit",
  "tokio",
  "tokio-rustls",
@@ -14131,6 +14137,7 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -14477,6 +14484,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-vello",
  "tilo-vello-encoding",
+ "tilo-wallpapers",
  "tilo-winit",
  "tokio",
  "tokio-util",
@@ -15952,6 +15960,7 @@ dependencies = [
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -16628,6 +16637,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-cloud-files"
+version = "0.1.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "chrono",
+ "host-fs",
+ "runtime-fs",
+ "serde",
+ "serde_json",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-connector"
 version = "0.1.0"
 dependencies = [
@@ -17230,6 +17254,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
@@ -19294,6 +19319,19 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "tilo-lock",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wallpapers"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "tempfile",
+ "tilo-image-codec",
+ "tilo-paths",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 
@@ -22773,6 +22811,7 @@ dependencies = [
 name = "word-processor"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "regex",
  "runtime-dylib",
  "serde",
@@ -22799,6 +22838,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]

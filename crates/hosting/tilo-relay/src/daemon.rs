@@ -929,6 +929,10 @@ impl Relay {
         if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
             governance.attach(rooms.clone());
         }
+        #[cfg(any(feature = "agents", feature = "web"))]
+        if let Some(rooms) = &rooms {
+            handler.compactor.steward_with(Arc::new(rooms.clone()));
+        }
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,

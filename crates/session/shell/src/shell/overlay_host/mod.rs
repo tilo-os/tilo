@@ -671,6 +671,11 @@ pub struct ShellOverlayHost {
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
     qs_type_lines: CenterMetrics,
+    /// The quick settings panel's width and window margin, from the theme
+    /// at the top of each frame (HIG 9.6: a utility Panel is
+    /// `panel_width_utility`, grown with the text; it stays the floating
+    /// Panel margin inside its display).
+    qs_panel: QsPanelMetrics,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -1718,7 +1723,8 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
                 workspace_switch: self.workspace_switch_holding_at(now),
-                quick_settings: self.qs_transition.is_animating(now),
+                quick_settings: self.qs_transition.is_animating(now)
+                    || self.qs_root_scroll_fading(),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
                 power_menu: self.layers.power_menu.is_animating(now),
@@ -2441,6 +2447,7 @@ impl ShellOverlayHost {
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
+            qs_panel: QsPanelMetrics::for_theme(&Theme::dark()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -5349,6 +5356,35 @@ impl ShellOverlayHost {
                 unsafe { (*row).group_ids().contains(&group) }
             })
         })
+    }
+
+    /// Capture Studio covers the focused display: its picker bars sit along
+    /// that display's top and bottom edges and "Screen" is that display.
+    /// Across the whole desktop of a docked laptop the bars were centred on
+    /// the combined width and hung from its tallest edge, which put them on
+    /// the other display, partly below the panel's bottom, while the panel
+    /// only greyed: Print looked broken until Escape.
+    fn place_capture_studio(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
+        let Some(display) = self.focused_output() else {
+            return;
+        };
+        let area = display.rect();
+        let Ok(style) = taffy.style(node) else {
+            return;
+        };
+        let mut style = style.clone();
+        style.position = Position::Absolute;
+        style.inset = TaffyRect {
+            left: LengthPercentageAuto::length(f32_of_f64(area.x0 - self.rect.x0)),
+            right: LengthPercentageAuto::auto(),
+            top: LengthPercentageAuto::length(f32_of_f64(area.y0 - self.rect.y0)),
+            bottom: LengthPercentageAuto::auto(),
+        };
+        style.size = Size {
+            width: Dimension::length(f32_of_f64(area.width())),
+            height: Dimension::length(f32_of_f64(area.height())),
+        };
+        let _ = taffy.set_style(node, style);
     }
 
     /// An expanded (maximized) window owns the left edge: the workspace
@@ -10331,31 +10367,29 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
-    /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
-    /// from the controls actually visible on this device, not a fixed grid of
-    /// unavailable radios.
+    /// Mirror of the geometry in `draw_quick_settings`: the utility Panel
+    /// width (HIG 9.6), narrowed to the display that holds the tray so it
+    /// never runs off a narrow one.
     fn quick_settings_width(&self) -> f64 {
-        // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        if area.width() >= 1200.0 {
-            400.0
-        } else if area.width() >= 720.0 {
-            360.0
-        } else {
-            320.0
-        }
+        let room = (area.width() - 2.0 * self.qs_panel.margin).max(1.0);
+        self.qs_panel.width.min(room)
     }
 
+    /// Under the tray: the Panel margin in from the display's trailing edge,
+    /// the same margin under the top bar, and never past the display's
+    /// bottom margin.
     fn quick_settings_rect(&self) -> Rect {
         let area = self.tray_area();
+        let margin = self.qs_panel.margin;
         let popover_w = self.quick_settings_width();
-        let x1 = area.x1 - 16.0;
-        let y0 = area.y0 + 48.0;
+        let x1 = area.x1 - margin;
+        let y0 = area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
             let state = chrome.borrow();
             self.quick_settings_preferred_height(&state)
         });
-        let popover_h = desired_h.min((area.y1 - y0 - 16.0).max(1.0));
+        let popover_h = desired_h.min((area.y1 - margin - y0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -10512,6 +10546,55 @@ impl ShellOverlayHost {
             scale_factor,
         );
         true
+    }
+
+    /// Scrolling for a Quick Settings root page taller than its popover:
+    /// wheel, touchpad, a finger's drag (which the compositor emulates as a
+    /// wheel) and the page's scrollbar, through the toolkit's
+    /// [`ui::widget::ScrollRegion`]. Anything the region does not take
+    /// continues to the ordinary click and hover routing.
+    fn route_qs_root_scroll(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let on_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !on_root && !self.qs_root.scroll_dragging() {
+            return false;
+        }
+        let mut taken = false;
+        let changed = self.qs_root.handle_scroll_event(
+            event,
+            scale_factor,
+            modifiers.state(),
+            &mut taken,
+            &self.overview_layout_theme,
+        );
+        if changed {
+            chrome.borrow_mut().bump();
+        }
+        if taken {
+            *handled = true;
+        }
+        taken
+    }
+
+    /// The root page's scrollbar is fading on an open popover.
+    fn qs_root_scroll_fading(&self) -> bool {
+        self.overlay_flags().quick_settings
+            && self.qs_root.scroll_needs_frame(&self.overview_layout_theme)
     }
 
     /// Scroll the bounded Wi-Fi, Bluetooth, and VPN lists without allowing a
@@ -17048,13 +17131,12 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_policy(
-                        &mut chrome.borrow_mut(),
-                        move |ws, actor| {
-                            tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
-                        },
-                    );
+                if is_owner
+                    && let Some(chrome) = self.chrome.clone()
+                    && let Err(error) =
+                        crate::shell::membership::remove_agent(&mut chrome.borrow_mut(), &agent)
+                {
+                    tracing::debug!(%error, "agent removal refused");
                 }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
@@ -18533,6 +18615,7 @@ impl Widget for ShellOverlayHost {
             // dedicated tree so the chooser has both geometry and an input
             // target while OOBE is active.
             let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+            self.place_capture_studio(taffy, capture_node);
             self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
@@ -18597,6 +18680,7 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+        self.place_capture_studio(taffy, capture_node);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
             .screenshot_markup
@@ -18951,6 +19035,7 @@ impl Widget for ShellOverlayHost {
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
+        self.qs_panel = QsPanelMetrics::for_theme(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -18958,10 +19043,10 @@ impl Widget for ShellOverlayHost {
                 self.projection_overlay.controller().status,
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
+            // The root keeps its natural size; a popover shorter than the
+            // page scrolls it (`QuickSettingsRoot::draw`).
             let state = chrome.borrow();
-            let available_height = (self.tray_area().height() - 64.0).max(1.0);
-            self.qs_root
-                .fit_root_layout_to_height(&state.quick_settings, available_height);
+            self.qs_root.sync_displays(&state.quick_settings);
         }
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
@@ -19374,6 +19459,9 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
+            return;
+        }
+        if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
@@ -20426,7 +20514,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 14] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 15] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20485,6 +20573,17 @@ impl ShellOverlayHost {
                 }),
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
+            (
+                "quick-settings-scroll",
+                self.chrome
+                    .as_ref()
+                    .is_some_and(|chrome| chrome.borrow().overlays.quick_settings)
+                    .then(|| {
+                        self.qs_root
+                            .scroll_wake_deadline(&self.overview_layout_theme)
+                    })
+                    .flatten(),
+            ),
             ("window-previews", self.window_previews_wake_deadline(now)),
             (
                 "strip-indicators",
@@ -20617,7 +20716,7 @@ impl ShellOverlayHost {
         // widget's animation is in flight. `tick_*` clear their own flags once
         // the duration has elapsed, so at rest this returns false and the
         // event loop can go idle.
-        let qs_in_flight = self.qs_transition.is_animating(now);
+        let qs_in_flight = self.qs_transition.is_animating(now) || self.qs_root_scroll_fading();
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let layers_in_flight = self.layers.is_animating(now);
@@ -24021,7 +24120,7 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -24047,8 +24146,9 @@ impl ShellOverlayHost {
             ground,
         );
 
-        // "You are here" states which of these rooms you are in: a chip
-        // tinted with your own colour, the colour your presence has.
+        // "You are here" states which of these rooms you are in: a quiet
+        // neutral chip. Your colour is for the focus ring, the caret and
+        // your presence among others (HIG 9.4), not for a label.
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
@@ -24084,7 +24184,7 @@ impl ShellOverlayHost {
             ),
             &here_label,
         )
-        .style(ChipStyle::Tinted(Tone::Presence(colors.you)))
+        .style(ChipStyle::Neutral)
         .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
@@ -27294,4 +27394,22 @@ pub(crate) fn install_fixture_search_provider(
     provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
 ) {
     host.search_registry.register_or_replace(provider);
+}
+
+/// The quick settings panel's theme-resolved size: the utility Panel width
+/// grown with the text, and the floating Panel margin it keeps inside its
+/// display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QsPanelMetrics {
+    width: f64,
+    margin: f64,
+}
+
+impl QsPanelMetrics {
+    fn for_theme(theme: &Theme) -> Self {
+        Self {
+            width: f64::from(theme.tokens.metrics.panel_width_utility * theme.text_growth()),
+            margin: ui::widget::floating_surface::viewport_margin(theme),
+        }
+    }
 }

@@ -12,9 +12,10 @@
 # ($TILO_RUN), and define die().
 
 shot_ocr() {
-  local name="$1" image="$run/$name.png" text_file="$out/$name.txt"
-  "$vm" shot "$name" >/dev/null
-  tesseract "$image" stdout 2>/dev/null > "$text_file"
+  local name="$1"
+  local image="$run/$name.png" text_file="$out/$name.txt"
+  "$vm" shot "$name" >/dev/null || return 1
+  tesseract "$image" stdout 2>/dev/null > "$text_file" || return 1
   printf '%s\n' "$image"
 }
 
@@ -26,8 +27,8 @@ wait_screen() {
   for i in $(seq 1 "$attempts"); do
     if image="$(shot_ocr observe 2>/dev/null)" \
       && ocr_flat "$out/observe.txt" | grep -Eqi "$pattern"; then
-      cp -f "$image" "$out/$saved.png"
-      cp -f "$out/observe.txt" "$out/$saved.txt"
+      cp -f "$image" "$out/$saved.png" || return 1
+      cp -f "$out/observe.txt" "$out/$saved.txt" || return 1
       return 0
     fi
     "$vm" status | grep -q '^running' || return 1
@@ -128,8 +129,8 @@ unlock_target_to_greeter() {
   for attempt in $(seq 1 60); do
     if image="$(shot_ocr target-observe 2>/dev/null)" \
       && grep -Eqi 'Welcome[[:space:]]+back|Sign[[:space:]]+in' "$out/target-observe.txt"; then
-      cp -f "$image" "$out/$saved.png"
-      cp -f "$out/target-observe.txt" "$out/$saved.txt"
+      cp -f "$image" "$out/$saved.png" || return 1
+      cp -f "$out/target-observe.txt" "$out/$saved.txt" || return 1
       return 0
     fi
     "$vm" status | grep -q '^running' || return 1

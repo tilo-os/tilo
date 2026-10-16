@@ -138,6 +138,9 @@ pub enum MountKind {
     Tmpfs { size: Option<u64> },
     /// `lower`, read-only, with what the job writes going to `upper`
     /// (`work` is overlayfs's scratch, on the same filesystem as `upper`).
+    /// Mounted `volatile`, never synced: `upper` and `work` serve one job,
+    /// and are thrown away after it (overlayfs refuses to mount a `work`
+    /// a volatile mount used again).
     Overlay {
         lower: PathBuf,
         upper: PathBuf,
@@ -236,8 +239,12 @@ impl IdMap {
 /// idmapped mount on which the files of `outside_uid`/`outside_gid` show as
 /// the job's own (`inside_uid`/`inside_gid`) and what the job creates is
 /// owned by `outside_uid`/`outside_gid` on the host, so the next job, with
-/// another block, finds them as its own too. Other owners read as `nobody`,
-/// as without a block. A path whose filesystem can't be idmapped is bound as
+/// another block, finds them as its own too. Every other id below `count`
+/// keeps its number on those mounts (the id `inside_uid` on disk takes the
+/// owner's place), so the job may name any of its users in an ACL entry,
+/// or find files a job made through one, under any path it is given; ids
+/// beyond read as `nobody`. Owning a file by another id still takes
+/// `CAP_CHOWN`, which no job holds. A path whose filesystem can't be idmapped is bound as
 /// it is, its owners reading as `nobody`; a writable one is named by
 /// `Job::unmapped`. A socket is never idmapped: it becomes the job's user's
 /// (the caller makes it for this job), as connecting to it takes.
@@ -247,7 +254,7 @@ impl IdMap {
 /// `MOUNT_ATTR_IDMAP`); overlays need 5.19, for idmapped layers. `count`
 /// must exceed `inside_uid` and `inside_gid`. Blocks of jobs that run at
 /// the same time must not overlap; the caller hands them out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IdBlock {
     pub uid: u32,
     pub gid: u32,

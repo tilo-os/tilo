@@ -155,6 +155,28 @@ pub(super) fn publish_changes_for(
     )
 }
 
+/// The relay's compactor folds the sealed history of the channels this
+/// relay stewards with their keys, so a newcomer replays one snapshot and
+/// the writes since rather than every write the room's members ever made.
+impl crate::compaction::StewardedKeys for Rooms {
+    fn keys<'a>(
+        &'a self,
+        route: &'a crate::compaction::Route,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ChannelContentKeys>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let state = self.room(&route.cluster_id).await.ok()?;
+            let steward = state.lock().await.stewardship.clone()?;
+            let channel = collab_types::document_channel_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            );
+            steward.channels.lock().await.existing_keys(channel).ok()
+        })
+    }
+}
+
 impl Rooms {
     /// Compact every sealed record history of `room` that has used most of
     /// its bound into one sealed checkpoint, and commit and publish the

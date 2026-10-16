@@ -64,6 +64,8 @@ name = "it"
 path = "tests/it.rs"
 
 [dev-dependencies]
+zip.workspace = true
+quick-xml.workspace = true
 settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true

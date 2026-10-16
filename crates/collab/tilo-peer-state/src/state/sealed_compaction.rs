@@ -347,6 +347,16 @@ impl StatePeer {
     }
 }
 
+/// Each author's highest write `compaction` folds into its snapshot.
+pub(super) fn covered(compaction: &SignedOp) -> Result<Vec<([u8; 32], u64)>, String> {
+    let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
+    Ok(wrapper
+        .covers
+        .iter()
+        .map(|(author, sequence)| (*author.as_bytes(), *sequence))
+        .collect())
+}
+
 /// The history after `compaction`, whose envelope passed every admission
 /// check, supersedes `history`: the compaction, then every write it does not
 /// cover, in order. `floors` are the record's sequence floors before it.

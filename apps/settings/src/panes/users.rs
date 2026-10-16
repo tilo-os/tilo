@@ -85,8 +85,10 @@ pub enum UsersEffect {
     },
 }
 
-/// Answer an account change on a worker, then read the accounts again; an
-/// identity change once the host has made it.
+/// Answer an account change on a worker, then read the accounts again on
+/// it: both may wait on `AccountsService`, so the window takes in the
+/// outcome and the fresh accounts together when the job ends. An identity
+/// change answers once the host has made it.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: UsersEffect,
@@ -117,16 +119,20 @@ pub(crate) fn answer(
         _ => Zeroizing::new(String::new()),
     };
     let created = matches!(effect, UsersEffect::CreateUser { .. });
-    Ok(cx.thread(
-        move |_| carry_out(&backends, &users, &effect, &password),
-        move |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+    Ok(crate::device_read::job(
+        cx,
+        move || {
+            let outcome = carry_out(&backends, &users, &effect, &password);
+            (outcome, Reread::of(&backends))
+        },
+        move |app: &mut SettingsApp, (outcome, reread): (Result<(), String>, Option<Reread>), _| {
             let model = app.users().model();
             let mut model = model.borrow_mut();
             if created && outcome.is_ok() {
                 model.form.clear();
             }
             model.error = outcome.as_ref().err().cloned();
-            model.reload();
+            model.adopt(reread);
             outcome.map(|()| Effected::done())
         },
     ))
@@ -224,12 +230,19 @@ pub trait UserAdmin: Send + Sync {
     /// Returns the backend's error message if enabling or disabling
     /// automatic login for the account is rejected.
     fn set_autologin(&self, username: &str, enabled: bool) -> Result<(), String>;
+
+    /// The device's login accounts as they are now, read again after a
+    /// change, or why they could not be read. `None` when the accounts
+    /// shown are not the device's (a screenshot's samples): nothing is
+    /// read.
+    fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>>;
 }
 
 struct AccountsServiceAdmin;
 
 impl UserAdmin for AccountsServiceAdmin {
     fn create(&self, username: &str, full_name: &str, password: &mut [u8]) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::users::create_user(username, full_name, os_actions::AccountRole::Standard)?;
         // Never destructively roll back a newly created home if credential
         // setup fails; it may already contain PAM/AccountsService work.
@@ -237,10 +250,12 @@ impl UserAdmin for AccountsServiceAdmin {
     }
 
     fn delete(&self, user: &DeviceUser, remove_files: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::users::delete_user(&user.username, user.uid, remove_files)
     }
 
     fn set_admin(&self, username: &str, admin: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::users::set_role(
             username,
             if admin {
@@ -252,7 +267,12 @@ impl UserAdmin for AccountsServiceAdmin {
     }
 
     fn set_autologin(&self, username: &str, enabled: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::users::set_automatic_login(username, enabled)
+    }
+
+    fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>> {
+        Some(read_users())
     }
 }
 
@@ -375,8 +395,10 @@ fn read_passwd_users(
         .collect()
 }
 
-/// The device's login accounts, or why they could not be read.
+/// The device's login accounts, or why they could not be read: one
+/// `AccountsService` call per person, so never on the UI thread.
 fn read_users() -> Result<Vec<DeviceUser>, String> {
+    crate::device_read::off_ui_thread();
     let current = std::env::var("USER").ok();
     let admins = fs::read_to_string("/etc/group")
         .map(|s| admins_from_group(&s))
@@ -604,6 +626,21 @@ impl UsersRead {
     }
 }
 
+/// The accounts read again after a change, on the job that made it. The
+/// identities are the host's: they are asked for again once it answers.
+struct Reread {
+    users: Result<Vec<DeviceUser>, String>,
+}
+
+impl Reread {
+    /// Read the accounts `backends` change; `None` when the accounts shown
+    /// are not the device's.
+    fn of(backends: &Backends) -> Option<Self> {
+        let users = backends.users.accounts()?;
+        Some(Self { users })
+    }
+}
+
 impl UsersModel {
     /// The model over what `read` found on this device, asking
     /// `identity_admin` for the person's identities.
@@ -669,12 +706,14 @@ impl UsersModel {
         }
     }
 
-    fn reload(&mut self) {
+    /// Take in what a read after a change found; `None` (a screenshot's
+    /// samples) keeps what is shown.
+    fn adopt(&mut self, reread: Option<Reread>) {
         self.changed = true;
-        if !self.of_device {
+        let Some(reread) = reread else {
             return;
-        }
-        (self.users, self.users_error) = users_and_error(read_users());
+        };
+        (self.users, self.users_error) = users_and_error(reread.users);
         self.reload_identities();
     }
 
@@ -1036,17 +1075,25 @@ struct SampleAdmin;
 
 impl UserAdmin for SampleAdmin {
     fn create(&self, _: &str, _: &str, password: &mut [u8]) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         password.fill(0);
         Ok(())
     }
     fn delete(&self, _: &DeviceUser, _: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn set_admin(&self, _: &str, _: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn set_autologin(&self, _: &str, _: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
+    }
+    fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>> {
+        crate::device_read::off_ui_thread();
+        None
     }
 }
 
@@ -1108,6 +1155,9 @@ mod tests {
         fn set_autologin(&self, u: &str, a: bool) -> Result<(), String> {
             self.0.lock().unwrap().push(format!("autologin:{u}:{a}"));
             Ok(())
+        }
+        fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>> {
+            None
         }
     }
     #[derive(Default)]
@@ -1423,6 +1473,100 @@ mod tests {
         );
         assert_eq!(asked[0].confirmation, None, "listing asks nothing");
         assert_eq!(asked[2].confirmation, Some(Confirmation::Confirmed));
+    }
+
+    /// An `AccountsService` that takes changes at once but does not answer
+    /// a read until it is let go (or ten seconds pass), as one waiting on a
+    /// wedged polkit. Once let go it knows one more account.
+    struct StalledAdmin(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl UserAdmin for StalledAdmin {
+        fn create(&self, _: &str, _: &str, password: &mut [u8]) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            password.fill(0);
+            Ok(())
+        }
+        fn delete(&self, _: &DeviceUser, _: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn set_admin(&self, _: &str, _: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn set_autologin(&self, _: &str, _: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>> {
+            crate::device_read::off_ui_thread();
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Some(Err("AccountsService never answered".into()));
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            let mut barbara = user("barbara", false);
+            barbara.full_name = "Barbara Liskov".into();
+            Some(Ok(vec![user("ada", true), barbara]))
+        }
+    }
+
+    /// A change is answered and the window keeps drawing while
+    /// `AccountsService` takes its time to be read again: the accounts are
+    /// re-read on the change's job, and land once it returns.
+    #[test]
+    fn a_stalled_accounts_service_never_holds_the_window() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Users);
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.users().model().borrow_mut().backends.users = Arc::new(StalledAdmin(stalled));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        app.start_effect_on(
+            "settings.user:grace",
+            &SettingsEffect::from(UsersEffect::SetAdministrator {
+                user: "grace".into(),
+                admin: true,
+            }),
+        )
+        .expect("the role change runs as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on AccountsService"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Grace Hopper"),
+            "the last read is shown: {frame}"
+        );
+        assert!(!frame.contains("Barbara Liskov"), "{frame}");
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Barbara Liskov"))),
+            "the accounts read again are shown"
+        );
     }
 
     /// The password typed into the form is read once by the effect and

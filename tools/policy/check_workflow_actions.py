@@ -36,7 +36,12 @@ class Violation:
 
 def workflow_files(directory: Path) -> list[Path]:
     """Return workflows and nested composite-action definitions."""
-    return sorted((*directory.rglob("*.yml"), *directory.rglob("*.yaml")))
+    if not directory.is_dir():
+        raise ValueError(f"workflow directory is missing or not a directory: {directory}")
+    paths = sorted((*directory.rglob("*.yml"), *directory.rglob("*.yaml")))
+    if not paths:
+        raise ValueError(f"no workflow/action definitions found in {directory}")
+    return paths
 
 
 def audit(directory: Path) -> list[Violation]:
@@ -64,7 +69,10 @@ def main() -> int:
         help="Forgejo configuration tree to audit recursively",
     )
     args = parser.parse_args()
-    violations = audit(args.workflows)
+    try:
+        violations = audit(args.workflows)
+    except (OSError, ValueError) as error:
+        parser.exit(1, f"workflow action inspection failed: {error}\n")
     for violation in violations:
         print(violation.display(ROOT))
     if violations:

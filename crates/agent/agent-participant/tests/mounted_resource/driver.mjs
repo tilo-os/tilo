@@ -220,10 +220,13 @@ try {
   // The full-tab entry page marks its outcome on <html data-entry>: open,
   // refused (no access) or failed.
   const entryOutcome = 'document.documentElement.dataset.entry';
+  const waitForAccounts = async () => {
+    const outcome = await tab.waitFor(`document.querySelectorAll(".tilo-entry-card button").length === 2
+      ? 'accounts' : (${entryOutcome} || false)`, {timeout:15_000});
+    assert.equal(outcome, 'accounts', `entry settled as ${outcome} instead of offering both fixture accounts`);
+  };
   const chooseAccount = async name => {
-    await tab.waitFor(`document.documentElement.dataset.entry !== undefined
-      || document.querySelectorAll('.tilo-entry-card button').length === 2`);
-    assert.equal(await tab.evaluate(entryOutcome), undefined, 'entry must offer account choice before completing');
+    await waitForAccounts();
     await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
   };
   observer.mark('navigate-link');
@@ -246,7 +249,7 @@ try {
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   stage('leaving-the-page-releases-mounted-app-and-device-custody');
   await tab.navigate(link);
-  await tab.waitFor('document.querySelectorAll(".tilo-entry-card button").length === 2');
+  await waitForAccounts();
   stage('page-navigation-reopens-existing-account-picker');
   stage('revoke');
   assert.equal(JSON.parse((await lines.next()).value).revoked, true);

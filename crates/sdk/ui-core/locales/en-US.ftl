@@ -473,6 +473,12 @@ block-editor-replace = Replace
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
 
+block-callout-note = Note
+block-callout-tip = Tip
+block-callout-important = Important
+block-callout-warning = Warning
+block-callout-caution = Caution
+
 dictation-record-once = Record once
 dictation-finish = Finish
 dictation-cancel = Cancel
@@ -537,3 +543,9 @@ author-persona-suffix = { $name } · { $service }
 
 # Context menu entry: ask the desktop agent about what is selected here.
 ask-agent-about-selection = Ask agent…
+
+widget-screenshot-saved = Saved
+widget-screenshot-copied = Copied
+widget-screenshot-send-workspace = Save to this workspace's files
+widget-screenshot-send-no-device = No other device is online
+widget-screenshot-send-device = Send to { $device }

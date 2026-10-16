@@ -3734,6 +3734,25 @@ impl RecordStore {
             .map(|(changed, _)| changed)
     }
 
+    /// Merge another replica's incremental changes (what
+    /// [`Self::replication_delta`] answers there) into the open record, as
+    /// the room's broker delivers one window's changes to the others on the
+    /// record. Whether anything changed.
+    ///
+    /// # Errors
+    /// The record is not open here or the changes do not merge.
+    pub fn merge_peer_changes(
+        &self,
+        checkout: &RecordCheckout,
+        changes: Vec<u8>,
+    ) -> Result<bool, String> {
+        self.merge_remote_document(
+            checkout,
+            collab_types::DocumentMutation::Incremental(changes),
+        )
+        .map(|(changed, _)| changed)
+    }
+
     /// Changes to the open record `id` that `frontier` has not covered, for a
     /// host replicating open records itself (a browser page over the relay).
     /// The pending action is committed first, as for a save. Advance the

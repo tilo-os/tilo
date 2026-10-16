@@ -779,6 +779,7 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            offers: Vec::new(),
         };
         let room = RoomId::new();
         let mut command = LaunchCommand {

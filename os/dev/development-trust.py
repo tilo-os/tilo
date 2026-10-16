@@ -7,8 +7,11 @@ store, release defaults, or the signing authority of any artifact.
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -27,17 +30,26 @@ def reject_redirected_path(path):
 def read_public(path):
     path = Path(path)
     reject_redirected_path(path)
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > LIMIT:
-        raise ValueError(f'expected a bounded regular public input: {path.name}')
-    data = path.read_bytes()
-    if len(data) > LIMIT:
-        raise ValueError('public input exceeds size limit')
-    return data
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > LIMIT:
+            raise ValueError(f'expected a bounded regular public input: {path.name}')
+        data = stream.read(LIMIT + 1)
+        after = os.fstat(stream.fileno())
+        if (len(data) != before.st_size or len(data) > LIMIT
+                or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise ValueError('public input changed during snapshot')
+        return data
 
 
 def rust_crypto(*args):
-    result = subprocess.run([CRYPTO, *map(str, args)],
-                            capture_output=True)
+    try:
+        result = subprocess.run([CRYPTO, *map(str, args)],
+                                capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise ValueError('Rust-native public key validation timed out') from None
     if result.returncode:
         raise ValueError('Rust-native crypto rejected the public key or certificate')
     return result.stdout
@@ -51,6 +63,16 @@ def pem(data, label):
 
 
 def identities(inputs, paths):
+    # Native parsers must inspect the bytes whose manifest hashes were checked,
+    # not reopen mutable caller paths after the check.
+    with tempfile.TemporaryDirectory(prefix='tilo-public-identities-') as temporary:
+        snapshots = {name: Path(temporary) / name for name in FILES}
+        for name, path in snapshots.items():
+            path.write_bytes(inputs[name])
+        return _identities(inputs, snapshots)
+
+
+def _identities(inputs, paths):
     result = {}
     cosign = inputs['cosign.pub']
     pem(cosign, 'PUBLIC KEY')

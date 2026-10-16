@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         try:
             cases = parse(args.junit)
-        except ET.ParseError as error:
+        except (ET.ParseError, OSError, LookupError) as error:
             text = f"### nextest: {args.label}\n\nUnreadable JUnit report: {error}\n\n"
             cases = []
         else:
@@ -130,8 +130,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.summary is None:
         sys.stdout.write(text)
     else:
-        with args.summary.open("a", encoding="utf-8") as handle:
-            handle.write(text)
+        try:
+            with args.summary.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError as error:
+            # Reporting is diagnostic: never replace the test phase's verdict
+            # with a failure to append its optional summary.
+            print(f"::warning::Cannot write nextest summary: {annotation(str(error))}", file=sys.stderr)
+            sys.stdout.write(text)
     return 0
 
 

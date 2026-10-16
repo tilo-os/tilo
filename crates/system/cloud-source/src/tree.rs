@@ -10,8 +10,8 @@
 //!   as `name (2).ext`, `name (3).ext`, … in id order, so the projection is
 //!   deterministic and does not depend on the order changes arrived in;
 //! - an item with several parents appears under each of them;
-//! - a provider-native document is projected as a `<name>.<link_extension>`
-//!   link entry, never under a real format's extension.
+//! - a supported native document uses its preferred Office export extension;
+//!   unsupported native documents retain their unadorned name.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -215,10 +215,10 @@ impl Tree {
 pub fn base_name(item: &Item) -> String {
     let name = sanitize(&item.name);
     match &item.kind {
-        ItemKind::Native(document) if !document.link_extension.is_empty() => {
-            let extension = sanitize(&document.link_extension);
-            truncate_keeping(&name, &format!(".{extension}"))
-        }
+        ItemKind::Native(document) => crate::materialize::preferred_export(document).map_or_else(
+            |_| name.clone(),
+            |format| truncate_keeping(&name, &format!(".{}", format.extension)),
+        ),
         _ => name,
     }
 }
@@ -372,7 +372,7 @@ mod tests {
             .into_iter()
             .map(|(n, _)| n)
             .collect();
-        assert_eq!(names, ["Budget.gsheet", "_..", "a\u{2215}b"]);
+        assert_eq!(names, ["Budget", "_..", "a\u{2215}b"]);
         let long = "é".repeat(300);
         assert!(sanitize(&long).len() <= MAX_NAME_BYTES);
     }

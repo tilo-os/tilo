@@ -393,6 +393,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn import_account_without_a_mount_has_a_searchable_open_action() {
+        let account = RemoteAccount {
+            id: accounts::AccountId::from("import-cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+            label: "Import cloud".into(),
+            host: "cloud.example".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::NeverChecked,
+            files_mode: accounts::cloud_types::FilesMode::Import,
+            mount: None,
+        };
+        let search = RemoteAccountSearch::new(std::slice::from_ref(&account));
+        let hit = source(search.entries()).search("import").pop().unwrap();
+        let resource = search.resource(&hit.anchor()).unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            crate::remote_accounts::resource_id(&account.id)
+        );
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
+        );
+    }
+
     /// Places and remote accounts are found by label, path, host and kind with wire-safe, round-tripping action ids that navigate.
     #[allow(
         clippy::too_many_lines,
@@ -445,6 +471,7 @@ mod tests {
                 label: "Personal cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                files_mode: accounts::cloud_types::FilesMode::Sync,
                 mount: None,
             };
             let accounts = vec![account.clone()];
@@ -572,6 +599,7 @@ mod tests {
                     label: format!("Shared record {index}"),
                     host: format!("host-{index}.example"),
                     health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+                    files_mode: accounts::cloud_types::FilesMode::Sync,
                     mount: None,
                 })
                 .collect();

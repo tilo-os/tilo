@@ -470,6 +470,12 @@ block-editor-replace = Ersetzen
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
 
+block-callout-note = Hinweis
+block-callout-tip = Tipp
+block-callout-important = Wichtig
+block-callout-warning = Warnung
+block-callout-caution = Vorsicht
+
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
 
@@ -533,3 +539,9 @@ author-persona-suffix = { $name } · { $service }
 
 # Context menu entry: ask the desktop agent about what is selected here.
 ask-agent-about-selection = Agent fragen…
+
+widget-screenshot-saved = Gespeichert
+widget-screenshot-copied = Kopiert
+widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speichern
+widget-screenshot-send-no-device = Kein anderes Gerät ist online
+widget-screenshot-send-device = An { $device } senden

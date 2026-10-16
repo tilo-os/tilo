@@ -32,14 +32,14 @@ pub(crate) async fn member_device(
     room: &str,
     (key, cert): (&SigningKey, &DeviceCert),
     seed: u8,
-) -> SigningKey {
+) -> (SigningKey, DeviceCert) {
     let member_key = SigningKey::from_bytes(&[seed; 32]);
     let mut member = cert.clone();
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(rooms, room, key, &member).await;
-    member_key
+    (member_key, member)
 }
 
 /// A member device that holds one record's channel keys and writes the
@@ -128,6 +128,33 @@ impl SealingMember {
         self.document.lock().unwrap().clone()
     }
 
+    /// Open `op`, any write of the record a newcomer is sent (sealed or in
+    /// the clear, a snapshot or changes), into `document`.
+    pub(crate) fn open_into(&self, op: &SignedOp, document: &mut automerge::AutoCommit) {
+        let plaintext = match op.encryption {
+            Some(metadata) => self
+                .keys
+                .open_content(
+                    op.artifact,
+                    &metadata,
+                    &collab_types::sealed_ciphertext(op).unwrap(),
+                )
+                .unwrap()
+                .to_vec(),
+            None => op.payload.clone(),
+        };
+        match collab_types::DocumentMutation::decode(&plaintext).unwrap() {
+            collab_types::DocumentMutation::Snapshot(bytes) => {
+                document
+                    .merge_incoming(&mut automerge::AutoCommit::load(&bytes).unwrap())
+                    .unwrap();
+            }
+            collab_types::DocumentMutation::Incremental(changes) => {
+                document.load_incoming(&changes).unwrap();
+            }
+        }
+    }
+
     /// Open `op`, a sealed write of the record, and take in its changes.
     pub(crate) fn take_in(&self, op: &SignedOp) {
         let metadata = op.encryption.expect("a sealed write");
@@ -160,6 +187,22 @@ impl SealingMember {
         room: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> R {
+        let (result, message) = self.seal(room, change);
+        let body = postcard::to_stdvec(&message).unwrap();
+        rooms
+            .absorb(room, self.key.verifying_key().to_bytes(), &body)
+            .await
+            .unwrap();
+        result
+    }
+
+    /// The member's next write of the record, `change` made to its replica,
+    /// sealed and signed as its page publishes it.
+    pub(crate) fn seal<R>(
+        &self,
+        room: &str,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
+    ) -> (R, NeighbourMsg) {
         let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let mut document = self.document();
         let heads = document.get_heads();
@@ -191,19 +234,14 @@ impl SealingMember {
         )
         .with_surface(self.surface);
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
-        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
+        let message = NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: room.into(),
             record_id: record.into(),
             envelope: Box::new(envelope),
-        })
-        .unwrap();
-        rooms
-            .absorb(room, self.key.verifying_key().to_bytes(), &body)
-            .await
-            .unwrap();
-        result
+        };
+        (result, message)
     }
 }
 
@@ -272,7 +310,7 @@ async fn lounge() -> Lounge {
     let relay = view_read_relay(dir.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
-    let member_key = member_device(&rooms, &room, (&key, &cert), 3).await;
+    let (member_key, _) = member_device(&rooms, &room, (&key, &cert), 3).await;
     rooms
         .author_room_record(&room, &cert, (APP, RECORD), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
@@ -364,5 +402,132 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
         .count();
     assert_eq!(published, 0, "a compaction is not published to members");
     drop((state, rooms));
+    relay.shutdown().await;
+}
+
+/// Every write of `record` the relay retains for `workspace_id`, in replay
+/// order: what a newcomer is sent.
+async fn retained_writes(
+    relay: &crate::daemon::Relay,
+    workspace_id: u64,
+    record: &str,
+) -> Vec<SignedOp> {
+    relay
+        .room_records()
+        .retained(workspace_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(
+            |retained| match postcard::from_bytes::<NeighbourMsg>(&retained.body) {
+                Ok(NeighbourMsg::AppDocument {
+                    record_id,
+                    envelope,
+                    ..
+                }) if record_id == record => Some(*envelope),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// A record its members wrote sealed for a long time is folded by the node
+/// that stewards its channel: a newcomer is sent one sealed snapshot and the
+/// writes since, not every write ever made, and they open to the record as
+/// its members wrote it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the assertions"
+)]
+async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
+    const WRITES: usize = 400;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (room, workspace_id) = (created.room, created.workspace_id);
+    let (member_key, member_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
+    rooms
+        .author_room_record(&room, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member = SealingMember::join(&rooms, &room, (APP, RECORD), member_key.clone()).await;
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&member_key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let client = crate::RelayClient::connect_to_pinned_host(
+        endpoint,
+        relay.node_addr(),
+        member_cert,
+        member_key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(crate::Envelope::Subscribe { workspace_id })
+        .unwrap();
+    tilo_test_env::within("the member's subscription", async {
+        while !matches!(client.recv().await, Some(crate::Envelope::Ready { .. })) {}
+    })
+    .await;
+    for index in 0..WRITES {
+        let ((), message) = member.seal(&room, |doc| {
+            doc.put(ROOT, "title", format!("line {index}")).unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+        client
+            .send(crate::Envelope::Delta {
+                workspace_id,
+                author_device_public_key: member_key.verifying_key().to_bytes(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta: crate::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+    }
+    // What a newcomer is sent, opened: every write, and the newest last.
+    let newest = format!("line {}", WRITES - 1);
+    let newcomer_reads = |held: &[SignedOp]| {
+        let mut newcomer = automerge::AutoCommit::new();
+        for op in held {
+            member.open_into(op, &mut newcomer);
+        }
+        title(&newcomer.save())
+    };
+    let held = tilo_test_env::within("the node folds the record's sealed history", async {
+        loop {
+            let held = retained_writes(&relay, workspace_id, RECORD).await;
+            let folded = held.iter().any(|op| {
+                op.author.as_bytes() == &cert.device_public_key && op.encryption.is_some()
+            });
+            if folded
+                && held.len() < WRITES / 4
+                && newcomer_reads(&held).as_deref() == Some(newest.as_str())
+            {
+                break held;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(
+        held.iter().skip(1).all(|op| op.encryption.is_some()),
+        "past the record's cleartext start, the members' writes and their snapshot stay sealed"
+    );
+    drop(rooms);
     relay.shutdown().await;
 }

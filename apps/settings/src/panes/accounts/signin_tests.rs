@@ -202,6 +202,130 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
     }
 }
 
+#[test]
+fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
+    use accounts::cloud_types::{FilesMode, set_files_mode};
+    use ui::tilo_actions::remote::ApplicationLaunch;
+    for mode in [FilesMode::Sync, FilesMode::Import] {
+        let (_scratch, root) = scratch_root();
+        let id = accounts::AccountId::from("drive:ada@example.org");
+        let mut account = accounts::Account::new(id.clone(), "google-drive");
+        account.display_name = "Ada’s Drive".into();
+        account.config = serde_json::json!({"identity": "ada@example.org"});
+        set_files_mode(&mut account.config, mode);
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root.clone());
+        let view = pane.dir.views_of(AccountKind::GoogleDrive).remove(0);
+        let spec = pane.files_handoff(&view).expect("connected Files account");
+        assert_eq!(view.summary, "ada@example.org");
+        let mut details = Vec::new();
+        assert!(pane.files_button(&view, &mut details).is_some());
+        assert!(details.contains(&t(if mode == FilesMode::Import {
+            "accounts-files-configured-import"
+        } else {
+            "accounts-files-configured-sync"
+        })));
+        assert_eq!(
+            spec.label,
+            t(if mode == FilesMode::Import {
+                "accounts-choose-import-files"
+            } else {
+                "accounts-browse-files"
+            })
+        );
+        let encoded = spec.build_args([]).unwrap();
+        let launch: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(launch.valid());
+        assert_eq!(
+            launch.target("workspace-a"),
+            ui::tilo_actions::remote::application_action_target(
+                "workspace-a",
+                "so.tilo.file-explorer",
+                file_explorer::remote_accounts::resource_id(&id),
+                "open-remote-account",
+            )
+        );
+        assert!(matches!(
+            launch.argument(),
+            ui::tilo_actions::remote::InvokeArgument::None
+        ));
+        let profile = tempfile::tempdir().unwrap();
+        let area = AccountsArea::new(&PaneCx::in_file(profile.path().join("settings.json")))
+            .with_account_root(root.clone());
+        let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
+        let row = area
+            .rows()
+            .into_iter()
+            .find(|row| row.id() == format!("settings.account:{id}"))
+            .unwrap()
+            .into_resource();
+        let published = row
+            .actions
+            .iter()
+            .find(|action| action.id == "open-files")
+            .unwrap();
+        assert_eq!(published.build_args([]).unwrap(), encoded);
+        let mut labels = Vec::new();
+        let composed = super::tests::lay_out(&area.model().borrow());
+        crate::host::testing::labels_of(composed.as_ref(), "Button", &mut labels);
+        assert!(labels.contains(&spec.label));
+        account.enabled = false;
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root.clone());
+        assert!(
+            pane.files_handoff(&pane.dir.views_of(AccountKind::GoogleDrive)[0])
+                .is_none()
+        );
+        account.enabled = true;
+        account.config["files_mode"] = "unsupported".into();
+        store.upsert(account);
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root);
+        assert!(
+            pane.files_handoff(&pane.dir.views_of(AccountKind::GoogleDrive)[0])
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn published_service_choices_use_the_same_sign_in_form() {
+    let (_dir, root) = scratch_root();
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let mut pane = AccountsPane::in_root(root.clone());
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    app.surface::<crate::SettingsApp, _>(|settings| {
+        *settings.accounts().model().borrow_mut() = pane;
+    })
+    .unwrap();
+    app.settle();
+    app.call_on(
+        "settings.root",
+        "select-account-services",
+        serde_json::json!({
+            "files": false, "mail": true, "files_mode": "import",
+        }),
+    )
+    .unwrap();
+    app.surface::<crate::SettingsApp, _>(|settings| {
+        let shared = settings.accounts().model();
+        let mut pane = shared.borrow_mut();
+        assert!(pane.sign_in_open());
+        assert!(
+            pane.select_account_services(false, true, "unknown")
+                .is_err()
+        );
+        assert!(
+            root.store().is_empty(),
+            "selection does not perform sign-in"
+        );
+    })
+    .unwrap();
+}
+
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     let dir = tempfile::tempdir().expect("scratch config root");
     let root = AccountRoot::at(dir.path().join("tilo"));
@@ -276,6 +400,226 @@ fn oauth_sign_in_through_the_pane_seals_the_grant() {
             .is_some_and(|grant| grant.contains("refresh-"))
     );
     assert_eq!(pane.directory().views_of(AccountKind::GoogleDrive).len(), 1);
+}
+
+/// Drive configuration is local metadata; only OAuth and Gmail need fake HTTP servers.
+fn google_service_sign_in(
+    root: &AccountRoot,
+    files: bool,
+    mail: bool,
+    mode: accounts::cloud_types::FilesMode,
+) -> Arc<FakeBrowser> {
+    let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let gmail = Responder::handle(|request| {
+        assert_eq!(request.target, "/gmail/v1/users/me/profile");
+        assert!(
+            request
+                .header("Authorization")
+                .unwrap()
+                .starts_with("Bearer ")
+        );
+        Some(
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"emailAddress":"ada@example.org"}"#),
+        )
+    });
+    let custodian = root
+        .custodian()
+        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+        .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
+    let browser = FakeBrowser::new(true);
+    let mut pane = pane(root, custodian, browser.clone());
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    pane.sign_in
+        .as_mut()
+        .unwrap()
+        .select_services(files, mail, mode)
+        .unwrap();
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+    let urls = browser.opened.lock().unwrap();
+    assert_eq!(urls.len(), 1);
+    assert_eq!(urls[0].contains("auth%2Fdrive"), files);
+    assert_eq!(urls[0].contains("mail.google.com"), mail);
+    drop(urls);
+    let metadata = serde_json::to_string(&root.store()).unwrap();
+    assert!(!metadata.contains("refresh-"));
+    for account in root.store().all() {
+        let secret = root.vault().get(&account.id).expect("sealed Google grant");
+        assert!(secret.password.is_empty());
+        assert!(
+            secret
+                .token
+                .as_deref()
+                .is_some_and(|token| token.contains("refresh-"))
+        );
+    }
+    browser
+}
+
+#[test]
+fn google_files_only_selection_saves_only_drive() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, false, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 1);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&drive),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
+    assert!(
+        drive
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            .is_none()
+    );
+}
+
+#[test]
+fn google_mail_only_selection_saves_only_mail() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, false, true, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 1);
+    let mail = only_account(&root, "email");
+    assert_eq!(mail.config["email"], "ada@example.org");
+    assert_eq!(mail.config["imap_host"], "imap.gmail.com");
+    assert_eq!(mail.config["smtp_host"], "smtp.gmail.com");
+    assert_eq!(mail.config["smtp_port"], 587);
+    assert_eq!(
+        mail.config_as::<accounts::email::AccountConfig>()
+            .unwrap()
+            .auth,
+        accounts::email::AuthMethod::OAuth
+    );
+}
+
+#[test]
+fn google_both_selection_links_drive_to_mail() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, true, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 2);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    let mail = only_account(&root, "email");
+    assert_eq!(
+        drive.config[accounts::cloud_types::MAIL_ACCOUNT_ID_KEY],
+        mail.id.as_str()
+    );
+    assert_eq!(mail.config["email"], "ada@example.org");
+    assert_eq!(root.vault().get(&drive.id), root.vault().get(&mail.id));
+}
+
+#[test]
+fn google_import_selection_persists_import_metadata() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, false, accounts::cloud_types::FilesMode::Import);
+    assert_eq!(root.store().len(), 1);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&drive),
+        Some(accounts::cloud_types::FilesMode::Import)
+    );
+    assert!(
+        drive
+            .config
+            .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
+            .is_some_and(serde_json::Value::is_object)
+    );
+}
+
+#[test]
+fn google_mail_selection_cannot_replace_a_separately_connected_grant() {
+    for files in [true, false] {
+        let (_dir, root) = scratch_root();
+        let mut existing = accounts::Account::new("stable-opaque-mail-id", "email");
+        existing.display_name = "Personal inbox".into();
+        existing.set_config(&accounts::email::AccountConfig {
+            email: "Ada@Example.org".into(),
+            display_name: "Personal inbox".into(),
+            ..Default::default()
+        });
+        existing.config["custom_setting"] = "kept".into();
+        let mut store = accounts::AccountStore::new();
+        store.upsert(existing.clone());
+        root.save_store(&store).unwrap();
+        let mut vault = root.vault();
+        vault.put(&existing.id, &accounts::Secret::password("old-password"));
+        vault.try_save().unwrap();
+
+        let mut mail = existing.clone();
+        mail.config["email"] = "ada@example.org".into();
+        let completed = super::cloud_signin::Completed {
+            kind: if files {
+                AccountKind::GoogleDrive
+            } else {
+                AccountKind::Mail
+            },
+            existing_id: None,
+            display_name: "Google".into(),
+            config: if files {
+                serde_json::json!({})
+            } else {
+                mail.config.clone()
+            },
+            secret: accounts::Secret::password("replacement"),
+            mail: files.then_some(mail),
+        };
+        assert!(
+            AccountsPane::save_signed_in(&root, &completed)
+                .unwrap_err()
+                .contains("already connected")
+        );
+        assert_eq!(root.store().len(), 1);
+        let mail = only_account(&root, "email");
+        assert_eq!(mail.id, existing.id);
+        assert_eq!(mail.config["custom_setting"], "kept");
+        assert_eq!(mail.config["display_name"], "Personal inbox");
+        assert_eq!(mail.config["email"], "Ada@Example.org");
+        assert_eq!(
+            root.vault().get(&existing.id).unwrap().password,
+            "old-password"
+        );
+        assert!(root.vault().get(&"ada@example.org".into()).is_none());
+    }
+}
+
+#[test]
+fn disconnecting_linked_mail_retains_files_and_its_grant() {
+    let (_dir, root) = scratch_root();
+    let mut files = accounts::Account::new("files", "google-drive");
+    files.config = serde_json::json!({"mail_account_id": "mail", "files_mode": "sync"});
+    let mail = accounts::Account::new("mail", "email");
+    let mut store = root.store();
+    store.upsert(files.clone());
+    store.upsert(mail.clone());
+    root.save_store(&store).unwrap();
+    let secret = accounts::Secret::password("files-grant");
+    let mut vault = root.vault();
+    vault.put(&files.id, &secret);
+    vault.put(&mail.id, &accounts::Secret::password("mail-grant"));
+    vault.try_save().unwrap();
+    let mut pane = pane(&root, root.custodian(), FakeBrowser::new(false));
+    pane.remove("mail").unwrap();
+    let store = root.store();
+    assert_eq!(store.len(), 1);
+    let retained = store.get(&files.id).unwrap();
+    assert!(
+        retained
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            .is_none()
+    );
+    assert_eq!(
+        accounts::cloud_types::files_mode(retained),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
+    assert_eq!(root.vault().get(&files.id), Some(secret));
+    assert!(root.vault().get(&mail.id).is_none());
 }
 
 #[test]
@@ -574,7 +918,7 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
     let mut texts = Vec::new();
     collect(composed.as_ref(), &mut texts);
     assert!(
-        texts.iter().any(|text| text == "Re-authenticate"),
+        texts.iter().any(|text| text == "Re-authenticate — Files"),
         "{texts:?}"
     );
     assert!(texts.iter().any(|text| text == "Best effort"), "{texts:?}");

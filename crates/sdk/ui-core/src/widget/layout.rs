@@ -394,7 +394,7 @@ impl CompositionFocus {
             .map(|id| format!("named:{id}"))
             .or_else(|| {
                 widget
-                    .accessibility()
+                    .accessibility_root()
                     .and_then(|access| access.semantic_key)
                     .map(|key| format!("semantic:{key}"))
             })
@@ -438,7 +438,7 @@ impl CompositionFocus {
                     ambiguous: false,
                     key: CompositionFocus::key(widget),
                     semantic_key: widget
-                        .accessibility()
+                        .accessibility_root()
                         .and_then(|access| access.semantic_key),
                     qualified_semantic: false,
                     binding: binding.clone(),
@@ -513,7 +513,7 @@ impl CompositionFocus {
                 ambiguous: false,
                 key: Self::key(widget),
                 semantic_key: widget
-                    .accessibility()
+                    .accessibility_root()
                     .and_then(|access| access.semantic_key),
                 qualified_semantic: false,
                 binding: bindings.binding_for(node),
@@ -552,7 +552,7 @@ impl CompositionFocus {
                 crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
                     focus.key = Self::key(widget);
                     focus.semantic_key = widget
-                        .accessibility()
+                        .accessibility_root()
                         .and_then(|access| access.semantic_key);
                     state_node = *aggregate;
                 })
@@ -589,7 +589,7 @@ impl CompositionFocus {
                             focus.same_owner(bindings, node)
                                 && Self::key(widget).as_ref() == Some(key)
                                 && widget
-                                    .accessibility()
+                                    .accessibility_root()
                                     .and_then(|access| access.semantic_key)
                                     == focus.semantic_key
                         })
@@ -691,7 +691,7 @@ impl CompositionFocus {
             candidates.retain(|&node| unsafe {
                 crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                     widget
-                        .accessibility()
+                        .accessibility_root()
                         .and_then(|access| access.semantic_key)
                         == self.semantic_key
                 })

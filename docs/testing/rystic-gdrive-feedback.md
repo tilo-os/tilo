@@ -1,116 +1,124 @@
 # Google Drive adapter against Rystic
 
-## Versions and scope
+## Current verification
 
-Observed on 2026-10-14, Linux amd64:
+On 2026-10-14, **before starting a metered instance**, ran
+`rystic update -no-self google-drive-twin`. This updated the installed twin from
+**0.0.3 to 0.0.5**, published `2026-10-14T18:05:59Z`, commit `28864b4`.
+The CLI remained **0.0.28**, commit `3e381c4`, built
+`2026-10-12T14:34:05Z`, Go 1.24.0 linux/amd64.
+The running twin's version handshake reported **0.0.5**, model
+`sha256:2521a3325edc5162aa9da197dc7df19cec9f62049014fbbc784bcba6b830423a`.
 
-- Rystic CLI `0.0.28`, commit `3e381c4`, built `2026-10-12T14:34:05Z`, Go `1.24.0`.
-- `google-drive-twin 0.0.3`, commit `5b4a15bd9931181da6c77f2a668c16c41b004475`, contract `24`, metered edition.
-- Model `sha256:d8f46d5b8036d37ac3fe481297e7204843fb765814a1ef1d9a0e18070e6f863f`.
-
-The installed CLI uses `rystic run google-drive-twin`, not `rystic google-drive-twin`.
-The CLI authenticates using its existing installation credentials; no license or
-API key is copied into the repository. Requests to the simulator use the dummy
-bearer token `tilo-rystic-gdrive`, not a Google credential.
-
-## Reproduction
-
-Use a dedicated instance: fixture seeding changes the twin's quota configuration.
-The test refuses non-loopback HTTP origins and checks `/_rystic/version` before
-sending fixture requests. It neither starts a twin nor contacts Google.
+The new twin requires a bearer value starting `ya29.`. Tests use the dummy
+`ya29.tilo-rystic-gdrive`, not a Google credential. An initial run with the old
+dummy prefix failed authentication; that was a test configuration mismatch,
+not evidence of missing Changes or upload endpoints. Installation credentials
+are neither read nor printed by the test harness.
 
 ```bash
-name="tilo-gdrive-$(date +%s)-$$"
-rystic run google-drive-twin --name "$name" --port 0 -d -json
-# Set this to data.url from the startup JSON (no trailing slash):
-export TILO_RYSTIC_GDRIVE_URL=http://localhost:<allocated-port>
-trap 'rystic stop "$name"; rystic rm "$name"' EXIT
-cargo test --locked -p cloud-source-gdrive --features rystic-tests \
-  --test gdrive-rystic -- --nocapture
+python3 scripts/test-cloud-rystic.py gdrive --contracts --volume
+# Independently green Changes-only contract (2 passed, 0 failed):
+python3 scripts/test-cloud-rystic.py gdrive --changes-only
 ```
 
-When `cargo` routes tests to a remote builder, that builder's loopback is **not**
-the host's twin. Compile remotely and execute the fetched binary locally instead:
+The runner updates only the Drive twin, compiles all selected targets using
+normal Cargo routing **before** starting a uniquely named, dedicated instance,
+then executes fetched test binaries locally. Startup is bounded to 60 seconds;
+each binary to 240 seconds. Setup HTTP requests have explicit timeouts;
+production adapter requests retain their production timeouts but cannot outlive
+the binary's paid-run deadline. `finally` stops and removes only the owned
+instance, including test failures, panics, timeouts and keyboard interruption.
+Each cleanup command is bounded to 30 seconds; removal is attempted even if
+stopping fails. No privileged FUSE mount or personal account is used.
 
-```bash
-cargo test --locked -p cloud-source-gdrive --features rystic-tests \
-  --test gdrive-rystic --no-run
-find target/debug/deps -maxdepth 1 -type f -name 'gdrive_rystic-*' -executable \
-  -exec env TILO_RYSTIC_GDRIVE_URL="$TILO_RYSTIC_GDRIVE_URL" {} --nocapture \;
+The adapter target finished **4 passed, 1 failed, 0 ignored**; the real
+filesystem target finished **2 passed, 0 failed, 0 ignored**. Overall:
+**6 passed, 1 failed**, runner exit **1**. The only remaining failed contract
+is genuine native DOCX export. Adapter and filesystem test-body times were
+4.05 and 0.62 seconds respectively, not billed instance lifetime.
+
+## Measured production paths
+
+`crates/system/cloud-source-gdrive/tests/rystic.rs` exercises the real
+`GDrive` implementation of `CloudSource`, not its fake server:
+
+- Existing import/read/metadata contract: 1,001 seeded binary files, paginated
+  listing preserving duplicate names, exact complete/ranged/revision-pinned
+  bytes, revisions, rename/move/delete, quota and native-document classification.
+- Initial sync: complete snapshot of all 1,002 entries, no duplicate IDs,
+  bounded pagination, nonempty terminal cursor, empty subsequent delta and
+  stable idle cursor.
+- Post-cursor Changes contract: after saving a terminal cursor, rename 1,000
+  files (including a move to an existing folder) and delete another through
+  ordinary provider APIs. A fresh adapter resumes the saved cursor across at
+  least two Changes pages and verifies exactly the expected 1,001 metadata
+  updates/tombstones, without duplicate IDs, loss or reset. The terminal cursor
+  remains stable when idle. Fixture seeding is setup only, never a mutation
+  under proof.
+- Real resumable upload commits exactly the submitted bytes and reads them
+  through the production provider. No multipart/media fallback substitutes for
+  a failed resumable request.
+- Strict native DOCX export still validates ZIP integrity, required XML parts,
+  Office types/relationships and the WordprocessingML body. It is not weakened
+  to accept stand-in bytes.
+
+`crates/system/fs/tests/gdrive_rystic_volume.rs` is the opt-in
+`tilo-fs --features rystic-tests --test gdrive-rystic-volume` target. Depending
+from fs to the provider avoids a reverse development-dependency cycle. It uses
+production `CloudVolume` inode APIs, the same operations the FUSE adapter calls:
+
+- Local create/write/release, `upload_pending`, exact provider bytes.
+- External byte replacement using the real upload API, `sync_once`, exact
+  mounted bytes; local and external rename/delete propagation.
+- Native Docs remain ordinary-sync read-only exports (0444; write-open refused).
+- A persisted terminal cursor is reused on idle sync and after reopening the
+  volume. Reopened cached bytes are checked with an invalid provider credential,
+  distinguishing durable content from silently downloading it again.
+- Independent binary import uses a private account configuration, credential
+  handoff and the production `CloudService` Files socket. The production
+  `tilo-cloud-files::execute_at` engine consumes a host-issued exact-payload
+  permit, streams provider bytes and publishes a descriptor-pinned local copy.
+  The copy has exact initial bytes; editing it leaves provider bytes unchanged.
+  No sync mount or Remote directory is created. This covers the service and
+  import engine, **not** the Files app's action/UI admission journey or native
+  Office conversion. Binary seed bytes are setup, not a simulated external edit.
+
+## Remaining vendor fidelity limit
+
+On 0.0.5, the strict native export contract still reports:
+
+```text
+DOCX export is not a ZIP Office Open XML package (stand-in bytes)
 ```
 
-Ensure this finds exactly one current binary; zero binaries is not a test run.
-On this checkout the fetched executable was
-`target/debug/deps/gdrive_rystic-326d2b6999924b23`; execution against port `44819`
-passed: **1 test, 0 ignored**. The uniquely named instance was stopped and removed
-following verification. An invocation without `TILO_RYSTIC_GDRIVE_URL` fails with
-an explicit configuration error, never skips. Ordinary tests do not enable the
-`rystic-tests` feature and remain credential-free.
+The native document is created and exported by the production adapter, but the
+export cannot prove an independent Office import. A genuine, structurally valid
+Office package is required; preserving populated content and rendering fidelity
+would require additional checks. The validator remains strict.
 
-## What the production adapter proved
+Earlier 0.0.3 measurements returned 404 for `changes/startPageToken` and 501
+for resumable initiation. **Those are historical observations, not current
+endpoint claims.** Changes pagination and real resumable upload now succeed on
+0.0.5. Installed descriptive metadata still contains an old “resumable upload
+answers 501” sentence, while the HOWTO describes resumable sessions; measured
+production requests, not that stale sentence, establish the result above.
+Shared drives and rate-limit modeling were not newly verified in this run.
 
-`crates/system/cloud-source-gdrive/tests/rystic.rs` calls `GDrive`/`CloudSource`,
-not the in-memory fake. The only raw HTTP requests identify the twin and seed
-fixture data. A unique folder and 1,001 binary files exercise:
-
-- Root alias normalization in returned parents; folder creation.
-- Multi-page listings preserving same-named items and metadata.
-- Complete, ranged, EOF-clipped and revision-pinned reads with exact bytes.
-- Revision enumeration, moving/renaming into another folder, and permanent deletion.
-- Native document creation/classification and refusal of ordinary media reads.
-- Quota parsing with explicitly seeded string-valued limit and usage.
-
-No production adapter defect was verified in these operations; no adapter behavior
-was changed merely to make the simulator pass. Initial quota probing returned
-`{"storageQuota":{"usage":"0","usageInDrive":"0","usageInDriveTrash":"0"}}`:
-a missing limit is valid unlimited storage, not an adapter bug. The test therefore
-seeds a finite quota and checks the exact parsed values.
-
-## Simulator gaps, not adapter workarounds
-
-These can be reproduced with `$TILO_RYSTIC_GDRIVE_URL` from above:
-
-```bash
-curl -i -H 'Authorization: Bearer tilo-rystic-gdrive' \
-  "$TILO_RYSTIC_GDRIVE_URL/drive/v3/changes/startPageToken"
-curl -i -H 'Authorization: Bearer tilo-rystic-gdrive' \
-  -H 'Content-Type: application/json' -d '{"name":"probe"}' \
-  "$TILO_RYSTIC_GDRIVE_URL/upload/drive/v3/files?uploadType=resumable"
-```
-
-- **Changes API absent:** startPageToken returns HTTP 404 with a Google-style
-  `notFound` error about a nonexistent file. Production `source.changes(None)`
-  consequently returns `Error::NotFound`; it cannot obtain the pre-enumeration
-  token needed for a race-safe initial sync. The separately enabled strict sync contract fails at this error. There is no fallback to listing-only sync, no empty successful
-  snapshot, and no fabricated cursor.
-- **Resumable uploads absent:** initialization returns HTTP 501 with
-  `__rystic_unimplemented__: true` and an interaction-vector diagnostic.
-  Production `begin_upload` returns `Error::Status(501)`; the separately
-  enabled strict upload contract fails at this error. Fixture content is seeded, not uploaded by an alternative
-  implementation. Resume/commit/concurrent-write behavior remains covered by
-  the fake-backed tests, not claimed as Rystic-verified.
-- **Shared drives absent:** the twin's declared surface excludes `drives.*` and
-  shared-drive state. Shared-drive behavior remains covered by fake tests.
-- **Exports are placeholders:** Rystic documents that these are generated from
-  name/description rather than rendered content. This test does not assert
-  Office/PDF validity or count an export placeholder as successful importing.
-- **No rate-limit modeling:** backoff correctness remains a fake-backed test.
-
-Strict vendor contracts assert successful sync and upload, not successful
-reproduction of errors. Run `python3 scripts/test-cloud-rystic.py gdrive
---contracts` to reproduce both failing contracts. The supported import test
-passes separately. These tests should become green when the missing endpoints
-are implemented, without weakening assertions or changing production behavior.
-
-## Credential-free verification
+## Credential-free checks
 
 ```bash
 cargo test --locked -p cloud-source-gdrive --lib --test drive --test conformance
-cargo check --locked -p cloud-source-gdrive --tests --features rystic-tests
+python3 crates/system/cloud-source-gdrive/tests/validate_docx.py --self-test
 cargo clippy --locked -p cloud-source-gdrive --test gdrive-rystic \
+  --features rystic-contract-tests -- -D warnings
+cargo clippy --locked -p tilo-fs --test gdrive-rystic-volume \
   --features rystic-tests -- -D warnings
+cargo check --locked -p cloud-source-gdrive --tests --features rystic-contract-tests
+cargo check --locked -p tilo-fs --tests --features rystic-tests
 ```
 
-Results: **102 tests passed, 0 skipped**; all-test compile check and opt-in test lint check passed.
-The existing tests continue to exercise the genuine changes-feed implementation,
-shared drives, resumable uploads, native exports, conflicts and credential rejection.
+Ordinary provider tests: **106 passed, 0 skipped**. Validator self-tests:
+**4 passed**. Both opt-in target Clippy checks passed with `-D warnings`;
+both packages' all-test compile checks passed. These are separate from
+simulator test counts.

@@ -267,6 +267,7 @@ members = [
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
+    "crates/platform/tilo-cloud-files",
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
@@ -288,6 +289,7 @@ members = [
     "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
+    "crates/platform/tilo-wallpapers",
 
     # Runtime
     "crates/runtime/cli",

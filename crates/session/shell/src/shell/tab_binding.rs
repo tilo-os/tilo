@@ -2913,6 +2913,7 @@ mod tests {
                     opens_extensions: Vec::new(),
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
+                    offers: Vec::new(),
                 });
                 crate::shell::launcher::clear_pending_placements();
                 let mut tree = WorkspaceTree::bootstrap_demo();

@@ -68,11 +68,12 @@ def child(arguments, *, stdin=None, limit=MAX_EXPANDED, scratch, deadline):
         env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'TMPDIR': str(scratch)})
     expired = threading.Event()
     def stop():
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        # An exited leader may leave a descendant holding stdout open. Kill the
+        # owned session even then, so the deadline can release a blocked read.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     def expire():
         expired.set()
         stop()

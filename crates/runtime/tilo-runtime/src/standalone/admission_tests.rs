@@ -44,6 +44,7 @@ impl LauncherServices for RecordingLauncher {
             package_id: "host:fixture".into(),
             display_name: "Fixture application".into(),
             unconfined: true,
+            offers: Vec::new(),
         }]
     }
     fn launch(

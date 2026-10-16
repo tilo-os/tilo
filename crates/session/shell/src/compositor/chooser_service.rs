@@ -265,6 +265,12 @@ fn answer(
             if !(context.presence)() {
                 return Reply::Nobody { id };
             }
+            if mode == PickMode::WritableDirectory && multiple {
+                return Reply::Failed {
+                    id,
+                    reason: t("portal-chooser-no-file"),
+                };
+            }
             let Some(scope) = authorized_scope(context, caller, mode) else {
                 return Reply::Failed {
                     id,
@@ -276,7 +282,8 @@ fn answer(
                 caller: caller.clone(),
                 title,
                 save: mode == PickMode::Save,
-                directory: mode == PickMode::Directory,
+                directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
+                writable_directory: mode == PickMode::WritableDirectory,
                 multiple,
                 accept_label: Some(accept_label).filter(|label| !label.trim().is_empty()),
                 current_name: suggested_name,
@@ -297,6 +304,12 @@ fn answer(
             });
             (context.wake)();
             match chosen.blocking_recv() {
+                Ok(Some(paths)) if mode == PickMode::WritableDirectory && paths.len() > 1 => {
+                    Reply::Failed {
+                        id,
+                        reason: t("portal-chooser-no-file"),
+                    }
+                }
                 Ok(Some(paths)) if !paths.is_empty() => {
                     match permitted(&context.grants, caller, &paths, mode) {
                         Ok(paths) => Reply::Picked { id, paths },
@@ -306,41 +319,49 @@ fn answer(
                 _ => Reply::Cancelled { id },
             }
         }
-        Request::Open { id, path } => {
-            let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
-                Ok(paths) => paths,
-                Err(reason) => return Reply::Failed { id, reason },
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-no-file"),
-                };
-            };
-            let (reply, outcome) = mpsc::channel();
-            if opens
-                .send(OpenRequest {
-                    caller: caller.clone(),
-                    path,
-                    reply,
-                })
-                .is_err()
-            {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-session-closing"),
-                };
-            }
-            (context.wake)();
-            match outcome.recv() {
-                Ok(Ok(())) => Reply::Opened { id },
-                Ok(Err(reason)) => Reply::Failed { id, reason },
-                Err(_) => Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-session-closing"),
-                },
-            }
-        }
+        Request::Open { id, path } => answer_open(context, opens, caller, id, path),
+    }
+}
+
+fn answer_open(
+    context: &ChooserContext,
+    opens: &mpsc::Sender<OpenRequest>,
+    caller: &PortalCaller,
+    id: u64,
+    path: PathBuf,
+) -> Reply {
+    let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
+        Ok(paths) => paths,
+        Err(reason) => return Reply::Failed { id, reason },
+    };
+    let Some(path) = paths.into_iter().next() else {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-no-file"),
+        };
+    };
+    let (reply, outcome) = mpsc::channel();
+    if opens
+        .send(OpenRequest {
+            caller: caller.clone(),
+            path,
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(Ok(())) => Reply::Opened { id },
+        Ok(Err(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
     }
 }
 
@@ -350,7 +371,7 @@ fn authorized_scope(
     caller: &PortalCaller,
     mode: PickMode,
 ) -> Option<PickerScope> {
-    let verb = if mode == PickMode::Save {
+    let verb = if matches!(mode, PickMode::Save | PickMode::WritableDirectory) {
         Access::Write
     } else {
         Access::Read
@@ -413,9 +434,12 @@ fn permitted(
                     let folder = path.parent().and_then(|folder| folder.canonicalize().ok());
                     folder.zip(name).map(|(folder, name)| folder.join(name))
                 }
-                PickMode::Open | PickMode::Directory => path.canonicalize().ok(),
+                PickMode::Open | PickMode::Directory | PickMode::WritableDirectory => path
+                    .canonicalize()
+                    .ok()
+                    .filter(|path| mode != PickMode::WritableDirectory || path.is_dir()),
             };
-            let verb = if mode == PickMode::Save {
+            let verb = if matches!(mode, PickMode::Save | PickMode::WritableDirectory) {
                 Access::Write
             } else {
                 Access::Read
@@ -625,6 +649,95 @@ mod tests {
                 workspace_id: "room-7".into(),
             }
         );
+    }
+
+    #[test]
+    fn directory_write_intent_preserves_existing_grant_boundaries_and_cancellation() {
+        let session = session_with_save_hint(false);
+        let caller = session
+            .service
+            .grants
+            .caller_in_room(&session.room, APP)
+            .unwrap();
+        let granted_before = session.service.grants.granted_paths(&caller);
+        let mut app = App::launch(&session, APP, &session.room);
+        app.send(&pick(1, PickMode::Directory));
+        let request = shown(&session);
+        assert!(request.directory);
+        assert!(
+            request
+                .scope
+                .as_ref()
+                .unwrap()
+                .roots
+                .contains(&session.inbox)
+        );
+        request
+            .reply
+            .send(Some(vec![session.inbox.clone()]))
+            .unwrap();
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Picked {
+                id: 1,
+                paths: vec![session.inbox.clone()]
+            })
+        );
+
+        app.send(&pick(2, PickMode::WritableDirectory));
+        let request = shown(&session);
+        assert!(request.directory);
+        assert!(!request.save);
+        assert!(request.writable_directory);
+        assert_eq!(
+            request.display_title(),
+            t("portal-file-existing-write-folder")
+        );
+        assert_eq!(request.confirm_label(), t("portal-file-use-write-folder"));
+        assert_eq!(
+            request.scope.as_ref().unwrap().roots,
+            vec![session.outbox.clone()]
+        );
+        request
+            .reply
+            .send(Some(vec![session.inbox.clone()]))
+            .unwrap();
+        assert!(matches!(app.reply(), Some(Reply::Failed { id: 2, .. })));
+
+        app.send(&pick(3, PickMode::WritableDirectory));
+        shown(&session)
+            .reply
+            .send(Some(vec![session.outbox.clone()]))
+            .unwrap();
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Picked {
+                id: 3,
+                paths: vec![session.outbox.clone()]
+            })
+        );
+        app.send(&pick(4, PickMode::WritableDirectory));
+        shown(&session).reply.send(None).unwrap();
+        assert_eq!(app.reply(), Some(Reply::Cancelled { id: 4 }));
+        assert_eq!(
+            session.service.grants.granted_paths(&caller),
+            granted_before
+        );
+        assert!(session.service.grants.filesystem_path_allows(
+            &caller,
+            &session.outbox,
+            Access::Write
+        ));
+        assert!(!session.service.grants.filesystem_path_allows(
+            &caller,
+            &session.inbox,
+            Access::Write
+        ));
+        assert!(!session.service.grants.filesystem_path_allows(
+            &caller,
+            &session.elsewhere,
+            Access::Write
+        ));
     }
 
     #[test]

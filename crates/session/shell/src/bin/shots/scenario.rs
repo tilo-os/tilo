@@ -1252,6 +1252,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 title: opts.title,
                 save: opts.save,
                 directory: opts.directory,
+                writable_directory: opts.writable_directory,
                 multiple: opts.multiple,
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,

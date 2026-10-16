@@ -5136,6 +5136,8 @@ fn component_control_root(
             search_requests: std::rc::Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
+            device_id: "test-device".into(),
+            host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
             permissions: std::rc::Rc::new(std::cell::RefCell::new(

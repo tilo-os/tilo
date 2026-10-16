@@ -1029,17 +1029,21 @@ mod tests {
 
         // Phase `a_boolean_toggles_and_sets`.
         {
-            assert!(power::AUTO_SUSPEND.get());
-            let toggled = run(&chrome, "power.auto-suspend.toggle", Vec::new()).unwrap();
-            assert_eq!(toggled["value"], false);
+            // An untouched machine does not suspend on idle, and the action
+            // says so the way the Settings pane and the compositor read it.
+            let fresh = run(&chrome, "power.auto-suspend.get", Vec::new()).unwrap();
+            assert_eq!(fresh["value"], false);
             assert!(!power::AUTO_SUSPEND.get());
+            let toggled = run(&chrome, "power.auto-suspend.toggle", Vec::new()).unwrap();
+            assert_eq!(toggled["value"], true);
+            assert!(power::AUTO_SUSPEND.get());
             run(
                 &chrome,
                 "power.auto-suspend.set",
-                arg("enabled", ArgValue::Boolean(true)),
+                arg("enabled", ArgValue::Boolean(false)),
             )
             .unwrap();
-            assert!(power::AUTO_SUSPEND.get());
+            assert!(!power::AUTO_SUSPEND.get());
         }
 
         // Phase `keyboard_layout_switches_to_a_listed_source_and_adds_a_new_one`.

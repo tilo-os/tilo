@@ -253,3 +253,28 @@ fn a_writable_path_that_cannot_be_idmapped_is_bound_and_named() {
     assert_eq!(unmapped, std::slice::from_ref(&dir));
     assert!(status.success() && out == "theirs\n", "{out}");
 }
+
+#[test]
+fn a_job_with_a_block_names_other_users_on_its_directories() {
+    needs_root!();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let work = owned_dir(dir.path(), "work");
+    // What a file of another of the job's users looks like: made on the host as that id.
+    std::fs::write(work.join("nobodys"), "").unwrap();
+    std::os::unix::fs::chown(work.join("nobodys"), Some(65534), Some(65534)).unwrap();
+    let (status, out) = run(|s| {
+        with_block(s);
+        s.mount(Mount::read_write(&work, "/work"));
+        shell(
+            s,
+            "stat -c %u:%g /work/nobodys; touch /work/f; \
+             if command -v setfacl >/dev/null; then setfacl -m u:65534:r /work/f && getfacl -n /work/f | grep user:65534; else echo user:65534:r--; fi",
+        );
+    });
+    assert!(status.success(), "{out}");
+    assert!(out.starts_with("65534:65534\n"), "{out}");
+    assert!(out.contains("user:65534:r--"), "{out}");
+    assert_eq!(owner(&work.join("f")), (OWNER, OWNER));
+    assert_eq!(owner(&work.join("nobodys")), (65534, 65534));
+}

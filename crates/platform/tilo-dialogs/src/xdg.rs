@@ -219,14 +219,24 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
             }
             r.send().await.and_then(|r| r.response())
         }
-        PickKind::Directory => SelectedFiles::open_file()
-            .title(req.title.as_str())
-            .accept_label(req.accept_label.as_str())
-            .modal(true)
-            .directory(true)
-            .send()
-            .await
-            .and_then(|r| r.response()),
+        PickKind::Directory => {
+            let mut request = SelectedFiles::open_file()
+                .title(req.title.as_str())
+                .accept_label(req.accept_label.as_str())
+                .modal(true)
+                .directory(true);
+            if req.is_writable_directory() {
+                // `choices` is a standard forwarded option. A private top-level
+                // option would be discarded by xdg-desktop-portal. The label
+                // comes from the caller's localized destination operation.
+                request = request.choice(ashpd::desktop::file_chooser::Choice::boolean(
+                    crate::portal::WRITABLE_DIRECTORY_CHOICE,
+                    req.accept_label.as_str(),
+                    true,
+                ));
+            }
+            request.send().await.and_then(|r| r.response())
+        }
         PickKind::Save { suggested_name } => {
             let mut r = SelectedFiles::save_file()
                 .title(req.title.as_str())
@@ -241,6 +251,16 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     };
 
     match response {
+        Ok(files)
+            if req.is_writable_directory()
+                && !files.choices().iter().any(|(id, value)| {
+                    id == crate::portal::WRITABLE_DIRECTORY_CHOICE && value == "true"
+                }) =>
+        {
+            Err(PortalFailure::Failed(
+                "the desktop did not authorize a writable destination directory".into(),
+            ))
+        }
         Ok(files) => files
             .uris()
             .iter()
@@ -257,6 +277,21 @@ mod tests {
 
     use super::*;
     use crate::FilePicker;
+
+    #[test]
+    fn directory_requests_never_become_regular_file_descriptors() {
+        for request in [
+            PickRequest::directory("Read folder", "Choose"),
+            PickRequest::writable_directory("Import into folder", "Import here"),
+        ] {
+            let result = PortalFilePicker
+                .open_file(request)
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(matches!(result, OpenFileOutcome::Failed(reason)
+                if reason.contains("single-file Open")));
+        }
+    }
 
     /// Portal requests run on the app runtime, never on the thread that asks,
     /// and their outcome wakes the asking event loop. A relative path fails

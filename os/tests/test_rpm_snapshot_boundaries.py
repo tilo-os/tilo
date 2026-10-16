@@ -207,6 +207,17 @@ class LayeringTests(unittest.TestCase):
         placed = self.layering.layer(repo, slots, name_of=lambda rpm: rpm.name.rsplit("-", 2)[0])
         return slots, placed
 
+    def test_directory_symlinks_cannot_silently_drop_metadata(self):
+        repo = self.root / "redirected-repo"
+        repo.mkdir()
+        metadata = self.root / "metadata"
+        metadata.mkdir()
+        (metadata / "repomd.xml").write_text("repository metadata")
+        (repo / "repodata").symlink_to(metadata, target_is_directory=True)
+        (repo / "bash-1-1.rpm").write_bytes(b"rpm")
+        with self.assertRaisesRegex(ValueError, "only regular files"):
+            self.layering.layer(repo, self.root / "slots", name_of=lambda _: "bash")
+
     def test_slot_layering(self):
         with self.subTest(phase="an_update_changes_only_its_own_slot"):
             big = self.layering.BIG_BYTES

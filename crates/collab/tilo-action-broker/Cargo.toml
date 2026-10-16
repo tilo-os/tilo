@@ -17,6 +17,8 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
+# The actions an installed app's signed manifest offers while it is closed.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }

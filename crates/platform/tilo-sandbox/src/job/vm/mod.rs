@@ -644,6 +644,9 @@ impl Passt {
     pub fn start(socket: &Path) -> io::Result<Self> {
         let child = Command::new("passt")
             .args(["--foreground", "--one-off", "--quiet", "--no-map-gw"])
+            // Frames of up to 65520 bytes, passt's largest and its default, said here as the
+            // guest sets the same MTU itself (init.sh: it takes no DHCP that would tell it).
+            .args(["--mtu", "65520"])
             .args([
                 "--address",
                 GUEST_ADDRESS,

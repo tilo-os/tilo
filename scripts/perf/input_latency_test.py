@@ -6,6 +6,8 @@ import subprocess
 import unittest
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 from input_latency import summarize_input_latency
 
 
@@ -92,6 +94,199 @@ class CompositorTraceCompletenessTests(unittest.TestCase):
         with mock.patch.object(runner.os, "killpg") as kill:
             runner.stop_process_group(proc)
         kill.assert_not_called()
+
+
+class BenchmarkFailureTests(unittest.TestCase):
+    runner = CompositorTraceCompletenessTests.runner
+
+    def run_frame(self, directory, *, status=0, workload=None, write_trace=True, load_status=0):
+        runner = self.runner()
+        root = Path(directory)
+        shell = root / 'shell'
+        shell.touch()
+        (root / 'tilo-loadclient').touch()
+        args = SimpleNamespace(
+            shell_bin=str(shell), load='windowed' if workload else 'none', label='test',
+            backend='headless', seconds=.01, warmup_ms=0, launch_app=None,
+            width=100, height=100, startup_timeout=.1, refresh_hz=None, rust_log=None,
+            nested=False, input_hz=0, keep_session_root=False, target_us=16667)
+        trace = root / 'test.csv'
+        row = {key: 0 for key in runner.REQUIRED_TRACE_COLUMNS}
+        row.update(start_us=100000000, painted=1, period_us=16667)
+        contents = ','.join(row) + '\n' + ','.join(map(str, row.values())) + '\n'
+        trace.write_text(contents)  # Previous invocation's evidence.
+        proc = mock.Mock(pid=42, returncode=status)
+        proc.poll.return_value = status
+        proc.wait.side_effect = status if isinstance(status, Exception) else None
+        proc.wait.return_value = status
+        load = mock.Mock(returncode=load_status)
+        load.poll.return_value = None
+        load.communicate.return_value = (workload, None)
+
+        def spawn(command, **_kwargs):
+            if command[0].endswith('tilo-loadclient'):
+                return load
+            if write_trace:
+                trace.write_text(contents)
+            return proc
+
+        with mock.patch.object(runner.subprocess, 'run', return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(runner.subprocess, 'Popen', side_effect=spawn), \
+                mock.patch.object(runner, 'wait_for_socket', return_value=True), \
+                mock.patch.object(runner, 'wait_for_wayland_socket', return_value='wayland-1'), \
+                mock.patch.object(runner, 'cpu_percent_between', return_value=0), \
+                mock.patch.object(runner, 'stop_process_group'), \
+                mock.patch.object(runner.time, 'sleep'), mock.patch('builtins.print'):
+            return runner.run_once(args, root)
+
+    def test_crashed_or_overdue_compositor_cannot_publish_partial_results(self):
+        for status in [9, subprocess.TimeoutExpired('shell', 1)]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(RuntimeError, 'compositor'):
+                    self.run_frame(directory, status=status)
+                self.assertFalse((Path(directory) / 'test.stats.json').exists())
+
+    def test_previous_trace_is_not_evidence_for_current_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(SystemExit, 'no trace'):
+                self.run_frame(directory, write_trace=False)
+
+    def test_requested_workload_must_report_frames(self):
+        for report in ['LOADCLIENT frames=0 seconds=1 fps=0', 'unexpected output']:
+            with self.subTest(report=report), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(RuntimeError, 'load client produced no frames'):
+                    self.run_frame(directory, workload=report)
+
+    def test_failed_workload_cannot_pass_using_its_partial_frame_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'load client failed'):
+                self.run_frame(directory, workload='LOADCLIENT frames=60 seconds=1 fps=60',
+                    load_status=9)
+
+    def test_successful_loaded_run_still_reports_statistics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stats = self.run_frame(directory, workload='LOADCLIENT frames=60 seconds=1 fps=60')
+            self.assertEqual(stats['ticks'], 1)
+            self.assertTrue((Path(directory) / 'test.stats.json').exists())
+
+    def test_pointer_refusal_is_not_counted_as_injected_input(self):
+        runner = self.runner()
+        ctl = mock.Mock()
+        ctl.send.return_value = {'err': {'code': 'denied'}}
+        with self.assertRaisesRegex(RuntimeError, 'pointer input refused'):
+            runner.drive_pointer(ctl, 10, .1, 100, 100)
+
+    def test_provision_exception_removes_private_session(self):
+        runner = self.runner()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shell = root / 'shell'
+            shell.touch()
+            session = root / 'private'
+            session.mkdir()
+            args = SimpleNamespace(shell_bin=str(shell), load='none', label='test',
+                backend='headless', keep_session_root=False, warmup_ms=0,
+                seconds=1, launch_app=None, width=100, height=100, startup_timeout=1)
+            with mock.patch.object(runner.tempfile, 'mkdtemp', return_value=str(session)), \
+                    mock.patch.object(runner.subprocess, 'run', side_effect=OSError('spawn denied')):
+                with self.assertRaisesRegex(OSError, 'spawn denied'):
+                    runner.run_once(args, root)
+            self.assertFalse(session.exists())
+
+
+class KeyLatencyFailureTests(unittest.TestCase):
+    def runner(self):
+        spec = importlib.util.spec_from_file_location('headless_key_latency',
+            Path(__file__).with_name('headless_key_latency.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_readiness_is_bounded_even_for_partial_line(self):
+        runner = self.runner()
+        for output in ['', 'READY']:
+            with self.subTest(output=output):
+                proc = subprocess.Popen([sys.executable, '-c',
+                    f'import sys,time; sys.stdout.write({output!r}); sys.stdout.flush(); time.sleep(30)'],
+                    stdout=subprocess.PIPE)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'readiness timed out'):
+                        runner.wait_client_ready(proc, .1)
+                finally:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    proc.stdout.close()
+
+    def test_ready_client_and_malformed_readiness(self):
+        runner = self.runner()
+        for line in ['READY 640x480', 'READY', 'READY nope']:
+            proc = subprocess.Popen([sys.executable, '-c', f'print({line!r})'], stdout=subprocess.PIPE)
+            try:
+                if line == 'READY 640x480':
+                    self.assertEqual(runner.wait_client_ready(proc, 2), '640x480')
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'invalid.*readiness'):
+                        runner.wait_client_ready(proc, 2)
+            finally:
+                proc.wait(timeout=5)
+                proc.stdout.close()
+
+    def test_uncooperative_client_is_killed_and_reaped(self):
+        runner = self.runner()
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired('client', 5), 0]
+        runner.stop_client(proc)
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        self.assertEqual(proc.wait.call_count, 2)
+        proc.stdout.close.assert_called_once()
+
+    def test_compositor_death_after_timing_cannot_publish_results(self):
+        runner = self.runner()
+        with tempfile.TemporaryDirectory() as directory:
+            shell = Path(directory) / 'shell'
+            shell.touch()
+            args = SimpleNamespace(shell_bin=str(shell), client_bin=str(shell),
+                app='dev.tilo.notes', out=Path(directory), label='app', width=100,
+                height=100, hz=60, startup_timeout=1, app_timeout=1, settle=0,
+                seed=1, keys=1, warmup=0, input='seat', interval_ms=0,
+                damage='full', buffers='shm')
+            bench = mock.Mock()
+            bench.wait_for_socket.return_value = True
+            bench.wait_for_wayland_socket.return_value = 'wayland-1'
+            bench.launch_and_wait_for_app.return_value = (True, .1, 'painted')
+            bench.Control.return_value.send.return_value = {'ok': {}}
+            proc = mock.Mock(returncode=9)
+            proc.poll.return_value = 9
+
+            def spawn(*_args, **_kwargs):
+                # Real production log syntax: enough timings to pass the old runner.
+                (Path(directory) / 'app.log').write_text(
+                    'KEY-LATENCY app=dev.tilo.notes key_to_commit_us=10 '
+                    'key_to_submit_us=20 key_to_present_us=30\n')
+                return proc
+            with mock.patch.object(runner, '_bench', return_value=bench), \
+                    mock.patch.object(runner.subprocess, 'run', return_value=mock.Mock(returncode=0)), \
+                    mock.patch.object(runner.subprocess, 'Popen', side_effect=spawn), \
+                    mock.patch.object(runner.time, 'sleep'):
+                with self.assertRaisesRegex(RuntimeError, 'compositor exited'):
+                    runner.measure(args)
+            bench.stop_process_group.assert_called_once_with(proc)
+            bench.Control.return_value.close.assert_called_once()
+            self.assertFalse((Path(directory) / 'app.json').exists())
+
+    def test_app_mode_does_not_require_synthetic_client(self):
+        runner = self.runner()
+        with tempfile.TemporaryDirectory() as directory:
+            shell = Path(directory) / 'shell'
+            shell.touch()
+            args = SimpleNamespace(shell_bin=str(shell), client_bin=str(shell.with_name('missing')),
+                app='dev.tilo.notes', out=Path(directory), label='app', width=100, height=100, hz=60)
+            with mock.patch.object(runner.subprocess, 'run', side_effect=OSError('provision reached')):
+                with self.assertRaisesRegex(OSError, 'provision reached'):
+                    args.startup_timeout = 1
+                    runner.measure(args)
 
 
 class InputLatencyTests(unittest.TestCase):

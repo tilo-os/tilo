@@ -712,6 +712,7 @@ active workspace:
 | `invitation.list` | none | `{"invitations": [{invite_id, name, role, expires_at}]}` |
 | `invitation.resend` | `invite_id` | `{"invite": token}` |
 | `invitation.cancel` | `invite_id` | `{"canceled": true}` |
+| `agent.remove` | `name` (the agent as the Agents tab lists it) | none |
 
 Each also takes `confirm: true`; the contracts are privileged, sensitive or
 destructive and require `Admin` on the workspace. `participant_id` is the
@@ -721,8 +722,12 @@ the invitee's 64-hex person key (or a `tilo-identity:` card); with it, only
 that person's devices can redeem the token, which is otherwise a bearer
 credential. The invitation actions need peer sync and complete on a later
 frame, so callers poll the pending invocation. The Members tab in workspace
-settings calls the same functions as `member.role.set` and `member.remove`, so
-a click and an invocation pass the same authority check.
+settings calls the same functions as `member.role.set` and `member.remove`, and
+its Agents tab's Remove calls the same function as `agent.remove`, so a click
+and an invocation pass the same authority check. `agent.remove` revokes every
+grant naming the agent, its membership included; its next call through any
+door, including an agent-door session that is still connected, is answered
+without them.
 
 ### Reviewing a Tilo package in Store
 

@@ -1849,8 +1849,11 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 /// Resolve one canonical installed package without parsing every app's
 /// manifest on the compositor loop. Keep the registry watch armed so a real
 /// update invalidates the input-method service before its TTL fallback.
-pub(crate) fn installed_app(app_id: &str) -> Result<Option<InstalledApp>, LaunchError> {
-    let app = tilo_installed_apps::read_one_from_env(app_id).map_err(|e| {
+pub(crate) fn installed_app(
+    catalog: &package_store::Catalog,
+    app_id: &str,
+) -> Result<Option<InstalledApp>, LaunchError> {
+    let app = tilo_installed_apps::read_one(catalog, app_id).map_err(|e| {
         LaunchError::RegistryUnreadable {
             detail: e.to_string(),
         }
@@ -6870,6 +6873,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -6919,6 +6923,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -7022,6 +7027,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let room = RoomId::new();
             let command = build_workspace_agent_command(
@@ -7086,6 +7092,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
             let room = RoomId::new();
@@ -7371,6 +7378,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             });
             // full package id, trailing component, case-insensitivity
             assert_eq!(
@@ -7410,6 +7418,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            offers: Vec::new(),
         }
     }
 

@@ -232,21 +232,40 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn rect_for(viewport: Rect) -> Rect {
-        // This lens is a floating application surface, not edge chrome.  A
-        // 12 px inset made its outline and footer read as if they were glued
-        // to the monitor bezel, especially at 1x laptop density.  Keep a
-        // conventional 20 px breathing edge on every output while retaining
-        // the responsive width calculation below.
-        let margin = 20.0;
-        let top = viewport.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
-        let bottom = (viewport.y1 - margin).max(top + 320.0);
-        if viewport.width() < 820.0 {
+        let spacing = ui::tokens::Spacing::BASE;
+        let metrics = ui::tokens::Metrics::BASE;
+        // A floating application surface, not edge chrome: the group step
+        // (`s6`) of air from the bezel on every side, under the top bar.
+        let margin = f64::from(spacing.s6);
+        let bar_bottom = viewport.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX);
+        let top = bar_bottom + margin;
+        // Shorter than the header, the tab strip and a first card need, the
+        // lens becomes the whole page under the bar (HIG 7c: a compact
+        // sheet fills the window) rather than running past the screen's
+        // bottom edge.
+        let min_card = Self::IDENTITY_H
+            + Self::NAV_H
+            + 2.0 * Self::HEADER_PAD
+            + Self::BODY_LEAD
+            + f64::from(metrics.panel_row_height)
+            + Self::FOOTER_H;
+        if viewport.y1 - margin - top < min_card {
+            return Rect::new(
+                viewport.x0,
+                bar_bottom.min(viewport.y1),
+                viewport.x1,
+                viewport.y1,
+            );
+        }
+        let bottom = viewport.y1 - margin;
+        // A sheet's width beside the workspace, which keeps the larger part
+        // of the screen; narrower than that and the workspace, the lens is
+        // one inset sheet.
+        let sheet = f64::from(metrics.panel_width_sheet);
+        if viewport.width() < f64::from(metrics.compact_breakpoint) {
             return Rect::new(viewport.x0 + margin, top, viewport.x1 - margin, bottom);
         }
-        // Keep the workspace itself legible beside this contextual lens. A
-        // 620px floor consumed half of a 1280px laptop even when the pane's
-        // responsive tab layout no longer needed a sidebar.
-        let lens_w = (viewport.width() * 0.42).clamp(540.0, 720.0);
+        let lens_w = (viewport.width() * 0.42).clamp(sheet, f64::from(metrics.readable_width));
         // The workspace-name control that summons this lens lives on the
         // left. Keep the contextual surface on that same side instead of
         // making the pointer cross the entire display after clicking Home.
@@ -271,6 +290,8 @@ impl WorkspaceSettingsOverlay {
     /// them by `s1` on every side.
     const PILL_INSET: f64 = ui::tokens::Spacing::BASE.s1 as f64;
     const NAV_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64 + 2.0 * Self::PILL_INSET;
+    /// The footer band the close hint sits in, under every tab's body.
+    const FOOTER_H: f64 = 44.0;
 
     /// The identity card at the head of the lens.
     pub fn identity_rect_for(card: Rect) -> Rect {
@@ -302,7 +323,7 @@ impl WorkspaceSettingsOverlay {
             // Reserve a real footer band for the global close hint.  Letting
             // tab content extend to y1-16 painted empty states, policy copy,
             // and the hint into the same last line on compact laptop panels.
-            card.y1 - 44.0,
+            card.y1 - Self::FOOTER_H,
         )
     }
 
@@ -2781,9 +2802,12 @@ mod tests {
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-            assert_eq!(lens.x0, viewport.x0 + 20.0);
-            assert!(lens.width() <= 540.0);
-            assert!(lens.x1 <= 560.0, "the workspace keeps a usable majority");
+            assert_eq!(lens.x0, viewport.x0 + 24.0);
+            assert!(lens.width() <= f64::from(ui::tokens::Metrics::BASE.panel_width_sheet));
+            assert!(
+                lens.x1 <= viewport.width() / 2.0,
+                "the workspace keeps a usable majority"
+            );
         }
 
         // Phase `lens_keeps_a_visible_bezel_gap_on_wide_and_compact_outputs`.
@@ -2794,13 +2818,13 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 700.0),
             ] {
                 let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-                if viewport.width() >= 820.0 {
-                    assert_eq!(lens.x0 - viewport.x0, 20.0);
+                if viewport.width() >= 840.0 {
+                    assert_eq!(lens.x0 - viewport.x0, 24.0);
                 } else {
-                    assert_eq!(viewport.x1 - lens.x1, 20.0);
+                    assert_eq!(viewport.x1 - lens.x1, 24.0);
                 }
-                assert_eq!(viewport.y1 - lens.y1, 20.0);
-                assert!(lens.y0 >= viewport.y0 + 20.0);
+                assert_eq!(viewport.y1 - lens.y1, 24.0);
+                assert!(lens.y0 >= viewport.y0 + 24.0);
             }
         }
 
