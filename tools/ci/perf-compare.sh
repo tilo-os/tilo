@@ -5,15 +5,15 @@
 # T_INPUT_ACCEPT names KPI ids (or all) whose values start a new baseline, on
 # main only; T_INPUT_SYNTHETIC_SERIES and T_INPUT_SYNTHETIC_FACTOR tag the
 # records as a synthetic series for a gate test, which is published from any
-# reference and never enters a real baseline. TILO_PACKAGE_TOKEN (or
-# REGISTRY_TOKEN) writes the store.
+# reference and never enters a real baseline. TILO_PACKAGE_TOKEN (or t's
+# TILO_PACKAGES_TOKEN, or REGISTRY_TOKEN) writes the store.
 set -uo pipefail
 shopt -s nullglob
 
 perf=${CARGO_TARGET_DIR:-/target}/perf
 out=$perf/compare
 store=${TILO_PERF_STORE:-https://code.tilo.so}
-TILO_PACKAGE_TOKEN=${TILO_PACKAGE_TOKEN:-${REGISTRY_TOKEN:-}}
+TILO_PACKAGE_TOKEN=${TILO_PACKAGE_TOKEN:-${TILO_PACKAGES_TOKEN:-${REGISTRY_TOKEN:-}}}
 export TILO_PACKAGE_TOKEN
 owner=tilo
 rm -rf "$out"
