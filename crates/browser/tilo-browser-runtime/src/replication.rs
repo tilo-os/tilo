@@ -29,21 +29,26 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
-use ui::automerge::{
-    AutoCommit, ROOT, ReadDoc as _, ScalarValue, Value, transaction::Transactable as _,
-};
+use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
-const DESKTOP_KEY: &str = "desktop";
+/// How often a page asks again whether the room lets its person moderate
+/// the shared desktop: a role the room grants while they are in it reaches
+/// their page within this.
+const MODERATION_ASK_EVERY_MS: u64 = 15_000;
+/// How soon a page asks again when the room could not answer (the page was
+/// between connections): what it knew stands meanwhile.
+const MODERATION_RETRY_MS: u64 = 3_000;
 
 thread_local! {
     static ROOMS: RefCell<HashMap<u32, Rc<RefCell<Room>>>> = RefCell::new(HashMap::new());
@@ -84,8 +89,11 @@ pub(crate) struct Room {
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
     desktop_snapshotted: bool,
-    /// The desktop value last published or applied.
+    /// The room's desktop as this page last published or applied it.
     desktop_value: Option<serde_json::Value>,
+    /// This page's own desktop as it last wrote it into the record: a
+    /// frame that changed nothing shared writes nothing.
+    local_value: Option<serde_json::Value>,
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
@@ -95,6 +103,12 @@ pub(crate) struct Room {
     /// Changes this page made to the room: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
+    /// Whether the room lets this page's person close and move what others
+    /// made on the shared desktop: the attached desktop's flag, set from the
+    /// room's answer.
+    moderates: Arc<AtomicBool>,
+    /// When the page next asks the room that (Unix milliseconds; 0: now).
+    moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -142,9 +156,12 @@ pub(crate) fn open(
         desktop: DocumentReplica::new(AutoCommit::new()),
         desktop_snapshotted: false,
         desktop_value: None,
+        local_value: None,
         stored: BTreeSet::new(),
         unapplied: HashSet::new(),
         authored: 0,
+        moderates: Arc::default(),
+        moderation_due_ms: Arc::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -227,6 +244,10 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         {
             warn(&format!("shared desktop not applied: {error}"));
         }
+        if let Some((_, shared)) = &attachment.desktop {
+            room.moderates = Arc::clone(&shared.moderates);
+            room.moderation_due_ms.store(0, Ordering::Relaxed);
+        }
         room.mounts.insert(
             mount,
             Mounted {
@@ -261,7 +282,11 @@ pub(crate) fn pump(id: u32) {
 /// Send what attached mounts changed since the last call.
 pub(crate) fn publish(id: u32) {
     if let Some(room) = room(id) {
-        room.borrow_mut().send();
+        let mut room = room.borrow_mut();
+        room.send();
+        // Every frame passes here, so the room is asked again on time
+        // whether or not anything arrived from it.
+        room.ask_moderation_when_due();
     }
 }
 
@@ -272,6 +297,95 @@ fn warn(message: &str) {
 }
 
 impl Room {
+    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
+    /// lets this page's person close and move what others made on its
+    /// shared desktop; the answer sets the desktop's flag and wakes it.
+    fn ask_moderation_when_due(&mut self) {
+        if !self.ready
+            || !self
+                .mounts
+                .values()
+                .any(|mounted| mounted.attachment.desktop.is_some())
+        {
+            return;
+        }
+        let now = crate::shell::now_ms();
+        if now < self.moderation_due_ms.load(Ordering::Relaxed) {
+            return;
+        }
+        self.moderation_due_ms.store(
+            now.saturating_add(MODERATION_ASK_EVERY_MS),
+            Ordering::Relaxed,
+        );
+        let moderates = Arc::clone(&self.moderates);
+        let due = Arc::clone(&self.moderation_due_ms);
+        let wake: Vec<_> = self
+            .mounts
+            .values()
+            .map(|mounted| Arc::clone(&mounted.attachment.notify))
+            .collect();
+        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+            room: self.uuid.clone(),
+            node: tilo_desktop_model::ownership::moderation_node(&self.uuid).to_string(),
+        };
+        if let Err(error) = self.peer.rooms_then(
+            request,
+            Box::new(move |answer| {
+                let now = match &answer {
+                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
+                    Ok(other) => {
+                        warn(&format!(
+                            "the room did not say what this page may moderate: {other:?}"
+                        ));
+                        false
+                    }
+                    Err(_) => {
+                        due.store(
+                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                            Ordering::Relaxed,
+                        );
+                        return;
+                    }
+                };
+                if moderates.swap(now, Ordering::Relaxed) != now {
+                    for wake in &wake {
+                        wake();
+                    }
+                }
+            }),
+        ) {
+            warn(&format!(
+                "could not ask the room what this page may moderate: {error}"
+            ));
+            self.moderation_due_ms
+                .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether `value`, this page's desktop, closes, moves or renames
+    /// something on the room's desktop that its person did not make and may
+    /// not moderate: the room refuses such a write, so it is never sent.
+    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> bool {
+        if self.moderates.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some(room) = &self.desktop_value else {
+            return false;
+        };
+        let parse = |value: &serde_json::Value| {
+            serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
+                .ok()
+        };
+        let (Some(before), Some(after)) = (parse(room), parse(value)) else {
+            return false;
+        };
+        let acts = tilo_desktop_model::ownership::foreign_acts(&before, &after, author);
+        if !acts.is_empty() {
+            warn(&format!("undid a change to what others made: {acts:?}"));
+        }
+        !acts.is_empty()
+    }
+
     /// Every record a mount has open in this room, as wire `(app, record)`.
     fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
@@ -312,6 +426,7 @@ impl Room {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
+                    self.moderation_due_ms.store(0, Ordering::Relaxed);
                 }
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
@@ -643,23 +758,44 @@ impl Room {
         }) else {
             return;
         };
-        if self.desktop_value.as_ref() == Some(&value) {
+        if self.local_value.as_ref() == Some(&value) {
+            return;
+        }
+        if self.rearranges_others(&value, &author) {
+            // Whatever moved someone else's window (a command, a race with
+            // their own move) is undone here: it springs back to where the
+            // room has it, and nothing is sent.
+            if let Some(room) = &self.desktop_value {
+                for mounted in self.mounts.values() {
+                    if let Some((handle, shared)) = &mounted.attachment.desktop {
+                        if let Err(error) = crate::desktop::return_to(handle, shared, room) {
+                            warn(&format!("shared desktop not restored: {error}"));
+                        }
+                        (mounted.attachment.notify)();
+                    }
+                }
+            }
             return;
         }
         // The desktop this page joined with is not something the person did.
         let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
-        // The same change the desktop's own history log would make: its
-        // time, and who made it.
-        if tilo_desktop_surface::history_log::record(doc, &value, &author, ui::time::unix_now_i64())
-        {
-            // Windows opened, closed, moved or resized: the person's own
-            // work on the desktop, as the history pane tells it.
-            if joined {
-                self.authored = self.authored.saturating_add(1);
-            }
-        } else if doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok() {
-            doc.commit();
+        // Only the entries that differ are written, stamped with the time
+        // and who made the change, as the history pane tells it.
+        let wrote = tilo_desktop_surface::history_log::record(
+            doc,
+            &value,
+            &author,
+            ui::time::unix_now_i64(),
+        );
+        if wrote && joined {
+            // Windows opened, closed, moved or renamed: the person's own
+            // work on the desktop.
+            self.authored = self.authored.saturating_add(1);
+        }
+        if !wrote && self.desktop_snapshotted {
+            self.local_value = Some(value);
+            return;
         }
         let mutation = if self.desktop_snapshotted {
             let (delta, heads) = self.desktop.pending_outbound_delta();
@@ -675,7 +811,8 @@ impl Room {
         if self.peer.publish(route, &mutation.0).is_ok() {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_snapshotted = true;
-            self.desktop_value = Some(value);
+            self.desktop_value = desktop_value(self.desktop.document());
+            self.local_value = Some(value);
         }
     }
 }
@@ -706,13 +843,8 @@ fn outbound(
 }
 
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
-    match doc.get(ROOT, DESKTOP_KEY).ok()?? {
-        (Value::Scalar(scalar), _) => match scalar.as_ref() {
-            ScalarValue::Str(text) => serde_json::from_str(text).ok(),
-            _ => None,
-        },
-        _ => None,
-    }
+    tilo_desktop_model::shared_record::read(doc, None)
+        .and_then(|desktop| serde_json::to_value(desktop).ok())
 }
 
 /// Publish a reviewed report as this peer, using the existing action and record.

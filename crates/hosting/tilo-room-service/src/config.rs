@@ -64,6 +64,10 @@ pub struct PersistentConfig {
     pub owners: Vec<String>,
     /// User public keys (hex) made Moderators of the room at start.
     pub moderators: Vec<String>,
+    /// A file of more owners and moderators (`TILO_ROOMS_ROLES_FILE`,
+    /// `{"owners": [hex], "moderators": [hex]}`), read again whenever it
+    /// changes: the operator grants or takes back a role while the room runs.
+    pub roles_file: Option<std::path::PathBuf>,
     /// Bot directory entries, with their inputs, installed at first start.
     pub bots: Vec<String>,
     /// Apps authored into the room at first start.
@@ -434,6 +438,9 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
             .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")?,
         owners: keys("TILO_ROOMS_OWNERS")?,
         moderators: keys("TILO_ROOMS_MODERATORS")?,
+        roles_file: var("TILO_ROOMS_ROLES_FILE")
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from),
         bots: list("TILO_ROOMS_BOTS", ';'),
         // Unset: chat, a welcome note and a canvas, so a visitor has
         // something to do at once.

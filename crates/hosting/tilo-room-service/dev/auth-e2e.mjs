@@ -186,7 +186,7 @@ const bindable = port => new Promise(done => {
  * it), below every system's ephemeral range: run.py probes its listeners
  * while they start, and a connection to an unbound ephemeral port can meet
  * itself (TCP simultaneous open) and read its own request back. */
-async function freePort(taken, span = 0) {
+export async function freePort(taken, span = 0) {
   for (;;) {
     const port = 20000 + Math.floor(Math.random() * (32000 - 20000 - span));
     if (taken.has(port) || taken.has(port + span)) continue;
@@ -198,7 +198,7 @@ async function freePort(taken, span = 0) {
 }
 
 /** run.py with `ports`, until its banner; resolves to `{room, stop}`. */
-async function startStack(options, ports, {fresh, env = {}}) {
+export async function startStack(options, ports, {fresh, env = {}}) {
   const args = [RUN_PY, '--scratch', options.scratch, '--bundle', options.bundle,
     '--relay-bin', options.relayBin, '--room-service-bin', options.roomServiceBin, '--name', 'auth',
     '--web-port', String(ports.web), '--api-port', String(ports.api), '--port-base', String(ports.base),
@@ -251,7 +251,7 @@ const FETCHES = `(() => {
 })();`;
 
 /** A page of `browser` in `context`, with the fetches it makes recorded. */
-async function page(browser, context) {
+export async function page(browser, context) {
   const tab = await browser.tab({context});
   const requests = [];
   const off = browser.on(message => {
@@ -385,13 +385,13 @@ const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entr
 const leaving = tab => tab.evaluate('globalThis.__authE2eLeft = true').catch(() => {});
 
 /** Navigate `tab` to `url` (a fresh tab) and settle. */
-async function open(tab, url, settleOptions) {
+export async function open(tab, url, settleOptions) {
   await tab.navigate(url);
   return settle(tab, settleOptions);
 }
 
 /** Reload `tab` and settle. */
-async function reload(tab, settleOptions) {
+export async function reload(tab, settleOptions) {
   await leaving(tab);
   await tab.reload();
   return settle(tab, settleOptions);

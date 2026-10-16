@@ -3,7 +3,7 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
+    desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
 };
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
@@ -97,6 +97,9 @@ pub(super) async fn handle_commit(
         delta,
         signature: [0; 64],
     };
+    if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
+        return refused(&reason);
+    }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,
@@ -136,6 +139,29 @@ pub(super) async fn handle_commit(
         op,
         seq,
     }))
+}
+
+/// Why the room refuses `delta`, a page's commit, if it does: decided as a
+/// session's delta is ([`super::handle_delta`]), by what the change says it
+/// does against its author's grants, then, for the room's shared desktop,
+/// by what it does to what others made.
+async fn commit_refusal(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    delta: &Envelope,
+) -> Option<String> {
+    let Envelope::Delta { delta: bytes, .. } = delta else {
+        return None;
+    };
+    let (standings, payloads) = {
+        let runtime = ws.lock().await;
+        (runtime.standings.clone(), runtime.store.payloads().clone())
+    };
+    if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
+        tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
+        return Some(reason);
+    }
+    desktop_refusal(ws, author, delta).await
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the room's governor, if a

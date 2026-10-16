@@ -373,6 +373,17 @@ pub enum RoomsRequest {
         /// The room.
         room: String,
     },
+    /// Whether the calling device's person may make an undoable change at
+    /// `node` of `room`, as the room decides their writes there: answered
+    /// with [`RoomsReply::Permits`]. A page asks before it offers what only
+    /// some members may do, such as acting on what other people made.
+    Permits {
+        /// The room.
+        room: String,
+        /// A node of the room's published tree, in its text form
+        /// (`room:<id>/app:<app>/…`).
+        node: String,
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -397,6 +408,8 @@ pub enum RoomsReply {
     Refused(String),
     /// What happened without the owner deciding it then, oldest first.
     Notices(Vec<RoomNotice>),
+    /// Whether the caller may, for [`RoomsRequest::Permits`].
+    Permits(bool),
 }
 
 /// One `/join` step.

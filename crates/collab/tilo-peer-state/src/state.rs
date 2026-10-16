@@ -598,20 +598,29 @@ impl StatePeer {
             key.verifying_key().to_bytes().to_vec(),
         ));
         put_member(&mut doc, &members, user_public_key, role)?;
+        // An administrator moderates the room too: the two grants come and
+        // go together.
+        let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
         if administrator {
-            let grant = tilo_action_policy::roles::administrator_grant(
-                &self.core.room,
-                &person,
-                Subject::Person(hex::encode(self.core.authority.user_public_key)),
-            );
-            doc.put(
-                &grants,
-                admin_id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
-            )
-            .map_err(err)?;
-        } else if doc.get(&grants, admin_id.as_str()).map_err(err)?.is_some() {
-            doc.delete(&grants, admin_id.as_str()).map_err(err)?;
+            let giver = Subject::Person(hex::encode(self.core.authority.user_public_key));
+            let room = self.core.room.clone();
+            for grant in [
+                tilo_action_policy::roles::administrator_grant(&room, &person, giver.clone()),
+                tilo_action_policy::roles::administrator_moderation_grant(&room, &person, giver),
+            ] {
+                doc.put(
+                    &grants,
+                    grant.id.as_str(),
+                    automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
+                )
+                .map_err(err)?;
+            }
+        } else {
+            for id in [admin_id.as_str(), moderation_id.as_str()] {
+                if doc.get(&grants, id).map_err(err)?.is_some() {
+                    doc.delete(&grants, id).map_err(err)?;
+                }
+            }
         }
         doc.commit();
         let changed = self.apply_governance_doc(doc, &before, key, now)?;

@@ -315,6 +315,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     for moderator in &persistent.moderators {
         command.arg("--moderator").arg(moderator);
     }
+    if let Some(roles) = &persistent.roles_file {
+        command.arg("--roles-file").arg(roles);
+    }
     for app in &persistent.seed_apps {
         command.arg("--seed-app").arg(app);
     }
