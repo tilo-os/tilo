@@ -1404,8 +1404,7 @@ fn copy_includes(
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        copy_file(extra, &dst)?;
-        written.push((rel_in_bundle, dst));
+        copy_payload_file(extra, dst, rel_in_bundle, written)?;
     }
     Ok(())
 }
@@ -1485,12 +1484,28 @@ fn copy_tree(
         if kind.is_dir() {
             copy_tree(&from, &to, &rel, written)?;
         } else if kind.is_file() {
-            copy_file(&from, &to)?;
-            written.push((rel, to));
+            copy_payload_file(&from, to, rel, written)?;
         } else {
             return Err(BundleError::IncludeSpecialFile { path: from });
         }
     }
+    Ok(())
+}
+
+/// Includes can name the same destination through different source paths.
+/// Keep identical bytes once, but never silently replace a library already
+/// selected for the bundle or emit duplicate manifest entries.
+fn copy_payload_file(
+    src: &Path,
+    dst: PathBuf,
+    rel: String,
+    written: &mut Vec<(String, PathBuf)>,
+) -> Result<(), BundleError> {
+    if let Some((_, first)) = written.iter().find(|(path, _)| path == &rel) {
+        return ensure_same_bytes(&rel, first, src);
+    }
+    copy_file(src, &dst)?;
+    written.push((rel, dst));
     Ok(())
 }
 
@@ -2055,7 +2070,7 @@ mod tests {
         fs::write(first.path().join(name), b"first runtime").unwrap();
         fs::write(second.path().join(name), b"conflicting runtime").unwrap();
         let out = tempfile::tempdir().unwrap();
-        let (_, root) = build_abi_bundle(
+        let error = build_abi_bundle(
             out.path(),
             "2026.07",
             &BuildOptions {
@@ -2066,11 +2081,12 @@ mod tests {
                 extra_bins: &[],
             },
         )
-        .unwrap();
+        .unwrap_err();
         assert!(matches!(
-            verify_bundle(&root),
-            Err(BundleError::InvalidPayloadPath { path }) if path == format!("lib/{name}")
+            error,
+            BundleError::IncludeConflict { name: path, .. } if path == format!("lib/{name}")
         ));
+        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
     }
 
     /// The bundle's payload paths, sorted.
