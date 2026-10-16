@@ -269,8 +269,8 @@ family = "os-images"
 name = "legacy-guest"
 about = """
 The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
-the guest agent built here, the guest image built with it on a privileged x86_64 node,
-installed to a disk and booted once until the agent serves, then the whole path end to end
+the guest agent built here, the guest image built with it as root in an x86_64 micro-VM
+step, installed to a disk and booted once until the agent serves, then the whole path end to end
 (legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
 text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
 since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
@@ -291,7 +291,7 @@ inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapsh
 requires = ["/dev/kvm", "disk-100g"]
 cpus = 8
 memory = "16G"
-privileged = true
+isolation = "vm"
 writable_sources = true
 timeout_secs = 9000
 
