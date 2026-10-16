@@ -218,7 +218,10 @@ containerfile="$repo/os/Containerfile"
 # stage, which fetches the files the tilo-wallpapers catalog pins: two
 # intentional payload rows, /usr/share/backgrounds/tilo and
 # /usr/share/licenses/tilo-wallpapers, each with a COPY of its own.
-expected_contract=7fd09c7c182aef608455c9f7ae67c0fb7367563d308fb3ede3b542d289bbe7c2
+# Miracast moved into tilo-projector (the miracast crate), so the Python
+# sender's rows are gone: its source tree, its wrapper and the wpa_supplicant
+# D-Bus policy only it used.
+expected_contract=7a3ce2601fb595145d8bac34058dd90291b59e0f0c4494ea1690ef7ac9af2efe
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

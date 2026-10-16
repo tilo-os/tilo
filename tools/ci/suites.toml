@@ -1486,10 +1486,6 @@ suite = "os/tests/fex-wine-smoke.py"
 reason = "needs a FEX runtime container"
 
 [[unrequired]]
-suite = "os/tests/fluxcast-rtsp-receiver.py"
-reason = "driver for a running FluxCast server"
-
-[[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
 reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
