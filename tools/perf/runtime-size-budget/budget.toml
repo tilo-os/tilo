@@ -74,15 +74,20 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # out of the runtime, then the main commits after it, left main's runtime at
 # x86_64 156364744 bytes, 5435392 dirtied per process, 6625 symbol
 # relocations; aarch64 141824904, 5218304, 6659 (Release / apps 119198, at
-# 1067088ee0).
+# 1067088ee0). Canvas's painting engines (libtilo_paint_engine.so) and the
+# YouTube client of Music and Tube (libtilo_youtube_engine.so, rustypipe with
+# QuickJS) then moved into engine libraries, 18 crates (Release / apps
+# 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
+# relocations; aarch64 137517640, 4935680, 6470. The two engines are
+# 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
 [runtime.x86_64]
-bytes = 157941760
+bytes = 153223168
 relocation_bytes = 262144
-relocated_bytes = 5505024
-symbol_relocations = 6720
+relocated_bytes = 5242880
+symbol_relocations = 6528
 
 [runtime.aarch64]
-bytes = 143261696
+bytes = 138936320
 relocation_bytes = 262144
-relocated_bytes = 5308416
-symbol_relocations = 6784
+relocated_bytes = 5046272
+symbol_relocations = 6592
