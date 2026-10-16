@@ -779,7 +779,8 @@ impl Widget for Slider {
                     let new_value = if ctx.modifiers.state().shift_key() {
                         let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
                         let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
-                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
+                        let span = self.range.1 - self.range.0;
+                        self.constrain(value + (p.x - x) / track * Self::FINE_DRAG * span)
                     } else {
                         self.fine_from = None;
                         self.value_from_cursor_x(p.x)
@@ -1213,6 +1214,36 @@ mod tests {
             assert!(!s.is_dragging, "disabled slider must not start a drag");
             assert_eq!(s.value, before, "disabled slider must not change its value");
         }
+    }
+
+    #[test]
+    fn fine_drag_uses_the_configured_range_and_step() {
+        let state = crate::LocalState::new(50.0);
+        let mut slider = Slider::from_state(&state).range(20.0, 120.0).step(0.5);
+        slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+        dispatch(&mut slider, &cursor_moved(60.0, 15.0));
+        dispatch(&mut slider, &mouse_press());
+        assert_eq!(state.get(), 50.0);
+        let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(60.0, 15.0));
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(80.0, 15.0));
+        assert_eq!(
+            state.get(),
+            51.0,
+            "Shift slows movement in the slider's units"
+        );
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(83.0, 15.0));
+        assert_eq!(
+            state.get(),
+            51.0,
+            "fine movement still honors the step grid"
+        );
     }
 
     #[test]
