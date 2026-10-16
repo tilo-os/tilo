@@ -80,12 +80,88 @@ then also enters the signature in the public transparency log (Rekor) and keeps 
 `bundle.json`, which `oci-publish.sh` attaches with the signature, since such a verification
 requires a log entry. The signing check still needs no registry access.
 
+## Products
+
+Every container image Tilo publishes runs the same chain, so a product is a few lines of data in
+`tools/ci/products.toml`, not a page of checks. `python3 tools/ci/t_toml.py write` turns each
+`[[product]]` into its checks in `t.toml`, between `# BEGIN generated … products-<family>` markers;
+the policy tests fail while `t.toml` is out of date. The chain:
+
+| check | what it does | when |
+|---|---|---|
+| `image-<name>-context` | prepares the build context (`[product.context]`) | asked for, and before every build |
+| `image-<name>`, or `image-<name>-<arch>` per architecture | builds the image into `image.oci.tar` and `digest` and runs its tests | asked for, and before every publication |
+| `image-<name>` with `index = true` | joins the architectures' archives into one image index (`oci-index.py`) | |
+| `sign-<name>` | signs the digest the build produced with the release key in KMS (`oci-sign.sh`) | `release_on` (stable) |
+| `publish-<name>` | pushes the archive with its digest unchanged and writes `receipt.json` (`oci-publish.sh`) | main for `dev` tags, `release_on` for `release` tags |
+
+Development and release are one chain: `publish-<name>` names `sign-<name>` in `optional_needs`,
+so on main it runs without a signature and pushes the `dev` tags, and on stable it waits for the
+signature and pushes the `release` tags (`oci-publish.sh any … dev:<tag> release:<tag>`; the
+script takes the run's channel from `T_REF` and refuses a release without its signature). A
+product with only `dev` tags is never signed; one with only `release` tags publishes nowhere
+else. Build steps hold no secrets and run for a working tree with `t test image-<name>`; the
+signing and publishing steps only read what the build produced, so they run on any architecture
+(`requires = ["arch=any"]`).
+
+A product:
+
+```toml
+[[product]]
+family = "services"                      # one generated block per family
+name = "web-entry"                       # check names: image-web-entry, publish-web-entry, …
+about = "The web entry (web-entry.yml)." # the comment above its checks
+repository = "registry.tilo.so/tilo/web-entry"
+dev = ["dev-{commit}"]                   # tags main pushes; leave out to publish no development builds
+release = ["sha-{commit}"]               # tags a signed release pushes; {version} on v* tags
+# release_on = ["tag:v*"]                # where releases come from (default: stable)
+# arches = ["x86_64", "aarch64"]         # built natively, one check each (default: x86_64)
+# index = true                           # publish one multi-platform index of them
+# tlog = true                            # enter the signature in the transparency log
+# gates = ["web-entry-e2e"]              # checks that must pass before signing and publishing
+# anonymous = true                       # prove the publication pulls without credentials
+
+[product.context]                        # optional: a step that prepares the build context
+run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
+inputs = ["crates/browser/**", "apps/**"]
+outputs = ["{dir}/context/**"]
+
+[product.build]
+context = "{dir}/context"                # or `run = "…"` for a build script of its own
+containerfile = "{dir}/context/Containerfile"
+# test = ["bash <dir>/test-image.sh {out}/image.oci.tar"]  # commands that test the archive
+```
+
+`{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
+per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
+field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `cpus`, `memory`,
+`timeout_secs`, `needs`, `privileged`, `cargo_packages`, …) goes to the check as written; the
+generator adds the publishing scripts to `inputs`, `arch=<arch>` to `requires` and `default =
+false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
+publish from a working tree by mistake.
+
+To add a product: add its table, run `python3 tools/ci/t_toml.py write`, then `t test
+image-<name>` to build and test it from your tree. The trusted halves run only on main and
+stable, so try them locally in their dry-run mode, which signs with a throwaway key and
+publishes into a local OCI layout instead of the registry and KMS:
+
+```sh
+export TILO_PUBLISH_DRY_RUN=$PWD/target/dry-registry T_COMMIT=$(git rev-parse HEAD)
+t outputs image-web-entry                # target/publish/web-entry/{image.oci.tar,digest}
+T_REF=stable bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry target/publish/web-entry
+T_REF=stable bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry \
+  target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'
+cat target/publish/web-entry/receipt.json
+```
+
+`tools/tests/test_publish_chain.py` covers the generator and the scripts' channel rules.
+
 ## Declared in t.toml
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
 |---|---|---|---|---|
-| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `release-room-service`: `sha-<commit>`, signed, receipt |
-| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `release-web-entry`: `sha-<commit>`, signed, receipt |
+| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
+| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `release-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
