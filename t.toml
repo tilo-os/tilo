@@ -2013,6 +2013,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/
 needs = ["image-room-service"]
 optional_needs = ["sign-room-service"]
 outputs = ["/target/publish/room-service/receipt.json"]
+pointers = { room-service = "/target/publish/room-service/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=x86_64"]
 on = ["main", "stable"]
@@ -2060,6 +2061,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/
 needs = ["image-web-entry"]
 optional_needs = ["sign-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
+pointers = { web-entry = "/target/publish/web-entry/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=x86_64"]
 on = ["main", "stable"]
@@ -2305,6 +2307,7 @@ default = false
 # review-speech-catalog`). The compiler is built without credentials; only the signing checks
 # hold TILO_MODEL_CATALOG_SIGNING_KEY and only the publishing one the package token. Forgejo's
 # generic package registry does not take t's identity tokens, so that one is a stored secret.
+# Checks holding a secret run as micro-VM steps, which t boots on x86_64 only for now.
 [[check]]
 name = "model-catalog-compiler"
 run = "bash tools/release/local-model-catalog.sh compiler /target/model-catalog/bin"
@@ -2320,6 +2323,7 @@ inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_
 needs = ["model-catalog-compiler"]
 outputs = ["/target/model-catalog/signed/catalog.json", "/target/model-catalog/signed/keys.json"]
 secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
+requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 [[check]]
@@ -2328,6 +2332,7 @@ run = "bash tools/release/local-model-catalog.sh publish /target/model-catalog/s
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/release/publish_speech_artifacts.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-*.json"]
 needs = ["sign-model-catalog"]
 secrets = ["REGISTRY_TOKEN"]
+requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 [[check]]
@@ -2337,37 +2342,45 @@ inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_
 needs = ["model-catalog-compiler"]
 outputs = ["/target/model-catalog/review/*"]
 secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
+requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 # ---------------------------------------------------------------------------
 # Tilo Cloud promotion (tools/release/cloud_promotion.py; crates/hosting/tilo-room-service/
 # README.md). Production pins the room service and web entry by digest in the infra repository;
-# nothing here deploys. `cloud-drift` reports every Monday which revision each service runs and
-# how far main is ahead (`t log cloud-drift`). `t dispatch cloud-promotion --ref stable` plans a
-# promotion of both images from one released commit (`--input revision=<commit>`, default the
-# newest with both), and with INFRA_PROMOTION_TOKEN opens the pull request on the infra
-# repository through its API (`--input open_pull_request=false` only plans). Promotions are
+# nothing here deploys. Production runs what stable released: publish-room-service and
+# publish-web-entry set stable's `room-service` and `web-entry` pointers to the receipts of their
+# signed `sha-<commit>` images, and both checks here read them. `cloud-drift` reports every Monday
+# (or on `t dispatch cloud-drift`) which revision each service runs, how far main is ahead and
+# what stable has ready (`t log cloud-drift`). `t dispatch cloud-promotion --ref stable` plans a
+# promotion of stable's two images (`--input revision=<commit>` takes that commit's
+# `sha-<commit>` images instead), and with INFRA_PROMOTION_TOKEN opens the pull request on the
+# infra repository through its API (`--input open_pull_request=false` only plans). Promotions are
 # batched by hand: each web entry deploy makes open tabs offer a reload.
 [[check]]
 name = "cloud-drift"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-run = "mkdir -p /target/cloud-promotion && python3 tools/release/cloud_promotion.py drift --json /target/cloud-promotion/drift.json"
-inputs = ["tools/release/cloud_promotion.py"]
+run = "bash tools/release/cloud-promotion.sh drift /target/cloud-promotion/drift.json"
+inputs = ["tools/release/cloud_promotion.py", "tools/release/cloud-promotion.sh"]
 outputs = ["/target/cloud-promotion/drift.json"]
+reads_pointers = ["stable:room-service", "stable:web-entry"]
 # Counts and lists main's commits since the deployed revision.
 git = true
 # It observes production and the registry, which change without this repository changing.
 cache = false
-on = ["schedule:0 7 * * 1"]
+on = ["schedule:0 7 * * 1", "dispatch"]
 default = false
 
 [[check]]
 name = "cloud-promotion"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-run = "bash tools/release/cloud-promotion.sh /target/cloud-promotion/promotion"
+run = "bash tools/release/cloud-promotion.sh promote /target/cloud-promotion/promotion"
 inputs = ["tools/release/cloud_promotion.py", "tools/release/cloud-promotion.sh"]
 outputs = ["/target/cloud-promotion/promotion/*"]
+reads_pointers = ["stable:room-service", "stable:web-entry"]
 git = true
+# A check holding a secret runs as a micro-VM step, which t boots on x86_64 only for now.
+requires = ["arch=x86_64"]
 cache = false
 secrets = ["INFRA_PROMOTION_TOKEN"]
 on = ["dispatch"]

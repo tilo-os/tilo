@@ -199,15 +199,86 @@ class CloudPromotionTests(unittest.TestCase):
                                      "--receipt", receipt(ROOM, self.deployed))
         self.assertEqual(code, 1)
         self.assertIn("different revisions", err)
-        # A receipt naming the deployed image under the new revision is caught by the label.
+        # A receipt naming the deployed image under the new revision is caught by the release tag.
         lying = receipt(ROOM, self.target, self.fake.digests[("room-service", self.deployed)], name="lying.json")
         code, _, err = self.run_tool("plan", "--infra", str(infra), "--receipt", receipt(WEB, self.target),
                                      "--receipt", lying)
         self.assertEqual(code, 1)
-        self.assertIn(f"labelled {self.deployed}", err)
+        self.assertIn(f"not the receipt's {self.fake.digests[('room-service', self.deployed)]}", err)
         code, _, err = self.run_tool("plan", "--infra", str(infra), "--receipt", receipt(WEB, self.target))
         self.assertEqual(code, 1)
         self.assertIn("both images", err)
+
+    def test_receipts_from_two_revisions_promote_the_newer_when_the_older_image_is_unchanged(self):
+        """Stable republishes an image only when its inputs change, as t caches the build."""
+        def commit(files, subject):
+            for name, text in files.items():
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+            self.git("add", "-A")
+            self.git("commit", "-q", "-m", subject)
+            return self.git("rev-parse", "HEAD")
+
+        checks = ('[[check]]\nname = "image-room-service-context"\ninputs = ["crates/room/**"]\n'
+                  '[[check]]\nname = "image-room-service"\nneeds = ["image-room-service-context"]\n'
+                  'inputs = ["tools/ci/publish/oci-build.sh"]\n')
+        self.git("checkout", "-q", "main")
+        room = commit({"t.toml": checks, "crates/room/lib.rs": "1"}, "room service")
+        web = commit({"crates/browser/lib.rs": "2"}, "web only")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.fake.publish(ROOM, room)
+        self.fake.publish(WEB, web)
+
+        def receipt(service, revision):
+            image_digest = self.fake.digests[(service.name, revision)]
+            path = Path(self.temp.name) / f"{service.name}-{revision[:7]}.json"
+            path.write_text(json.dumps({"schemaVersion": 3, "repository": service.image, "digest": image_digest,
+                                        "image": f"{service.image}@{image_digest}", "tags": [f"sha-{revision}"],
+                                        "sourceRevision": revision, "reference": "stable", "signed": True}))
+            return str(path)
+
+        infra = self.infra(self.deployed)
+        out_dir = Path(self.temp.name) / "two"
+        code, _, err = self.run_tool("plan", "--infra", str(infra), "--out", str(out_dir),
+                                     "--receipt", receipt(ROOM, room), "--receipt", receipt(WEB, web))
+        self.assertEqual(code, 0, err)
+        plan = json.loads((out_dir / "plan.json").read_text())
+        self.assertEqual(plan["revision"], web)
+        self.assertEqual(plan["images"]["room-service"]["digest"], self.fake.digests[("room-service", room)])
+        self.assertEqual(plan["images"]["room-service"]["sourceRevision"], room)
+
+        # Once the room service's own files change, its older receipt no longer stands for the newer commit.
+        changed = commit({"crates/room/lib.rs": "3"}, "room service changed")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.fake.publish(WEB, changed)
+        code, _, err = self.run_tool("plan", "--infra", str(infra),
+                                     "--receipt", receipt(ROOM, room), "--receipt", receipt(WEB, changed))
+        self.assertEqual(code, 1)
+        self.assertIn("files it is built from changed", err)
+
+    def test_images_without_a_revision_label_are_taken_from_their_receipts(self):
+        config = json.dumps({"os": "linux", "architecture": "amd64", "config": {"Labels": {}}}).encode()
+        manifest = json.dumps({"schemaVersion": 2,
+                               "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                               "config": {"digest": digest(config)}, "layers": []}).encode()
+        base = f"https://{promotion.REGISTRY}/v2/{ROOM.repository}"
+        self.fake.routes[f"{base}/blobs/{digest(config)}"] = promotion.Response(200, {}, config)
+        for reference in (f"sha-{self.target}", digest(manifest)):
+            self.fake.routes[f"{base}/manifests/{reference}"] = promotion.Response(
+                200, {"content-type": "application/vnd.docker.distribution.manifest.v2+json"}, manifest)
+        receipts = []
+        for service in promotion.SERVICES:
+            image_digest = digest(manifest) if service is ROOM else self.fake.digests[(service.name, self.target)]
+            path = Path(self.temp.name) / f"unlabelled-{service.name}.json"
+            path.write_text(json.dumps({"repository": service.image, "digest": image_digest,
+                                        "image": f"{service.image}@{image_digest}", "sourceRevision": self.target}))
+            receipts += ["--receipt", str(path)]
+        out_dir = Path(self.temp.name) / "unlabelled"
+        code, _, err = self.run_tool("plan", "--infra", str(self.infra(self.deployed)), "--out", str(out_dir), *receipts)
+        self.assertEqual(code, 0, err)
+        plan = json.loads((out_dir / "plan.json").read_text())
+        self.assertEqual(plan["images"]["room-service"]["sourceRevision"], self.target)
 
     def test_only_main_moves_forward_unless_a_rollback_is_asked_for(self):
         infra = self.infra(self.deployed)
