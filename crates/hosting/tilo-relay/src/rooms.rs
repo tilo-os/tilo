@@ -36,7 +36,7 @@ pub use member_records::PreparedRecord;
 mod pages;
 mod publisher;
 #[cfg(any(feature = "agents", feature = "web"))]
-mod sealed_records;
+pub(crate) mod sealed_records;
 #[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(feature = "agents")]
@@ -932,7 +932,8 @@ impl Rooms {
     }
 
     /// The `(app, record)` of every record of `room` the governor's copy
-    /// holds readable.
+    /// holds readable: in the clear, or sealed under channels this relay
+    /// stewards ([`Self::record_document`] opens those).
     ///
     /// # Errors
     ///
@@ -941,13 +942,14 @@ impl Rooms {
         &self,
         room: &str,
     ) -> Result<Vec<(String, String)>, CollaborationError> {
-        Ok(self
-            .room(room)
-            .await?
-            .lock()
-            .await
-            .peer()
-            .plaintext_routes())
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        let mut routes = governed.peer().plaintext_routes();
+        if governed.stewardship.is_some() {
+            routes.extend(governed.peer().sealed_routes());
+        }
+        drop(governed);
+        Ok(routes)
     }
 
     /// `room` as governance records it now.
