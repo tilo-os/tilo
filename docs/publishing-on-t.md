@@ -139,8 +139,8 @@ false`, and writes `on`, `id_token` and the signing environment itself, so a pro
 publish from a working tree by mistake.
 
 To add a product: add its table, run `python3 tools/ci/t_toml.py write`, then `t test
-image-<name>` to build and test it from your tree. The trusted halves run only on main and
-stable, so try them locally in their dry-run mode, which signs with a throwaway key and
+image-<name>` to build and test it from your tree. The trusted halves run only on main,
+stable and tags, so try them locally in their dry-run mode, which signs with a throwaway key and
 publishes into a local OCI layout instead of the registry and KMS:
 
 ```sh
@@ -244,31 +244,38 @@ publishing anything. The publishing checks run only as trusted runs; `t test pub
 on a working tree reports them skipped ("needs identity tokens: runs on …") after running their
 builds.
 
-## Shadow runs
+## Moved to t
 
-Until the cutover, every workflow keeps publishing while its checks run on t beside it. A
-workflow is retired only once its checks have built on t from a working tree (`t test`) and
-their trusted half has published from main or stable. What blocks the rest for now:
-trusted runs and privileged checks need the Tilo job sandbox, which replaces the Kata release
-and privileged pools (rpm's database can't be written on their storage).
+Forgejo Actions no longer runs for this repository. A workflow is deleted once its checks have
+built on t from a working tree (`t test`) and their trusted half has passed from main, stable or a
+tag; the evidence is the run on prod t.
 
-| workflow | checks on t | built with `t test` | still blocked |
+Deleted:
+
+| workflow | replaced by | evidence on t |
+|---|---|---|
+| `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | `publish-registry-server` on main 291d4d45c1 pushed `tilo-registry-server:sha-291d4d45c1…` |
+| `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | builds in r5072cc14f4; `publish-release-tools` on main 0fcb7c612d pushed the index `sha-0fcb7c612d…` |
+| `release-verifier-bundles.yml` | `verifier-bundle-x86_64`, `-aarch64` (dispatch) | rfad5de2f14, r352e0cb508 |
+
+Still here, with what is missing:
+
+| workflow | checks on t | passed on t | missing |
 |---|---|---|---|
-| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | all three, smoke included | trusted half: release nodes |
-| `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | both architectures, their test and the index | trusted half: release nodes |
-| `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | build and the image test, server answering `/health` | trusted half: release nodes |
-| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (`v*` tags) | `rpm-snapshot`, `image-relay` (its Compose contract, then the build) | trusted half: release nodes |
-| `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | trusted half: release nodes, and the `TAPP_PUBLISHER_IDENTITY` secret |
-| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `publish-kernel-buildroot` | both architectures built and audited | trusted half: release nodes; the pin (`kernel-buildroot.sh pin`, a check that pushes) once the workflow stops proposing it |
-| `build-ci-builder.yml` | `image-ci-builder-*` | both architectures (6.5 min each) | canaries: images built in the same run (`image = { check = … }`) and the compiler cache; signing and promotion: release nodes |
-| `build-rpms.yml` | `image-rpms-*` | both architectures (15–18 min) | signing with SLSA provenance and promotion: not written yet, release nodes |
-| `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | both architectures (x86_64 54 min, aarch64 2 h 11 min, no compiler cache) | acceptance (KVM boot, Secure Boot probe): privileged nodes; signing with provenance and the pin: not written yet |
-| `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest` | agent and end-to-end binaries | guest image and end-to-end test: privileged nodes; trusted half: release nodes; the pin (`legacy-guest.sh pin`) |
-| `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries on both architectures | catalog build: privileged nodes; publication: tools are sealed inside the build, so publishing needs them re-signed with the publisher identity afterwards and the catalog rewritten |
-| `ci-development-signing.yml` | `development-signing-context-*`, `development-signing-*` | both contexts | the fixture run (nested Podman): privileged nodes |
-| `build-windows-compat.yml` | none | | its scripts drive Docker; they need Podman on privileged nodes |
-| `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; t pins the builder in `t.toml`. Retires with its callers |
-| `inspect-rpm-signing.yml` | none | | inspects the signing broker installed on the Forgejo runner; retires with `release-desktop.yml`'s move |
+| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | builds from a working tree earlier | a main run with the builds' memory raised (they were killed at 4 GiB) |
+| `room-service-image.yml`, `web-entry.yml` | the services chains (above) | the generic chain on a rehearsal tag (rba3e9736f8) | their own development publication from main; web entry's carried version |
+| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (version tags) | `rpm-snapshot`, `image-relay` | a version tag |
+| `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | a stable run |
+| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `publish-kernel-buildroot`, `pin-kernel-buildroot` | both architectures; `pin-kernel-buildroot` on main | a stable run |
+| `build-ci-builder.yml` | `image-ci-builder-*` and their canaries | both architectures | canaries on the compile cache, signing and promotion |
+| `build-rpms.yml` | `image-rpms-*` | both architectures | signing with SLSA provenance and promotion |
+| `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | builds and acceptance on both architectures (re81dd6df90) | signing with provenance, publication and the pin |
+| `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest`, `pin-legacy-guest` | image and end-to-end test (r8673ba882c); the pin on main | a stable run |
+| `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries and catalogs on both architectures (r8673ba882c) | publication: the tools are sealed inside the build, so publishing re-signs them with the publisher identity and rewrites the catalog |
+| `ci-development-signing.yml` | `development-signing-context-*`, `development-signing-*` | both architectures (r8673ba882c) | nothing; it goes next |
+| `build-windows-compat.yml` | | | its scripts drive Docker: they move to buildah in micro-VM steps |
+| `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
+| `inspect-rpm-signing.yml` | none | | inspects the signing broker on the Forgejo runner; retires with `release-desktop.yml` |
 
 ## Inventory
 
