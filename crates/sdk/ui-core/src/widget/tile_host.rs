@@ -576,6 +576,28 @@ impl TileHost {
         self.flush_edges = flush;
     }
 
+    /// Offer the window's bar to the hosted app's header row (see
+    /// [`crate::widget::WindowHeader::set_window_bar`]). Returns whether a
+    /// row took it. Only an app drawn in this process has a row to merge
+    /// with; a foreign surface answers `false`.
+    pub(crate) fn offer_window_bar(&mut self, bar: Option<super::WindowBar>) -> bool {
+        let _running = self.running();
+        match &mut self.content {
+            TileContent::App(w) => {
+                super::window_header::offer_window_bar(w.as_mut() as &mut dyn Widget, bar)
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
+
+    /// The hosted app's header row holding the window's bar, after layout.
+    pub(crate) fn window_bar_slot(&self) -> Option<super::WindowBarSlot> {
+        match &self.content {
+            TileContent::App(w) => super::window_header::window_bar_slot(w.as_ref() as &dyn Widget),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
     /// Name `tab` to a panic hook while this tile's application runs: see
     /// [`panic_scope`](super::panic_scope).
     pub fn set_panic_scope(&self, tab: u64) {

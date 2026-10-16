@@ -1297,3 +1297,151 @@ fn a_toast_damages_its_card_and_shadow_where_it_was_and_is() {
         }
     }
 }
+
+/// Maximized, the window's controls join the header row at its trailing end:
+/// one bar, the app's header and the window's controls side by side. The
+/// shell's own trailing buttons and the app's actions stand before them.
+#[test]
+fn the_window_bar_merges_into_the_header_row() {
+    let theme = Theme::dark();
+    let width = crate::widget::merged_controls_width(&theme);
+    let mut h = harness(mail_shell(), 1280, 800, theme);
+    h.root_mut::<NavShell>()
+        .set_history_control(Some(HistoryControl::Closed));
+    assert!(
+        h.root_mut::<NavShell>()
+            .set_window_bar(Some(crate::widget::WindowBar {
+                controls_width: width,
+                revealed: false,
+                top_inset: 0.0,
+            })),
+        "a header row takes the window's bar"
+    );
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    let m = Metrics::resolve(&Theme::dark());
+    assert!(g.header_height > 0.0, "a permanent header stays");
+    assert!((g.window_controls.width() - width).abs() < 1e-9);
+    assert!((g.window_controls.x1 - (1280.0 - m.inset)).abs() < 1e-9);
+    assert_eq!(g.window_controls.y0, 0.0);
+    assert_eq!(g.window_controls.y1, g.header_height, "the row's height");
+    assert_eq!(g.window_row, Rect::new(0.0, 0.0, 1280.0, g.header_height));
+    assert!(
+        g.history.x1 <= g.window_controls.x0 - m.gap + 1e-9,
+        "History stands before the window's controls: {g:?}"
+    );
+    assert!(g.actions_band(Column::Content).x1 <= g.history.x0);
+    let slot = h
+        .root::<NavShell>()
+        .window_bar_slot()
+        .expect("the row reports its slot");
+    assert_eq!(slot.controls, g.window_controls);
+    assert!(!slot.hides_with_bar);
+    assert_eq!(
+        child_rect(&h, "content").map(|r| r.y0),
+        Some(g.header_height),
+        "the content stands below a permanent header"
+    );
+
+    // Restored: the row gives the room back.
+    h.root_mut::<NavShell>().set_window_bar(None);
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(g.window_controls, Rect::ZERO);
+    assert!(g.history.x1 > 1280.0 - 24.0);
+    assert!(h.root::<NavShell>().window_bar_slot().is_none());
+}
+
+/// An app that puts its header in the window's bar gives the whole window to
+/// its content while maximized; the header comes back, over the content and
+/// with the window's controls in its row, when the person reaches for the
+/// bar, and the row is then the header's, never the content's under it.
+#[test]
+fn a_header_in_the_window_bar_hides_until_reached_for() {
+    let theme = Theme::dark();
+    let width = crate::widget::merged_controls_width(&theme);
+    let (content, content_events) = Probe::boxed("content");
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(content)
+        .sidebar_header("Notes", Vec::new())
+        .content_header("", Vec::new())
+        .with_header_in_window_bar();
+    let mut h = harness(shell, 1280, 800, theme);
+    let bar = |revealed| {
+        Some(crate::widget::WindowBar {
+            controls_width: width,
+            revealed,
+            top_inset: 0.0,
+        })
+    };
+
+    // Tiled: an ordinary header above the content.
+    settle(&mut h, 1280, 800);
+    let tiled = geometry(&h);
+    assert!(tiled.header_height > 0.0);
+    assert_eq!(
+        child_rect(&h, "content").map(|r| r.y0),
+        Some(tiled.header_height)
+    );
+
+    // Maximized, at rest: no header, the content from the top.
+    h.root_mut::<NavShell>().set_window_bar(bar(false));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(g.header_height, 0.0, "the header hides with the bar");
+    assert_eq!(child_rect(&h, "content").map(|r| r.y0), Some(0.0));
+    assert_eq!(g.toggle, Rect::ZERO, "no header buttons at rest");
+    let slot = h
+        .root::<NavShell>()
+        .window_bar_slot()
+        .expect("where the bar will stand");
+    assert!(slot.hides_with_bar);
+    assert_eq!(slot.row.height(), tiled.header_height);
+    let before = content_events.get();
+    h.click_at(700.0, 10.0);
+    let hidden_delta = content_events.get() - before;
+    assert!(
+        hidden_delta >= 3,
+        "at rest the top of the window is the content's"
+    );
+
+    // Reached for: the header over the content, the controls in its row.
+    h.root_mut::<NavShell>().set_window_bar(bar(true));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(g.header_height, tiled.header_height);
+    assert_eq!(
+        child_rect(&h, "content").map(|r| r.y0),
+        Some(0.0),
+        "the content does not move: the header stands over it"
+    );
+    assert!(g.toggle.width() > 0.0, "the header's buttons are back");
+    assert!(g.window_controls.width() > 0.0);
+    assert!(g.window_controls.y1 <= g.header_height);
+    let before = content_events.get();
+    h.click_at(700.0, 10.0);
+    let shown_delta = content_events.get() - before;
+    assert!(
+        shown_delta < hidden_delta,
+        "a press on the shown bar never reaches the content under it \
+         ({shown_delta} vs {hidden_delta} events)"
+    );
+    // The desktop's top bar shown over the window's top edge: the bar
+    // stacks below it instead of hiding under it.
+    h.root_mut::<NavShell>()
+        .set_window_bar(Some(crate::widget::WindowBar {
+            controls_width: width,
+            revealed: true,
+            top_inset: 36.0,
+        }));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(g.window_row.y0, 36.0);
+    assert_eq!(g.window_controls.y0, 36.0);
+    assert!(
+        g.toggle.y0 >= 36.0,
+        "the header's buttons move down with it"
+    );
+    assert_eq!(child_rect(&h, "content").map(|r| r.y0), Some(0.0));
+}

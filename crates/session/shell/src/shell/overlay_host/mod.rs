@@ -2796,10 +2796,12 @@ impl ShellOverlayHost {
             || self.agent_quick_composer.modal_capture().is_some()
     }
 
-    /// Whether the pointer is over the shell-owned controls painted above a
-    /// maximized client.  The client fills the output, so ordinary foreign
-    /// hit-testing would otherwise consume Restore/Close presses before the
-    /// `WindowGroup` which draws those controls can see them.
+    /// Whether the pointer is over the shell-owned bar a maximized window
+    /// shows over its client when the person reaches for it. The client
+    /// fills the window, so ordinary foreign hit-testing would otherwise
+    /// consume Restore/Close presses before the `WindowGroup` which draws
+    /// those controls can see them. Pointer only: the keyboard stays with the
+    /// client.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
         // Local input controls are above window chrome and preserve its seat.
         if self
@@ -2820,9 +2822,45 @@ impl ShellOverlayHost {
             let row: &GroupRow = unsafe { &*ptr };
             row.groups.iter().any(|group| {
                 group.id == group_id
-                    && group.should_show_maximized_chrome(self.last_cursor.map(|p| p.y))
+                    && self
+                        .last_cursor
+                        .is_some_and(|p| group.maximized_chrome_captures(p))
             })
         })
+    }
+
+    /// Run `f` on the maximized group, if there is one.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the group is reached through a raw row pointer; `&mut self` is what makes that access unaliased"
+    )]
+    fn with_maximized_group(&mut self, f: impl FnOnce(&mut ui::widget::WindowGroup)) {
+        let Some(group_id) = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().maximized_group())
+        else {
+            return;
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; `&mut self` gives unaliased access.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(group) = row.groups.iter_mut().find(|group| group.id == group_id) {
+                f(group);
+                return;
+            }
+        }
+    }
+
+    /// A press at the last pointer position, wherever it goes: one in the
+    /// maximized window's reveal band while its bar hides belongs to the
+    /// app and cancels the bar's reveal (`top_edge_reveal`).
+    pub fn note_pointer_press(&mut self) {
+        let Some(p) = self.last_cursor else {
+            return;
+        };
+        self.with_maximized_group(|group| group.note_maximized_press(p));
     }
 
     pub fn open_screenshot_markup(
@@ -9543,6 +9581,11 @@ impl ShellOverlayHost {
     /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
+        // The maximized window's bar reads the pointer's path even while the
+        // client under it takes the motion (`top_edge_reveal`).
+        self.with_maximized_group(|group| {
+            group.note_maximized_pointer(p);
+        });
     }
 
     /// Retire raw direct-touch contacts at a compositor ownership boundary
