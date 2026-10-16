@@ -60,6 +60,16 @@ impl RecordKeys {
 }
 
 impl GovernedRoom {
+    /// Whether this relay stewards the channel of `record` of `app` and
+    /// holds its keys: it can then read the record's sealed writes.
+    pub(super) async fn stewards_channel(&self, app: &str, record: &str) -> bool {
+        let Some(steward) = self.stewardship.as_ref() else {
+            return false;
+        };
+        let channel = collab_types::document_channel_id(app, self.room(), record);
+        steward.channels.lock().await.existing_keys(channel).is_ok()
+    }
+
     /// The keys of `record` of `app`'s channel when the record is sealed:
     /// `None` for a record written in the clear.
     ///

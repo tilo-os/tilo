@@ -90,6 +90,9 @@ pub struct RelayCoeditSession {
     author: [u8; 32],
     /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
     last_heard_ns: std::sync::atomic::AtomicU64,
+    /// The on-demand records this session opened, by retained channel:
+    /// opened again with every resubscription.
+    opened: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
 }
 
 impl RelayCoeditSession {
@@ -115,7 +118,31 @@ impl RelayCoeditSession {
             workspace_id,
             author,
             last_heard_ns: std::sync::atomic::AtomicU64::new(tilo_clock::unix_now_ns()),
+            opened: std::sync::Mutex::default(),
         })
+    }
+
+    /// Open an on-demand record of this workspace
+    /// (`neighbour_wire::record_sync`), one a subscription does not
+    /// replay, by its retained channel
+    /// (`neighbour_wire::app_document_channel`). The host sends what it
+    /// retains of it as [`Inbound::Delta`]s, then [`Inbound::RecordOpened`],
+    /// and its changes from then on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn open_record(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
+        self.opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(channel);
+        self.client
+            .send(Envelope::OpenRecord {
+                workspace_id: self.workspace_id,
+                channel,
+            })
+            .map_err(|_| CoeditError::Disconnected)
     }
 
     /// Ask the host to replay the workspace's retained state again, as it
@@ -130,7 +157,21 @@ impl RelayCoeditSession {
             .send(Envelope::Subscribe {
                 workspace_id: self.workspace_id,
             })
-            .map_err(|_| CoeditError::Disconnected)
+            .map_err(|_| CoeditError::Disconnected)?;
+        let opened = self
+            .opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for channel in opened {
+            self.client
+                .send(Envelope::OpenRecord {
+                    workspace_id: self.workspace_id,
+                    channel,
+                })
+                .map_err(|_| CoeditError::Disconnected)?;
+        }
+        Ok(())
     }
 
     /// Join the workspace's live plane, where presence and previews of every
@@ -546,6 +587,13 @@ impl RelayCoeditSession {
                     return Some(Inbound::Ready {
                         pending: pending_deltas,
                     });
+                }
+                Envelope::RecordOpened {
+                    workspace_id,
+                    channel,
+                    frames,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::RecordOpened { channel, frames });
                 }
                 Envelope::VoiceCallResult {
                     workspace_id,

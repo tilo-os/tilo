@@ -100,15 +100,17 @@ def plan(which: str) -> list[Run]:
     # node's disk each write's sync took 100 ms and more, so writing the
     # history measured the disk's other tenants, not the room.
     in_memory = (("TMPDIR", "/dev/shm"),)
+    # The two runs differ in the history only: 100 guests posting every 5 s
+    # between them, 20 posts a second, a busier chat than any room keeps up
+    # for long.
+    chatting = ("--guests", "100", "--ramp", "5", "--chat-every", "5", "--chat-bytes", "60")
     runs.append(Run("history50k-g100", "history",
                     # The flag last: `run_seconds` reads the options in pairs.
-                    ("--guests", "100", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
-                     "--history", "50000", "--historians", "200", "--seeded-chat"), in_memory))
+                    (*chatting, "--history", "50000", "--historians", "200", "--seeded-chat"), in_memory))
     # The same at a size that writes in a minute: what each history post
     # costs the host and the guests.
-    runs.append(Run("history2k-g20", "history",
-                    ("--guests", "20", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
-                     "--history", "2000", "--historians", "20", "--seeded-chat"), in_memory))
+    runs.append(Run("history2k-g100", "history",
+                    (*chatting, "--history", "2000", "--historians", "20", "--seeded-chat"), in_memory))
     if which != "full":
         pattern = re.compile(which)
         runs = [run for run in runs if pattern.search(run.name)]

@@ -1673,19 +1673,7 @@ impl Task {
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::OpenRecord(workspace_id, route) => {
-                let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-                // Ask for the record's keys as its history is asked for.
-                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
-                self.absorb(changes);
-                self.opened_records.insert(channel, (workspace_id, route));
-                client.is_none_or(|client| {
-                    client
-                        .send(Envelope::OpenRecord {
-                            workspace_id,
-                            channel,
-                        })
-                        .is_ok()
-                })
+                self.open_record(workspace_id, route, client)
             }
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
@@ -2349,6 +2337,40 @@ impl Task {
         delivered
     }
 
+    /// Open the on-demand record `route` of `workspace_id`, and ask for its
+    /// keys at the same time. Returns `false` when the session could not
+    /// take the request.
+    fn open_record(
+        &mut self,
+        workspace_id: u64,
+        route: DocumentRoute,
+        client: Option<&Link>,
+    ) -> bool {
+        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
+        self.absorb(changes);
+        self.opened_records.insert(channel, (workspace_id, route));
+        client.is_none_or(|client| {
+            client
+                .send(Envelope::OpenRecord {
+                    workspace_id,
+                    channel,
+                })
+                .is_ok()
+        })
+    }
+
+    /// The host sent everything it holds of a record this page opened.
+    fn record_opened(&self, workspace_id: u64, channel: [u8; 32], frames: u32) {
+        if let Some((_, route)) = self.opened_records.get(&channel) {
+            self.emit(&PeerEvent::RecordOpened {
+                workspace_id,
+                route: route.clone(),
+                frames,
+            });
+        }
+    }
+
     /// Subscribe to `workspace_id`, resuming after the last position when
     /// the host supports it.
     fn subscribe(&self, client: &Link, workspace_id: u64) -> Envelope {
@@ -2399,16 +2421,7 @@ impl Task {
                 workspace_id,
                 channel,
                 frames,
-            } => {
-                if let Some((_, route)) = self.opened_records.get(&channel) {
-                    let route = route.clone();
-                    self.emit(&PeerEvent::RecordOpened {
-                        workspace_id,
-                        route,
-                        frames,
-                    });
-                }
-            }
+            } => self.record_opened(workspace_id, channel, frames),
             Envelope::CompactRequest {
                 workspace_id,
                 request,
