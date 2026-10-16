@@ -8,6 +8,7 @@
 use crate::shell::automation_host::{
     DocumentShare, FinishedShortcutRun, document_share, ordered_steps, record_run_steps,
 };
+use crate::shell::cold_record_reads::ColdRecordReads;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::room_records::{LocalRecordReader, RoomRecords};
 use crate::shell::state::WorkspaceAuthority as _;
@@ -1083,6 +1084,7 @@ pub struct RoomActivityPane(
     tilo_desktop::activity::RoomActivityPane,
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
+    ColdRecordReads,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -1112,24 +1114,56 @@ impl RoomActivityPane {
     /// Derive history and load referenced records after releasing the shared
     /// workspace lock. Admission and output may read the current tree while
     /// expensive history reconstruction uses this coherent observation.
+    #[cfg(test)]
     pub(crate) fn refresh_observed(
         &mut self,
         tree: &WorkspaceTreeHandle,
         records: &RecordStore,
         local: &dyn tilo_desktop::activity::PersistedRecordHistory,
     ) -> u64 {
-        let mut observed = ActivityObservation::capture(tree);
-        let workspace = observed.active.raw();
-        self.observe_workspace(workspace);
-        self.refresh(&mut observed);
-        self.refresh_records_with_local(&mut observed, records, local);
+        refresh_pane(&mut self.0, tree, records, local)
+    }
+
+    /// Derive history from a coherent observation of `tree`, after the
+    /// workspace lock is released, over the records `local` found on this
+    /// device as a worker last read them: the refresh never reads the
+    /// disk. A record not read yet is unavailable for now; what this
+    /// refresh asked for is handed to the worker, and
+    /// [`Self::take_persisted_reads`] says when Activity must refresh
+    /// again because a read came in.
+    pub(crate) fn refresh_observed_local(
+        &mut self,
+        tree: &WorkspaceTreeHandle,
+        records: &RecordStore,
+        local: &RoomRecords,
+        now: Instant,
+    ) -> u64 {
+        let workspace = refresh_pane(&mut self.0, tree, records, &self.3);
+        self.3.request(local.local_reader(), now);
         workspace
+    }
+
+    /// Take in the persisted records the worker read since the last call.
+    /// Returns whether what Activity derives from changed, so it must
+    /// refresh. Never waits.
+    pub(crate) fn take_persisted_reads(&mut self) -> bool {
+        self.3.take_reads()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persisted_reads(&self) -> &ColdRecordReads {
+        &self.3
     }
 
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        Self(
+            pane,
+            None,
+            ShortcutRunRecorder::default(),
+            ColdRecordReads::default(),
+        )
     }
     /// The production pane: the device's private seen frontiers and
     /// departures are read from and written to the user's state directory.
@@ -1141,7 +1175,12 @@ impl RoomActivityPane {
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        Self(
+            pane,
+            None,
+            ShortcutRunRecorder::default(),
+            ColdRecordReads::default(),
+        )
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
@@ -1225,6 +1264,23 @@ impl RoomActivityPane {
         self.0
             .observe_agent_launch_event(&activity_launch_event(event))
     }
+}
+
+/// Refresh `pane` from a coherent observation of `tree`, deriving history
+/// after the workspace lock is released, with persisted records from
+/// `local`.
+fn refresh_pane(
+    pane: &mut tilo_desktop::activity::RoomActivityPane,
+    tree: &WorkspaceTreeHandle,
+    records: &RecordStore,
+    local: &dyn tilo_desktop::activity::PersistedRecordHistory,
+) -> u64 {
+    let mut observed = ActivityObservation::capture(tree);
+    let workspace = observed.active.raw();
+    pane.observe_workspace(workspace);
+    pane.refresh(&mut observed);
+    pane.refresh_records_with_local(&mut observed, records, local);
+    workspace
 }
 
 fn activity_launch_event(
@@ -1331,6 +1387,123 @@ mod tests {
             heads,
             "derived cursors never replace live state"
         );
+    }
+
+    /// Activity's history reads a record persisted on this device (not
+    /// open here) off the loop: while the read is held up, as by a disk
+    /// under pressure, every refresh returns with the record unavailable;
+    /// once the read is in, the next refresh shows its history. A peer's
+    /// edit that moves the file on disk is read the same way: the refresh
+    /// keeps the last-read history until the new read is in.
+    #[test]
+    fn activity_never_reads_a_persisted_record_on_the_loop() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("activity-cold-read.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let handle = WorkspaceTreeHandle::new(tree);
+
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::record_document_path_for_test(
+            data.path(),
+            "so.tilo.fixture-drafts",
+            "activity-cold-read",
+        );
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document
+            .put(automerge::ROOT, "draft", "Written before the refresh")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 21);
+        std::fs::write(&path, document.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+
+        let records = RecordStore::in_memory();
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let interval = std::time::Duration::from_secs(1);
+        let mut at = Instant::now();
+        let release = crate::shell::cold_record_reads::held::hold_record(record.clone());
+        for _ in 0..3 {
+            pane.refresh_observed_local(&handle, &records, &local, at);
+            assert!(!pane.take_persisted_reads(), "the read is held up");
+            assert!(pane.persisted_reads().reading(), "the read is off the loop");
+            assert!(
+                pane.feed_coverage()
+                    .unavailable_records
+                    .iter()
+                    .any(|checkout| checkout.id == record),
+                "a record not read yet is unavailable, not read here"
+            );
+            at = at.checked_add(interval).expect("a later frame");
+        }
+        let before = pane.entries().len();
+
+        release.send(()).expect("the read is held");
+        wait_for_reads(&mut pane);
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        assert!(pane.feed_coverage().is_complete(), "the read is in");
+        assert_eq!(pane.feed_coverage().indexed_records, 1);
+        let read = pane.entries().len();
+        assert!(read > before, "the record's history is shown");
+
+        // That refresh handed the record to the worker again; nothing
+        // moved, so the pass changes nothing.
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
+        while pane.persisted_reads().reading() {
+            assert!(
+                !pane.take_persisted_reads(),
+                "an unchanged file is not read"
+            );
+            assert!(Instant::now() < deadline, "the pass never finished");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        // A peer's edit reaches the file. The next refresh still derives
+        // from the last read and hands the record to the worker, which
+        // reads the moved file; the refresh after shows the edit.
+        document
+            .put(automerge::ROOT, "draft", "Edited by a peer")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 42);
+        std::fs::write(&path, document.save()).unwrap();
+        at = at.checked_add(interval).expect("a later frame");
+        let release = crate::shell::cold_record_reads::held::hold_record(record.clone());
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        assert_eq!(pane.entries().len(), read, "the last read stands meanwhile");
+        assert!(pane.feed_coverage().is_complete());
+        assert!(
+            pane.persisted_reads().reading(),
+            "the moved file is read off the loop"
+        );
+        assert!(!pane.take_persisted_reads(), "the read is held up");
+        release.send(()).expect("the read is held");
+        wait_for_reads(&mut pane);
+        at = at.checked_add(interval).expect("a later frame");
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        let edited = pane.entries().len();
+        drop(pane);
+        assert!(edited > read, "the peer's edit is shown");
+    }
+
+    /// Take the persisted reads in once the worker has them. Polls: tests
+    /// only.
+    fn wait_for_reads(pane: &mut RoomActivityPane) {
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
+        while !pane.take_persisted_reads() {
+            assert!(Instant::now() < deadline, "the read never came in");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     /// Leaving a workspace rewrites the history file and nothing else: a

@@ -1436,6 +1436,21 @@ memory_gib = "22"
 # is checked on every head of main, the SDK and the apps, which take it over an hour, nightly.
 # None holds a secret.
 
+# The native UTM adapter belongs to the existing VM tool. Compile its macOS paths and
+# exercise command generation with fake runners; never control an installed VM here.
+[[check]]
+name = "vm-macos"
+requires = ["os=macos", "arch=arm64"]
+run = """
+set -eu
+cargo check --locked -p tilo-vm --all-targets
+cargo test --locked -p tilo-vm --lib hypervisor::tests::
+"""
+cargo_packages = ["tilo-vm"]
+cost = "minutes"
+on = ["main"]
+default = false
+
 [[check]]
 name = "runtime-macos"
 requires = ["os=macos", "arch=arm64"]
@@ -1947,7 +1962,7 @@ default = false
 # upstream still serves it, and passes at once when the mirror has them all.
 [[check]]
 name = "mirror-images"
-image = "quay.io/skopeo/stable@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/mirror-images.sh"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/mirror-images.sh", "tools/ci/publish/mirrored-images.tsv"]
 id_token = ["registry.tilo.so"]
@@ -1968,7 +1983,7 @@ default = false
 
 [[check]]
 name = "image-room-service"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
 needs = ["image-room-service-context"]
@@ -1980,7 +1995,7 @@ default = false
 
 [[check]]
 name = "sign-room-service"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-room-service"]
@@ -1992,7 +2007,7 @@ on = ["stable"]
 
 [[check]]
 name = "publish-room-service"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/room-service /target/publish/room-service 'dev:dev-{commit}' 'release:sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-room-service"]
@@ -2015,7 +2030,7 @@ default = false
 
 [[check]]
 name = "image-web-entry"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /target/publish/web-entry/context/Containerfile /target/publish/web-entry"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
 needs = ["image-web-entry-context"]
@@ -2027,7 +2042,7 @@ default = false
 
 [[check]]
 name = "sign-web-entry"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-web-entry"]
@@ -2039,7 +2054,7 @@ on = ["stable"]
 
 [[check]]
 name = "publish-web-entry"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-web-entry"]
@@ -2054,7 +2069,7 @@ on = ["main", "stable"]
 # and the GitOps repository pins the receipt's digest.
 [[check]]
 name = "image-registry-server"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = """
 assets=$TMPDIR/github-assets
 TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
@@ -2074,7 +2089,7 @@ default = false
 
 [[check]]
 name = "publish-registry-server"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-registry-server"]
@@ -2090,7 +2105,7 @@ on = ["main"]
 # `sha-<commit>` with the signature and a receipt, and sets stable's `release-rehearsal` pointer.
 [[check]]
 name = "image-release-rehearsal"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/oci-build.sh tools/ci/publish/rehearsal tools/ci/publish/rehearsal/Containerfile /target/publish/release-rehearsal"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "tools/ci/publish/rehearsal/**"]
 outputs = ["/target/publish/release-rehearsal/image.oci.tar", "/target/publish/release-rehearsal/digest"]
@@ -2101,7 +2116,7 @@ default = false
 
 [[check]]
 name = "sign-release-rehearsal"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-release-rehearsal"]
@@ -2113,7 +2128,7 @@ on = ["dispatch"]
 
 [[check]]
 name = "publish-release-rehearsal"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal 'dev:dev-{commit}' 'release:sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-release-rehearsal"]
@@ -2130,7 +2145,7 @@ on = ["main", "dispatch"]
 # by hand. image-ci-fast-smoke runs what the jobs that use them need, before either is published.
 [[check]]
 name = "image-ci-fast"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = """
 mkdir -p $TMPDIR/empty
 bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast
@@ -2144,7 +2159,7 @@ default = false
 
 [[check]]
 name = "publish-ci-fast"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-fast /target/publish/ci-fast 'sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-ci-fast", "image-ci-fast-smoke"]
@@ -2156,7 +2171,7 @@ on = ["main"]
 # ci-control adds the Docker client to the ci-fast image just built, not to the pinned one.
 [[check]]
 name = "image-ci-control"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = """
 mkdir -p $TMPDIR/empty
 bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-control /target/publish/ci-control --build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar
@@ -2171,7 +2186,7 @@ default = false
 
 [[check]]
 name = "publish-ci-control"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /target/publish/ci-control 'sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-ci-control", "image-ci-fast-smoke"]
@@ -2186,7 +2201,7 @@ on = ["main"]
 # must be anonymously pullable.
 [[check]]
 name = "image-release-tools-x86_64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = """
 mkdir -p $TMPDIR/empty
 bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/x86_64
@@ -2201,7 +2216,7 @@ default = false
 
 [[check]]
 name = "image-release-tools-aarch64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = """
 mkdir -p $TMPDIR/empty
 bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/aarch64
@@ -2225,7 +2240,7 @@ default = false
 
 [[check]]
 name = "publish-release-tools"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index 'sha-{commit}'
 bash tools/ci/publish/oci-anonymous.sh registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index
@@ -2242,7 +2257,7 @@ on = ["main"]
 # Its canaries, signing and promotion stay with build-ci-builder.yml for now.
 [[check]]
 name = "image-ci-builder-x86_64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/ci-builder.sh build x86_64 /target/publish/ci-builder/x86_64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder.sh"]
 outputs = ["/target/publish/ci-builder/x86_64/image.oci.tar", "/target/publish/ci-builder/x86_64/digest"]
@@ -2256,7 +2271,7 @@ default = false
 
 [[check]]
 name = "image-ci-builder-aarch64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/ci-builder.sh build aarch64 /target/publish/ci-builder/aarch64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder.sh"]
 outputs = ["/target/publish/ci-builder/aarch64/image.oci.tar", "/target/publish/ci-builder/aarch64/digest"]
@@ -2273,7 +2288,7 @@ default = false
 [[check]]
 name = "image-ci-fast-smoke"
 isolation = "vm"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar /target/publish/ci-control/image.oci.tar"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-run.sh", "os/tests/ci_fast_images.sh"]
 needs = ["image-ci-fast", "image-ci-control"]
@@ -2605,7 +2620,7 @@ default = false
 # only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`.
 [[check]]
 name = "image-relay"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/relay"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "tools/ci/publish/relay-build.sh"]
 needs = ["rpm-snapshot"]
@@ -2619,7 +2634,7 @@ default = false
 
 [[check]]
 name = "sign-relay"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-relay"]
@@ -2631,7 +2646,7 @@ on = ["tag:v*"]
 
 [[check]]
 name = "publish-relay"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-relay /target/publish/relay '{version}' 'sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-relay", "sign-relay"]
@@ -2664,7 +2679,7 @@ default = false
 
 [[check]]
 name = "sign-legacy-guest"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-legacy-guest", "legacy-guest-e2e"]
@@ -2676,7 +2691,7 @@ on = ["stable"]
 
 [[check]]
 name = "publish-legacy-guest"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image 'x86_64-{commit}'
 bash tools/ci/publish/legacy-guest.sh pins /target/publish/legacy-guest/image
@@ -2700,7 +2715,7 @@ on = ["stable"]
 [[check]]
 name = "image-env-runtime-tree-x86_64"
 isolation = "vm"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-runtime.sh tree x86_64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
 needs = ["rpm-snapshot"]
@@ -2712,7 +2727,7 @@ default = false
 [[check]]
 name = "image-env-runtime-tree-aarch64"
 isolation = "vm"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-runtime.sh tree aarch64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
 needs = ["rpm-snapshot"]
@@ -2743,7 +2758,7 @@ default = false
 [[check]]
 name = "image-env-runtime-preview"
 isolation = "vm"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/preview /target/publish/env-runtime/preview-image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
 needs = ["env-runtime-preview"]
@@ -2763,7 +2778,7 @@ on = ["stable"]
 [[check]]
 name = "image-env-runtime"
 isolation = "vm"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/sealed /target/publish/env-runtime/image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
 needs = ["seal-env-runtime"]
@@ -2773,7 +2788,7 @@ default = false
 
 [[check]]
 name = "sign-env-runtime"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/env-runtime /target/publish/env-runtime/image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-env-runtime"]
@@ -2784,7 +2799,7 @@ on = ["stable"]
 
 [[check]]
 name = "release-env-runtime"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/env-runtime.sh release /target/publish/env-runtime/image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-env-runtime", "sign-env-runtime"]
@@ -2798,7 +2813,7 @@ on = ["stable"]
 # per architecture. build-rpms.yml still signs and publishes the snapshot.
 [[check]]
 name = "image-rpms-x86_64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/rpms-build.sh x86_64 /target/publish/rpms/x86_64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages", "tools/ci/publish/rpms-build.sh"]
 outputs = ["/target/publish/rpms/x86_64/image.oci.tar", "/target/publish/rpms/x86_64/digest"]
@@ -2811,7 +2826,7 @@ default = false
 
 [[check]]
 name = "image-rpms-aarch64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/rpms-build.sh aarch64 /target/publish/rpms/aarch64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages", "tools/ci/publish/rpms-build.sh"]
 outputs = ["/target/publish/rpms/aarch64/image.oci.tar", "/target/publish/rpms/aarch64/digest"]
@@ -2831,7 +2846,7 @@ default = false
 # proposes them.
 [[check]]
 name = "image-kernel-buildroot-x86_64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel-buildroot.sh build x86_64 /target/publish/kernel-buildroot/x86_64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh"]
 outputs = ["/target/publish/kernel-buildroot/x86_64/image.oci.tar", "/target/publish/kernel-buildroot/x86_64/digest"]
@@ -2842,7 +2857,7 @@ default = false
 
 [[check]]
 name = "image-kernel-buildroot-aarch64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel-buildroot.sh build aarch64 /target/publish/kernel-buildroot/aarch64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh"]
 outputs = ["/target/publish/kernel-buildroot/aarch64/image.oci.tar", "/target/publish/kernel-buildroot/aarch64/digest"]
@@ -2853,7 +2868,7 @@ default = false
 
 [[check]]
 name = "sign-kernel-buildroot"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/x86_64
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64
@@ -2868,7 +2883,7 @@ on = ["stable"]
 
 [[check]]
 name = "publish-kernel-buildroot"
-image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/x86_64 'sha-{commit}-x86_64'
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64 'sha-{commit}-aarch64'
@@ -2889,7 +2904,7 @@ on = ["stable"]
 # the whole kernel. build-kernel.yml still signs, publishes and pins it.
 [[check]]
 name = "image-kernel-x86_64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel.sh build x86_64 /target/publish/kernel/x86_64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub", "tools/ci/publish/kernel.sh"]
 outputs = ["/target/publish/kernel/x86_64/image.oci.tar", "/target/publish/kernel/x86_64/digest", "/target/publish/kernel/x86_64/secureboot/**"]
@@ -2902,7 +2917,7 @@ default = false
 
 [[check]]
 name = "image-kernel-aarch64"
-image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel.sh build aarch64 /target/publish/kernel/aarch64"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub", "tools/ci/publish/kernel.sh"]
 outputs = ["/target/publish/kernel/aarch64/image.oci.tar", "/target/publish/kernel/aarch64/digest", "/target/publish/kernel/aarch64/secureboot/**"]
@@ -3269,3 +3284,81 @@ memory = "2G"
 default = false
 # END generated
 
+
+# BEGIN generated by tools/ci/t_toml.py: products-windows-compat
+# The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
+# scripts, natively on x86_64. The Wine steps below run in it as their micro-VM's userspace.
+[[check]]
+name = "image-wine-tools"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/windows-compat.sh wine-tools /target/publish/wine-tools"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore", "tools/ci/publish/windows-compat.sh"]
+outputs = ["/target/publish/wine-tools/image.oci.tar", "/target/publish/wine-tools/digest"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "publish-wine-tools"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-tools /target/publish/wine-tools 'candidate-{commit}'"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-wine-tools"]
+outputs = ["/target/publish/wine-tools/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
+# The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
+# (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
+# resolves its build dependencies with the network, then rebuilds Wine from that bundle alone,
+# offline. Every image is an archive named by the digest it is published with, so the contracts
+# the steps write name what is published.
+[[check]]
+name = "wine-resolve-x86_64"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh resolve x86_64 /target/windows-compat/wine-resolve-x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-source"]
+outputs = ["/target/windows-compat/wine-resolve-x86_64/bundle.tar"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "wine-resolve-i686"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh resolve i686 /target/windows-compat/wine-resolve-i686"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-source"]
+outputs = ["/target/windows-compat/wine-resolve-i686/bundle.tar"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "wine-source"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = """
+bash tools/ci/publish/wine.sh source /target/windows-compat/wine-source
+for test in os/tests/test_fetch_wine_source.py os/tests/test_wine_rpm_contract.py os/tests/test_wine_rpm_merge.py os/tests/test_wine_mock_producer.py; do python3 "$test"; done
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
+outputs = ["/target/windows-compat/wine-source/**"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "minutes"
+default = false
+# END generated
