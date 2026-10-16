@@ -10,7 +10,7 @@ use vello::kurbo::{Point, Rect};
 use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
 use crate::shell::certified_action_session::ActionSessionSource;
-use crate::shell::selection_agent::{ChordRoute, SelectionSeed};
+use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
 
 impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection` answers selection requests.
@@ -38,6 +38,7 @@ impl ShellOverlayHost {
     /// app let its moment pass, the composer opens with what the desktop
     /// knows itself.
     pub(crate) fn route_ask_agent_chord(&mut self, now: Instant) -> Vec<u64> {
+        self.follow_agent_start(now);
         let focused = self.focused_app_id();
         match self.selection_requests.route(focused.as_deref(), now) {
             Some(ChordRoute::Ask(connections)) => connections,
@@ -111,13 +112,16 @@ impl ShellOverlayHost {
             return false;
         };
         let (source, live) = self
-            .live_agents(&room, members)
+            .live_agents(&room, members.clone())
             .map_or((None, Vec::new()), |(source, live)| (Some(source), live));
         let chosen = self.selection_requests.choose_agent(&room, &live);
         let (Some(source), Some(agent)) = (source, chosen) else {
-            chrome
-                .borrow_mut()
-                .show_osd(crate::shell::osd::Osd::no_agent());
+            let osd = if self.start_admitted_agent(&room, &members, seed) {
+                crate::shell::osd::Osd::starting_agent()
+            } else {
+                crate::shell::osd::Osd::no_agent()
+            };
+            chrome.borrow_mut().show_osd(osd);
             return false;
         };
         let Some(identity_revision) = source.identity_revision(&room) else {
@@ -154,6 +158,67 @@ impl ShellOverlayHost {
         );
         self.bump_chrome();
         true
+    }
+
+    /// No agent of the focused workspace takes tasks: start the one asked
+    /// last there (else its first admitted agent), as Task Center's "Start
+    /// agent" does, and open the composer about `seed` once it takes them.
+    /// Whether one is starting. Only someone who may administer the
+    /// workspace starts its agents.
+    fn start_admitted_agent(
+        &mut self,
+        room: &str,
+        members: &[String],
+        seed: SelectionSeed,
+    ) -> bool {
+        let Some(agent) = self.selection_requests.choose_agent(room, members) else {
+            return false;
+        };
+        // A chord pressed again while the agent comes up asks about the
+        // newer selection; the agent is not started twice.
+        if self.selection_requests.is_starting(room, &agent) {
+            self.selection_requests
+                .starting(room, &agent, seed, Instant::now());
+            return true;
+        }
+        let Some(workspace) = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().tree().desktop.active_workspace().cloned())
+        else {
+            return false;
+        };
+        if let Err(error) = crate::shell::launcher::launch_workspace_agent(&agent, &workspace) {
+            tracing::info!(%agent, error = %error.user_message(), "the ask-agent chord could not start the agent");
+            return false;
+        }
+        tracing::info!(%agent, "the ask-agent chord started the workspace's agent");
+        self.selection_requests
+            .starting(room, &agent, seed, Instant::now());
+        true
+    }
+
+    /// Open the composer once an agent the chord started takes tasks, or
+    /// say there is no agent when it did not come up.
+    fn follow_agent_start(&mut self, now: Instant) {
+        let broker = self.shortcut_triggers.broker();
+        let outcome = self.selection_requests.started(now, |room, agent| {
+            broker.is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
+        });
+        match outcome {
+            Some(AgentStart::Ready(seed)) => {
+                self.open_ask_agent(*seed);
+            }
+            Some(AgentStart::GaveUp) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome
+                        .borrow_mut()
+                        .show_osd(crate::shell::osd::Osd::no_agent());
+                }
+                self.bump_chrome();
+            }
+            None => {}
+        }
     }
 
     /// The session source for the workspace, and those of its agent

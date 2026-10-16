@@ -14504,6 +14504,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
         | crate::shell::osd::OsdKind::NoAgent
+        | crate::shell::osd::OsdKind::StartingAgent
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
