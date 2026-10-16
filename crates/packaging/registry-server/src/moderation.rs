@@ -158,43 +158,19 @@ impl ModerationService {
         )
     }
 
-    /// Approve an exact bounded batch under one moderation lock. Every pending
-    /// slot is compared and validated before the first mutation. Missing slots
-    /// are accepted only when a previous crash durably completed the exact
-    /// review and public state, which makes promotion-journal replay safe.
+    /// Approve an exact bounded batch while the caller retains the registry
+    /// mutation lock. This joins promotion selection, its durable journal,
+    /// moderation, and snapshot publication into one cross-process
+    /// transaction boundary. Every pending slot is compared and validated
+    /// before the first mutation. Missing slots are accepted only when a
+    /// previous crash durably completed the exact review and public state,
+    /// which makes promotion-journal replay safe.
     ///
     /// # Errors
     ///
     /// Returns an error if any selected submission changed, disappeared
     /// without a completed review, fails trust validation, conflicts with the
     /// public index, or cannot be persisted.
-    pub fn approve_batch(
-        &self,
-        reviewed_submissions: &[PendingSubmission],
-        reviewer: &str,
-        reason: &str,
-        reviewed_at_unix: u64,
-        allowlist: &PublisherAllowlist,
-    ) -> Result<Vec<ReviewRecord>, ModerationError> {
-        let _transaction = self.storage.lock_snapshot()?;
-        let _thread_guard = thread_lock(&self.transition_lock)?;
-        self.approve_batch_locked(
-            reviewed_submissions,
-            reviewer,
-            reason,
-            reviewed_at_unix,
-            allowlist,
-            false,
-        )
-    }
-
-    /// Approve a batch while the caller retains the registry mutation lock.
-    /// This joins promotion selection, its durable journal, moderation, and
-    /// snapshot publication into one cross-process transaction boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::approve_batch`].
     pub fn approve_batch_in_transaction(
         &self,
         _transaction: &SnapshotLock<'_>,
@@ -211,7 +187,6 @@ impl ModerationService {
             reason,
             reviewed_at_unix,
             allowlist,
-            true,
         )
     }
 
@@ -222,7 +197,6 @@ impl ModerationService {
         reason: &str,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-        recover_replaced_slots: bool,
     ) -> Result<Vec<ReviewRecord>, ModerationError> {
         let mut displaced = Vec::new();
         for reviewed in reviewed_submissions {
@@ -239,11 +213,6 @@ impl ModerationService {
                 Some(pending) => {
                     if self.completed_review(reviewed)?.is_some() {
                         continue;
-                    }
-                    if !recover_replaced_slots {
-                        return Err(ModerationError::PendingChanged(
-                            reviewed.submission_id.clone(),
-                        ));
                     }
                     self.validate_deferred_successor(reviewed, &pending)?;
                     displaced.push((reviewed.clone(), pending));
@@ -1624,27 +1593,6 @@ mod tests {
                     .is_none()
             );
         }
-        // phase: batch_preflight_prevents_partial_approval_when_any_slot_changed
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let first = service
-                .submit(change_for(&key, "so.tilo.a", 10), 100)
-                .unwrap();
-            let second = service
-                .submit(change_for(&key, "so.tilo.b", 10), 100)
-                .unwrap();
-            service
-                .submit(append_change(&key, &second.change, 11), 101)
-                .unwrap();
-
-            assert!(matches!(
-                service.approve_batch(&[first.clone(), second], "auto", "", 102, &allow(&key)),
-                Err(ModerationError::PendingChanged(package)) if package == "so.tilo.b"
-            ));
-            assert!(service.storage.load_entry("so.tilo.a").unwrap().is_none());
-            assert_eq!(service.pending("so.tilo.a").unwrap(), Some(first));
-        }
         // phase: batch_retry_recovers_an_approval_completed_before_a_crash
         {
             let (_dir, service) = setup();
@@ -1659,9 +1607,18 @@ mod tests {
                 .approve(&first, "auto", "", 101, &allow(&key))
                 .unwrap();
 
+            let transaction = service.storage.lock_snapshot().unwrap();
             let reviews = service
-                .approve_batch(&[first, second], "auto", "", 102, &allow(&key))
+                .approve_batch_in_transaction(
+                    &transaction,
+                    &[first, second],
+                    "auto",
+                    "",
+                    102,
+                    &allow(&key),
+                )
                 .unwrap();
+            drop(transaction);
             assert_eq!(reviews.len(), 2);
             assert!(service.pending_submissions().unwrap().is_empty());
             assert!(service.storage.load_entry("so.tilo.a").unwrap().is_some());

@@ -140,19 +140,6 @@ pub fn config_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
-/// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
-/// environment, applying the same rules.
-pub fn config_root_from(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    Some(
-        tilo_paths::xdg::Base::Config
-            .resolve_from(xdg_config_home, home)?
-            .join("tilo"),
-    )
-}
-
 /// Resolve one settings file under the config root.
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
@@ -646,54 +633,7 @@ mod tests {
     // Path resolution: the divergence this crate ends
 
     #[test]
-    fn config_root_resolution_accepts_only_absolute_xdg_paths() {
-        // Phase `an_absolute_xdg_config_home_wins`.
-        {
-            let dir = tmpdir();
-            assert_eq!(
-                config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
-                Some(dir.join("tilo"))
-            );
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Phase `a_relative_xdg_config_home_is_ignored_not_joined`.
-        {
-            // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
-            // moved with the working directory while `dirs::config_dir()` readers stayed on
-            // `$HOME/.config` — one file, two locations, silently.
-            let root =
-                config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
-                    .expect("falls back to $HOME/.config");
-            assert!(
-                root.is_absolute(),
-                "a settings path must never be relative: {root:?}"
-            );
-            assert_eq!(root, Path::new("/home/ada/.config/tilo"));
-        }
-        // Phase `an_empty_xdg_config_home_is_ignored`.
-        {
-            assert_eq!(
-                config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
-                Some(PathBuf::from("/home/ada/.config/tilo"))
-            );
-            assert_eq!(
-                config_root_from(None, None),
-                None,
-                "no usable variable and no home names no config root"
-            );
-        }
-        // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
-        {
-            let home = tilo_paths::home();
-            assert_eq!(
-                config_root(),
-                config_root_from(
-                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-                    home.as_deref().map(Path::as_os_str),
-                )
-            );
-        }
-        // Phase `a_session_settings_env_wins_over_the_remapped_xdg_root`.
+    fn a_session_settings_env_wins_over_the_remapped_xdg_root() {
         {
             let session = tmpdir();
             let xdg = tmpdir();

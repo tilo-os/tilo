@@ -131,8 +131,9 @@ pub fn text_edit_action(file: impl Into<String>, base: &str, next: &str) -> Acti
 
 /// Replace the whole text of `file` with `text`, written as the smallest
 /// splice against the text it meets.
+#[cfg(test)]
 #[must_use]
-pub fn replace_text_action(file: impl Into<String>, text: impl Into<String>) -> Action {
+pub(crate) fn replace_text_action(file: impl Into<String>, text: impl Into<String>) -> Action {
     edit(
         Project::paths()
             .buffers
@@ -142,8 +143,9 @@ pub fn replace_text_action(file: impl Into<String>, text: impl Into<String>) -> 
 }
 
 /// Set the language of `file` to the one labelled `language`.
+#[cfg(test)]
 #[must_use]
-pub fn set_language_action(file: &str, language: impl Into<String>) -> Action {
+pub(crate) fn set_language_action(file: &str, language: impl Into<String>) -> Action {
     edit(
         Project::paths()
             .files
@@ -168,8 +170,9 @@ pub fn new_file_action(
 }
 
 /// A new folder named `name` in `folder`.
+#[cfg(test)]
 #[must_use]
-pub fn new_folder_action(name: impl Into<String>, folder: Option<&str>) -> Action {
+pub(crate) fn new_folder_action(name: impl Into<String>, folder: Option<&str>) -> Action {
     stamped(ProjectAction::NewFolder(project::project::NewFolder {
         name: Some(name.into()),
         folder: folder.map(Id::from),
@@ -177,8 +180,9 @@ pub fn new_folder_action(name: impl Into<String>, folder: Option<&str>) -> Actio
 }
 
 /// Rename the file or folder `entry`.
+#[cfg(test)]
 #[must_use]
-pub fn rename_action(entry: &str, name: impl Into<String>) -> Action {
+pub(crate) fn rename_action(entry: &str, name: impl Into<String>) -> Action {
     stamped(ProjectAction::Rename(project::project::Rename {
         entry: Id::from(entry),
         name: name.into(),
@@ -186,8 +190,9 @@ pub fn rename_action(entry: &str, name: impl Into<String>) -> Action {
 }
 
 /// Move the file or folder `entry` into `folder`, before `before`.
+#[cfg(test)]
 #[must_use]
-pub fn move_action(entry: &str, folder: Option<&str>, before: Option<&str>) -> Action {
+pub(crate) fn move_action(entry: &str, folder: Option<&str>, before: Option<&str>) -> Action {
     stamped(ProjectAction::MoveEntry(project::project::MoveEntry {
         entry: Id::from(entry),
         folder: folder.map(Id::from),
@@ -196,8 +201,9 @@ pub fn move_action(entry: &str, folder: Option<&str>, before: Option<&str>) -> A
 }
 
 /// Delete the file or folder `entry`.
+#[cfg(test)]
 #[must_use]
-pub fn delete_action(entry: &str) -> Action {
+pub(crate) fn delete_action(entry: &str) -> Action {
     stamped(ProjectAction::Delete(project::project::Delete {
         entry: Id::from(entry),
     }))

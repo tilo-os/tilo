@@ -79,7 +79,7 @@ impl Workspace {
     #[action(housekeeping)]
     pub fn accept_places(&mut self, #[param("The places")] places: Vec<Place>) {
         for place in places {
-            match self.places.iter_mut().find(|known| known.id == place.id) {
+            match self.places.find_mut(&tilo_resource::Identified::id(&place)) {
                 Some(known) => {
                     let saved = known.saved || place.saved;
                     *known = Place { saved, ..place };

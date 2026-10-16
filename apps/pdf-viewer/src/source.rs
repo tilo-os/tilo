@@ -895,6 +895,7 @@ impl RasterBackend {
     /// The annotations the engine reads back from displayed page
     /// `display_idx` of the backing document. Used by the save round-trip
     /// tests to check that exported markup lands as real PDF annotations.
+    #[cfg(test)]
     pub fn page_annotations(&self, display_idx: usize) -> Vec<tilo_pdf::AnnotationInfo> {
         self.slot(display_idx)
             .and_then(|slot| {

@@ -47,8 +47,8 @@ use moka::sync::Cache;
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
 #[cfg(feature = "filesystem")]
 use crate::eviction::{
-    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionPlan,
-    EvictionQueue, EvictionRequestId, ObservedBlobState, VersionPayload,
+    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionQueue,
+    EvictionRequestId, ObservedBlobState, VersionPayload,
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
@@ -129,10 +129,6 @@ pub enum BlobRecordLookupError {
 #[derive(Debug, thiserror::Error)]
 #[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
-    #[error(
-        "a dry-run plan cannot delete blobs; enqueue it and use the freshly authorized GC bridge"
-    )]
-    ExplicitDeletionUnsupported,
     #[error(transparent)]
     Authorization(#[from] BackendGcAuthorizationError),
     #[error("reading owned blob tag {tag} failed: {message}")]
@@ -1136,24 +1132,6 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Refuse to execute a bare, potentially stale dry-run plan.
-    ///
-    /// Use [`EvictionQueue::enqueue`] followed by
-    /// [`Self::release_eviction_to_backend_gc`]. Keeping this API fail-closed
-    /// prevents an enqueue-time or ad-hoc plan from becoming stale deletion
-    /// authority.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`StoreEvictionError::ExplicitDeletionUnsupported`].
-    #[cfg(feature = "filesystem")]
-    pub fn execute_eviction(
-        &self,
-        _plan: &EvictionPlan,
-    ) -> std::result::Result<(), StoreEvictionError> {
-        Err(StoreEvictionError::ExplicitDeletionUnsupported)
-    }
-
     /// Freshly authorize a queued request and make exactly its approved blobs
     /// collectible by releasing Tilo-owned named tags.
     ///
@@ -1588,38 +1566,6 @@ mod tests {
                 metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
-        }
-        // Phase `unsupported_execution_never_claims_to_delete`.
-        {
-            use crate::eviction::{EvictionMode, EvictionPlan};
-
-            let store = ContentStore::memory();
-            let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
-            let plan = EvictionPlan {
-                record_id: fs_protocol::FileRecordId::new(),
-                version_id: fs_protocol::FileVersionId::new(),
-                mode: EvictionMode::DestructiveOverride,
-                reclaimable: vec![BlobExtent {
-                    hash,
-                    locally_present: true,
-                    resident_bytes: Some(7),
-                }],
-                shared_and_protected: Vec::new(),
-                already_absent: Vec::new(),
-                reclaimable_bytes: 7,
-                unaccounted_reclaimable_blobs: 0,
-                protected_shared_bytes: 0,
-                unaccounted_protected_shared_blobs: 0,
-            };
-
-            assert!(matches!(
-                store.execute_eviction(&plan),
-                Err(StoreEvictionError::ExplicitDeletionUnsupported)
-            ));
-            assert!(
-                store.has(hash).await,
-                "an unsupported action must not mutate storage"
-            );
         }
         // Phase `eviction_observation_completes_only_for_backend_absence`.
         {

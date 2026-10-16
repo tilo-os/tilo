@@ -195,3 +195,109 @@ fn prepared_effect_entry_refuses_malformed_or_downgraded_bindings() {
         assert!(InvocationJournal::open(&root).is_err(), "{corruption}");
     }
 }
+
+/// Admits a native task invocation, which raises the writer floor to 6.
+fn admit_native_task(journal: &mut InvocationJournal, room: &str) -> InvocationKey {
+    let key = InvocationKey {
+        room: room.into(),
+        host: journal.host(),
+        owner: InvocationOwner::NativeTask {
+            agent: "scribe".into(),
+            task: "task:00000000-0000-4000-8000-000000000001".into(),
+            epoch: 1,
+        },
+        invocation: tilo_actions::InvocationId::new(),
+    };
+    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,
+        "context":tilo_actions::ActionContext::default(),"actor":"agent:scribe"});
+    assert!(journal.admit(key.clone(), intent, 2).unwrap());
+    key
+}
+
+fn entry_versions(root: &std::path::Path) -> Vec<u64> {
+    let bytes = std::fs::read(root.join("records.json")).unwrap();
+    let mut values = serde_json::Deserializer::from_slice(&bytes).into_iter::<serde_json::Value>();
+    values.next().expect("snapshot").unwrap();
+    values
+        .map(|entry| entry.unwrap()["version"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn prepared_effect_after_a_native_task_keeps_the_writer_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("journal");
+    let (mut journal, key, request, update) = fixture(&root);
+    let native = admit_native_task(&mut journal, &key.room);
+    journal.prepare_effect(&key, update, &request).unwrap();
+    drop(journal);
+    assert_eq!(
+        entry_versions(&root),
+        [1, 6, 6],
+        "preparing an effect never lowers the floor a native task raised"
+    );
+    let journal = InvocationJournal::open(&root).expect("the store reopens after a restart");
+    assert_eq!(journal.snapshot.version, 6);
+    assert!(journal.lookup(&native).unwrap().unwrap().uncertain);
+    assert!(
+        journal
+            .lookup(&key)
+            .unwrap()
+            .unwrap()
+            .prepared_effect
+            .is_some()
+    );
+}
+
+#[test]
+fn store_with_an_entry_stamped_below_the_floor_reopens_under_the_raised_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("journal");
+    let (mut journal, key, request, update) = fixture(&root);
+    let native = admit_native_task(&mut journal, &key.room);
+    let prepared = journal
+        .prepare_effect(&key, update.clone(), &request)
+        .unwrap();
+    journal.finish_effect(&key, &prepared).unwrap();
+    drop(journal);
+    // What an earlier writer left: every entry after the preparation stamped
+    // 5, beneath the native task's floor of 6.
+    let path = root.join("records.json");
+    let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+    let mut lines: Vec<String> = stored.lines().map(str::to_owned).collect();
+    for line in lines.iter_mut().skip(3) {
+        *line = line.replacen("{\"version\":6,", "{\"version\":5,", 1);
+    }
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    assert_eq!(entry_versions(&root), [1, 6, 5, 5]);
+
+    let mut journal = InvocationJournal::open(&root).expect("a downgraded entry is recovered");
+    assert_eq!(journal.snapshot.version, 6, "the floor never falls");
+    let record = journal.lookup(&key).unwrap().unwrap();
+    assert_eq!(record.update, update);
+    assert!(!record.uncertain, "the finished effect stays terminal");
+    let native_record = journal.lookup(&native).unwrap().unwrap();
+    assert!(native_record.uncertain, "recovery never reissues dispatch");
+    assert!(!journal.admit(native, native_record.intent, 2).unwrap());
+    drop(journal);
+    drop(InvocationJournal::open(&root).expect("the recovered store reopens"));
+}
+
+#[test]
+fn native_task_entry_stamped_below_its_floor_is_still_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("journal");
+    let (mut journal, key, _, _) = fixture(&root);
+    admit_native_task(&mut journal, &key.room);
+    drop(journal);
+    let path = root.join("records.json");
+    let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+    let mut lines: Vec<String> = stored.lines().map(str::to_owned).collect();
+    let last = lines.last_mut().unwrap();
+    *last = last.replacen("{\"version\":6,", "{\"version\":5,", 1);
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    assert!(
+        InvocationJournal::open(&root).is_err(),
+        "no earlier entry raised the floor a native task row requires"
+    );
+}

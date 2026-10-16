@@ -59,15 +59,6 @@ pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
     v.insert(to, item);
 }
 
-/// Insert a clone of the item at `index` immediately after it. A no-op when
-/// `index` is out of range.
-pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
-    let Some(copy) = v.get(index).cloned() else {
-        return;
-    };
-    v.insert(index.saturating_add(1), copy);
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuAction {
     Duplicate,
@@ -1113,15 +1104,6 @@ mod tests {
             assert_eq!(v, vec![0, 1]);
             move_item(&mut v, 5, 0);
             assert_eq!(v, vec![0, 1]);
-        }
-
-        // Case `duplicate_after_inserts_clone`.
-        {
-            let mut v = vec!['a', 'b', 'c'];
-            duplicate_after(&mut v, 1);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
-            duplicate_after(&mut v, 99);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
         }
 
         // Case `themed_metrics_read_the_spacing_scale_the_constants_restate`.

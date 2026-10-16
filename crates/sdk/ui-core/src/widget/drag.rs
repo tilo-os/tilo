@@ -11,9 +11,7 @@
 //! understanding it.
 //!
 //! The reflow math assumes a **uniform** list (one extent + fixed gap per
-//! item) — true of every current adopter. A non-uniform list can still drive
-//! the insertion index via its own [`ListMetrics`], but the whole-slot
-//! reflow shift only makes sense for uniform slots.
+//! item) — true of every current adopter.
 
 use crate::num::f64_of_usize;
 use vello::kurbo::{Point, Rect, Size};
@@ -64,29 +62,6 @@ impl ListMetrics {
     /// `0` sits before the first item, boundary `count` after the last.
     pub fn slot_lead(&self, i: usize) -> f64 {
         self.origin + f64_of_usize(i) * self.pitch()
-    }
-
-    /// The insertion **boundary** (`0..=count`) nearest `axis_coord` —
-    /// snaps to the closest seam by rounding, so the gap flips at the
-    /// midpoint of each slot.
-    pub fn insertion_at(&self, axis_coord: f64) -> usize {
-        if self.count == 0 || self.pitch() <= 0.0 {
-            return 0;
-        }
-        let rel = (axis_coord - self.origin) / self.pitch();
-        let boundary = rel.round().max(0.0);
-        // `boundary` is non-negative by construction and the result is
-        // immediately clamped to `self.count` below, so this cast cannot
-        // misread a sign or lose a bit that matters — an out-of-range
-        // `boundary` just saturates and is then capped by `.min`.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "boundary is non-negative and the result is immediately clamped to \
-                      self.count below"
-        )]
-        let idx = boundary as usize;
-        idx.min(self.count)
     }
 }
 
@@ -383,21 +358,6 @@ mod tests {
 
     #[test]
     fn insertion_snaps_to_seams_with_an_own_slot_dead_zone() {
-        fn insertion_snaps_to_nearest_seam() {
-            let m = m4();
-            // Right at the top → before item 0.
-            assert_eq!(m.insertion_at(100.0), 0);
-            // Just past the middle of slot 0 (100..160, midpoint of pitch 68 = 134)
-            // rounds up to seam 1.
-            assert_eq!(m.insertion_at(140.0), 1);
-            // Deep in slot 2 rounds to its trailing seam.
-            assert_eq!(m.insertion_at(250.0), 2);
-            // Far below the list clamps to the final boundary.
-            assert_eq!(m.insertion_at(10_000.0), 4);
-            // Above the list clamps to 0.
-            assert_eq!(m.insertion_at(-500.0), 0);
-        }
-
         fn nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow() {
             let m = m4();
             let mut c = DragController::<u32>::vertical();
@@ -460,7 +420,6 @@ mod tests {
             );
         }
 
-        insertion_snaps_to_nearest_seam();
         nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow();
         gap_opens_only_once_the_ghost_crosses_into_a_neighbour();
         insertion_equals_the_committed_destination();

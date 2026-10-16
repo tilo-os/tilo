@@ -159,7 +159,7 @@ impl InvocationJournal {
             return Err("cannot prepare a retired invocation".into());
         }
         record.prepared_effect = Some(prepared.clone());
-        self.snapshot.version = 5;
+        self.snapshot.version = self.snapshot.version.max(5);
         self.commit(at)?;
         Ok(prepared)
     }

@@ -176,6 +176,8 @@ impl WorkspaceStore {
         remove: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Replaced, StoreError> {
         self.tail_cache.invalidate();
+        // Rewrites lineages of every author on the channel.
+        self.forget_channel_listing(channel);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let mut outcome = Replaced::default();

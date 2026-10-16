@@ -428,41 +428,6 @@ pub fn fit(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> St
     out
 }
 
-/// Keep the **tail** of `s`. What a person is typing is at the end, so a field
-/// that has run out of room drops the beginning, not the caret.
-pub fn fit_tail(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> String {
-    const ELLIPSIS: &str = "\u{2026}";
-    if budget <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure_style(s, None, style).0) <= budget {
-        return s.to_string();
-    }
-    let ell_w = f64::from(tr.measure_style(ELLIPSIS, None, style).0);
-    if ell_w > budget {
-        return String::new();
-    }
-    let inner = budget - ell_w;
-    let chars: Vec<char> = s.chars().collect();
-    let mut take = 0usize;
-    while take < chars.len() {
-        // `take < chars.len()` (loop guard), so `take + 1 <= chars.len()`
-        // and this can't saturate in practice; written defensively so it
-        // degrades to "keep everything" instead of panicking if that
-        // invariant is ever wrong.
-        let start = chars.len().saturating_sub(take.saturating_add(1));
-        let candidate: String = chars.get(start..).unwrap_or(&[]).iter().collect();
-        if f64::from(tr.measure_style(&candidate, None, style).0) > inner {
-            break;
-        }
-        take = take.saturating_add(1);
-    }
-    let mut out = ELLIPSIS.to_string();
-    let start = chars.len().saturating_sub(take);
-    out.extend(chars.get(start..).unwrap_or(&[]).iter());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,28 +643,6 @@ mod tests {
                 "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
             );
             assert!(rect.contains(rtl_caret.center()));
-        }
-
-        // Case `a_long_name_keeps_the_end_visible`.
-        {
-            let mut tr = TextRenderer::new();
-            let long = "a very long version name that will not fit in the box";
-            let style = Theme::dark().text(crate::tokens::TextRole::Label);
-            let shown = fit_tail(&mut tr, long, &style, 80.0);
-            assert!(shown.starts_with('\u{2026}'), "got {shown:?}");
-            assert!(
-                long.ends_with(shown.trim_start_matches('\u{2026}')),
-                "the tail is what is kept: {shown:?}"
-            );
-            assert!(shown.chars().count() < long.chars().count());
-        }
-
-        // Case `a_box_squeezed_to_nothing_draws_nothing_rather_than_overflowing`.
-        {
-            let mut tr = TextRenderer::new();
-            let style = Theme::dark().text(crate::tokens::TextRole::Label);
-            assert_eq!(fit_tail(&mut tr, "anything", &style, 0.0), "");
-            assert_eq!(fit_tail(&mut tr, "anything", &style, -5.0), "");
         }
     }
 

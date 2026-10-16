@@ -39,17 +39,6 @@ pub enum FlathubError {
     Decode(String),
 }
 
-/// One app-id in a popular-collection response.
-#[derive(Clone, Debug, Deserialize)]
-pub struct PopularEntry {
-    #[serde(rename = "id", alias = "flatpakAppId")]
-    pub app_id: String,
-    /// Full record often embeds a name; treat as optional so the
-    /// wire changing doesn't break parsing.
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
 /// A configured Flatpak remote, as reported by the machine-readable CLI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Remote {
@@ -361,38 +350,6 @@ fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
     })
 }
 
-/// The pure decode: kept a free fn so tests can feed fixtures without
-/// standing up an HTTP mock.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Decode`] if `text` isn't one of the accepted
-/// JSON shapes (a bare array/id-list, or a `{ "hits": [...] }` envelope).
-pub fn decode_popular(text: &str) -> Result<Vec<PopularEntry>, FlathubError> {
-    let value: serde_json::Value =
-        serde_json::from_str(text).map_err(|error| FlathubError::Decode(error.to_string()))?;
-    let rows = value
-        .as_array()
-        .or_else(|| value.get("hits").and_then(serde_json::Value::as_array))
-        .ok_or_else(|| FlathubError::Decode("expected an array or hits array".into()))?;
-    rows.iter()
-        .map(|row| {
-            if let Some(id) = row.as_str() {
-                Ok(PopularEntry {
-                    app_id: id.into(),
-                    name: None,
-                })
-            } else {
-                let record = record_from_value(row)?;
-                Ok(PopularEntry {
-                    app_id: record.app_id,
-                    name: Some(record.name),
-                })
-            }
-        })
-        .collect()
-}
-
 /// Decode the host service's machine-readable installed-app rows.
 pub fn installed_flatpaks(output: &str) -> Vec<(String, String)> {
     let mut installed = std::collections::BTreeMap::<String, (String, bool)>::new();
@@ -598,36 +555,6 @@ mod tests {
     /// Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
     #[test]
     fn flathub_decoders_accept_published_shapes_and_remotes_stay_bounded() {
-        // Case `decode_bare_array_of_ids`.
-        {
-            let text = r#"["org.gnome.Calculator","org.videolan.VLC"]"#;
-            let out = decode_popular(text).unwrap();
-            assert_eq!(out.len(), 2);
-            assert_eq!(out[0].app_id, "org.gnome.Calculator");
-        }
-
-        // Case `decode_hits_object_of_objects`.
-        {
-            let text = r#"{
-            "hits": [
-                {"id": "org.gnome.Calculator", "name": "Calculator"},
-                {"id": "org.videolan.VLC", "name": "VLC"}
-            ]
-        }"#;
-            let out = decode_popular(text).unwrap();
-            assert_eq!(out.len(), 2);
-            assert_eq!(out[1].app_id, "org.videolan.VLC");
-            assert_eq!(out[1].name.as_deref(), Some("VLC"));
-        }
-
-        // Case `decode_hits_object_of_string_ids`.
-        {
-            let text = r#"{"hits":["org.gnome.Calculator","org.videolan.VLC"]}"#;
-            let out = decode_popular(text).unwrap();
-            assert_eq!(out.len(), 2);
-            assert_eq!(out[0].app_id, "org.gnome.Calculator");
-        }
-
         // Case `search_decoder_accepts_current_hit_shape`.
         {
             let out = decode_records(
@@ -660,10 +587,6 @@ mod tests {
         assert_eq!(records[0].app_id, "org.gnome.Calculator");
         assert_eq!(records[0].summary, "Solve equations");
         assert_eq!(records[0].categories[0].name, "Utility");
-        assert_eq!(
-            decode_popular(current_collection).unwrap()[0].app_id,
-            "org.gnome.Calculator"
-        );
 
         let architecture_rows = serde_json::json!({"hits": [
             {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},

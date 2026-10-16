@@ -10,8 +10,8 @@
 //!
 //! The filter binds only the calling thread and threads it spawns afterwards
 //! (no `SECCOMP_FILTER_FLAG_TSYNC`), never the test harness. The process's
-//! state writer is started before the filter goes on, so the writes the
-//! entry point hands it still sync on their own thread.
+//! state writer and session-start worker are started before the filter goes
+//! on, so the work the entry point hands them still syncs on their threads.
 
 /// The errno a denied sync returns, distinctive enough to name in an
 /// assertion: waiting for the disk is what would deadlock the desktop.
@@ -30,8 +30,10 @@ pub(crate) fn deny_disk_syncs_on_this_thread() {
         libc::SYS_syncfs,
         libc::SYS_sync,
     ];
-    // Started here, the writer thread does not inherit the filter.
+    // Started here, the writer thread and the session-start worker do not
+    // inherit the filter.
     let _ = crate::shell::durable_writer::global();
+    let _ = crate::session_runtime::start_worker();
     let statement = |code: u32, k: u32| libc::sock_filter {
         code: u16::try_from(code).expect("BPF opcode fits"),
         jt: 0,

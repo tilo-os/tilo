@@ -348,14 +348,14 @@ impl PlotPanel {
     }
 
     /// Center of the show/hide button, once placed (test helper).
-    #[doc(hidden)]
-    pub fn toggle_center(&self) -> Option<Point> {
+    #[cfg(test)]
+    pub(crate) fn toggle_center(&self) -> Option<Point> {
         self.toggle_rect().map(|r| r.center())
     }
 
     /// Center of row `i`'s visibility toggle, once laid out (test helper).
-    #[doc(hidden)]
-    pub fn vis_center(&self, i: usize) -> Option<Point> {
+    #[cfg(test)]
+    pub(crate) fn vis_center(&self, i: usize) -> Option<Point> {
         self.visibility_rect(i).map(|r| r.center())
     }
 

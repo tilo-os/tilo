@@ -87,8 +87,29 @@ fn rest(app: &mut App, damage: &mut SurfaceDamage) {
 /// A new note in a fresh window holding `text`, the caret in its body, at
 /// rest.
 fn a_note_holding(app: &mut App, damage: &mut SurfaceDamage, text: &str) {
+    a_note_holding_among(app, damage, text, 0);
+}
+
+/// [`a_note_holding`] in a notebook already holding `notes` other notes,
+/// written through the notebook's own actions as an agent writes them.
+fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, notes: usize) {
     app.init_layout();
     for _ in 0..5 {
+        frame(app, damage);
+    }
+    for note in 0..notes {
+        let action = notes::actions::create_page_action(
+            notes::PageId::new_v4(),
+            None,
+            &format!("Listed note {note}"),
+        );
+        let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(&action)
+            .expect("creating a note is a notebook action");
+        app.invoke_local_resource_action(
+            &tilo_actions::ActionAddress::new("notes.notebook", invoke.id),
+            &invoke.arguments,
+        )
+        .expect("the notebook takes the note");
         frame(app, damage);
     }
     let new_note = app
@@ -191,4 +212,56 @@ fn a_pointer_moving_within_a_block_walks_no_widgets() {
         );
     })
     .unwrap();
+}
+
+/// What the accessibility walk of a keystroke's frame costs in a new note
+/// beside a page list of `notes` other notes: the semantic nodes it built,
+/// and the subtrees widgets handed it other than as the very node it kept,
+/// each of which it compared or built. Also the rows the page list shows.
+fn keystroke_walk_beside(notes: usize) -> (usize, usize, usize) {
+    drive_live_window::<NotesShell, _>(|app| {
+        let mut damage = SurfaceDamage::default();
+        a_note_holding_among(app, &mut damage, "Rest", notes);
+        let key = Key::Character("s".into());
+        app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+        frame(app, &mut damage);
+        assert!(
+            values_of(app, "Block text").contains(&"Rests".to_owned()),
+            "the frame that shows the key publishes it: {:?}",
+            values_of(app, "Block text")
+        );
+        let tree = app.semantic_tree();
+        let rows = tree
+            .iter()
+            .filter(|node| node.role == ui::a11y::Role::TreeItem)
+            .count();
+        (
+            tree.nodes_built_for_test(),
+            tree.subtrees_compared_for_test(),
+            rows,
+        )
+    })
+    .unwrap()
+}
+
+/// A keystroke in a note costs the walk the block it changed: the page
+/// list beside it hands every row over as the very node it handed over
+/// before, and the notebook's published resources keep their nodes, so the
+/// walk builds and compares the same in a notebook of three notes as in one
+/// of twenty-one.
+#[test]
+fn a_keystroke_walks_the_same_nodes_however_many_notes_are_listed() {
+    ui::i18n::I18nManager::init("en-US");
+    let (few_built, few_compared, few_rows) = keystroke_walk_beside(2);
+    let (many_built, many_compared, many_rows) = keystroke_walk_beside(20);
+    assert!(
+        few_rows >= 3 && many_rows >= 21,
+        "the page list shows every note: {few_rows} and {many_rows} rows"
+    );
+    assert_eq!(
+        (few_built, few_compared),
+        (many_built, many_compared),
+        "a keystroke beside {few_rows} listed notes built and compared \
+         ({few_built}, {few_compared}); beside {many_rows}, ({many_built}, {many_compared})"
+    );
 }

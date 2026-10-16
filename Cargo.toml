@@ -369,7 +369,6 @@ members = [
     "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
-    "crates/system/ssh-agent-client",
     "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",

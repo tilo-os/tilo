@@ -120,10 +120,6 @@ impl KeyValue {
     pub fn blank() -> Self {
         Self::new(String::new(), String::new())
     }
-
-    pub fn is_blank(&self) -> bool {
-        self.key.trim().is_empty() && self.value.trim().is_empty()
-    }
 }
 
 /// Authentication scheme applied to a request. The variants mirror the
@@ -308,12 +304,6 @@ impl Request {
             form: Vec::new(),
         }
     }
-
-    /// Count of enabled key/value rows for a section — drives the little
-    /// count badge shown on each tab.
-    pub fn enabled_count(rows: &[KeyValue]) -> usize {
-        rows.iter().filter(|r| r.enabled && !r.is_blank()).count()
-    }
 }
 
 /// A named group of saved requests, shown as a foldable node in the
@@ -447,22 +437,10 @@ mod tests {
         }
     }
 
-    /// The summaries the builder and response chrome display: enabled row
-    /// counts, status families, durations, and the bundled sample response.
+    /// The summaries the response chrome displays: status families,
+    /// durations, and the bundled sample response.
     #[test]
-    fn request_and_response_summaries_count_rows_bucket_statuses_and_format_durations() {
-        // Case "enabled count": skips disabled and blank rows.
-        let rows = vec![
-            KeyValue::new("a", "1"),
-            {
-                let mut r = KeyValue::new("b", "2");
-                r.enabled = false;
-                r
-            },
-            KeyValue::blank(),
-        ];
-        assert_eq!(Request::enabled_count(&rows), 1, "case enabled count");
-
+    fn response_summaries_bucket_statuses_and_format_durations() {
         // Case "status class": buckets by family.
         let mut r = ResponseData {
             status: 200,

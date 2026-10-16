@@ -771,6 +771,30 @@ done
 if grep -Eq '/usr/lib/user-tmpfiles\.d' "$repo/os/Containerfile" || [ -e "$repo/os/usr/lib/user-tmpfiles.d" ]; then
   bad 'a user-tmpfiles.d snippet is installed under /usr/lib, which systemd-tmpfiles --user never reads'
 fi
+# A ReadWritePaths= entry that does not exist fails the unit at 226/NAMESPACE
+# on every start, and a read-only home leaves the service no way to create it.
+# Every home path a user unit names there is therefore created first: by a
+# user-tmpfiles.d snippet the image installs, so it exists on a fresh or
+# migrated home before any user unit starts, or by the unit's own privileged
+# (`+`, outside the sandbox) ExecStartPre= mkdir.
+for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
+  for dir in $(sed -n 's/^ReadWritePaths=//p' "$unit"); do
+    dir="${dir#-}"
+    case "$dir" in %h/*) ;; *) continue ;; esac
+    created=0
+    if grep -E '^ExecStartPre=\+/usr/bin/mkdir ' "$unit" | tr ' ' '\n' | grep -Fqx -- "$dir"; then
+      created=1
+    fi
+    for conf in "$repo"/os/usr/share/user-tmpfiles.d/*.conf; do
+      grep -Fq "os/usr/share/user-tmpfiles.d/$(basename "$conf")" "$repo/os/Containerfile" || continue
+      if awk -v d="$dir" '$1 == "d" && $2 == d { found = 1 } END { exit !found }' "$conf"; then
+        created=1
+      fi
+    done
+    [ "$created" -eq 1 ] \
+      || bad "$(basename "$unit") needs $dir (ReadWritePaths=) but neither an installed user-tmpfiles.d snippet nor a privileged ExecStartPre= mkdir creates it"
+  done
+done
 [ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"

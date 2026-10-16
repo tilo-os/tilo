@@ -34,7 +34,9 @@ pub mod vm;
 
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
-pub use spec::{CiProfile, IdMap, JobSpec, Landlock, Mount, MountKind, Root, Seccomp, Tmp};
+pub use spec::{
+    CiProfile, IdMap, JobSpec, Landlock, Mount, MountKind, NESTING_ID, Root, Seccomp, Tmp,
+};
 
 #[cfg(target_os = "linux")]
 pub use linux::runner::Job;

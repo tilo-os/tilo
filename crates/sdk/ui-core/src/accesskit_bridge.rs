@@ -41,9 +41,7 @@
 //!   instead of the widget. This is ARIA's `aria-activedescendant`: the widget
 //!   owns the keyboard, the marked node is where the user is. Keying it off the
 //!   App's real focus is deliberate — an unfocused widget cannot steal the
-//!   reader's cursor by setting a flag. [`active_descendant_path`] names the
-//!   same node for the keyboard path, so Enter activates what the reader just
-//!   announced.
+//!   reader's cursor by setting a flag.
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
 //!   clip the user was on, via
@@ -344,32 +342,6 @@ pub fn widget_ak_id<S: BuildHasher>(
     node_map
         .contains_key(&taffy_id)
         .then(|| widget_node_id(Some(taffy_id), 0))
-}
-
-/// The key path to the **active descendant** a widget nominates — the first
-/// node in its synthetic subtree marked
-/// [`focused`](crate::a11y::AccessState::focused) — or `None` when it nominates
-/// none.
-///
-/// [`build_tree_update`] uses the same rule to aim the exported focus. This is
-/// the other half: the host uses it to aim *keyboard* activation at the element
-/// the user is on, so a canvas widget implements
-/// [`Widget::perform_action`] once
-/// and gets both the assistive-technology and the Enter/arrow paths, instead of
-/// having to implement `perform_action` again for the keyboard.
-pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
-    fn walk(children: &[AccessNode], path: &mut Vec<u64>) -> bool {
-        for (ordinal, child) in children.iter().enumerate() {
-            path.push(child.key.unwrap_or(ordinal as u64));
-            if child.state.focused || walk(&child.children, path) {
-                return true;
-            }
-            path.pop();
-        }
-        false
-    }
-    let mut path = Vec::new();
-    walk(&access.children, &mut path).then_some(path)
 }
 
 /// Where an [`accesskit::NodeId`] points in the live widget tree. Produced by
@@ -2544,11 +2516,8 @@ mod tests {
             assert_eq!(focused.label(), Some("Interview"));
         }
 
-        // Case `active_descendant_path_names_the_marked_node_the_same_way_focus_does`.
+        // Case `exported_focus_resolves_back_to_the_marked_node`.
         {
-            // The keyboard path and the exported focus must agree on which element
-            // the user is on; if they disagreed, Enter would activate something
-            // other than what the reader just announced.
             let mut root = TestWidget::new(Some(
                 AccessNode::new(Role::Canvas)
                     .with_name("Timeline")
@@ -2560,12 +2529,7 @@ mod tests {
                         AccessNode::new(Role::Group).with_name("Track 2"),
                     ]),
             ));
-            let access = Widget::accessibility(&root).unwrap();
-
             // Second clip of the first track: [track 0, clip 1].
-            assert_eq!(active_descendant_path(&access), Some(vec![0, 1]));
-
-            // And it names the very node the exported focus lands on.
             let (_taffy, node_map, _n) = lay_out(&mut root);
             let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
             let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
@@ -2580,19 +2544,8 @@ mod tests {
                     ordinal_path: vec![0, 1],
                     semantic_target: None,
                 }),
-                "keyboard target and reader focus must be the same element"
+                "the exported focus resolves to the marked clip"
             );
-        }
-
-        // Case `a_widget_that_marks_nothing_has_no_active_descendant`.
-        {
-            // An ordinary widget must yield an empty target so the keyboard path
-            // keeps addressing the widget itself.
-            let plain = AccessNode::new(Role::Button).with_name("Save");
-            assert_eq!(active_descendant_path(&plain), None);
-
-            let unmarked = canvas(vec![clip("a", false), clip("b", false)]);
-            assert_eq!(active_descendant_path(&unmarked), None);
         }
     }
 
