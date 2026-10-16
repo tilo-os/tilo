@@ -478,7 +478,7 @@ impl AgentQuickComposer {
         &mut self,
         owner: ComposerOwner,
         label: &str,
-        origin: AgentQuickComposerOrigin,
+        origin: &AgentQuickComposerOrigin,
         viewport: Rect,
         about: super::selection_agent::SelectionSeed,
     ) {
@@ -486,8 +486,9 @@ impl AgentQuickComposer {
             owner,
             label,
             AgentQuickComposerOrigin {
+                marker: origin.marker,
+                protected: origin.protected,
                 context: about.context(),
-                ..origin
             },
             viewport,
         );
@@ -1458,7 +1459,7 @@ mod tests {
         composer.open_about(
             tide.clone(),
             "Tide",
-            AgentQuickComposerOrigin {
+            &AgentQuickComposerOrigin {
                 marker: Rect::new(400.0, 200.0, 401.0, 201.0),
                 protected: Rect::new(400.0, 200.0, 401.0, 201.0),
                 context: String::new(),
