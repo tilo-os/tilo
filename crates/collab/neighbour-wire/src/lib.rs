@@ -130,6 +130,11 @@ pub enum NeighbourMsg {
         source_peer: PeerId,
         encoded_h264: Vec<u8>,
         ts: u64,
+        /// The unit's place in the owner's encoded sequence, one more than
+        /// the unit it follows. Delta units reference earlier ones, so a
+        /// receiver that sees a gap (a unit lost on the way) must not feed
+        /// the next delta to its decoder: it waits for the next keyframe.
+        seq: u64,
     },
     /// Explicit start-of-stream announcement for a shared surface.
     ///
@@ -744,6 +749,7 @@ mod tests {
                     source_peer: 0xABCD,
                     encoded_h264: vec![0, 0, 0, 1, 0x67],
                     ts: 1_700_000_001,
+                    seq: 3,
                 },
             ),
             (
@@ -1065,7 +1071,7 @@ mod tests {
             ),
         ),
         ("presence cleared", "032a06637572736f72"),
-        ("surface frame", "0407cdd70205000000016781e2cfaa06"),
+        ("surface frame", "0407cdd70205000000016781e2cfaa0603"),
         (
             "SDR stream start",
             concat!(

@@ -113,6 +113,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                 source_peer: 1,
                 encoded_h264: Vec::new(),
                 ts: 0,
+                seq: 0,
             },
             Some(change()),
         ),

@@ -214,6 +214,7 @@ async fn native_window_scenario() {
             source_peer: tilo_peer_state::peer_handle(&author),
             encoded_h264: encoded.to_vec(),
             ts: 5000,
+            seq: 0,
         },
     );
     let path = tilo_moq::live::namespace_path(&grant.room, &hex::encode(author)).unwrap();
@@ -554,6 +555,7 @@ async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes
             source_peer: tilo_peer_state::peer_handle(&author),
             encoded_h264: key_frame.to_vec(),
             ts: 5000,
+            seq: 0,
         },
     );
     let path = tilo_moq::live::namespace_path(&grant.room, &hex::encode(author)).unwrap();

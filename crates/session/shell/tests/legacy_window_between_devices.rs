@@ -229,11 +229,16 @@ async fn a_legacy_window_streams_between_two_devices() {
     let mut arrivals = Vec::new();
     let mut announced_tab = None;
     let mut before_keyframe = 0_u32;
+    // Units held back after one went missing on the way, until the host's
+    // next keyframe.
+    let mut awaiting_keyframe = 0_u32;
+    let mut chain_lost = false;
     let mut first_picture = None;
     let mut first_decoded_ts = None;
     let mut previous_received_ts = None;
-    let mut early: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
-    let mut pending: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
+    let mut previous_seq: Option<u64> = None;
+    let mut early: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
+    let mut pending: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
     let receive_until = Instant::now() + DAMAGE_INTERVAL * FRAMES + Duration::from_secs(2);
     while Instant::now() < receive_until {
         let Ok(Some(event)) =
@@ -270,9 +275,10 @@ async fn a_legacy_window_streams_between_two_devices() {
                 surface,
                 encoded_h264,
                 ts,
+                seq,
                 ..
             } if surface == SURFACE => {
-                let frame = (encoded_h264, ts, Instant::now());
+                let frame = (encoded_h264, ts, seq, Instant::now());
                 if view.is_none() {
                     early.push(frame);
                 } else {
@@ -284,20 +290,37 @@ async fn a_legacy_window_streams_between_two_devices() {
         let Some(view) = view.as_mut() else {
             continue;
         };
-        for (encoded, ts, arrived) in std::mem::take(&mut pending) {
+        for (encoded, ts, seq, arrived) in std::mem::take(&mut pending) {
             let captured = origin + Duration::from_nanos(ts);
             let previous_ts = previous_received_ts.replace(ts);
+            // A unit lost between the host's encoder and here leaves a gap
+            // in the sequence; the units after it reference a picture this
+            // viewer never had.
+            chain_lost |= previous_seq
+                .replace(seq)
+                .is_some_and(|p| p.checked_add(1) != Some(seq));
             let decode_started = Instant::now();
             // A picture that outlasts the decoder's wait on a loaded runner
             // is collected as the compositor loop collects it: slow is not
             // rejected. Every frame still has to yield its picture.
-            let outcome = push_and_settle(view, &encoded, None);
+            let outcome = push_and_settle(view, seq, &encoded, None);
             let decode_elapsed = decode_started.elapsed();
             // The first frame is the keyframe the host forced for this
-            // viewer; one that fails to decode means the viewer had to
-            // wait for the next keyframe.
-            if latencies.is_empty() && outcome == PushOutcome::DecodeFailed {
+            // viewer; one that is not means the viewer had to wait for the
+            // next keyframe.
+            if latencies.is_empty()
+                && matches!(
+                    outcome,
+                    PushOutcome::DecodeFailed | PushOutcome::AwaitingKeyframe
+                )
+            {
                 before_keyframe += 1;
+                continue;
+            }
+            // Held back, not decoded: only ever after a unit went missing,
+            // and counted against delivery below.
+            if chain_lost && outcome == PushOutcome::AwaitingKeyframe {
+                awaiting_keyframe += 1;
                 continue;
             }
             assert!(
@@ -305,7 +328,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                 "the viewer decodes every frame once it has a keyframe: \
                  outcome={outcome:?} encoder={encoder} codec={codec} \
                  decoded={} before_keyframe={before_keyframe} \
-                 capture_ts_ns={ts} previous_capture_ts_ns={previous_ts:?} \
+                 seq={seq} capture_ts_ns={ts} previous_capture_ts_ns={previous_ts:?} \
                  capture_gap_ns={:?} keyframe={} encoded_bytes={} \
                  decode_ms={:.2} queued_ms={:.2}",
                 latencies.len(),
@@ -315,6 +338,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                 millis(decode_elapsed),
                 millis(decode_started.duration_since(arrived)),
             );
+            chain_lost = false;
             view.mark_drawn();
             first_picture.get_or_insert_with(|| start_sent.elapsed());
             first_decoded_ts.get_or_insert(ts);
@@ -385,6 +409,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     eprintln!(
         "legacy-window encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
          received={received} before_keyframe={before_keyframe} \
+         awaiting_keyframe={awaiting_keyframe} \
          first_picture_ms={:.2} fps={fps:.1} \
          encode_ms(p50={:.2} p95={:.2}) \
          glass_ms(p50={:.2} p95={:.2} max={:.2}) \
@@ -415,6 +440,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                 source_peer: host_peer,
                 encoded_h264: vec![0, 0, 0, 1, 9],
                 ts: 1,
+                seq: 0,
             },
         })
         .await
@@ -516,11 +542,14 @@ fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
         let Some(frame) = session.encode_next_frame(now) else {
             continue;
         };
-        let NeighbourMsg::SurfaceFrame { encoded_h264, .. } = frame.into_neighbour_msg() else {
+        let NeighbourMsg::SurfaceFrame {
+            encoded_h264, seq, ..
+        } = frame.into_neighbour_msg()
+        else {
             panic!("a frame");
         };
         assert_eq!(
-            push_and_settle(&mut view, &encoded_h264, None),
+            push_and_settle(&mut view, seq, &encoded_h264, None),
             PushOutcome::Decoded,
             "every frame decodes, the first one too"
         );
@@ -585,10 +614,10 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
         })
         .await
         .unwrap();
-    let (encoded, ts) = next_surface_frame(&mut viewer_events).await;
+    let (encoded, ts, seq) = next_surface_frame(&mut viewer_events).await;
     assert_eq!(ts, timestamps[0]);
     assert_eq!(
-        push_and_settle(&mut view, &encoded, None),
+        push_and_settle(&mut view, seq, &encoded, None),
         PushOutcome::Decoded
     );
     view.mark_drawn();
@@ -605,10 +634,10 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
     let mut previous_index = 0_usize;
     tilo_test_env::within("the final recorded unit reached the viewer", async {
         loop {
-            let (encoded_h264, ts) = next_surface_frame(&mut viewer_events).await;
+            let (encoded_h264, ts, seq) = next_surface_frame(&mut viewer_events).await;
             let index = timestamps.iter().position(|timestamp| *timestamp == ts).expect("recorded capture timestamp");
             let started = Instant::now();
-            let outcome = push_and_settle(&mut view, &encoded_h264, None);
+            let outcome = push_and_settle(&mut view, seq, &encoded_h264, None);
             eprintln!("legacy-backlog previous_index={previous_index} index={index} outcome={outcome:?} decode_ms={:.2}", millis(started.elapsed()));
             assert!(matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                 "every delivered encoded unit decodes: previous_index={previous_index} index={index} outcome={outcome:?}");
@@ -618,6 +647,116 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
             if index == timestamps.len().saturating_sub(1) { return; }
         }
     }).await;
+}
+
+/// Units lost or overtaken between the host's encoder and the viewer, as a
+/// saturated queue or a failed read loses them: the viewer never feeds its
+/// decoder a delta whose reference it did not get. It holds those back,
+/// decodes again from the host's next keyframe on, and drops a unit it
+/// already moved past.
+#[test]
+fn a_lost_or_overtaken_unit_waits_for_the_next_keyframe() {
+    let session = SharedFlatpakSession::start_with_metrics(
+        0xA,
+        APP,
+        SURFACE,
+        WIDTH,
+        HEIGHT,
+        &FlatpakShareConfig {
+            max_bitrate_kbps: 8000,
+            target_fps: 60,
+            encoder: EncoderChoice::Auto,
+            hdr: None,
+        },
+        &[media::realtime::local_capabilities()],
+        None,
+    )
+    .expect("an encoder for the window");
+    session.add_viewer(0xB, false);
+    let codec = session.chosen_codec();
+    // Another device starting to watch is how a keyframe is forced
+    // mid-stream: units 8 and 14 are keyframes, the rest deltas.
+    let mut units = Vec::new();
+    let mut now = Instant::now();
+    for index in 0_u32..18 {
+        if index == 8 || index == 14 {
+            session.add_viewer(0xC + u64::from(index), false);
+        }
+        session.deposit_captured_rgba(window_frame(index.saturating_mul(23)));
+        now += Duration::from_millis(40);
+        let NeighbourMsg::SurfaceFrame {
+            encoded_h264, seq, ..
+        } = session
+            .encode_next_frame(now)
+            .expect("one encoded unit")
+            .into_neighbour_msg()
+        else {
+            panic!("an encoded frame");
+        };
+        assert_eq!(
+            media::realtime::is_keyframe(codec, &encoded_h264),
+            matches!(index, 0 | 8 | 14),
+            "unit {index} is a keyframe exactly where one was forced"
+        );
+        units.push((seq, encoded_h264));
+    }
+    let seqs: Vec<u64> = units.iter().map(|(seq, _)| *seq).collect();
+    assert!(
+        seqs.windows(2)
+            .all(|pair| pair[0].checked_add(1) == Some(pair[1])),
+        "the host numbers its units without gaps: {seqs:?}"
+    );
+
+    let mut view = PeerView::new_with_metrics(SURFACE, 0xB, PeerSurfaceMetrics::default());
+    view.restart_stream(codec.wire_label(), Some((WIDTH, HEIGHT)));
+    // Unit 3 is lost; 11 overtakes 10; 16 arrives twice.
+    let arrivals = [
+        0, 1, 2, 4, 5, 3, 6, 7, 8, 9, 11, 10, 12, 13, 14, 15, 16, 16, 17,
+    ];
+    let mut outcomes = Vec::new();
+    for index in arrivals {
+        let (seq, encoded) = &units[index];
+        let outcome = push_and_settle(&mut view, *seq, encoded, None);
+        if matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest) {
+            view.mark_drawn();
+        }
+        outcomes.push((index, outcome));
+    }
+    let decoded = |outcome: &PushOutcome| {
+        matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest)
+    };
+    for (index, outcome) in &outcomes {
+        if matches!(index, 3..=7 | 10..=13) {
+            assert_eq!(
+                *outcome,
+                PushOutcome::AwaitingKeyframe,
+                "unit {index} follows a missing reference: {outcomes:?}"
+            );
+        }
+    }
+    let outcome_of = |wanted: usize| {
+        outcomes
+            .iter()
+            .filter(|(index, _)| *index == wanted)
+            .map(|(_, outcome)| *outcome)
+            .collect::<Vec<_>>()
+    };
+    for index in [0, 1, 2, 8, 9, 14, 15, 17] {
+        assert!(
+            outcome_of(index).iter().all(decoded),
+            "unit {index} continues an intact chain and decodes: {outcomes:?}"
+        );
+    }
+    assert_eq!(
+        outcome_of(10),
+        vec![PushOutcome::AwaitingKeyframe],
+        "a unit that arrives after its successor is not decoded: {outcomes:?}"
+    );
+    let sixteen = outcome_of(16);
+    assert!(
+        decoded(&sixteen[0]) && sixteen[1] == PushOutcome::Stale,
+        "a repeated unit decodes once: {outcomes:?}"
+    );
 }
 
 fn record_encoded_units(session: &SharedFlatpakSession) -> (Vec<NeighbourMsg>, Vec<u64>) {
@@ -647,18 +786,21 @@ fn record_encoded_units(session: &SharedFlatpakSession) -> (Vec<NeighbourMsg>, V
     (frames, timestamps)
 }
 
-async fn next_surface_frame(events: &mut mpsc::Receiver<NetEvent>) -> (Vec<u8>, u64) {
+async fn next_surface_frame(events: &mut mpsc::Receiver<NetEvent>) -> (Vec<u8>, u64, u64) {
     tilo_test_env::within("a recorded surface unit reached the viewer", async {
         while let Some(event) = events.recv().await {
             if let NetEvent::Msg {
                 msg:
                     NeighbourMsg::SurfaceFrame {
-                        encoded_h264, ts, ..
+                        encoded_h264,
+                        ts,
+                        seq,
+                        ..
                     },
                 ..
             } = event
             {
-                return (encoded_h264, ts);
+                return (encoded_h264, ts, seq);
             }
         }
         panic!("viewer event channel closed");

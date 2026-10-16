@@ -12690,10 +12690,12 @@ pub fn run() {
                             let mounted = !stream.app_id.is_empty()
                                 && frame_builder.host_mut().mount_peer_stream(&stream);
                             if mounted {
-                                for frame in early_legacy_frames.take((source_peer, surface)) {
+                                for (seq, frame) in early_legacy_frames.take((source_peer, surface))
+                                {
                                     let _ = frame_builder.host_mut().push_peer_stream_frame(
                                         source_peer,
                                         surface,
+                                        seq,
                                         &frame,
                                         None,
                                     );
@@ -12712,17 +12714,19 @@ pub fn run() {
                             surface,
                             source_peer,
                             encoded_h264,
+                            seq,
                             ..
                         } => {
                             if frame_builder.host().has_peer_stream(source_peer, surface) {
                                 let _ = frame_builder.host_mut().push_peer_stream_frame(
                                     source_peer,
                                     surface,
+                                    seq,
                                     &encoded_h264,
                                     None,
                                 );
                             } else {
-                                early_legacy_frames.hold((source_peer, surface), encoded_h264);
+                                early_legacy_frames.hold((source_peer, surface), seq, encoded_h264);
                             }
                         }
                         crate::network::NeighbourMsg::SurfaceStreamEnd {
@@ -12769,10 +12773,11 @@ pub fn run() {
                     if !stream.app_id.is_empty()
                         && frame_builder.host_mut().mount_peer_stream(stream)
                     {
-                        for frame in early_legacy_frames.take((source_peer, surface)) {
+                        for (seq, frame) in early_legacy_frames.take((source_peer, surface)) {
                             let _ = frame_builder.host_mut().push_peer_stream_frame(
                                 source_peer,
                                 surface,
+                                seq,
                                 &frame,
                                 None,
                             );
