@@ -18,6 +18,24 @@ if (( $# < 1 )); then
   exit 2
 fi
 
+# greetd starts its session with stdout and stderr on the login VT. Whatever
+# this script, cage, wlroots, libseat or the program print would land on the
+# console before the greeter's first frame (libseat's seat message on every
+# boot), and a greeter error would be lost with the console instead of being
+# kept. So everything after this point goes to the journal, under the
+# program's name (`journalctl -t tilo-greeter`), stderr at warning. The script
+# re-runs itself under systemd-cat so its own messages go there too;
+# systemd-cat execs it, so no process stays in between. Without a journal to
+# write to (a rescue shell, a test), or when the caller collects the output
+# itself and says so with TILO_CAGE_SESSION_KEEP_OUTPUT=1, it stays where it was.
+journal_socket="${TILO_JOURNAL_STDOUT_SOCKET:-/run/systemd/journal/stdout}"
+if [[ -z ${TILO_CAGE_SESSION_KEEP_OUTPUT:-} && -S $journal_socket ]]; then
+  export TILO_CAGE_SESSION_KEEP_OUTPUT=1
+  exec systemd-cat --identifier="${1##*/}" --stderr-priority=warning \
+    -- "$BASH" "${BASH_SOURCE[0]}" "$@"
+fi
+unset TILO_CAGE_SESSION_KEEP_OUTPUT
+
 drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
 for card in "$drm_sysfs"/card[0-9]*; do
   if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
