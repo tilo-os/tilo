@@ -748,33 +748,80 @@ pub struct Fds {
     pub extra: Vec<(OwnedFd, RawFd)>,
 }
 
-/// How long the job's setup may take before the worker gives up on it.
+/// How long the job's setup may wait for anything but a CPU before the worker
+/// gives up on it: a mount that hangs, a lock that is never released.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How often a setup that has not reported is looked at.
+const SETUP_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the job's setup has spent waiting for a CPU, so far: the time
+/// `pid` and its children spent ready to run (`/proc/<pid>/schedstat`), or,
+/// if longer, the time some task of their cgroup did (its `cpu.pressure`).
+/// A setup step can wait on a lock that a task of the same cgroup holds while
+/// it waits for a CPU: that wait is for a CPU too. Zero where the kernel keeps
+/// neither statistic.
+fn cpu_wait(pid: libc::pid_t, cgroup: Option<&std::path::Path>) -> Duration {
+    let one = |p: &str| {
+        std::fs::read_to_string(format!("/proc/{p}/schedstat"))
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let children =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+    let ready = children
+        .split_whitespace()
+        .map(one)
+        .fold(one(&pid.to_string()), u64::saturating_add);
+    let pressure = cgroup
+        .and_then(|dir| std::fs::read_to_string(dir.join("cpu.pressure")).ok())
+        .and_then(|text| {
+            let some = text.lines().find(|l| l.starts_with("some "))?;
+            some.split_whitespace()
+                .find_map(|f| f.strip_prefix("total="))?
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0);
+    Duration::from_nanos(ready).max(Duration::from_micros(pressure))
+}
+
 /// Wait for the report pipe to close (the command is running) or to say
-/// which step failed.
-/// Block on the report pipe: `Ok(None)` when it closes (the command runs),
-/// `Ok(Some(_))` with the 12-byte failure record.
-fn read_report_bytes(report: OwnedFd) -> Result<Option<[u8; 12]>, SpawnError> {
-    let deadline = Instant::now().checked_add(SETUP_TIMEOUT);
+/// which step failed: `Ok(None)` when it closes, `Ok(Some(_))` with the
+/// 12-byte failure record.
+///
+/// On a busy machine the job's setup waits for a CPU, at the share its cgroup
+/// gets: the time it spends ready to run doesn't count against
+/// `SETUP_TIMEOUT`, only the time it spends waiting for anything else.
+fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Option<[u8; 12]>, SpawnError> {
+    let start = Instant::now();
+    let cgroup =
+        crate::job::cgroup::cgroup_of(&pid.to_string(), std::path::Path::new("/sys/fs/cgroup"))
+            .ok();
+    let cgroup = cgroup.as_deref();
+    let before = cpu_wait(pid, cgroup);
     let mut f = std::fs::File::from(report);
     let mut buf = [0_u8; 12];
     let mut got = 0_usize;
     loop {
-        let left = deadline.map_or(Duration::ZERO, |d| {
-            d.saturating_duration_since(Instant::now())
-        });
-        if left.is_zero() {
+        let runnable = cpu_wait(pid, cgroup).saturating_sub(before);
+        let waited = start.elapsed().saturating_sub(runnable);
+        if waited >= SETUP_TIMEOUT {
             return Err(SpawnError::Setup(format!(
-                "the job did not start within {SETUP_TIMEOUT:?}"
+                "the job did not start within {SETUP_TIMEOUT:?} (besides {:.1}s waiting for a CPU)",
+                runnable.as_secs_f64()
             )));
         }
+        let left = SETUP_TIMEOUT.saturating_sub(waited).min(SETUP_CHECK_EVERY);
         let mut pfd = libc::pollfd {
             fd: f.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        let ms = libc::c_int::try_from(left.as_millis()).unwrap_or(libc::c_int::MAX);
+        let ms = libc::c_int::try_from(left.as_millis())
+            .unwrap_or(libc::c_int::MAX)
+            .max(1);
         // SAFETY: one pollfd structure on the stack.
         let rc = unsafe { libc::poll(&raw mut pfd, 1, ms) };
         if rc < 0 {
@@ -862,8 +909,8 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
     SpawnError::Setup(format!("{what}: {os}{hint}"))
 }
 
-fn read_report(report: OwnedFd, plan: &Plan) -> Result<(), SpawnError> {
-    match read_report_bytes(report)? {
+fn read_report(report: OwnedFd, pid: libc::pid_t, plan: &Plan) -> Result<(), SpawnError> {
+    match read_report_bytes(report, pid)? {
         None => Ok(()),
         Some(buf) => Err(describe_failure(buf, plan)),
     }
@@ -1008,7 +1055,7 @@ fn finish(
     go.write_all(b"g")
         .map_err(|e| SpawnError::Setup(format!("releasing the job: {e}")))?;
     drop(go);
-    read_report(report_r, plan)
+    read_report(report_r, job.pid(), plan)
 }
 
 /// Start `plan` as a job. See [`crate::job::Launch::spawn`].
