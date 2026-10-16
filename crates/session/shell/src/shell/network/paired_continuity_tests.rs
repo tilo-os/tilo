@@ -238,13 +238,6 @@ fn pump(runtime: &mut DeviceFabricRuntime, session: &Session, selection: &Shared
     );
 }
 
-struct SettingsReset;
-impl Drop for SettingsReset {
-    fn drop(&mut self) {
-        settings_store::install_source(None);
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn paired_continuity_clipboard_requires_activation_and_filters_private_selections() {
@@ -254,10 +247,9 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
         "unix:path=/nonexistent/tilo-continuity-test",
     );
     let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-    settings_store::install_source(Some(Arc::new(
+    let _settings = crate::shell::test_support::install_settings(Arc::new(
         settings_store::SessionSettings::open(paths).unwrap(),
-    )));
-    let _settings_reset = SettingsReset;
+    ));
     settings_store::update_section(
         "continuity",
         serde_json::json!({
@@ -770,7 +762,7 @@ type OwnerFixtureFuture<'local, T> =
 
 struct NativeEditorPair {
     home: tilo_test_env::TestHome,
-    _settings: SettingsReset,
+    _settings: crate::shell::test_support::InstalledSettings,
     left: Session,
     right: Session,
     source: tilo_app::framework::testing::TestApp<code_editor::CodeEditorShell>,
@@ -892,9 +884,9 @@ impl NativeEditorPair {
             install_editor_package(&mut home);
             let (source, mut target) = mounted_editors(&home);
             let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-            settings_store::install_source(Some(Arc::new(
+            let settings = crate::shell::test_support::install_settings(Arc::new(
                 settings_store::SessionSettings::open(paths).unwrap(),
-            )));
+            ));
             settings_store::update_section(
                 "continuity",
                 serde_json::json!({
@@ -971,7 +963,7 @@ impl NativeEditorPair {
             pair(&left, &right).await;
             Self {
                 home,
-                _settings: SettingsReset,
+                _settings: settings,
                 left,
                 right,
                 source,

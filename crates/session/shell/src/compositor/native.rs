@@ -8880,7 +8880,8 @@ mod live_power_settings_tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session_settings = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        settings_store::install_source(Some(session_settings.host_view().unwrap()));
+        let settings =
+            crate::shell::test_support::install_settings(session_settings.host_view().unwrap());
         let live = settings_store::live::LiveSettings::start(|| {});
         let mut follower = settings_store::live::SectionFollower::new(&live);
         let bridge = tilo_power_mgmt::PowerBridge::new();
@@ -8953,7 +8954,7 @@ mod live_power_settings_tests {
                 "locking by hand still works"
             );
         }
-        settings_store::install_source(None);
+        drop(settings);
     }
 }
 

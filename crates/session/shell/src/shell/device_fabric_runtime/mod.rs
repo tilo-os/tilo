@@ -9171,11 +9171,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
         let open = || {
-            settings_store::install_source(Some(Arc::new(
+            crate::shell::test_support::install_settings(Arc::new(
                 settings_store::SessionSettings::open(paths.clone()).unwrap(),
-            )));
+            ))
         };
-        open();
+        let settings = open();
 
         // A winner from another device reaches this process's readers and the
         // copy the compositor boots from and apps read.
@@ -9206,9 +9206,9 @@ mod tests {
         );
 
         // A restarted session reads the same records.
-        settings_store::install_source(None);
+        drop(settings);
         std::fs::remove_file(&paths.copy).unwrap();
-        open();
+        let _settings = open();
         assert_eq!(
             settings_store::load_section("appearance"),
             serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
@@ -9220,7 +9220,6 @@ mod tests {
             settings_store::load_section_at(&paths.copy, "appearance")["mode"],
             "dark"
         );
-        settings_store::install_source(None);
     }
 
     #[test]

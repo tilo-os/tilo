@@ -1094,15 +1094,7 @@ fn assert_foreign_pixel(
     assert_eq!(&pixels[at..at + 3], &xrgb, "actual foreign interior pixels");
 }
 
-struct ForeignFilterSettings(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-impl Drop for ForeignFilterSettings {
-    fn drop(&mut self) {
-        settings_store::install_source(self.0.take());
-    }
-}
-
-fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
-    let previous = settings_store::installed_source();
+fn foreign_filter_settings(frame: &FrameBuilder) -> crate::shell::test_support::InstalledSettings {
     let temperatures: serde_json::Map<_, _> = frame
         .chrome()
         .tree()
@@ -1123,8 +1115,7 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
             "read-only fixture settings",
         ))
     });
-    settings_store::install_source(Some(std::sync::Arc::new(source)));
-    ForeignFilterSettings(previous)
+    crate::shell::test_support::install_settings(std::sync::Arc::new(source))
 }
 
 // Exact client damage is published through the Linux capture seam

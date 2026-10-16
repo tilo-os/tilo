@@ -900,7 +900,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        settings_store::install_source(Some(session.host_view().unwrap()));
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
 
         // Phase `every_setting_has_get_and_set_and_a_boolean_has_toggle`.
@@ -1099,6 +1099,6 @@ mod tests {
             );
             assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
         }
-        settings_store::install_source(None);
+        drop(settings);
     }
 }
