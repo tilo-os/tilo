@@ -4640,6 +4640,122 @@ pub(crate) mod tests {
         assert!(turn.starts_with(&briefed.reference));
     }
 
+    /// The casework room after a wait: Chat open on the room's record with
+    /// Lena's channel, Mail with `messages` messages and Sheets
+    /// with `sheets` sheets, each resource publishing a dozen operations.
+    fn casework_context(messages: usize, sheets: usize) -> PlanContext {
+        use tilo_actions::OperationKind;
+        let alike = |resource: &str, kind: &str, label: &str, actions: &[&str]| {
+            actions
+                .iter()
+                .map(|action| {
+                    let mut descriptor =
+                        operation(resource, action, OperationKind::Document, vec![]);
+                    descriptor.resource_kind = kind.into();
+                    descriptor.resource_label = label.into();
+                    descriptor
+                })
+                .collect::<Vec<_>>()
+        };
+        let chat = alike(
+            "chat.channel:wa-lena-hoffmann",
+            "chat.channel",
+            "#WhatsApp: Lena Hoffmann (+49 151 2345 6789)",
+            &[
+                "share-resource",
+                "deliver-message",
+                "submit-feedback",
+                "post",
+                "rename",
+                "archive",
+                "mark-read",
+                "delete",
+            ],
+        );
+        let ops: Vec<String> = (0..12).map(|op| format!("op-{op}")).collect();
+        let ops: Vec<&str> = ops.iter().map(String::as_str).collect();
+        let mut mail = Vec::new();
+        for n in 0..messages {
+            mail.extend(alike(
+                &format!("mail.message:{n:08x}-2222-4000-8000-000000000000"),
+                "mail.message",
+                &format!("Claim HM-4821{n}"),
+                &ops,
+            ));
+        }
+        let mut workbook = Vec::new();
+        for n in 0..sheets {
+            // Each sheet its own operations, so none share a line.
+            let own: Vec<String> = ops.iter().map(|op| format!("{op}-{n}")).collect();
+            let own: Vec<&str> = own.iter().map(String::as_str).collect();
+            workbook.extend(alike(
+                &format!("sheets.sheet:{n:08x}-3333-4000-8000-000000000000"),
+                "sheets.sheet",
+                &format!("Sheet {n}"),
+                &own,
+            ));
+        }
+        PlanContext {
+            open: vec![
+                (route("so.tilo.chat", ""), chat),
+                (route("so.tilo.mail", "m1"), mail),
+                (route("so.tilo.sheets", "w1"), workbook),
+            ],
+            apps: vec![
+                "so.tilo.chat".into(),
+                "so.tilo.mail".into(),
+                "so.tilo.sheets".into(),
+            ],
+            room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+            ..PlanContext::default()
+        }
+    }
+
+    /// The plan after a wait carries what the first plan's reads answered,
+    /// which names every mail message and sheet: more operations than the
+    /// listing's cap. They are listed on top of each app's share, so the
+    /// Chat channel the reply goes to still offers `post`, named by its
+    /// label without Chat's `#` or not named at all (r2-casework on v19:
+    /// seven of eight models never replied in Chat).
+    #[test]
+    fn a_replan_whose_reads_name_many_records_still_lists_the_channel_to_reply_in() {
+        let mut context = casework_context(8, 8);
+        let ids: Vec<String> = context
+            .open
+            .iter()
+            .flat_map(|(_, descriptors)| descriptors)
+            .filter(|descriptor| !descriptor.address.resource.starts_with("chat."))
+            .map(|descriptor| descriptor.address.resource.clone())
+            .collect();
+        context.observed = vec![format!("the reads answered {}", ids.join(", "))];
+        let (offered, _) = catalogue(&context);
+        assert!(offered.offers.len() > MOST_PUBLISHED + 50);
+        let briefed = briefing(&context, &offered);
+        for (request, rest) in [
+            (
+                "Reply briefly in her \"WhatsApp: Lena Hoffmann (+49 151 2345 6789)\" channel in Chat",
+                "What you waited for arrived in mail. Then: reply in her WhatsApp channel",
+            ),
+            (
+                "Update the case, then reply to her in Chat",
+                "What you waited for arrived in mail. Then: reply to her",
+            ),
+        ] {
+            context.request = Some(request.into());
+            let mut revealed = tilo_agent::tools::Revealed::new();
+            let task = with_results(rest, &context);
+            let turn = first_turn(&task, &briefed, &offered, &mut revealed);
+            assert!(
+                revealed.contains("chat.channel:wa-lena-hoffmann#post"),
+                "the channel is not crowded out ({request}): {turn}"
+            );
+            assert!(
+                revealed.contains("mail.message:00000007-2222-4000-8000-000000000000#op-11"),
+                "every message the reads named is listed past the cap: {turn}"
+            );
+        }
+    }
+
     /// The reference is the same bytes whatever the task, the records open
     /// and what they hold — only the apps granted shape it — and stays
     /// within its budget per app, document operations first.

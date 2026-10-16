@@ -1043,12 +1043,16 @@ fn alike_groups(catalogue: &Catalogue) -> BTreeMap<ResourceKey<'_>, Vec<Resource
         .collect()
 }
 
-/// The offers a [`catalogue_summary_with`] lists, at most `most` (counting
-/// a group of look-alike resources, `groups`, once): every open first, then
-/// every resource `named` names, then each application's best in turn, so a
-/// large one cannot crowd the others out; with the applications in order.
-/// A group's head stands for all of it: each of its operations listed is
-/// listed for every resource of the group.
+/// The offers a [`catalogue_summary_with`] lists: every open, then each
+/// application's best in turn up to `most` (counting a group of look-alike
+/// resources, `groups`, once), so a large one cannot crowd the others out;
+/// then every resource `named` names, whatever the cap. Named resources come
+/// on top of that share rather than out of it: a re-plan's text holds what
+/// its reads answered, which names many records, and taking them first
+/// left no room for an application it named none of (the channel to reply
+/// in). With the applications in order. A group's head stands for all of
+/// it: each of its operations listed is listed for every resource of the
+/// group.
 fn summary_offers<'c>(
     catalogue: &'c Catalogue,
     most: usize,
@@ -1087,6 +1091,25 @@ fn summary_offers<'c>(
         .iter()
         .filter(|offer| opened_app(offer).is_some())
         .collect();
+    let mut depth = 0;
+    while chosen.len() < most {
+        let mut any = false;
+        for offers in per_app.values() {
+            if let Some(offer) = offers.get(depth) {
+                any = true;
+                if opened_app(offer).is_none()
+                    && chosen.len() < most
+                    && !chosen.iter().any(|seen| std::ptr::eq(*seen, *offer))
+                {
+                    chosen.push(offer);
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        depth += 1;
+    }
     if let Some(named) = named {
         // Each resource is asked once, by its first offer; a member of a
         // group pins its head, which stands for all of it.
@@ -1108,25 +1131,6 @@ fn summary_offers<'c>(
                 chosen.push(offer);
             }
         }
-    }
-    let mut depth = 0;
-    while chosen.len() < most {
-        let mut any = false;
-        for offers in per_app.values() {
-            if let Some(offer) = offers.get(depth) {
-                any = true;
-                if opened_app(offer).is_none()
-                    && chosen.len() < most
-                    && !chosen.iter().any(|seen| std::ptr::eq(*seen, *offer))
-                {
-                    chosen.push(offer);
-                }
-            }
-        }
-        if !any {
-            break;
-        }
-        depth += 1;
     }
     // Every member of a group takes what its head was listed with.
     let mut members: BTreeMap<(ResourceKey<'c>, &str), Vec<&Offer>> = BTreeMap::new();
@@ -2306,6 +2310,65 @@ mod tests {
         assert!(
             !revealed.contains("video.clip:0000c110-0000-4000-8000-000000000000#set-op-19-0"),
             "{summary}"
+        );
+    }
+
+    /// The casework re-plan after a wait: what its reads answered names
+    /// every mail message and sheet, more operations than the cap holds.
+    /// Those are listed on top of each application's share of the cap, so
+    /// the Chat channel no text names still offers its `post`.
+    #[test]
+    fn named_resources_past_the_cap_leave_other_applications_their_share() {
+        let mut offers = Vec::new();
+        for action in [
+            "share-resource",
+            "deliver-message",
+            "submit-feedback",
+            "post",
+        ] {
+            offers.push(offer(
+                "chat",
+                "chat.channel:wa-lena",
+                "chat.channel",
+                action,
+                action,
+                InputSpec::None,
+            ));
+        }
+        for n in 0..12 {
+            let message = format!("mail.message:0000a11{n:x}-0000-4000-8000-000000000000");
+            for op in 0..10 {
+                offers.push(offer(
+                    "mail",
+                    &message,
+                    "mail.message",
+                    &format!("op-{op}-{n}"),
+                    "Op",
+                    InputSpec::None,
+                ));
+            }
+        }
+        let catalogue = Catalogue {
+            held: vec!["chat", "mail"],
+            offers,
+            ..Catalogue::default()
+        };
+        let every_message = |resource: &str| resource.starts_with("mail.message:");
+        let nothing = |_: &str| false;
+        let named = Naming {
+            resource: &every_message,
+            label: &nothing,
+        };
+        let mut revealed = Revealed::new();
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 20, &|_| false, Some(&named));
+        assert!(
+            revealed.contains("chat.channel:wa-lena#post"),
+            "the channel is not crowded out: {summary}"
+        );
+        assert!(
+            revealed.contains("mail.message:0000a11b-0000-4000-8000-000000000000#op-9-11"),
+            "every named message is listed past the cap: {summary}"
         );
     }
 

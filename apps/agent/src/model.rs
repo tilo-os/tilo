@@ -846,8 +846,14 @@ pub fn action_user_turn_listing(
     // earlier step returned, in what the steps answered), is listed
     // whatever the cap; many alike share a line.
     let lower = rest.to_lowercase();
+    // A channel's label carries Chat's `#`, which a request naming the
+    // channel ("the \"WhatsApp: Lena\" channel") leaves out.
     let label = |label: &str| {
-        let label = label.trim().to_lowercase();
+        let label = label
+            .trim()
+            .trim_start_matches('#')
+            .trim_start()
+            .to_lowercase();
         label.chars().count() >= 3 && lower.contains(&label)
     };
     let resource = |resource: &str| {

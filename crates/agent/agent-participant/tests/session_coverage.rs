@@ -2180,7 +2180,8 @@ async fn written_agent(
             delegation,
         },
         control.clone(),
-        catalogue(),
+        // Mail too: a worker holds it though a page cannot mount it.
+        tilo_agent_participant::AppCatalogue::native(),
         Box::new(DirectPlanner),
     )
     .unwrap();
@@ -2554,5 +2555,405 @@ async fn an_import_and_another_agents_writing_each_keep_their_own_document() {
 
     fay.close();
     eve.close();
+    host.relay.shutdown().await;
+}
+
+const MAIL: &str = "so.tilo.mail";
+const NOTES: &str = "so.tilo.notes";
+
+/// The first user turn of a chat-completions request: what the plan was
+/// shown, its listing of the operations published right now included.
+fn first_user_turn(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).unwrap();
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The casework flow after a wait, as `r2-casework` runs it: Sim writes
+/// Lena's channel in the room's Chat record and the claims
+/// mailbox, Web clips the claims rules into Notes and Ops imports the
+/// claims workbook, all as written steps. Cass's model first reads the
+/// mailbox (its answer names every message), then only waits for Lena's
+/// renewed-ID email. When Sim delivers it, the plan after the wake is
+/// shown what that read named, more operations than the listing's cap,
+/// and still the channel's `post` beside them: the reply lands in the
+/// channel Sim exports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_plan_after_a_wait_is_offered_the_rooms_chat_channel_to_reply_in() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let sim_content = tilo_content::ContentStore::memory();
+    let (mut sim, sim_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("sim", "Sim"),
+        &[CHAT, MAIL],
+        sim_content.clone(),
+    )
+    .await;
+    let ops_content = tilo_content::ContentStore::memory();
+    let (mut ops, ops_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("ops", "Ops"),
+        &[SHEETS],
+        ops_content.clone(),
+    )
+    .await;
+    let (mut web, web_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("web", "Web"),
+        &[NOTES],
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let channel = "chat.channel:wa-lena-hoffmann";
+    let post = format!("{channel}#post");
+    let plan = |steps: serde_json::Value, wait: serde_json::Value| {
+        tool_call(
+            "p",
+            "plan",
+            &serde_json::json!({ "steps": steps, "why": "casework", "wait_for": wait }),
+        )
+    };
+    let read_mail = tool_call(
+        "r1",
+        "read_view",
+        &serde_json::json!({
+            "operation": "mail.mailbox#search-messages",
+            "arguments": { "query": "claim" },
+        }),
+    );
+    let wait = plan(
+        serde_json::json!([]),
+        serde_json::json!({ "app": MAIL, "contains": "Renewed ID", "seconds": 60 }),
+    );
+    let reply = plan(
+        serde_json::json!([{
+            "operation": post,
+            "arguments": { "value": "Your update is on its way by email." },
+        }]),
+        serde_json::Value::Null,
+    );
+    let nothing = plan(serde_json::json!([]), serde_json::Value::Null);
+    let (url, sent) = model_endpoint(vec![
+        read_mail,
+        wait,
+        reply,
+        nothing.clone(),
+        nothing.clone(),
+        nothing,
+    ]);
+    let device = enrol(&root, "Agent: Cass", CertificationPolicy::agent().ceiling);
+    let now = tilo_clock::unix_now_ns();
+    let delegation = AgentDelegation::sign(
+        &root,
+        device.cert.device_public_key,
+        "cass",
+        "Cass",
+        [0x0f, 0x4c, 0x5c],
+        AgentScope {
+            rooms: vec![ROOM.into()],
+            apps: [CHAT, SHEETS, NOTES, MAIL].map(str::to_owned).to_vec(),
+            may_confirm: false,
+        },
+        now,
+        now + 3_600_000_000_000,
+    )
+    .unwrap();
+    host.relay.register_agent(delegation.clone()).unwrap();
+    let cass_control = AgentControl::new(delegation.clone());
+    let model = tilo_agent_participant::OpenAiModel::new(
+        &url,
+        "canned",
+        tilo_agent_participant::ApiKey::None,
+        Duration::from_secs(30),
+        tilo_model_gateway::openai::Target::Standard,
+    );
+    let mut cass = AgentParticipant::start(
+        ParticipantConfig {
+            host: host.iroh(),
+            host_cert: host_device.cert.clone(),
+            room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
+        },
+        AgentIdentity {
+            key: device.key.clone(),
+            cert: device.cert,
+            delegation,
+        },
+        cass_control.clone(),
+        tilo_agent_participant::AppCatalogue::native(),
+        Box::new(ModelPlanner::new(Box::new(model))),
+    )
+    .unwrap();
+    wait_for("Cass to be admitted", || {
+        cass.pump();
+        let waiting = cass_control.status() == AgentStatus::Waiting;
+        async move { waiting.then_some(()) }
+    })
+    .await;
+
+    let lena = |body: &str, ts: &str| {
+        (
+            CHAT,
+            channel,
+            "deliver-message",
+            serde_json::json!({ "author": "Lena Hoffmann", "body": body, "ts": ts }),
+        )
+    };
+    let mail = |subject: &str, from: &str, folder: &str, id: &str| {
+        (
+            MAIL,
+            "mail.mailbox",
+            "deliver-message",
+            serde_json::json!({
+                "from": from, "to": "Harbour Mutual Claims <claims@harbourmutual.example>",
+                "subject": subject, "body": format!("About {subject}."), "folder": folder,
+                "date": "2026-10-13T15:10:00Z", "message_id": id,
+            }),
+        )
+    };
+    let seed = written(&[
+        (
+            CHAT,
+            &format!("chat.workspace:{ROOM}"),
+            "new-channel",
+            serde_json::json!({
+                "value": "WhatsApp: Lena Hoffmann (+49 151 2345 6789)",
+                "id": "wa-lena-hoffmann",
+            }),
+        ),
+        lena(
+            "Hi, this is Lena Hoffmann, claim HM-48213.",
+            "2026-10-13T14:02:00Z",
+        ),
+        lena(
+            "I'll email you the new card's details this morning.",
+            "2026-10-14T06:53:00Z",
+        ),
+        mail(
+            "Your claim HM-48213",
+            "Harbour Mutual Claims <claims@harbourmutual.example>",
+            "sent",
+            "ack-hm48213@harbourmutual.example",
+        ),
+        mail(
+            "Claim HM-48231 - schedule follows",
+            "Lena Hofmann <l.hofmann@webmail.example>",
+            "inbox",
+            "hm48231-1@webmail.example",
+        ),
+        mail(
+            "Claim HM-48190 - invoice attached",
+            "Jan Berger <jan@example.org>",
+            "inbox",
+            "hm48190-1@example.org",
+        ),
+    ]);
+    let rules: Vec<(&str, &str, &str, serde_json::Value)> = [
+        "harbourmutual.example - How gadget claims work",
+        "harbourmutual.example - What gadget cover pays",
+        "harbourmutual.example - Excess and limits",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(n, title)| {
+        (
+            NOTES,
+            "notes.notebook",
+            "apply",
+            serde_json::json!({ "action": { "AppendPage": {
+                "id": format!("0000c1a1-0000-4000-8000-00000000000{n}"),
+                "title": title, "parent": "", "text": format!("{title}: the rules."),
+            }}}),
+        )
+    })
+    .collect();
+    let clip = written(&rules);
+    let cell = |raw: &str| {
+        Some(sheets::xlsx::ImportedCell {
+            raw: raw.to_owned(),
+            format: sheets::model::CellFormat::General,
+            formula: None,
+            bold: false,
+        })
+    };
+    let table = |name: &str, rows: &[&[&str]]| sheets::xlsx::SheetTable {
+        name: name.into(),
+        hidden: false,
+        rows: rows
+            .iter()
+            .map(|row| row.iter().map(|raw| cell(raw)).collect())
+            .collect(),
+    };
+    let admin = sheets::xlsx::xlsx_bytes(&[
+        table(
+            "Cases",
+            &[
+                &["Case", "Customer", "Status"],
+                &["HM-48213", "Lena Hoffmann", "Open"],
+            ],
+        ),
+        table("Statuses", &[&["Status"], &["Approved"], &["Declined"]]),
+    ])
+    .unwrap();
+    let hash = ops_content.put(&admin).unwrap();
+    let import = written(&[(
+        SHEETS,
+        "sheets.workbook",
+        "import-xlsx-content",
+        serde_json::json!({ "content": format!("tilo.content:{hash}"), "title": "Claims admin" }),
+    )]);
+    let seeded = run_together(
+        &mut [
+            (&mut sim, &sim_control),
+            (&mut web, &web_control),
+            (&mut ops, &ops_control),
+        ],
+        &[seed, clip, import],
+    )
+    .await;
+    seeded.iter().for_each(completed);
+    wait_for("Cass to see the room's records", || {
+        sim.pump();
+        web.pump();
+        ops.pump();
+        cass.pump();
+        let known = [CHAT, MAIL, NOTES, SHEETS]
+            .iter()
+            .all(|app| !known_of(&cass, app).is_empty());
+        async move { known.then_some(()) }
+    })
+    .await;
+    settle(&mut [&mut sim, &mut web, &mut ops, &mut cass]).await;
+
+    let task = cass_control
+        .message(
+            "You handle Harbour Mutual gadget claims. Lena Hoffmann is asking about her claim on \
+             WhatsApp: her conversation is the \"WhatsApp: Lena Hoffmann (+49 151 2345 6789)\" \
+             channel in Chat. Check her case on the \"Cases\" sheet of the Claims admin workbook \
+             in Sheets, against the \"Statuses\" sheet, and our rules clipped into Notes as \
+             \"harbourmutual.example - How gadget claims work\", \"harbourmutual.example - What \
+             gadget cover pays\" and \"harbourmutual.example - Excess and limits\". She is \
+             emailing the details of her renewed ID card: if that email is not in Mail yet, \
+             wait for it. Then reply briefly in her WhatsApp channel that her update is on its \
+             way by email.",
+        )
+        .unwrap();
+    cass.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        cass_control.activity().is_some()
+    });
+    assert!(
+        cass_control.activity().is_some(),
+        "Cass waits for the email"
+    );
+
+    let email = written(&[(
+        MAIL,
+        "mail.mailbox",
+        "deliver-message",
+        serde_json::json!({
+            "from": "Lena Hoffmann <lena.hoffmann@posteo.example>",
+            "to": "Harbour Mutual Claims <claims@harbourmutual.example>",
+            "subject": "Renewed ID card - claim HM-48213",
+            "body": "My renewed ID card is valid until 6 October 2036.",
+            "date": "2026-10-14T07:40:00Z",
+            "message_id": "renewed-id-hm48213@posteo.example",
+            "in_reply_to": "ack-hm48213@harbourmutual.example",
+        }),
+    )]);
+    let event = sim_control.message(&email).unwrap();
+    let ended = |control: &AgentControl, id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == id)
+            .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while ended(&cass_control, &task).is_none() || ended(&sim_control, &event).is_none() {
+        assert!(Instant::now() < deadline, "the task did not end");
+        sim.pump();
+        cass.pump();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let turns: Vec<String> = sent
+        .try_iter()
+        .map(|request| first_user_turn(&request))
+        .collect();
+    let woken = turns
+        .iter()
+        .find(|turn| turn.contains("What you waited for arrived"))
+        .unwrap_or_else(|| panic!("a plan after the wake: {turns:#?}"));
+    let listing = woken
+        .split("Operations published right now:")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        listing.contains("more; ask `list_operations`"),
+        "the read named more than the listing's cap holds: {woken}"
+    );
+    assert!(
+        listing.contains("Claim HM-48190 - invoice attached"),
+        "a message the read named is listed: {woken}"
+    );
+    assert!(
+        listing.contains(&post),
+        "the plan after the wake is offered the channel's post: {woken}"
+    );
+    let info = ended(&cass_control, &task).unwrap();
+    completed(&info);
+    assert!(
+        info.steps.iter().any(|step| step.action == "post"),
+        "{info:?}"
+    );
+
+    let export = written(&[(
+        CHAT,
+        channel,
+        "export-content",
+        serde_json::json!({ "format": "json" }),
+    )]);
+    let [exported] = run_together(&mut [(&mut sim, &sim_control)], &[export])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&exported);
+    let [address] = exported.steps[0].content.as_slice() else {
+        panic!("one exported channel: {exported:?}");
+    };
+    let text = String::from_utf8(
+        sim_content
+            .read(tilo_actions::content_hash(address).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(text.contains("on its way by email"), "{text}");
+
+    sim.close();
+    web.close();
+    ops.close();
+    cass.close();
     host.relay.shutdown().await;
 }
