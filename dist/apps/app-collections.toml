@@ -20,10 +20,21 @@ video-player = ["decode"]
 camera = ["live-capture"]
 # The YouTube client from its engine library beside the runtime.
 tube = ["live", "media", "grayjay-sync", "runtime-engine"]
-mail = ["live"]
+# Account custody with the IMAP client, and the contact directory, from their
+# engine libraries beside the runtime.
+mail = ["live", "runtime-engine"]
 disks = ["live"]
 video-editor = ["decode", "gst"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
 # The painting engines from their engine library beside the runtime.
 canvas = ["runtime-engine"]
+# Account custody and the IMAP client from their engine library beside the
+# runtime.
+settings = ["runtime-engine"]
+# The time-zone database from its engine library beside the runtime.
+calendar = ["runtime-engine"]
+clocks = ["runtime-engine"]
+# The contact directory from its engine library beside the runtime.
+contacts = ["runtime-engine"]
+messages = ["runtime-engine"]
