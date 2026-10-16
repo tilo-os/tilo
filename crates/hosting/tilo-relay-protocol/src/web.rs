@@ -117,19 +117,29 @@ pub const LIVE_PATH: &str = "/moq/live";
 pub const MAX_POLL_MS: u32 = 25_000;
 /// Largest request body a route accepts.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
-/// Most envelopes one `/events` answer carries.
-pub const MAX_PAGE_ENVELOPES: usize = 256;
+/// Most envelopes one `/events` answer carries. A late join's tail is
+/// thousands of small envelopes (a few hundred bytes each), and every page
+/// costs the browser a round trip to the host: the count must let
+/// [`MAX_PAGE_BYTES`] end a page of small envelopes, not cut it short. At
+/// 256 a Lounge with ~4000 envelopes of history took 16 pages, 8 s over a
+/// 450 ms route, before the page could open.
+pub const MAX_PAGE_ENVELOPES: usize = 8192;
+// Envelopes of 128 payload bytes (plus the per-envelope allowance) fill a
+// page by bytes before by count.
+const _: () = assert!(MAX_PAGE_ENVELOPES * (128 + ENVELOPE_OVERHEAD) >= MAX_PAGE_BYTES);
 /// Payload bytes after which an `/events` answer ends (it always carries at
 /// least one envelope). A late join's checkpoint and tail, or a segmented
 /// multi-megabyte document, then stream as a series of bounded pages, each
 /// acknowledged before the next.
 pub const MAX_PAGE_BYTES: usize = 1024 * 1024;
 
+/// What [`envelope_bytes`] allows each envelope for its keys and framing.
+const ENVELOPE_OVERHEAD: usize = 160;
+
 /// Approximate wire size of `envelope`: its opaque payload plus a fixed
 /// allowance for keys and framing. Bounds pages and session buffers without
 /// encoding every envelope twice.
 pub fn envelope_bytes(envelope: &Envelope) -> usize {
-    const OVERHEAD: usize = 160;
     let payload = match envelope {
         Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
@@ -163,7 +173,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
     };
-    payload.saturating_add(OVERHEAD)
+    payload.saturating_add(ENVELOPE_OVERHEAD)
 }
 
 /// What a page needs to know about the host before it has a certificate.
