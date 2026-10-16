@@ -4,7 +4,9 @@
 //! attributed separately in history while acting with the profile actor's
 //! authority. Whoever fronts this endpoint (a hosting provider's proxy) owns
 //! end-user authentication and pins sessions to the right machine; the
-//! optional bearer token only proves that the caller is that proxy.
+//! bearer token proves that the caller is that proxy. It is required even on
+//! loopback, which every process and account of the machine can reach. Local
+//! assistants can use the owner-only Unix socket (`--connect`) instead.
 //!
 //! Only JSON responses are produced: no server-initiated stream is offered, so
 //! `GET` answers 405 as the specification allows.
@@ -43,7 +45,7 @@ const SESSION_IDLE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_LABEL_CHARS: usize = 80;
 const VIEWER_PREFIX: &str = "/viewer/invitations";
 
-/// Where to listen and which bearer token, if any, callers must present.
+/// Where to listen and which bearer token callers must present.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub address: SocketAddr,
@@ -54,13 +56,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// Read the listen address and optional token file named by the
+    /// Read the listen address and required token file named by the
     /// environment. `None` when no address is configured.
     ///
     /// # Errors
     ///
-    /// Rejects an unparsable address, an unreadable or empty token file, and a
-    /// non-loopback address without a token, or a malformed room UUID.
+    /// Rejects an unparsable address, a missing, unreadable or empty token
+    /// file, or a malformed room UUID.
     pub fn from_env() -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os(ADDRESS_ENV) else {
             return Ok(None);
@@ -90,8 +92,8 @@ impl Config {
 
     /// # Errors
     ///
-    /// Rejects exposing the endpoint beyond loopback without a token or a
-    /// non-canonical selected room UUID.
+    /// Rejects an endpoint without a nonempty token, including on loopback,
+    /// or a non-canonical selected room UUID.
     pub fn validate(&self) -> io::Result<()> {
         if self.room.as_deref().is_some_and(|room| {
             uuid::Uuid::parse_str(room).map_or(true, |id| id.is_nil() || id.to_string() != room)
@@ -100,9 +102,13 @@ impl Config {
                 "{ROOM_ENV} must be a canonical non-nil room UUID"
             )));
         }
-        if !self.address.ip().is_loopback() && self.token.is_none() {
+        if self
+            .token
+            .as_deref()
+            .is_none_or(|token| token.trim().is_empty())
+        {
             return Err(invalid(format!(
-                "{ADDRESS_ENV} beyond loopback requires {TOKEN_FILE_ENV}"
+                "{ADDRESS_ENV} requires a nonempty {TOKEN_FILE_ENV}, including on loopback; local assistants can use `--connect`"
             )));
         }
         Ok(())
@@ -331,8 +337,12 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     }
 
     fn authorized(&self, headers: &hyper::HeaderMap) -> bool {
-        let Some(expected) = &self.token else {
-            return true;
+        let Some(expected) = self
+            .token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+        else {
+            return false;
         };
         headers
             .get(header::AUTHORIZATION)
