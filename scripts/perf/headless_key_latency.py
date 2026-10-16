@@ -37,6 +37,7 @@ import math
 import os
 import random
 import re
+import selectors
 import shutil
 import subprocess
 import sys
@@ -134,10 +135,44 @@ def session_env(root: Path, args: argparse.Namespace, ctl: Path) -> dict[str, st
     return env
 
 
+def wait_client_ready(proc: subprocess.Popen, timeout: float) -> str:
+    """Bound the complete readiness line, including a client that writes only a prefix."""
+    deadline = time.monotonic() + timeout
+    data = b""
+    with selectors.DefaultSelector() as selector:
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        while b"\n" not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise RuntimeError("latency client readiness timed out")
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            if not chunk:
+                raise RuntimeError(f"latency client exited before readiness: {data!r}")
+            data += chunk
+    fields = data.split(b"\n", 1)[0].split()
+    if (len(fields) != 2 or fields[0] != b"READY"
+            or re.fullmatch(rb"[1-9][0-9]*x[1-9][0-9]*", fields[1]) is None):
+        raise RuntimeError(f"invalid latency client readiness: {data!r}")
+    return fields[1].decode("ascii")
+
+
+def stop_client(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
+
+
 def measure(args: argparse.Namespace) -> dict:
     bench = _bench()
     shell, client = Path(args.shell_bin), Path(args.client_bin)
-    for binary in (shell, client):
+    for binary in ((shell,) if args.app else (shell, client)):
         if not binary.is_file():
             sys.exit(f"missing binary {binary}: see the build lines in --help")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -146,7 +181,7 @@ def measure(args: argparse.Namespace) -> dict:
     ctl_path = root / "run" / "control.sock"
     env = session_env(root, args, ctl_path)
     log = args.out / f"{args.label}.log"
-    proc = client_proc = None
+    proc = client_proc = control = None
     try:
         provision = subprocess.run(
             [str(shell), "--provision-identity", "--disable-peer-sync"], env=env,
@@ -177,10 +212,8 @@ def measure(args: argparse.Namespace) -> dict:
                     [str(client), app, "--damage", args.damage, "--buffers", args.buffers],
                     env={**env, "WAYLAND_DISPLAY": wayland},
                     stdout=subprocess.PIPE, text=True)
-                ready = client_proc.stdout.readline()
-                if not ready.startswith("READY"):
-                    sys.exit(f"the client did not map: {ready!r}")
-                print(f"[key-latency] client window {ready.split()[1]}", flush=True)
+                window = wait_client_ready(client_proc, args.startup_timeout)
+                print(f"[key-latency] client window {window}", flush=True)
             time.sleep(args.settle)
             rng = random.Random(args.seed)
             keys = "abcdefghijklmnopqrstuvwxyz"
@@ -192,13 +225,20 @@ def measure(args: argparse.Namespace) -> dict:
                 # Random phase against the display so no refresh position is favoured.
                 time.sleep(args.interval_ms / 1000 + rng.random() / args.hz)
             time.sleep(1.0)
-            control.close()
+            if proc.poll() is not None:
+                raise RuntimeError(f"compositor exited during measurement: {proc.returncode}")
+            if client_proc is not None and client_proc.poll() is not None:
+                raise RuntimeError(f"latency client exited during measurement: {client_proc.returncode}")
     finally:
-        if client_proc is not None:
-            client_proc.terminate()
-        if proc is not None:
-            bench.stop_process_group(proc)
-        shutil.rmtree(root, ignore_errors=True)
+        if control is not None:
+            control.close()
+        try:
+            if client_proc is not None:
+                stop_client(client_proc)
+        finally:
+            if proc is not None:
+                bench.stop_process_group(proc)
+            shutil.rmtree(root, ignore_errors=True)
     text = log.read_text(errors="replace")
     rows = parse_samples(text, app)[args.warmup:]
     if len(rows) < args.keys * 0.8:
