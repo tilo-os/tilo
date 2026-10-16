@@ -102,7 +102,12 @@ impl Row {
 
 /// `https://www.example.com/a` as `example.com/a`: what a person reads.
 pub fn display_url(url: &str) -> String {
-    normalize_url(url).trim_end_matches('/').to_owned()
+    let url = url.trim();
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.strip_prefix("www.")
+        .unwrap_or(rest)
+        .trim_end_matches('/')
+        .to_owned()
 }
 
 /// The address without scheme and `www.`, lowercased: the text a typed
@@ -323,7 +328,7 @@ pub fn inline_completion(typed: &str, best: Option<&Match>) -> Option<String> {
     {
         return None;
     }
-    let key = normalize_url(&best.entry.url);
+    let key = display_url(&best.entry.url);
     let typed_lower = typed.to_lowercase();
     let typed_norm = typed_lower.strip_prefix("www.").unwrap_or(&typed_lower);
     let completed = if typed_norm.contains('/') {
@@ -331,8 +336,24 @@ pub fn inline_completion(typed: &str, best: Option<&Match>) -> Option<String> {
     } else {
         host_of(&key).to_owned()
     };
-    // Keep the characters the person typed, complete after them.
-    let rest = completed.strip_prefix(typed_norm)?;
+    // Matching folds case, but navigating must preserve a case-sensitive
+    // path and query. Do not complete a differently cased typed path.
+    let original_typed = if typed_lower.starts_with("www.") {
+        typed.get(4..)?
+    } else {
+        typed
+    };
+    if let Some((_, path)) = original_typed.split_once('/') {
+        let (_, target_path) = completed.split_once('/')?;
+        if !target_path.starts_with(path) {
+            return None;
+        }
+    }
+    let prefix = completed.get(..original_typed.len())?;
+    if prefix.to_lowercase() != typed_norm {
+        return None;
+    }
+    let rest = completed.get(original_typed.len()..)?;
     if rest.is_empty() {
         return None;
     }
@@ -769,6 +790,27 @@ mod tests {
         let hits = idx.search("you", 8, NOW);
         let rows = build_rows("you", &hits, &[], "https://www.youtube.com", MAX_ROWS);
         assert!(rows.iter().all(|r| r.kind != RowKind::History));
+    }
+
+    #[test]
+    fn inline_completion_preserves_case_sensitive_destinations() {
+        let mut index = HistoryIndex::default();
+        let url = "https://example.test/Reports/Annual?token=AbC";
+        index.rebuild(&[HistoryEntry {
+            url: url.into(),
+            title: "Report".into(),
+            last_visit: NOW,
+            visit_count: 1,
+        }]);
+        let hits = index.search("example.test/Re", 8, NOW);
+        let completion = inline_completion("example.test/Re", hits.first()).unwrap();
+        assert_eq!(completion, "example.test/Reports/Annual?token=AbC");
+        let mut rows = Vec::new();
+        lead_with_address(&mut rows, &completion);
+        assert_eq!(rows[0].url, url);
+        assert_eq!(display_url(url), "example.test/Reports/Annual?token=AbC");
+        let hits = index.search("example.test/re", 8, NOW);
+        assert_eq!(inline_completion("example.test/re", hits.first()), None);
     }
 
     #[test]
