@@ -961,6 +961,53 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     }
 }
 
+#[test]
+fn collection_actions_leave_unrelated_library_destinations() {
+    let mut photo = LibraryPhoto::from_image(OpenImage::fixture("trip.png", 20, 10));
+    photo.favorite = true;
+    photo.tags = crate::model::labels(["Trip".to_owned()]);
+    let library = PhotoLibrary::of(
+        vec![photo.clone()],
+        vec![Album {
+            id: "photos.album:trip".into(),
+            name: "Trip".into(),
+            photo_ids: crate::model::labels([photo.id]),
+        }],
+    );
+    for destination in [
+        LibraryDestination::People,
+        LibraryDestination::Albums,
+        LibraryDestination::Places,
+        LibraryDestination::Analysis,
+    ] {
+        for effect in [
+            PhotosEffect::ViewAlbum {
+                album_id: "photos.album:trip".into(),
+            },
+            PhotosEffect::ViewFavorites,
+            PhotosEffect::ViewTag { tag: "Trip".into() },
+        ] {
+            let mut app = test_app();
+            app.library_destination = destination;
+            app.people_mode = destination == LibraryDestination::People;
+            app.selection_mode = true;
+            app.answer_effect(effect, tilo_actions::InvocationId::new(), &library)
+                .unwrap();
+            assert!(app.library_mode);
+            assert_eq!(app.library_destination, LibraryDestination::Timeline);
+            assert!(
+                !app.people_mode,
+                "the requested photo collection replaces People"
+            );
+            assert!(
+                !app.selection_mode,
+                "old collection selection is not carried over"
+            );
+            assert!(app.active_album.is_some() || app.active_favorites || app.active_tag.is_some());
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn collection_views_are_local_complete_and_refuse_stale_ids() {

@@ -648,7 +648,7 @@ impl PhotosApp {
         if library.album(album_id).cloned().is_none() {
             return Err("that album is no longer in the library".to_owned());
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = Some(album_id.to_owned());
         self.active_folder = None;
         self.active_person = None;
@@ -691,7 +691,7 @@ impl PhotosApp {
         if !exists {
             return Err(tr("photos-error-filter-gone"));
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = folder;
         self.active_person = person;
@@ -726,7 +726,7 @@ impl PhotosApp {
         if !exists {
             return Err(tr("photos-error-filter-gone"));
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
@@ -750,7 +750,7 @@ impl PhotosApp {
         if !library.photos.values().any(|photo| photo.favorite) {
             return Err("there are no favorite photographs in the library".to_owned());
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
