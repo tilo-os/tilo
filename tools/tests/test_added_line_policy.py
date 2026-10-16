@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/policy"))
 
 from added_line_policy import (  # noqa: E402
-    SECRET_PATTERNS, added_line_issues, added_lines, object_reader, scan_all,
+    SECRET_PATTERNS, added_line_issues, added_lines, object_reader, scan_all, scan_staged,
 )
 
 # Built from parts so this file passes the scan it exercises.
@@ -102,6 +102,30 @@ class ObjectReaderTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         scan_all(ROOT, secrets_only=False)
 
+    def test_required_index_blobs_cannot_be_missing_or_non_blobs(self):
+        for response in (b"abc missing\n", b"abc tree 0\n\n"):
+            for scan in (scan_all, scan_staged):
+                with self.subTest(response=response, scan=scan.__name__):
+                    process = self.process(response)
+                    listing = (b"100644 abc 0\tnotes.md\0" if scan is scan_all
+                               else b":000000 100644 000 abc A\0notes.md\0")
+                    with patch("added_line_policy.subprocess.Popen", return_value=process), \
+                         patch("added_line_policy.staged_parents", return_value=["HEAD"]), \
+                         patch("added_line_policy.git", side_effect=lambda root, command, *args:
+                               b"" if command == "ls-tree" else listing):
+                        with self.assertRaises(ValueError):
+                            scan(ROOT, secrets_only=False)
+
+    def test_parent_tree_blob_cannot_be_unreadable(self):
+        process = self.process(b"abc blob 5\nclean\nold missing\n")
+        with patch("added_line_policy.subprocess.Popen", return_value=process), \
+             patch("added_line_policy.staged_parents", return_value=["HEAD"]), \
+             patch("added_line_policy.git", side_effect=lambda root, command, *args:
+                   b"100644 blob old\tnotes.md\0" if command == "ls-tree"
+                   else b":100644 100644 old abc M\0notes.md\0"):
+            with self.assertRaisesRegex(ValueError, "cannot inspect parent blob"):
+                scan_staged(ROOT, secrets_only=False)
+
     def test_missing_parent_and_non_blob_remain_optional(self):
         process = self.process(b"HEAD:absent missing\nabc tree 0\n\nabc blob 5\nclean\n")
         with patch("added_line_policy.subprocess.Popen", return_value=process):
@@ -157,6 +181,23 @@ class StagedScanTests(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
                 self.assertIn("only exception", result.stderr)
                 run("git", "rm", "-q", "--cached", "--", name, cwd=self.root)
+
+    def test_newline_and_non_utf8_paths_are_scanned_and_keep_parent_lines(self):
+        for name in ("src/line\nbreak.rs", "src/raw-\udcff.rs"):
+            with self.subTest(name=repr(name)):
+                self.write(name, DBG + "\n")
+                result = self.scan("--staged")
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("dbg!", result.stderr)
+                run("git", "commit", "--no-verify", "-qm", "test: unusual path", cwd=self.root)
+                self.write(name, DBG + "\nfn clean() {}\n")
+                result = self.scan("--staged")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.write(name, DBG + "\nfn clean() {}\n" + CONFLICT + "\n")
+                result = self.scan("--staged")
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("merge-conflict marker", result.stderr)
+                run("git", "commit", "--no-verify", "-qm", "test: changed unusual path", cwd=self.root)
 
     def test_scan_secrets_script_reports_only_credentials(self):
         script = ROOT / "scripts/scan-secrets.sh"

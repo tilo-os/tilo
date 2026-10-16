@@ -79,6 +79,8 @@ def audit(
         if required is not None
         else workflow_files(workflows)
     )
+    if not paths:
+        return [Violation(str(workflows), "<no workflows found>")]
     violations: list[Violation] = []
     for path in paths:
         workflow = path.name
