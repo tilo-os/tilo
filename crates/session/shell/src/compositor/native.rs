@@ -13478,14 +13478,19 @@ pub fn run() {
                                 }),
                             );
                         }
-                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                        CaptureOutcome::ScreenshotSendRequested { device, screenshot } => {
+                            // The capture worker read the screenshot; the
+                            // offer reads no file on the loop.
                             let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
                                 network: peer_sync.as_deref(),
                                 workspace_root: crate::shell::screenshot_send::workspace_files_root(
                                 ),
                             };
-                            let sent =
-                                crate::shell::screenshot_send::route(&path, &target, &mut bridge);
+                            let sent = crate::shell::screenshot_send::offer(
+                                &device,
+                                screenshot.take(),
+                                &mut bridge,
+                            );
                             notify_screenshot_sent(&mut frame_builder, sent);
                         }
                         CaptureOutcome::ScreenshotSent(sent) => {
