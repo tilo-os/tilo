@@ -146,6 +146,9 @@ struct Stack {
     fill_height: bool,
     width_auto: bool,
     grow: bool,
+    /// Pinned at this box of its parent instead of taking part in the
+    /// parent's flow: the primary output's part of a window spanning several.
+    place: Option<Rect>,
     rect: Rect,
 }
 
@@ -165,6 +168,7 @@ impl Stack {
             fill_height: false,
             width_auto: false,
             grow: false,
+            place: None,
             rect: Rect::ZERO,
         }
     }
@@ -222,6 +226,12 @@ impl Stack {
         self.width_auto = true;
         self
     }
+
+    /// Occupy exactly `area` of the parent, out of its flow.
+    fn place(mut self, area: Rect) -> Self {
+        self.place = Some(area);
+        self
+    }
 }
 
 impl Widget for Stack {
@@ -277,6 +287,27 @@ impl Widget for Stack {
             flex_grow: if self.grow { 1.0 } else { 0.0 },
             flex_shrink: if self.grow { 1.0 } else { 0.0 },
             ..Default::default()
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "taffy lays out in f32; output geometry is far inside its range"
+        )]
+        let style = match self.place {
+            Some(area) => Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(area.x0 as f32),
+                    top: length(area.y0 as f32),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                },
+                size: Size {
+                    width: length(area.width() as f32),
+                    height: length(area.height() as f32),
+                },
+                ..style
+            },
+            None => style,
         };
         taffy.widget_node(style, &child_nodes, node_map, self)
     }
@@ -2054,42 +2085,25 @@ impl Widget for GreeterApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
-        let composition = self.build_composition(theme);
-        let mut child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
         (self.layout_area, self.layout_outputs) = self.output_layout();
+        let mut composition = self.build_composition(theme);
         if let Some(area) = self.layout_area {
             // The composition fills the primary output's part of the window.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "taffy lays out in f32; output geometry is far inside its range"
-            )]
-            let style = Style {
-                position: taffy::Position::Absolute,
-                inset: taffy::Rect {
-                    left: length(area.x0 as f32),
-                    top: length(area.y0 as f32),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    bottom: taffy::LengthPercentageAuto::auto(),
-                },
-                size: Size {
-                    width: length(area.width() as f32),
-                    height: length(area.height() as f32),
-                },
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                justify_content: Some(JustifyContent::Center),
-                align_items: Some(AlignItems::Center),
-                ..Default::default()
-            };
-            if let Ok(area) = taffy.new_with_children(style, &[child]) {
-                child = area;
-            }
+            // The box is a widget, not a bare taffy node: the App walks the
+            // widget and taffy trees in lock-step for the focus order, and a
+            // node without a widget shifted every focusable onto its
+            // neighbour's node, so autofocus missed the passcode field.
+            composition = Box::new(
+                Stack::column(0.0, vec![composition])
+                    .align(AlignItems::Center)
+                    .justify(JustifyContent::Center)
+                    .place(area),
+            );
         }
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; `child` was just built in this one above.
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -2109,22 +2123,17 @@ impl Widget for GreeterApp {
             self.content.width() >= 1000.0,
         );
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let mut child = taffy
+        let child = taffy
             .children(node)
             .ok()
             .and_then(|children| children.first().copied());
-        let mut child_origin = Point::new(self.rect.x0, self.rect.y0);
+        let child_origin = Point::new(self.rect.x0, self.rect.y0);
         self.content = self.rect;
         if self.layout_area.is_some()
             && let Some(area) = child
         {
             // The primary-output box built above holds the composition.
             self.content = ui::widget::layout_rect(taffy, area, child_origin);
-            child_origin = Point::new(self.content.x0, self.content.y0);
-            child = taffy
-                .children(area)
-                .ok()
-                .and_then(|children| children.first().copied());
         }
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
@@ -2866,6 +2875,92 @@ mod tests {
         layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
         assert_eq!(app.content, panel);
         assert!(app.layout_outputs.is_empty());
+    }
+
+    #[test]
+    fn the_passcode_keeps_focus_and_takes_keys_when_the_window_spans_two_outputs() {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        // The reported laptop: its panel at scale 2 beside a 1080p monitor.
+        // The window starts at the panel's size and grows to span both once
+        // the kiosk has applied the layout, re-laying the card out on the
+        // panel after the passcode field already had focus.
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
+        let displays = Displays::fixed(Arrangement {
+            displays: vec![
+                Display {
+                    rect: panel,
+                    internal: true,
+                },
+                Display {
+                    rect: monitor,
+                    internal: false,
+                },
+            ],
+        });
+        let greeter = pinned(
+            GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
+                .with_displays(displays),
+        );
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            greeter,
+            (1472, 920),
+            Theme::dark(),
+        );
+        harness.tab(false);
+        assert_eq!(
+            harness.focused_access_node().and_then(|node| node.name),
+            Some("Passcode".to_string())
+        );
+
+        harness.resize((3392, 1080)).unwrap();
+        assert_eq!(harness.root::<GreeterApp>().content, panel);
+        assert_eq!(
+            harness
+                .focus_access_nodes()
+                .first()
+                .and_then(|node| node.name.clone()),
+            Some("Passcode".to_string()),
+            "the first tab stop, where autofocus lands, is the passcode"
+        );
+        assert_eq!(
+            harness.focused_access_node().and_then(|node| node.name),
+            Some("Passcode".to_string()),
+            "re-laying the card out on the panel keeps focus on the passcode"
+        );
+        let password = find_test_id(harness.root_widget(), "greeter.password")
+            .expect("the passcode field is laid out");
+        assert!(password.is_focused(), "the caret is in the passcode field");
+        assert!(inside(panel, password.get_rect()));
+
+        harness.type_text("abc");
+        assert_eq!(
+            harness
+                .root::<GreeterApp>()
+                .password_buffer
+                .lock_recover()
+                .as_str(),
+            "abc",
+            "keys typed at the greeter reach the passcode"
+        );
+
+        // The App finds focusable controls by walking the widget and taffy
+        // trees together; a layout node without a widget sends its focus to
+        // the wrong control.
+        {
+            let mut app = pinned(GreeterApp::with_sessions_and_login_user(
+                one_session(),
+                Some(quick_user()),
+            ));
+            app.displays = harness.root::<GreeterApp>().displays.clone();
+            app.rect = Rect::new(0.0, 0.0, 3392.0, 1080.0);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let root = app.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            assert_eq!(app.layout_area, Some(panel));
+            assert_trees_mirror(&app, &taffy, root, "GreeterApp");
+        }
     }
 
     #[test]
