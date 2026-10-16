@@ -135,6 +135,8 @@ pub mod text_commit;
 pub mod toplevel_icon;
 pub mod touch_pointer;
 #[cfg(target_os = "linux")]
+pub mod watchdog;
+#[cfg(target_os = "linux")]
 pub mod window_previews;
 #[cfg(target_os = "linux")]
 mod window_provenance;

@@ -1126,7 +1126,10 @@ mod tests {
                 .active_workspace()
                 .expect("active workspace")
                 .room;
-            assert!(original.note_peer_present(room, 0x11, "alice"));
+            assert!(original.admit_collaborator_in_room(
+                room,
+                Collaborator::new("alice", "alice").with_session(0x11),
+            ));
             assert!(original.admit_collaborator_in_room(
                 room,
                 Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),

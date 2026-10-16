@@ -369,10 +369,22 @@ fn automatic_display_input_exclusion_revokes_only_the_matching_automatic_lease()
     drop(fixture);
 }
 
+/// The input the native compositor would take next, past its release barriers.
+fn admitted_spatial_input() -> Vec<(
+    crate::shell::personal_continuity::DeviceId,
+    crate::shell::device_fabric::FabricInputEvent,
+)> {
+    use crate::shell::device_fabric_runtime::{SpatialInputBatch, take_spatial_input_batches};
+    let [_, SpatialInputBatch::Inputs(inputs)] = take_spatial_input_batches() else {
+        panic!("the batches are releases, then inputs");
+    };
+    inputs
+}
+
 #[test]
 fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
     use crate::shell::device_fabric::FabricInputEvent;
-    use crate::shell::device_fabric_runtime::{handle_spatial_action, take_spatial_input};
+    use crate::shell::device_fabric_runtime::handle_spatial_action;
     let mut fixture = Fixture::new();
     Fixture::policy(false);
     let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
@@ -462,7 +474,7 @@ fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
         }]
     );
     assert_eq!(
-        take_spatial_input(),
+        admitted_spatial_input(),
         [motion(10), button, key, motion(12)]
             .into_iter()
             .map(|event| (fixture.controller.clone(), event))

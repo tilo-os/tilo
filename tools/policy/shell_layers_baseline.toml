@@ -30,12 +30,6 @@
     "crate::shell::overlay_host",
 ]
 
-# Peer transport. wayland.rs is a Wayland server built on smithay; it belongs beside the
-# compositor, and this goes when it moves there.
-"src/network/wayland.rs" = [
-    "smithay",
-]
-
 # Peer presence measures tiles with vello's re-exported geometry types. This goes when
 # it takes kurbo or its own rectangle type.
 "src/shell/peer_presence.rs" = [

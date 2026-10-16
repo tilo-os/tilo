@@ -2117,51 +2117,11 @@ impl ChromeState {
         reopened
     }
 
-    /// Routes into the active workspace's first strip/group via
-    /// [`super::workspace_drop::apply_workspace_drop_from_path`].
-    /// Returns the new tab id, or `None` if the path has no filename.
-    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
-        let tab_id = {
-            let mut tree = self.tree_mut();
-            super::workspace_drop::apply_workspace_drop_from_path(&mut tree, path)
-        };
-        if let Some(tab_id) = tab_id {
-            self.create_new_tab_record(tab_id);
-            self.bump();
-        }
-        tab_id
-    }
-
-    /// Splices the file's app into the `(strip_id, group_id)` the
-    /// pointer was over, then records a per-workspace filesystem grant.
-    /// A type an installed app declares opens in that app instead (see
-    /// [`crate::shell::doc_open`]).
-    pub fn handle_file_drop_at(
-        &mut self,
-        path: &std::path::Path,
-        strip_id: StripId,
-        group_id: GroupId,
-    ) -> Option<u64> {
-        let tab_id = {
-            let mut tree = self.tree_mut();
-            super::workspace_drop::apply_workspace_drop_at_from_path(
-                &mut tree, path, strip_id, group_id,
-            )
-        };
-        if let Some(tab_id) = tab_id {
-            self.create_new_tab_record(tab_id);
-            // A dropped file is an explicit capability grant to the app
-            // the user aimed at, keyed by the tab the drop created.
-            self.grant_dropped_file_access(path, strip_id, group_id, tab_id);
-            self.bump();
-        }
-        tab_id
-    }
-
-    /// Exact-placement sibling of [`Self::handle_file_drop_at`]. External
-    /// content and existing app tabs share the row's spatial target, so a
-    /// fallback Files/Editor tab must preserve the named tab gap or window
-    /// seam rather than collapsing it to a group id.
+    /// Open a dropped file or folder at `placement`, then record a
+    /// per-workspace filesystem grant. External content and existing app
+    /// tabs share the row's spatial target, so a fallback Files/Editor tab
+    /// must preserve the named tab gap or window seam rather than collapsing
+    /// it to a group id.
     pub fn handle_file_drop_at_placement(
         &mut self,
         path: &std::path::Path,
@@ -4023,39 +3983,7 @@ mod active_tab_tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn dropped_files_create_only_new_records_and_grant_the_real_app_id() {
-        fn history_file_drop_creates_only_the_new_tabs_record() {
-            let (tree, strip, group, existing) =
-                tree_with_single_tab(TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Notes".into()),
-                    label: "Existing".into(),
-                });
-            let chrome = ChromeState::new(tree);
-            let mut state = chrome.borrow_mut();
-            let first = state
-                .handle_file_drop(std::path::Path::new("/missing/example.txt"))
-                .unwrap();
-            let second = state
-                .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
-                .unwrap();
-            for id in [first, second] {
-                assert!(
-                    state
-                        .records()
-                        .read(&ui::RecordId::for_tab(id), |_| ())
-                        .is_some(),
-                    "a successful drop owns its newly minted scratch record"
-                );
-            }
-            assert!(
-                state
-                    .records()
-                    .read(&ui::RecordId::for_tab(existing), |_| ())
-                    .is_none(),
-                "a drop never authorizes repairing a missing persisted sibling"
-            );
-        }
-
+    fn dropped_files_grant_the_real_app_id() {
         /// Gap-2 proof: when the drop target is a real adopted Wayland client,
         /// the recorded grant is keyed by that client's actual
         /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
@@ -4136,7 +4064,6 @@ mod active_tab_tests {
             );
         }
 
-        history_file_drop_creates_only_the_new_tabs_record();
         dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id();
         dropped_file_grant_keyed_by_builtin_canonical_app_id();
     }

@@ -430,6 +430,20 @@ impl HistoryOwner {
         }
     }
 
+    /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`].
+    /// Whether nothing unfinished is left open; a legacy tile keeps no step.
+    pub(crate) fn close_named_step(&self, outer: &mut AutoCommit) -> bool {
+        match &self.0 {
+            OwnerKind::Component(binding) => {
+                binding.close_named_step(outer).unwrap_or_else(|error| {
+                    tracing::debug!(?error, "a committed merge could not close the open step");
+                    false
+                })
+            }
+            OwnerKind::Legacy { .. } => false,
+        }
+    }
+
     pub(crate) fn schedule_committed_history(&self) {
         let (store, checkout) = self.store_checkout();
         store.schedule_committed_history(&checkout.id);

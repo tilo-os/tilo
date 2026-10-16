@@ -1034,7 +1034,6 @@ overview-presence-you-and-one = Du und { $name } seid hier
 overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
-overview-collaborators-here = { $count } Mitwirkende sind hier
 
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo

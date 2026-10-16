@@ -4,14 +4,21 @@
 //! greeter publishes — without OCR, SSH or a debug service.
 //!
 //! Authentication uses the ordinary greetd/PAM worker. Secret arguments are
-//! transient input only: neither published resource values nor encoded operations
-//! contain credentials. Keyboard input readiness remains separately observable.
+//! transient input only: published resource values never contain credentials,
+//! and a secret travels only inside the in-process encoded operation that
+//! carries it to [`GreeterApp::apply_operation`], like every typed effect.
+//! Keyboard input readiness remains separately observable.
+//!
+//! Every door ends in that one function: this console, the toolkit host's
+//! action surface (`Widget::start_operation`) and the keyboard/pointer
+//! handlers, which call the same `attempt_login` and choosers.
 
 use automerge::AutoCommit;
 use console_control::{Request, catalog, wire};
 use serde_json::{Value, json};
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType, Resource,
+    ActionArgs, ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType,
+    Resource,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -20,6 +27,17 @@ use tilo_lock::MutexRecover as _;
 
 /// `provider` in `tilo-control` terms.
 pub const PROVIDER: &str = "greeter";
+
+/// The operation type every greeter action travels under. The greeter
+/// declares it as a locally handled type, so the host publishes its actions.
+pub const OPERATION: &str = "greeter.console/v1";
+
+/// Why an operation was refused: a stable code and a sentence.
+pub(super) type Refused = (&'static str, String);
+
+fn refused(code: &'static str, message: impl Into<String>) -> Refused {
+    (code, message.into())
+}
 
 /// The external-event payload that tells the greeter console requests are
 /// queued.
@@ -54,47 +72,82 @@ impl GreeterApp {
                 &ui::resources::resources(self, state),
                 &query,
             )),
-            Ok(Request::Invoke {
-                provider,
-                id,
-                mut args,
-            }) => {
-                match console_control::admit(
+            Ok(Request::Invoke { provider, id, args }) => {
+                let admitted = console_control::admit(
                     PROVIDER,
                     &ui::resources::resources(self, state),
                     &provider,
                     &id,
                     &args,
-                ) {
+                );
+                match admitted {
                     Err(refusal) => wire::error(refusal.code, &refusal.message),
-                    Ok(admitted) => self.invoke_console(&admitted.address.action, &mut args),
+                    Ok(mut admitted) => {
+                        let reply = match self.apply_operation(&admitted.encoded) {
+                            Ok(answer) => wire::answer(&answer),
+                            Err((code, message)) => wire::error(code, &message),
+                        };
+                        admitted.encoded.payload.zeroize();
+                        reply
+                    }
                 }
             }
         }
     }
 
-    fn invoke_console(
+    /// Apply one encoded greeter operation. The console and the toolkit
+    /// host's action surface both end here, after their own resolution,
+    /// availability and argument binding; the handlers still re-check the
+    /// greeter's preconditions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable code and the reason when the operation is malformed
+    /// or cannot run now.
+    pub(super) fn apply_operation(&mut self, encoded: &EncodedAction) -> Result<Value, Refused> {
+        if encoded.type_id != OPERATION {
+            return Err(refused(
+                "invalid_arguments",
+                format!("not a greeter operation: {}", encoded.type_id),
+            ));
+        }
+        let Ok(Value::Object(mut invocation)) = serde_json::from_slice::<Value>(&encoded.payload)
+        else {
+            return Err(refused("invalid_arguments", "Malformed greeter operation"));
+        };
+        let Some(Value::String(action)) = invocation.remove("action") else {
+            return Err(refused("invalid_arguments", "Malformed greeter operation"));
+        };
+        let mut args = match invocation.remove("args") {
+            Some(Value::Object(args)) => args,
+            None => serde_json::Map::new(),
+            Some(_) => return Err(refused("invalid_arguments", "Malformed greeter operation")),
+        };
+        self.run_action(&action, &mut args)
+    }
+
+    fn run_action(
         &mut self,
         action: &str,
         args: &mut serde_json::Map<String, Value>,
-    ) -> String {
+    ) -> Result<Value, Refused> {
         match action {
             "configure-session-diagnostics" => {
                 let mut flags = [false; 4];
                 for (flag, (param, _)) in flags.iter_mut().zip(&super::SESSION_DIAGNOSTICS) {
                     let Some(enabled) = args.get(*param).and_then(Value::as_bool) else {
-                        return wire::error(
+                        return Err(refused(
                             "invalid_arguments",
                             "Diagnostic options must be booleans",
-                        );
+                        ));
                     };
                     *flag = enabled;
                 }
                 if flags[3] && !flags[2] {
-                    return wire::error(
+                    return Err(refused(
                         "invalid_arguments",
                         "GPU dispatch timing requires GPU timestamps",
-                    );
+                    ));
                 }
                 self.next_sign_in_diagnostics = Some(flags);
             }
@@ -103,14 +156,14 @@ impl GreeterApp {
             "cancel-authentication" => return self.cancel_console_authentication(),
             "sign-in" => {
                 let Some(Value::String(secret)) = args.remove("password") else {
-                    return wire::error("invalid_arguments", "A passcode is required");
+                    return Err(refused("invalid_arguments", "A passcode is required"));
                 };
                 let mut secret = Zeroizing::new(secret);
                 if secret.is_empty() || secret.len() > 4096 {
-                    return wire::error(
+                    return Err(refused(
                         "invalid_arguments",
                         "The passcode is empty or exceeds its limit",
-                    );
+                    ));
                 }
                 {
                     let mut stored = self.password_buffer.lock_recover();
@@ -122,23 +175,29 @@ impl GreeterApp {
             "fingerprint" => self.attempt_login(super::AuthMethod::Fingerprint),
             "choose-account" => {
                 let Some(username) = args.get("username").and_then(Value::as_str) else {
-                    return wire::error("invalid_arguments", "Choose an account on this computer");
+                    return Err(refused(
+                        "invalid_arguments",
+                        "Choose an account on this computer",
+                    ));
                 };
                 let Some(index) = self.users.iter().position(|user| user.username == username)
                 else {
-                    return wire::error("invalid_arguments", "Choose an account on this computer");
+                    return Err(refused(
+                        "invalid_arguments",
+                        "Choose an account on this computer",
+                    ));
                 };
                 self.choose_account(index);
             }
             "set-username" => {
                 let Some(username) = args.get("username").and_then(Value::as_str) else {
-                    return wire::error("invalid_arguments", "A username is required");
+                    return Err(refused("invalid_arguments", "A username is required"));
                 };
                 if username.trim().is_empty() || username.len() > 256 {
-                    return wire::error(
+                    return Err(refused(
                         "invalid_arguments",
                         "The username is empty or exceeds its limit",
-                    );
+                    ));
                 }
                 self.username.set(username.trim().to_owned());
                 self.clear_password();
@@ -146,75 +205,82 @@ impl GreeterApp {
             }
             "choose-session" => {
                 let Some(name) = args.get("session").and_then(Value::as_str) else {
-                    return wire::error("invalid_arguments", "Choose an available session");
+                    return Err(refused("invalid_arguments", "Choose an available session"));
                 };
                 let Some(index) = self
                     .sessions
                     .iter()
                     .position(|session| session.name == name)
                 else {
-                    return wire::error("invalid_arguments", "Choose an available session");
+                    return Err(refused("invalid_arguments", "Choose an available session"));
                 };
                 self.selected_session = index;
                 self.session_choice.set(name.to_owned());
                 self.dirty_structure = true;
             }
-            _ => return wire::error("unknown_action", "This action is not published"),
+            _ => return Err(refused("unknown_action", "This action is not published")),
         }
-        wire::answer(&json!({"status":"accepted","state":self.console_state()}))
+        Ok(self.accepted())
     }
 
-    fn respond_console_challenge(&mut self, args: &mut serde_json::Map<String, Value>) -> String {
+    fn respond_console_challenge(
+        &mut self,
+        args: &mut serde_json::Map<String, Value>,
+    ) -> Result<Value, Refused> {
         let Some(id) = args
             .get("challenge")
             .and_then(Value::as_str)
             .and_then(|id| id.parse::<u64>().ok())
         else {
-            return wire::error(
+            return Err(refused(
                 "invalid_arguments",
                 "Choose the current authentication challenge",
-            );
+            ));
         };
         let Some(Value::String(response)) = args.remove("response") else {
-            return wire::error(
+            return Err(refused(
                 "invalid_arguments",
                 "An authentication response is required",
-            );
+            ));
         };
         let response = Zeroizing::new(response);
         if response.len() > 4096 {
-            return wire::error(
+            return Err(refused(
                 "invalid_arguments",
                 "The authentication response exceeds its limit",
-            );
+            ));
         }
         let Some(session) = &self.auth_session else {
-            return wire::error(
+            return Err(refused(
                 "action_unavailable",
                 "There is no authentication challenge to answer",
-            );
+            ));
         };
         if let Err(reason) = session.respond(id, response) {
-            return wire::error("action_unavailable", reason);
+            return Err(refused("action_unavailable", reason));
         }
         self.clear_password();
         self.dirty_structure = true;
-        wire::answer(&json!({"status":"accepted","state":self.console_state()}))
+        Ok(self.accepted())
     }
 
-    fn cancel_console_authentication(&mut self) -> String {
+    fn cancel_console_authentication(&mut self) -> Result<Value, Refused> {
         let Some(session) = &self.auth_session else {
-            return wire::error(
+            return Err(refused(
                 "action_unavailable",
                 "There is no authentication attempt to cancel",
-            );
+            ));
         };
         if let Err(reason) = session.cancel() {
-            return wire::error("action_unavailable", reason);
+            return Err(refused("action_unavailable", reason));
         }
         self.clear_password();
         self.dirty_structure = true;
-        wire::answer(&json!({"status":"accepted","state":self.console_state()}))
+        Ok(self.accepted())
+    }
+
+    fn accepted(&self) -> Value {
+        json!({"status":"accepted","state":self.console_state()})
     }
 
     /// What the greeter shows, as data.
@@ -407,14 +473,21 @@ fn console_action(id: &'static str, label: &'static str, params: Vec<ActionParam
         super::t(label),
         "",
         OperationKind::Effect,
-        "greeter.console/v1",
+        OPERATION,
         params,
-        move |_| EncodedAction {
-            type_id: "greeter.console/v1".into(),
-            // The credential is deliberately absent from the encoded operation.
-            payload: json!({"action":id}).to_string().into_bytes(),
-        },
+        move |args| encode(id, args),
     )
+}
+
+/// The operation `action` with the arguments the door bound strictly against
+/// its parameters. A secret argument rides along to the in-process handler
+/// only; it is never published or logged (the host redacts `Secret` params).
+fn encode(action: &str, args: &ActionArgs) -> EncodedAction {
+    EncodedAction {
+        type_id: OPERATION.into(),
+        payload: serde_json::to_vec(&json!({"action": action, "args": args.to_json()}))
+            .unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +521,66 @@ mod tests {
         assert_eq!(invoked["err"]["code"], "invalid_arguments");
         let typed = ask(&mut app, r#"{"op":"type","text":"hunter2"}"#);
         assert_eq!(typed["err"]["code"], "not_implemented");
+    }
+
+    #[test]
+    fn the_host_publishes_every_greeter_action_it_can_run() {
+        // The host refuses the whole surface when any effect's operation type
+        // has no handler in the retained tree; validate against the handlers
+        // the greeter actually declares, in every phase that changes it.
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        for phase in [AuthPhase::Idle, AuthPhase::Authenticating] {
+            app.phase = phase;
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
+            let violations = ui::tilo_actions::validate_surface(
+                &resources,
+                &ui::tilo_actions::ActionRegistry::new(),
+                &ui::widget::Widget::resource_operation_handlers(&app),
+            );
+            assert!(violations.is_empty(), "{phase:?}: {violations:?}");
+            for action in [
+                "sign-in",
+                "respond-challenge",
+                "choose-session",
+                "cancel-authentication",
+                "configure-session-diagnostics",
+            ] {
+                assert!(
+                    ui::tilo_actions::door::resolve(
+                        &resources,
+                        &ui::tilo_actions::ActionAddress::new(PROVIDER, action),
+                    )
+                    .is_some(),
+                    "{action} is not published"
+                );
+            }
+        }
+
+        // The surface runs the same handler as the console.
+        app.phase = AuthPhase::Idle;
+        let resources = ui::resources::resources(&app, &AutoCommit::new());
+        let encoded = ui::tilo_actions::door::resolve(
+            &resources,
+            &ui::tilo_actions::ActionAddress::new(PROVIDER, "choose-session"),
+        )
+        .unwrap()
+        .build_json(json!({"session":"GNOME"}).as_object().unwrap())
+        .unwrap();
+        let mut doc = AutoCommit::new();
+        let started = ui::widget::Widget::start_operation(
+            &mut app,
+            &ui::host_operation::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert!(started.is_some());
+        assert_eq!(app.sessions[app.selected_session].name, "GNOME");
     }
 
     #[test]
@@ -613,6 +746,9 @@ mod authentication_tests {
 
     #[test]
     fn session_diagnostics_reach_the_ordinary_authenticated_greetd_start() {
+        // An accepted session start exits the greeter process, as greetd
+        // requires. Run that in a child: in this test binary the exit ended
+        // every test still running or not yet started, and reported success.
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("greetd.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -632,6 +768,30 @@ mod authentication_tests {
             assert!(!request.to_string().contains(SECRET));
             respond(&mut stream, &json!({"type":"success"}));
         });
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "greeter_app::console::authentication_tests::session_diagnostics_start_child",
+                "--nocapture",
+            ])
+            .env("TILO_GREETER_DIAGNOSTICS_START_FIXTURE", &socket)
+            .output()
+            .unwrap();
+        daemon.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(SECRET));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(SECRET));
+    }
+
+    #[test]
+    fn session_diagnostics_start_child() {
+        let Some(socket) = std::env::var_os("TILO_GREETER_DIAGNOSTICS_START_FIXTURE") else {
+            return;
+        };
         let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
         let configured = invoke(
             &mut app,
@@ -641,18 +801,13 @@ mod authentication_tests {
             }),
         );
         assert_eq!(configured["answer"]["status"], "accepted");
-        let updates = start_worker(&mut app, &socket);
-        tilo_test_env::wait_until("authenticated greetd StartSession", || {
-            updates
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|event| matches!(event, crate::auth::AuthUpdate::Accepted))
-        });
         assert_eq!(app.selected_session, 0);
         assert_eq!(app.attempt_username(), "ada");
         assert!(!app.console_state().to_string().contains(SECRET));
-        daemon.join().unwrap();
+        let _updates = start_worker(&mut app, std::path::Path::new(&socket));
+        // The worker exits this process once greetd starts the session; the
+        // parent checks what greetd received.
+        tilo_test_env::wait_until("the accepted session start exits the greeter", || false);
     }
 
     #[test]
@@ -819,6 +974,14 @@ mod authentication_tests {
 
     #[test]
     fn remote_sign_in_uses_the_real_greetd_exchange_and_does_not_disclose_secrets() {
+        // The console and the toolkit host's action surface are two doors to
+        // one handler; both must reach the real greetd conversation.
+        for door in ["console", "surface"] {
+            remote_sign_in_through(door);
+        }
+    }
+
+    fn remote_sign_in_through(door: &str) {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("greetd.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -866,7 +1029,7 @@ mod authentication_tests {
                 "greeter_app::console::authentication_tests::remote_sign_in_fixture_child",
                 "--nocapture",
             ])
-            .env("TILO_GREETER_CONSOLE_AUTH_FIXTURE", "1")
+            .env("TILO_GREETER_CONSOLE_AUTH_FIXTURE", door)
             .env("GREETD_SOCK", &socket)
             .output()
             .unwrap();
@@ -882,11 +1045,11 @@ mod authentication_tests {
 
     #[test]
     fn remote_sign_in_fixture_child() {
-        if std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE").is_none() {
+        let Some(door) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
             let app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             assert!(!ui::resources::resources(&app, &AutoCommit::new()).is_empty());
             return;
-        }
+        };
         let _logs = tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_ansi(false)
@@ -896,14 +1059,41 @@ mod authentication_tests {
         let mut doc = AutoCommit::new();
         let resources = ui::resources::resources(&app, &doc);
         let args = json!({"password":SECRET}).as_object().unwrap().clone();
-        let admitted =
-            catalog::admit(PROVIDER, &resources, PROVIDER, "sign-in@greeter", &args).unwrap();
-        assert!(!String::from_utf8_lossy(&admitted.encoded.payload).contains(SECRET));
-        let reply = app.answer_console(
-            &json!({"op":"actions_invoke","provider":PROVIDER,"id":"sign-in@greeter","args":args})
-                .to_string(),
-            &doc,
-        );
+        // The secret is a `Secret` parameter: the published catalogue never
+        // carries it; it reaches the handler only inside the in-process
+        // operation, as every typed effect's secret does.
+        let catalogue = catalog::enumerate(PROVIDER, &resources, "");
+        assert!(!catalogue.to_string().contains(SECRET));
+        let reply = if door == "surface" {
+            let encoded = ui::tilo_actions::door::resolve(
+                &resources,
+                &ui::tilo_actions::ActionAddress::new(PROVIDER, "sign-in"),
+            )
+            .unwrap()
+            .build_json(&args)
+            .unwrap();
+            let started = ui::widget::Widget::start_operation(
+                &mut app,
+                &ui::host_operation::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .and_then(ui::host_operation::ResourceOperationStart::completed)
+            .unwrap();
+            started.value.unwrap().to_string()
+        } else {
+            app.answer_console(
+                &json!({"op":"actions_invoke","provider":PROVIDER,"id":"sign-in@greeter","args":args})
+                    .to_string(),
+                &doc,
+            )
+        };
         assert_eq!(app.phase, AuthPhase::Idle);
         assert_eq!(app.failures, 1);
         assert!(app.password_buffer.lock().unwrap().is_empty());
