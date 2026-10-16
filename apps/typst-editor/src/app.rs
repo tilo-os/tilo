@@ -562,8 +562,10 @@ impl TypstApp {
         let Some(file) = self.current_file().cloned() else {
             return Err("there is no file to save".into());
         };
+        self.save_path = Some(path.to_path_buf());
         match save_file(path, file.source.as_bytes()) {
             Ok(()) => {
+                self.save_status.set(ui::SaveState::Saved, ui::time::now());
                 self.set_flash(format!("Saved {}", path.display()));
                 let path = path.to_string_lossy().into_owned();
                 if file.path.as_ref().map(|at| at.0.as_str()) != Some(path.as_str())
@@ -1903,6 +1905,31 @@ mod tests {
             assert!(app.io.is_none());
             assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
         }
+    }
+
+    #[test]
+    fn failed_save_keeps_its_retry_destination_and_success_clears_the_failure() {
+        let (mut app, _) = fresh();
+        let dir = unique_dir("save-recovery");
+        let path = dir.join("report.typ");
+        // The missing directory makes the actual save fail, without relying
+        // on permissions (which differ when the tests run as root).
+        assert!(app.save_typ_to(&path).is_err());
+        assert_eq!(app.save_path.as_deref(), Some(path.as_path()));
+        assert!(app.save_status.failure().is_some());
+
+        std::fs::create_dir_all(&dir).unwrap();
+        let retry = app.save_path.clone().unwrap();
+        app.save_typ_to(&retry).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            app.current_file().unwrap().source
+        );
+        assert!(
+            app.save_status.failure().is_none(),
+            "a successful retry dismisses the failure card"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn cursor(p: Point) -> WindowEvent {
