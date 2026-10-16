@@ -145,3 +145,72 @@ cost = "heavy"
 timeout_secs = 14400
 cpus = 16
 memory = "32G"
+
+# ---------------------------------------------------------------------------
+# The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
+
+[[product]]
+family = "os-base"
+name = "rpms"
+about = """
+The frozen RPM snapshot's build half (tools/ci/publish/rpms-build.sh): every package the OS
+Containerfiles name, resolved, signature-checked and laid out as a repository image, natively
+per architecture. build-rpms.yml still signs and publishes the snapshot."""
+repository = "registry.tilo.so/tilo/rpms"
+arches = ["x86_64", "aarch64"]
+
+[product.build]
+run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
+inputs = ["os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+requires = ["disk-100g"]
+cpus = 8
+memory = "16G"
+timeout_secs = 10800
+
+[[product]]
+family = "os-base"
+name = "kernel-buildroot"
+about = """
+The kernel buildroot (os/Containerfile.kernel-buildroot, tools/ci/publish/kernel-buildroot.sh):
+the only build that resolves kernel build dependencies and the Fedora kernel SRPM from Fedora.
+Each architecture is built natively and audited; stable signs (with a transparency log entry,
+since build-kernel.yml verifies requiring one) and publishes both and sets the
+`kernel-buildroot` pointer. `kernel-buildroot.sh pin` commits stable's pins to
+os/kernel-buildroot-snapshot.env from a check that pushes, once build-buildroots.yml no longer
+proposes them."""
+repository = "registry.tilo.so/tilo/tilo-kernel-buildroot"
+arches = ["x86_64", "aarch64"]
+release = ["sha-{commit}-{arch}"]
+tlog = true
+after_publish = "bash tools/ci/publish/kernel-buildroot.sh pins {dir}/x86_64 {dir}/aarch64"
+
+[product.build]
+run = "bash tools/ci/publish/kernel-buildroot.sh build {arch} {out}"
+inputs = ["os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+cost = "heavy"
+
+[product.publish]
+inputs = ["os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+outputs = ["{dir}/pins.env"]
+pointers = { kernel-buildroot = "{dir}/pins.env" }
+
+[[product]]
+family = "os-base"
+name = "kernel"
+about = """
+The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
+fragment, built natively FROM the pinned signed buildroot, then booted under KVM with its
+module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
+node (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build compiles
+the whole kernel. build-kernel.yml still signs, publishes and pins it."""
+repository = "registry.tilo.so/tilo/tilo-kernel"
+arches = ["x86_64", "aarch64"]
+
+[product.build]
+run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
+inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+outputs = ["{out}/secureboot/**"]
+requires = ["disk-100g"]
+cpus = 16
+memory = "24G"
+timeout_secs = 14400
