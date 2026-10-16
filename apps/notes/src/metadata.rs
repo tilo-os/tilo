@@ -574,6 +574,7 @@ mod tests {
         eprintln!("phase metadata_shared_undo_and_redo_preserve_creation");
         {
             let mut state = ui::State::new();
+            crate::read::initialize(&mut state.doc);
             let page = PageId::new_v4();
             apply(
                 &mut state.doc,

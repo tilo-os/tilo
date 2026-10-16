@@ -3,7 +3,7 @@
 [[resources]]
 kind = "notes.notebook"
 label = "Notebook"
-version = 1
+version = 2
 fields = [
   { path = "pages", type = "Collection<Page>", stored = "collection" },
   { path = "pages.*.title", type = "String", label = true, readonly = true },
