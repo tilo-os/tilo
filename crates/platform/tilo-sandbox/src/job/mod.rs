@@ -29,6 +29,8 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub mod quota;
 pub mod spec;
+#[cfg(target_os = "linux")]
+pub mod vm;
 
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
@@ -128,6 +130,18 @@ impl<'a> Launch<'a> {
     #[must_use]
     pub fn cgroup(mut self, cgroup: &'a cgroup::JobCgroup) -> Self {
         self.cgroup = Some(cgroup.dir());
+        self
+    }
+
+    /// Start the job inside the cgroup named by this directory descriptor,
+    /// for a caller that makes and limits its own cgroups and only wants the
+    /// atomic placement (`CLONE_INTO_CGROUP`): t, whose jobs (micro-VM
+    /// steps' QEMU among them) have cgroups it meters itself. The descriptor
+    /// must stay open until [`Launch::spawn`] returns.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn cgroup_fd(mut self, dir: BorrowedFd<'a>) -> Self {
+        self.cgroup = Some(dir);
         self
     }
 
