@@ -134,6 +134,15 @@ class SnapshotManifestTests(unittest.TestCase):
                 self.check(files={"repo/padding": "x" * (32 * 1024),
                                   VERIFY.MANIFEST_PATH: "example-package\n"})
 
+    def test_manifest_aliases_are_checked_for_duplicates(self):
+        for alias in ("././" + VERIFY.MANIFEST_PATH, "repo//tilo-direct-package-specs.txt"):
+            with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, "no regular package manifest"):
+                self.check(files={VERIFY.MANIFEST_PATH: "example-package\n",
+                                  alias: "old-package\n"})
+
+    def test_safe_manifest_alias_is_still_verified(self):
+        self.check(files={"././" + VERIFY.MANIFEST_PATH: "example-package\n"})
+
     def test_parent_path_is_not_the_repository_manifest(self):
         with self.assertRaisesRegex(ValueError, "no regular package manifest"):
             self.check(files={"../" + VERIFY.MANIFEST_PATH: "example-package\n"})
