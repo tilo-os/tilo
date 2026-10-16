@@ -10,11 +10,15 @@
 //! Every way pairing can end is reported: a joined identity, the error the
 //! process recorded, its exit without one, or the process outliving every
 //! window it has. None of them leaves onboarding waiting.
+//!
+//! The status file is read by a watcher thread when the identity directory
+//! changes, never by the compositor's loop, which only takes the reads in.
 
 use std::io::Read as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::onboarding::MintedIdentity;
@@ -269,6 +273,184 @@ pub(crate) enum NearbyEvent {
     Failed(NearbyFailure),
 }
 
+/// How long the status watcher waits for a change before reading the status
+/// file anyway, should no change notification reach it.
+const STATUS_FALLBACK: Duration = Duration::from_millis(250);
+
+/// The status file as the watcher read it, with the identities it names
+/// already verified: the loop never reads the identity directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusRead {
+    progress: NearbyProgress,
+    /// For a completed join, its record, when that verifies.
+    joined: Option<MintedIdentity>,
+    /// Whether this is the final look, made once the helper ended or ran
+    /// out of time.
+    final_look: bool,
+    /// On the final look, the active identity, when one is selected and
+    /// verifies.
+    active: Option<MintedIdentity>,
+}
+
+impl StatusRead {
+    const STARTING: Self = Self {
+        progress: NearbyProgress::Starting,
+        joined: None,
+        final_look: false,
+        active: None,
+    };
+}
+
+/// What wakes the status watcher.
+enum WatcherWake {
+    /// Something in the identity directory changed.
+    Changed,
+    /// The helper ended or ran out of time: look once more, including the
+    /// identity it may have selected.
+    Final,
+    /// The attempt is over.
+    Stop,
+}
+
+/// Reads the helper's status file on its own thread whenever the identity
+/// directory changes, and sends each new read back. The helper is another
+/// process and reports only through that file; reading it on the
+/// compositor's loop held a frame for the disk four times a second.
+struct StatusWatcher {
+    wakes: mpsc::Sender<WatcherWake>,
+    reads: mpsc::Receiver<StatusRead>,
+}
+
+impl StatusWatcher {
+    /// Start watching `status_path`. `None` when the thread cannot start.
+    fn start(status_path: PathBuf, identity_dir: PathBuf) -> Option<Self> {
+        let (wakes, woken) = mpsc::channel();
+        let (sent, reads) = mpsc::channel();
+        // Made on the loop's thread, so a new read wakes the loop it is for.
+        let wake = crate::shell::search::invocation_wake::waker();
+        let changes = wakes.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-nearby-status".into())
+            .spawn(move || {
+                // Change notifications only hurry the next read; without
+                // them the fallback still reads.
+                let watcher =
+                    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                        // An open is no change, and the watcher's own reads
+                        // open the files it watches.
+                        let opened = |event: &notify::Event| {
+                            matches!(
+                                event.kind,
+                                notify::EventKind::Access(notify::event::AccessKind::Open(_))
+                            )
+                        };
+                        if event.is_ok_and(|event| !opened(&event)) {
+                            let _ = changes.send(WatcherWake::Changed);
+                        }
+                    })
+                    .and_then(|mut watcher| {
+                        notify::Watcher::watch(
+                            &mut watcher,
+                            &identity_dir,
+                            notify::RecursiveMode::NonRecursive,
+                        )
+                        .map(|()| watcher)
+                    });
+                if let Err(error) = &watcher {
+                    tracing::debug!(%error, "pairing status changes are not notified; reading on a timer");
+                }
+                watch_status(&status_path, &identity_dir, &woken, &sent, &wake);
+                drop(watcher);
+            });
+        match spawned {
+            Ok(_) => Some(Self { wakes, reads }),
+            Err(error) => {
+                tracing::warn!(%error, "pairing status watcher did not start; reading on the loop");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for StatusWatcher {
+    fn drop(&mut self) {
+        let _ = self.wakes.send(WatcherWake::Stop);
+    }
+}
+
+/// The watcher thread: read the status, send it when it changed or a final
+/// look was asked for, and wait for the next change.
+fn watch_status(
+    status_path: &Path,
+    identity_dir: &Path,
+    woken: &mpsc::Receiver<WatcherWake>,
+    sent: &mpsc::Sender<StatusRead>,
+    wake: &std::task::Waker,
+) {
+    let mut last = None;
+    let mut final_look = false;
+    loop {
+        let read = read_status(status_path, identity_dir, final_look);
+        if final_look || last.as_ref() != Some(&read) {
+            if sent.send(read.clone()).is_err() {
+                return;
+            }
+            wake.wake_by_ref();
+            last = Some(read);
+        }
+        final_look = false;
+        let first = match woken.recv_timeout(STATUS_FALLBACK) {
+            Ok(woke) => Some(woke),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        // One read covers every change queued meanwhile.
+        for woke in first.into_iter().chain(woken.try_iter()) {
+            match woke {
+                WatcherWake::Changed => {}
+                WatcherWake::Final => final_look = true,
+                WatcherWake::Stop => return,
+            }
+        }
+    }
+}
+
+/// Read the status file at `status_path`, verifying the identity a
+/// completed join names, and on a `final_look` the active identity too.
+/// Reads the disk: never on the compositor's loop while the watcher runs.
+fn read_status(status_path: &Path, identity_dir: &Path, final_look: bool) -> StatusRead {
+    let progress = read_progress(status_path);
+    let joined = match &progress {
+        NearbyProgress::Complete {
+            identity,
+            record_path,
+        } => verified(identity_dir, record_path, Some(identity.as_str())),
+        _ => None,
+    };
+    let active = final_look
+        .then(|| runtime_identity::resolve_active_identity(identity_dir))
+        .flatten()
+        .and_then(|path| verified(identity_dir, &path, None));
+    StatusRead {
+        progress,
+        joined,
+        final_look,
+        active,
+    }
+}
+
+/// `path` as a joined identity, when it is a valid record directly in
+/// `identity_dir` (and of `expected`, when given).
+fn verified(identity_dir: &Path, path: &Path, expected: Option<&str>) -> Option<MintedIdentity> {
+    if path.parent() != Some(identity_dir) {
+        return None;
+    }
+    let identity = crate::onboarding::existing_identity_at(path).ok()?;
+    expected
+        .is_none_or(|expected| identity.fingerprint == expected)
+        .then_some(identity)
+}
+
 /// One running pairing attempt. Dropping it stops the helper's whole process
 /// group.
 pub(crate) struct NearbyPairing {
@@ -277,6 +459,13 @@ pub(crate) struct NearbyPairing {
     status_path: PathBuf,
     identity_dir: PathBuf,
     shown_code: Option<String>,
+    /// Reads the status file off the loop; `None` only when its thread
+    /// could not start, and the loop reads instead.
+    watcher: Option<StatusWatcher>,
+    /// What the status file held when last read.
+    status: StatusRead,
+    /// Whether the final look was asked for.
+    ending: bool,
 }
 
 impl NearbyPairing {
@@ -348,51 +537,90 @@ impl NearbyPairing {
             status_path: status_path.to_path_buf(),
             identity_dir: identity_dir.to_path_buf(),
             shown_code: None,
+            watcher: StatusWatcher::start(status_path.to_path_buf(), identity_dir.to_path_buf()),
+            status: StatusRead::STARTING,
+            ending: false,
         })
     }
 
     /// Advance from what the helper reported. After [`NearbyEvent::Joined`]
-    /// or [`NearbyEvent::Failed`] the caller drops this attempt.
+    /// or [`NearbyEvent::Failed`] the caller drops this attempt. Never reads
+    /// the disk while the status watcher runs: the status comes from it.
     pub(crate) fn poll(&mut self, now: Instant) -> NearbyEvent {
         let exited = self
             .child
             .as_mut()
             .and_then(|child| child.try_wait().ok().flatten());
-        let progress = read_progress(&self.status_path);
-        if let NearbyProgress::Complete {
-            identity,
-            record_path,
-        } = &progress
-        {
-            return match self.verified(record_path, Some(identity)) {
+        let ended = exited.is_some() || now >= self.deadline;
+        self.take_status(ended);
+        if matches!(self.status.progress, NearbyProgress::Complete { .. }) {
+            return match self.status.joined.clone() {
                 Some(joined) => NearbyEvent::Joined(joined),
                 None => self.fail(NearbyFailure::new(NearbyCause::InvalidIdentity)),
             };
         }
-        // The join selects its identity as active once its commit has written
-        // everything else. A verified active identity is a completed join even
-        // when its status update was lost, but only once the helper has ended
-        // (or run out of time): ending this attempt stops the helper, and one
-        // still running is still finishing its commit and its status.
-        if (exited.is_some() || now >= self.deadline)
-            && let Some(joined) = runtime_identity::resolve_active_identity(&self.identity_dir)
-                .and_then(|path| self.verified(&path, None))
-        {
-            return NearbyEvent::Joined(joined);
+        if ended {
+            // The join selects its identity as active once its commit has
+            // written everything else. A verified active identity is a
+            // completed join even when its status update was lost, but only
+            // once the helper has ended (or run out of time): ending this
+            // attempt stops the helper, and one still running is still
+            // finishing its commit and its status. The final look reads
+            // both after the end, so what is decided below is what the
+            // helper left.
+            if !self.status.final_look {
+                return NearbyEvent::Idle;
+            }
+            if let Some(joined) = self.status.active.clone() {
+                return NearbyEvent::Joined(joined);
+            }
         }
         if let Some(status) = exited {
+            let progress = self.status.progress.clone();
             return self.exited(status, progress);
         }
         if now >= self.deadline {
             return self.fail(NearbyFailure::new(NearbyCause::TimedOut));
         }
-        if let NearbyProgress::Waiting { code } = progress
-            && self.shown_code.as_ref() != Some(&code)
+        if let NearbyProgress::Waiting { code } = &self.status.progress
+            && self.shown_code.as_ref() != Some(code)
         {
             self.shown_code = Some(code.clone());
-            return NearbyEvent::Code(code);
+            return NearbyEvent::Code(code.clone());
         }
         NearbyEvent::Idle
+    }
+
+    /// Take in the watcher's newest read, asking it for the final look once
+    /// the attempt has `ended`. Without a watcher, read here.
+    fn take_status(&mut self, ended: bool) {
+        let Some(watcher) = &self.watcher else {
+            self.status = read_status(&self.status_path, &self.identity_dir, ended);
+            return;
+        };
+        loop {
+            match watcher.reads.try_recv() {
+                Ok(read) => {
+                    // A final look stands until the attempt is over.
+                    if !self.status.final_look || read.final_look {
+                        self.status = read;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.watcher = None;
+                    self.status = read_status(&self.status_path, &self.identity_dir, ended);
+                    return;
+                }
+            }
+        }
+        if ended && !self.ending {
+            self.ending = true;
+            if watcher.wakes.send(WatcherWake::Final).is_err() {
+                self.watcher = None;
+                self.status = read_status(&self.status_path, &self.identity_dir, ended);
+            }
+        }
     }
 
     fn exited(&mut self, status: ExitStatus, progress: NearbyProgress) -> NearbyEvent {
@@ -423,7 +651,7 @@ impl NearbyPairing {
     /// unless the helper already recorded why it stopped.
     fn fail(&mut self, failure: NearbyFailure) -> NearbyEvent {
         terminate(&mut self.child);
-        if !matches!(read_progress(&self.status_path), NearbyProgress::Failed(_)) {
+        if !matches!(self.status.progress, NearbyProgress::Failed(_)) {
             let mut status = serde_json::Map::new();
             status.insert("state".into(), "failed".into());
             status.insert("cause".into(), failure.cause.status_name().into());
@@ -443,18 +671,6 @@ impl NearbyPairing {
             }
         }
         NearbyEvent::Failed(failure)
-    }
-
-    /// `path` as a joined identity, when it is a valid record directly in
-    /// this identity directory (and of `expected`, when given).
-    fn verified(&self, path: &Path, expected: Option<&str>) -> Option<MintedIdentity> {
-        if path.parent() != Some(self.identity_dir.as_path()) {
-            return None;
-        }
-        let identity = crate::onboarding::existing_identity_at(path).ok()?;
-        expected
-            .is_none_or(|expected| identity.fingerprint == expected)
-            .then_some(identity)
     }
 }
 
@@ -769,6 +985,63 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// The onboarding view polls the pairing from the compositor's loop,
+    /// four times a second; the helper's status file is read by the
+    /// watcher, never by a poll. While the file holds every reader up (a
+    /// FIFO nobody writes yet), each poll returns at once, and the code the
+    /// helper then writes reaches the screen through the watcher.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn polling_a_pairing_never_reads_its_status_file_on_the_loop() {
+        let fixture = fixture();
+        let mut pairing = helper(&fixture, "exec sleep 30", PROCESS_BOUND);
+        // Spawning removed any old status; the helper's file is now one
+        // whose bytes have not arrived.
+        let status = crate::shell::disk_sync_guard::blocking_source(
+            &fixture.identity_dir,
+            ".nearby-enrollment-status.json",
+        );
+        assert_eq!(status, fixture.status);
+        for _ in 0..3 {
+            let (event, blocked) = std::thread::scope(|scope| {
+                let poll = scope.spawn(|| pairing.poll(Instant::now()));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !poll.is_finished() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let blocked = !poll.is_finished();
+                if blocked {
+                    // Let the stuck read go, so the test fails instead of
+                    // hanging.
+                    std::fs::write(&status, b"{}").expect("release the read");
+                }
+                (poll.join().expect("the poll finished"), blocked)
+            });
+            assert!(!blocked, "a poll read the status file on the loop");
+            assert_eq!(event, NearbyEvent::Idle);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        std::fs::write(
+            &status,
+            br#"{"state":"waiting_for_approval","verification_code":"424242"}"#,
+        )
+        .expect("the watcher reads the status");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            match pairing.poll(Instant::now()) {
+                NearbyEvent::Idle => {}
+                NearbyEvent::Code(code) => {
+                    assert_eq!(code, "424242");
+                    break;
+                }
+                event => panic!("the pairing ended: {event:?}"),
+            }
+            assert!(Instant::now() < deadline, "the code never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
