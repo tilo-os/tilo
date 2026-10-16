@@ -393,6 +393,7 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
+  "dist/ci/tests/test_package_lane.py",
   "dist/session/tests/vm-e2e-exit-status.py",
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
