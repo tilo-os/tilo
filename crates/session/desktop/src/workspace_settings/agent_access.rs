@@ -210,31 +210,79 @@ pub enum AccessTarget {
     RemoveException(AnswerScope, ActionKind),
 }
 
+/// One keyboard stop in the agent access view. An Allow / Ask first /
+/// Deny control is one stop whose answer the arrow keys change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccessFocus {
+    Back,
+    Expand(AnswerScope),
+    Answers(AnswerScope, ActionKind),
+    Reset(AnswerScope),
+    RemoveException(AnswerScope, ActionKind),
+}
+
 /// The view's geometry: what was painted where.
 #[derive(Clone, Debug, Default)]
 pub struct AgentAccessLayout {
     pub targets: Vec<(AccessTarget, Rect)>,
+    /// The keyboard stops in reading order, where they were painted.
+    pub stops: Vec<(AccessFocus, Rect)>,
+    /// The region the app list scrolls in, under the pinned header.
+    pub viewport: Rect,
+    /// The whole list's height, scrolled or not.
+    pub content_height: f64,
+    /// The answer each editable control showed, for the arrow keys.
+    pub answers: Vec<(AnswerScope, ActionKind, Answer)>,
 }
 
 impl AgentAccessLayout {
     /// The control at `point`; the last painted wins, so a control inside
-    /// a row beats the row itself.
+    /// a row beats the row itself. A control scrolled out of the list's
+    /// region answers nothing there.
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<AccessTarget> {
         self.targets
             .iter()
             .rev()
+            .filter(|(target, _)| {
+                matches!(target, AccessTarget::Back) || self.viewport.contains(point)
+            })
             .find(|(_, rect)| rect.contains(point))
             .map(|(target, _)| target.clone())
     }
+
+    /// How far the list scrolls at most.
+    #[must_use]
+    pub fn max_scroll(&self) -> f64 {
+        (self.content_height - self.viewport.height()).max(0.0)
+    }
+
+    /// The answer the control for `kind` at `scope` showed.
+    #[must_use]
+    pub fn answer_shown(&self, scope: &AnswerScope, kind: ActionKind) -> Option<Answer> {
+        self.answers
+            .iter()
+            .find_map(|(s, k, answer)| (s == scope && *k == kind).then_some(*answer))
+    }
+
+    /// Where `focus` was painted.
+    #[must_use]
+    pub fn stop_rect(&self, focus: &AccessFocus) -> Option<Rect> {
+        self.stops
+            .iter()
+            .find_map(|(stop, rect)| (stop == focus).then_some(*rect))
+    }
 }
 
-/// Which agent the view shows, and which of its apps is open.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Which agent the view shows, which of its apps is open, how far its list
+/// is scrolled and which control has the keyboard.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AgentAccessView<'a> {
     pub agent: &'a str,
     pub open: Option<&'a AnswerScope>,
     pub editable: bool,
+    pub scroll: f64,
+    pub focus: Option<&'a AccessFocus>,
 }
 
 const HEADER_HEIGHT: f64 = 44.0;
@@ -280,7 +328,7 @@ fn summary(row: &AgentAccessRow) -> String {
 fn draw_header(
     ctx: &mut PaintCtx<'_>,
     (left, right, y): (f64, f64, f64),
-    name: &str,
+    (name, focused): (&str, bool),
     layout: &mut AgentAccessLayout,
 ) {
     let theme = ctx.theme;
@@ -298,8 +346,15 @@ fn draw_header(
         left + width,
         middle + REVOKE_HEIGHT / 2.0,
     );
-    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face(back));
+    Button::paint(
+        ctx.scene,
+        ctx.transform,
+        ctx.text,
+        theme,
+        &face(back).focused(focused),
+    );
     layout.targets.push((AccessTarget::Back, back));
+    layout.stops.push((AccessFocus::Back, back));
     let badge = draw_pill(
         ctx.scene,
         ctx.transform,
@@ -345,7 +400,7 @@ fn draw_app(
         ctx.theme,
     );
     let head = Rect::new(left, y, right, y + ACCESS_ROW_HEIGHT);
-    let text_x = draw_app_head(ctx, head, row, (open, view.editable), layout);
+    let text_x = draw_app_head(ctx, head, row, (open, view.editable), view.focus, layout);
     if open {
         let segments_x0 = right - 12.0 - SEGMENT_WIDTH * 3.0;
         for (index, cell) in row.cells.iter().enumerate() {
@@ -355,12 +410,32 @@ fn draw_app(
                 ctx,
                 (text_x, segments_x0, line_y + KIND_LINE_HEIGHT / 2.0),
                 (&row.scope, cell),
-                view.editable,
+                (view.editable, view.focus),
                 layout,
             );
         }
     }
     height
+}
+
+/// Record `stop` as a keyboard stop at `rect`, ringed when it has focus:
+/// for a surface that is not itself a shared control.
+fn push_stop(
+    ctx: &mut PaintCtx<'_>,
+    (stop, rect): (AccessFocus, Rect),
+    focus: Option<&AccessFocus>,
+    layout: &mut AgentAccessLayout,
+) {
+    if focus == Some(&stop) {
+        ui::widget::paint_focus_ring(
+            ctx.scene,
+            ctx.transform,
+            rect,
+            f64::from(ctx.theme.tokens.radii.control),
+            ctx.theme,
+        );
+    }
+    layout.stops.push((stop, rect));
 }
 
 /// Paint an app's head: chevron, name, its answers or where they come
@@ -370,6 +445,7 @@ fn draw_app_head(
     head: Rect,
     row: &AgentAccessRow,
     (open, editable): (bool, bool),
+    focus: Option<&AccessFocus>,
     layout: &mut AgentAccessLayout,
 ) -> f64 {
     let theme = ctx.theme;
@@ -379,6 +455,12 @@ fn draw_app_head(
     layout
         .targets
         .push((AccessTarget::Expand(row.scope.clone()), head));
+    push_stop(
+        ctx,
+        (AccessFocus::Expand(row.scope.clone()), head),
+        focus,
+        layout,
+    );
     let chevron = Rect::new(
         head.x0 + 12.0,
         head.center().y - 8.0,
@@ -408,17 +490,21 @@ fn draw_app_head(
             head.x1 - 12.0,
             head.center().y + REVOKE_HEIGHT / 2.0,
         );
+        let stop = AccessFocus::Reset(row.scope.clone());
         Button::paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             theme,
-            &ButtonFace::new(reset, &label).disabled(!editable),
+            &ButtonFace::new(reset, &label)
+                .disabled(!editable)
+                .focused(editable && focus == Some(&stop)),
         );
         if editable {
             layout
                 .targets
                 .push((AccessTarget::Reset(row.scope.clone()), reset));
+            layout.stops.push((stop, reset));
         }
         text_max = reset.x0 - 12.0 - text_x;
     } else if row.customised() {
@@ -466,7 +552,7 @@ fn draw_kind_line(
     ctx: &mut PaintCtx<'_>,
     (text_x, segments_x0, centre): (f64, f64, f64),
     (scope, cell): (&AnswerScope, &AnswerCell),
-    editable: bool,
+    (editable, focus): (bool, Option<&AccessFocus>),
     layout: &mut AgentAccessLayout,
 ) {
     let theme = ctx.theme;
@@ -530,12 +616,14 @@ fn draw_kind_line(
             &Rect::new(rects[0].x0, rects[0].y0, rects[2].x1, rects[2].y1),
         );
     }
+    let stop = AccessFocus::Answers(scope.clone(), cell.kind);
     ui::widget::ToggleGroup::paint(
         ctx.scene,
         ctx.transform,
         ctx.text,
         theme,
-        &SegmentedFace::new(&rects, &label_refs, selected),
+        &SegmentedFace::new(&rects, &label_refs, selected)
+            .focused(editable && focus == Some(&stop)),
     );
     if editable {
         for (segment, answer) in rects.iter().zip(ANSWERS) {
@@ -544,6 +632,11 @@ fn draw_kind_line(
                 *segment,
             ));
         }
+        layout.stops.push((
+            stop,
+            Rect::new(rects[0].x0, rects[0].y0, rects[2].x1, rects[2].y1),
+        ));
+        layout.answers.push((scope.clone(), cell.kind, cell.answer));
     } else {
         ctx.scene.pop_layer();
     }
@@ -552,17 +645,17 @@ fn draw_kind_line(
 /// Paint the actions always allowed without asking first, from `y`.
 fn draw_exceptions(
     ctx: &mut PaintCtx<'_>,
-    (left, right, mut y, bottom): (f64, f64, f64, f64),
+    (left, right, mut y): (f64, f64, f64),
     exceptions: &[AgentException],
-    editable: bool,
+    (editable, focus): (bool, Option<&AccessFocus>),
     layout: &mut AgentAccessLayout,
-) {
+) -> f64 {
     let theme = ctx.theme;
     let colors = &theme.tokens.colors;
     let caption = theme.tokens.typography.style(TextRole::Caption);
     let line_h = f64::from(caption.line_height_px());
-    if exceptions.is_empty() || y + line_h + ACCESS_ROW_HEIGHT > bottom {
-        return;
+    if exceptions.is_empty() {
+        return y;
     }
     ctx.text.draw_style(
         ctx.scene,
@@ -578,9 +671,6 @@ fn draw_exceptions(
     y += line_h + 8.0;
     for exception in exceptions {
         let rect = Rect::new(left, y, right, y + ACCESS_ROW_HEIGHT);
-        if rect.y1 > bottom {
-            break;
-        }
         draw_row_card(ctx.scene, ctx.transform, rect, theme);
         let stop = t("workspace-settings-agent-access-stop");
         let width = ButtonFace::new(Rect::ZERO, &stop)
@@ -606,23 +696,27 @@ fn draw_exceptions(
             None,
             &caption,
         );
-        super::draw_danger_button(
+        let key = AccessFocus::RemoveException(exception.scope.clone(), exception.kind);
+        Button::paint(
             ctx.scene,
             ctx.transform,
-            remove,
-            &stop,
-            editable,
             ctx.text,
             theme,
+            &ButtonFace::new(remove, &stop)
+                .role(ButtonRole::Destructive)
+                .disabled(!editable)
+                .focused(editable && focus == Some(&key)),
         );
         if editable {
             layout.targets.push((
                 AccessTarget::RemoveException(exception.scope.clone(), exception.kind),
                 remove,
             ));
+            layout.stops.push((key, remove));
         }
         y += ACCESS_ROW_HEIGHT + ROW_GAP;
     }
+    y
 }
 
 /// Paint `view`'s agent access into `pane`, returning where its controls are.
@@ -646,7 +740,12 @@ pub fn draw_agent_access(
         .iter()
         .find(|row| row.id == view.agent)
         .map_or_else(|| short_id(view.agent), |row| row.name.clone());
-    draw_header(ctx, (left, right, y), &name, &mut layout);
+    draw_header(
+        ctx,
+        (left, right, y),
+        (&name, view.focus == Some(&AccessFocus::Back)),
+        &mut layout,
+    );
     y += HEADER_HEIGHT + NOTE_GAP;
 
     #[allow(
@@ -672,17 +771,22 @@ pub fn draw_agent_access(
     }
     y += NOTE_GAP + 6.0;
 
+    // The header and note stay put; the apps and the always-allowed
+    // actions scroll under them, however many there are. The region keeps
+    // a focus ring's width beside the cards so it is never clipped.
+    let ring = 3.0;
+    layout.viewport = Rect::new(left - ring, y - ring, right + ring, bottom);
+    let top = y;
+    y -= view.scroll;
+    ctx.scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        ctx.transform,
+        &layout.viewport,
+    );
     let rows = agent_access_rows(ws, view.agent, apps);
     let exceptions = agent_exceptions(ws, view.agent, apps);
-    // The always-allowed actions keep their place below however many apps
-    // there are: they are what lifts asking first, so never cut off.
-    #[allow(clippy::cast_precision_loss, reason = "a short list")]
-    let reserved = if exceptions.is_empty() {
-        0.0
-    } else {
-        8.0 + line_h + 8.0 + (ACCESS_ROW_HEIGHT + ROW_GAP) * exceptions.len().min(3) as f64
-    };
-    let rows_bottom = bottom - reserved;
     if rows.is_empty() {
         ctx.text.draw_style(
             ctx.scene,
@@ -695,24 +799,17 @@ pub fn draw_agent_access(
         y += line_h + ROW_GAP;
     }
     for row in &rows {
-        let open = view.open == Some(&row.scope);
-        let needed = if open {
-            ACCESS_ROW_HEIGHT + KIND_LINE_HEIGHT * 3.0 + 8.0
-        } else {
-            ACCESS_ROW_HEIGHT
-        };
-        if y + needed > rows_bottom {
-            break;
-        }
         y += draw_app(ctx, (left, right, y), row, view, &mut layout) + ROW_GAP;
     }
-    draw_exceptions(
+    let end = draw_exceptions(
         ctx,
-        (left, right, y + 8.0, bottom),
+        (left, right, y + 8.0),
         &exceptions,
-        view.editable,
+        (view.editable, view.focus),
         &mut layout,
     );
+    ctx.scene.pop_layer();
+    layout.content_height = end.max(y) + view.scroll - top;
     layout
 }
 
@@ -736,6 +833,131 @@ mod tests {
         );
         assert!(!edit.is_empty());
         ws
+    }
+
+    /// The workspace with answers for `count` apps, so the agent view
+    /// lists more apps than fit.
+    fn crowded(count: usize) -> Workspace {
+        let mut ws = ws();
+        let answers: Vec<_> = (0..count)
+            .map(|index| {
+                (
+                    AnswerScope::app(format!("so.tilo.app{index:02}")),
+                    ActionKind::Read,
+                    Some(Answer::Deny),
+                )
+            })
+            .collect();
+        set_agent_answers(&mut ws, &OWNER.to_string(), AGENT, &answers);
+        ws
+    }
+
+    fn paint(
+        ws: &Workspace,
+        pane: Rect,
+        (scroll, focus): (f64, Option<&AccessFocus>),
+    ) -> AgentAccessLayout {
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let theme = ui::Theme::dark();
+        draw_agent_access(
+            &mut PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            pane,
+            (ws, &super::super::NoAppDirectory),
+            &AgentAccessView {
+                agent: AGENT,
+                open: None,
+                editable: true,
+                scroll,
+                focus,
+            },
+        )
+    }
+
+    #[test]
+    fn a_long_app_list_scrolls_to_its_last_app_and_only_answers_where_shown() {
+        let ws = crowded(24);
+        let pane = Rect::new(0.0, 0.0, 640.0, 520.0);
+        let last = AccessTarget::Expand(AnswerScope::app("so.tilo.app23"));
+        let top = paint(&ws, pane, (0.0, None));
+        assert!(top.max_scroll() > 0.0, "24 apps do not fit 520 px");
+        let painted_below = top
+            .targets
+            .iter()
+            .find_map(|(target, rect)| (*target == last).then_some(*rect))
+            .expect("every app is painted, scrolled or not");
+        assert!(painted_below.y0 > top.viewport.y1);
+        assert_eq!(
+            top.hit(painted_below.center()),
+            None,
+            "an app scrolled out of view answers nothing"
+        );
+        let end = paint(&ws, pane, (top.max_scroll(), None));
+        let shown = end
+            .targets
+            .iter()
+            .find_map(|(target, rect)| (*target == last).then_some(*rect))
+            .unwrap();
+        assert!(end.viewport.contains(shown.center()));
+        assert_eq!(end.hit(shown.center()), Some(last));
+        assert_eq!(
+            end.hit(end.stop_rect(&AccessFocus::Back).unwrap().center()),
+            Some(AccessTarget::Back),
+            "the header stays put"
+        );
+    }
+
+    #[test]
+    fn every_answer_control_is_one_keyboard_stop() {
+        let mut ws = ws();
+        let mail = AnswerScope::app(MAIL);
+        set_agent_answers(
+            &mut ws,
+            &OWNER.to_string(),
+            AGENT,
+            &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
+        );
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let theme = ui::Theme::dark();
+        let layout = draw_agent_access(
+            &mut PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            Rect::new(0.0, 0.0, 640.0, 520.0),
+            (&ws, &super::super::NoAppDirectory),
+            &AgentAccessView {
+                agent: AGENT,
+                open: Some(&mail),
+                editable: true,
+                scroll: 0.0,
+                focus: None,
+            },
+        );
+        let stops: Vec<_> = layout.stops.iter().map(|(stop, _)| stop.clone()).collect();
+        assert_eq!(
+            stops,
+            [
+                AccessFocus::Back,
+                AccessFocus::Expand(mail.clone()),
+                AccessFocus::Reset(mail.clone()),
+                AccessFocus::Answers(mail.clone(), ActionKind::Read),
+                AccessFocus::Answers(mail.clone(), ActionKind::Undoable),
+                AccessFocus::Answers(mail.clone(), ActionKind::Outside),
+            ]
+        );
+        assert_eq!(
+            layout.answer_shown(&mail, ActionKind::Outside),
+            Some(Answer::Deny)
+        );
     }
 
     #[test]
