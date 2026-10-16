@@ -3455,7 +3455,9 @@ fn news_brief(news: &[DocumentRoute], pending: &[String]) -> String {
 /// step, or before it is reported done: a correction or a decision changes
 /// what is left of it ([`MOST_NEWS_REPLANS`] at most).
 fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>) {
-    if news.is_empty() || running.news_replans >= MOST_NEWS_REPLANS {
+    // Steps written out in the task run as written: news is the model's to
+    // plan around, and a written task has no model plan to replace.
+    if news.is_empty() || running.news_replans >= MOST_NEWS_REPLANS || !running.by_model {
         return;
     }
     running.news_replans = running.news_replans.saturating_add(1);
@@ -4394,6 +4396,7 @@ mod tests {
             ],
             Vec::new(),
         );
+        running.by_model = true;
         let mut news = vec![message_route("so.tilo.chat", "")];
         take_news(&mut running, &mut news);
         assert!(news.is_empty());
@@ -4415,11 +4418,28 @@ mod tests {
         assert!(brief.contains("unless the news changes them"), "{brief}");
 
         let mut done = Running::new("t2".into(), "x".into(), Vec::new(), Vec::new());
+        done.by_model = true;
         take_news(&mut done, &mut vec![message_route("so.tilo.chat", "")]);
         let Some(StepAction::Continue(brief)) = done.steps.front().map(|step| &step.action) else {
             panic!("{:?}", done.steps);
         };
         assert!(brief.contains("Your planned steps are done"), "{brief}");
+    }
+
+    /// Steps written out in a task run as written when news arrives: only a
+    /// model's plan is re-planned around it.
+    #[test]
+    fn news_does_not_replan_steps_written_out_in_the_task() {
+        let written = vec![
+            invoke("so.tilo.sheets", "sheets.sheet:s1", "set-cells"),
+            invoke("so.tilo.chat", "chat.channel:logins", "post"),
+        ];
+        let mut running = Running::new("t1".into(), "[...]".into(), written.clone(), Vec::new());
+        assert!(!running.by_model);
+        let mut news = vec![message_route("so.tilo.chat", "")];
+        take_news(&mut running, &mut news);
+        assert_eq!(running.steps.iter().cloned().collect::<Vec<_>>(), written);
+        assert_eq!(running.news_replans, 0);
     }
 
     /// An import naming no record never lands in a document another agent
