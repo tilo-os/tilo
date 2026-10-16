@@ -99,6 +99,9 @@ def provenance_of(vm: TiloVm, disk: Path | None, want_commit: str | None) -> dic
         booted = (status.get("status") or {}).get("booted") or {}
         p["booted_digest"] = (booted.get("image") or {}).get("imageDigest")
         p["upgraded_since_disk"] = bool((status.get("status") or {}).get("rollback"))
+        if not p["booted_digest"]:
+            p["why"] = "bootc status has no booted image digest"
+            return p
     except (VmError, ValueError) as exc:
         p["why"] = f"could not read bootc status: {exc}"
         return p
@@ -106,8 +109,11 @@ def provenance_of(vm: TiloVm, disk: Path | None, want_commit: str | None) -> dic
         p["why"] = (f"no provenance record {rec_path} for the VM's disk: build disks with "
                     "scripts/vm-acceptance/build-disk.sh, which writes one")
         return p
-    if want_commit and not record.get("commit", "").startswith(want_commit[:12]) \
-            and not want_commit.startswith(record.get("commit", "")[:12]):
+    if not isinstance(record.get("commit"), str) or not record["commit"]:
+        p["why"] = "the disk provenance record has no commit"
+        return p
+    if want_commit and not record["commit"].startswith(want_commit[:12]) \
+            and not want_commit.startswith(record["commit"][:12]):
         p["mismatch"] = f"disk built from {record.get('commit')}, run asked for {want_commit}"
     if p["upgraded_since_disk"]:
         p["mismatch"] = (p.get("mismatch", "") + "; " if p.get("mismatch") else "") + \
