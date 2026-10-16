@@ -59,14 +59,19 @@ function card(text, choices) {
     form.className = 'tilo-entry-card';
     const message = document.createElement('p');
     message.textContent = text;
-    form.append(message);
-    for (const [label, value] of choices) {
+    // One or two answers sit side by side, the first the one to take; a
+    // longer list (accounts, machines) is a list of equal options.
+    const actions = document.createElement('div');
+    actions.className = choices.length <= 2 ? 'tilo-entry-actions' : 'tilo-entry-options';
+    choices.forEach(([label, value], index) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = label;
+      if (choices.length <= 2 && index === 0) button.className = 'tilo-entry-primary';
       button.addEventListener('click', () => { form.remove(); resolve(value); });
-      form.append(button);
-    }
+      actions.append(button);
+    });
+    form.append(message, actions);
     document.body.append(form);
   });
 }
