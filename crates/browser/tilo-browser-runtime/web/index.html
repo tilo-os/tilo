@@ -79,9 +79,10 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     #arrival > p .label { color: #9b9ba3; margin-right: .5em; }
     #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .08); overflow: hidden; }
     #arrival-bar > span { display: block; height: 100%; background: #6c6c76; transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
-    #arrival-retry { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
-    #arrival-retry:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
+    #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
+    [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
     @media (prefers-reduced-motion: reduce) {
@@ -96,6 +97,7 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
+  <button id="arrival-own" type="button">Open your own desktop</button>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
