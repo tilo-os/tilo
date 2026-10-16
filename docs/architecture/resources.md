@@ -49,12 +49,12 @@ want, not only for the value you hold.
 | `String` | Automerge text | character splices merge |
 | `RichText` | Automerge text with marks and blocks | splices and marks merge |
 | `Counter` | Automerge counter | increments add up |
-| `Set<T>` | map keyed by the value | adds and removes merge per element |
+| `Set<T>` | map keyed by the value | adds and removes merge per element; saving and comparing a copy visit only the chunks changes copied |
 | `Vec<T>` | list, by position | for short lists that are replaced whole |
 | `BTreeMap<String, T>` | map | per key; copied whole when a view holds the state, so for small maps |
 | `Map<T>` | map, as `BTreeMap<String, T>` | per key; a change copies only its chunk of a held state, and saving it visits only the chunks changes copied |
 | `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity |
-| `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity |
+| `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity; saving and comparing a copy visit only the rows of cells changes copied |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |

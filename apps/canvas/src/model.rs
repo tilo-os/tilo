@@ -650,17 +650,19 @@ impl Artwork {
         art
     }
 
-    /// Add `mark`, or replace the mark with its id.
+    /// Add `mark`, or replace the mark with its id. Found and added one at a
+    /// time, so a copy of the artwork remembers which mark changed or came,
+    /// and saving it writes that mark, not every one.
     pub fn put_mark(&mut self, mark: Mark) {
-        match self.marks.iter_mut().find(|held| held.id == mark.id) {
+        match self.marks.find_mut(&mark.id()) {
             Some(held) => *held = mark,
             None => self.marks.push(mark),
         }
     }
 
-    /// Add `layer`, or replace the layer with its id.
+    /// Add `layer`, or replace the layer with its id, as [`Self::put_mark`].
     pub fn put_layer(&mut self, layer: Layer) {
-        match self.layers.iter_mut().find(|held| held.id == layer.id) {
+        match self.layers.find_mut(&layer.id()) {
             Some(held) => *held = layer,
             None => self.layers.push(layer),
         }
