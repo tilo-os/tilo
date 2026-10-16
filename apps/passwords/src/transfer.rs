@@ -125,18 +125,14 @@ pub fn parse_browser_csv(mut reader: impl Read) -> Result<Vec<ImportLogin>, Stri
         if out.len() >= MAX_ROWS {
             return Err("The CSV contains more than 10,000 rows".into());
         }
-        let get = |index: Option<usize>| {
-            index
-                .and_then(|i| record.get(i))
-                .map_or("", String::as_str)
-                .trim()
-        };
+        let get =
+            |index: Option<usize>| index.and_then(|i| record.get(i)).map_or("", String::as_str);
         let password_value = get(Some(password));
         if password_value.is_empty() {
             continue;
         }
-        let origin_value = get(origin);
-        let title_value = get(title);
+        let origin_value = get(origin).trim();
+        let title_value = get(title).trim();
         let fallback = origin_value
             .strip_prefix("https://")
             .or_else(|| origin_value.strip_prefix("http://"))
@@ -410,6 +406,20 @@ mod tests {
             assert_eq!(rows[0].title.as_str(), "A, \"quoted\"");
             assert_eq!(rows[0].password.as_str(), "line\nsecret");
             assert_eq!(rows[0].notes.as_str(), "memo\nline");
+        }
+    }
+
+    #[test]
+    fn browser_csv_preserves_significant_credential_whitespace() {
+        for password in [" secret \t", "   "] {
+            let mut item = SecretItem::login("Mail", " ada ", password);
+            item.notes = " memo\n ".into();
+            let csv = export_browser_csv(std::slice::from_ref(&item));
+            let rows = parse_browser_csv(csv.as_bytes()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].password.as_str(), password);
+            assert_eq!(rows[0].username.as_str(), item.username);
+            assert_eq!(rows[0].notes.as_str(), item.notes);
         }
     }
 
