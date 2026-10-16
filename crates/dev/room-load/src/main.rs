@@ -639,10 +639,12 @@ async fn settle(shared: &guest::Shared, seeded: bool) -> serde_json::Value {
         return settled;
     }
     let mut missing = posted.len();
+    let mut records = serde_json::Value::Null;
     loop {
         if let Ok((200, body)) = shared.service.post_with("/record", &[], Vec::new()).await
             && let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&body)
         {
+            records = reply.get("records").cloned().unwrap_or_default();
             let held: std::collections::HashSet<&str> = reply
                 .get("changes")
                 .and_then(serde_json::Value::as_array)
@@ -662,6 +664,9 @@ async fn settle(shared: &guest::Shared, seeded: bool) -> serde_json::Value {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if missing > 0 {
+        eprintln!("the governor's copy of the chat, changes by record: {records}");
     }
     if let Some(fields) = settled.as_object_mut() {
         fields.insert("missing_in_governor".into(), missing.into());

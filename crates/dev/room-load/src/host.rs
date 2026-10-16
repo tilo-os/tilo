@@ -164,41 +164,47 @@ impl Seeded {
     }
 
     /// Every change of the chat records as the governor's copy holds them,
-    /// hex-encoded: what the driver checks each guest's writes against. A
-    /// chat is its record and the parts after it, numbered from `0` with no
-    /// gap.
-    async fn changes(&self) -> anyhow::Result<Vec<String>> {
+    /// hex-encoded, and how many each record holds: what the driver checks
+    /// each guest's writes against. A chat is its record and the parts after
+    /// it, numbered from `0`; the parts are read until four in a row are
+    /// missing, so one the governor lacks shows as a gap.
+    async fn changes(&self) -> anyhow::Result<(Vec<String>, Vec<(String, usize)>)> {
         let mut changes = Vec::new();
+        let mut held = Vec::new();
         for room in &self.chats {
             let records =
                 std::iter::once(crate::guest::CHAT_RECORD.to_owned())
                     .chain((0u64..).map(|index| {
                         neighbour_wire::record_part(crate::guest::CHAT_RECORD, index)
                     }));
-            for (index, record) in records.enumerate() {
+            let mut missing = 0;
+            for record in records {
                 let Some(bytes) = self
                     .rooms
                     .record_document(room, "so.tilo.chat", &record)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?
                 else {
-                    // The record itself may be missing; the parts end at
-                    // the first one missing.
-                    if index == 0 {
-                        continue;
+                    held.push((record, 0));
+                    missing += 1;
+                    if missing > 3 {
+                        break;
                     }
-                    break;
+                    continue;
                 };
+                missing = 0;
                 let mut document = automerge::AutoCommit::load(&bytes)?;
+                let before = changes.len();
                 changes.extend(
                     document
                         .get_changes(&[])
                         .into_iter()
                         .map(|change| hex::encode(change.hash().0)),
                 );
+                held.push((record, changes.len() - before));
             }
         }
-        Ok(changes)
+        Ok((changes, held))
     }
 }
 
@@ -366,10 +372,10 @@ impl Host {
                 return (404, None, error("no chat is seeded".into()));
             };
             return match seeded.changes().await {
-                Ok(changes) => (
+                Ok((changes, records)) => (
                     200,
                     None,
-                    serde_json::json!({ "changes": changes }).to_string(),
+                    serde_json::json!({ "changes": changes, "records": records }).to_string(),
                 ),
                 Err(problem) => (500, None, error(format!("{problem:#}"))),
             };
