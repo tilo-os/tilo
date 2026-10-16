@@ -104,11 +104,13 @@ fn normalized_email(value: &str) -> String {
     normalize_text(value.trim())
 }
 
-/// Formatting-insensitive phone key.  Keeping only decimal digits lets
-/// `+1 (555) 0100` and `15550100` meet, while an empty/non-numeric value never
-/// creates a spurious candidate.
+/// Ignore visual number formatting, but preserve dial symbols, extensions
+/// and vanity letters: stripping those would discard distinct rows on merge.
 fn normalized_phone(value: &str) -> String {
-    value.chars().filter(char::is_ascii_digit).collect()
+    normalize_text(value)
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !matches!(ch, '+' | '-' | '(' | ')' | '.'))
+        .collect()
 }
 
 fn normalized_name(contact: &Contact) -> String {
