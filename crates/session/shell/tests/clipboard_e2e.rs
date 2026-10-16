@@ -2912,12 +2912,15 @@ fn windows_in_their_own_groups(compositor: &Compositor, app_ids: &[&str]) -> Vec
 #[test]
 fn touch_hold_then_drag_on_a_tab_moves_the_window() {
     let compositor = Compositor::start_with(None, (1600, 800));
-    // Narrow groups, so both windows' tabs are on screen at once.
-    compositor.set_group_width(250);
     let clients = windows_in_their_own_groups(
         &compositor,
         &["org.tilo.test.touch-carry-a", "org.tilo.test.touch-carry-b"],
     );
+    // Quarter-strip groups, so both windows' tabs are on screen at once.
+    // The width applies to the groups that exist, so it is set once both
+    // are mapped.
+    compositor.set_group_width(250);
+    compositor.wait_for_layout_to_settle(|name| name.starts_with("tab:"), "the resized groups");
     let (first, second) = (&clients[0], &clients[1]);
     let groups = |c: &Compositor| (client_group(c, first), client_group(c, second));
     let (Some(first_group), Some(second_group)) = groups(&compositor) else {
@@ -2930,9 +2933,9 @@ fn touch_hold_then_drag_on_a_tab_moves_the_window() {
         position(&before, first_group) < position(&before, second_group),
         "the first window leads: {before:?}"
     );
-    let [ax, ay, aw, ah] = client_tab_rect(&compositor, first)
+    let [ax, _, aw, _] = client_tab_rect(&compositor, first)
         .unwrap_or_else(|| panic!("no tab for the first window.\n{}", compositor.debug_state()));
-    let [bx, _, bw, _] = client_tab_rect(&compositor, second).unwrap_or_else(|| {
+    let [bx, by, bw, bh] = client_tab_rect(&compositor, second).unwrap_or_else(|| {
         panic!(
             "no tab for the second window.\n{}",
             compositor.debug_state()
@@ -2946,22 +2949,25 @@ fn touch_hold_then_drag_on_a_tab_moves_the_window() {
         bx + bw
     );
 
-    let grab = (ax + aw / 2.0, ay + ah / 2.0);
+    // The second window is carried back past the first: the finger lifts
+    // on the first window's tab, left of that group's middle wherever the
+    // groups' widths put it, and on screen.
+    let grab = (bx + bw / 2.0, by + bh / 2.0);
     compositor.touch("e2e-panel", 0, "down", grab.0, grab.1);
     compositor.touch("e2e-panel", 0, "frame", grab.0, grab.1);
     // The hold that tells a carry from a swipe (300 ms in the strip), with
     // room so a slow frame cannot read it as a swipe.
     std::thread::sleep(Duration::from_millis(450));
-    let drop = ((bx + bw + 60.0).min(screen_w - 4.0), grab.1);
+    let drop = ((ax + aw / 2.0).max(4.0), grab.1);
     touch_sweep(&compositor, grab, drop, 12);
     compositor.touch("e2e-panel", 0, "up", drop.0, drop.1);
     compositor.touch("e2e-panel", 0, "frame", drop.0, drop.1);
 
     compositor.wait_for(
-        "the carried window never landed after the second one",
+        "the carried window never landed before the first one",
         |c| {
             let order = group_order(&c.workspace_tree());
-            position(&order, first_group) > position(&order, second_group)
+            position(&order, second_group) < position(&order, first_group)
         },
     );
     assert_eq!(
