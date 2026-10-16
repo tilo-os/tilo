@@ -827,7 +827,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
-    let guest = member_device(&rooms, &room, (&key, &cert), 3).await;
+    let (guest, _) = member_device(&rooms, &room, (&key, &cert), 3).await;
     let guest = SealingMember::join(&rooms, &room, (CHAT, ""), guest).await;
     let mut runner = member_runner(
         &rooms,
