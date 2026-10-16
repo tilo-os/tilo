@@ -830,6 +830,23 @@ inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "tools/
 writable_sources = true
 cost = "heavy"
 
+# The real shared provider panel in the production single-app WASM runtime.
+[[check]]
+name = "model-providers-web"
+run = """
+python3 tools/web/generate_web_desktop.py --check
+cargo build --locked -p tilo-app-cli --bin tilo-app
+python3 tools/ci/prepare_sdk_moq.py prepare
+"$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app apps/model-providers
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/provider-chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/provider-chrome.txt" | tail -n 1)
+node apps/model-providers/web/run.mjs "$CARGO_TARGET_DIR/tilo-app/web/model-providers/bundle"
+"""
+inputs = ["apps/model-providers/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "tools/ci/**", "tools/web/**", "Cargo.toml", "Cargo.lock"]
+writable_sources = true
+cost = "heavy"
+
 # The release desktop bundle against its size budget, and the exact release
 # private image worker qualified in headless Chromium. The release bundle runs
 # `npm ci` in scripts/moq-browser, in the source tree, and the qualification

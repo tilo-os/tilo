@@ -33,7 +33,7 @@ fn pair() -> (UnixStream, FdTransport, tokio::net::UnixStream) {
     )
 }
 
-async fn received(peer: &mut tokio::net::UnixStream) -> u64 {
+async fn received_request(peer: &mut tokio::net::UnixStream) -> (u64, Request) {
     // The first bytes must be the framed RPC, not a caller-forged identity.
     let body = crate::FRAMING.read_async(peer).await.unwrap().unwrap();
     let frame: crate::Frame<Request> = serde_json::from_slice(&body).unwrap();
@@ -51,8 +51,68 @@ async fn received(peer: &mut tokio::net::UnixStream) -> u64 {
     let Request::Cancellable { id, request } = frame.value else {
         panic!("missing operation identity")
     };
-    assert!(matches!(*request, Request::Complete { .. }));
+    (id, *request)
+}
+
+async fn received(peer: &mut tokio::net::UnixStream) -> u64 {
+    let (id, request) = received_request(peer).await;
+    assert!(matches!(request, Request::Complete { .. }));
     id
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn abandoned_administration_drains_committed_response_and_cancel_barrier() {
+    use agent_provider_config::management::{CredentialStatus, ProviderAdmin};
+    let (_original, transport, mut peer) = pair();
+    let admin = crate::transport::AdministrationClient::new(transport);
+    let (started, received) = tokio::sync::oneshot::channel();
+    let server = async {
+        let (_, request) = received_request(&mut peer).await;
+        assert!(matches!(request, Request::SetApiKey { .. }));
+        started.send(()).unwrap();
+        let body = crate::FRAMING.read_async(&mut peer).await.unwrap().unwrap();
+        let frame: crate::Frame<Request> = serde_json::from_slice(&body).unwrap();
+        let Request::Cancel { id } = frame.value else {
+            panic!("missing Stop")
+        };
+        // A durable write finishes before the barrier; its abandoned success
+        // must not become the next credential status response.
+        for output in ["committed".to_string(), format!("cancelled:{id}")] {
+            crate::FRAMING
+                .write_async(
+                    &mut peer,
+                    &serde_json::to_vec(&response(&output, None)).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        let (_, request) = received_request(&mut peer).await;
+        assert!(matches!(request, Request::CredentialStatus { .. }));
+        crate::FRAMING
+            .write_async(
+                &mut peer,
+                &serde_json::to_vec(&response("\"configured\"", None)).unwrap(),
+            )
+            .await
+            .unwrap();
+    };
+    let client = async {
+        let mut operation = admin.set_api_key("profile".into(), "write-only-key".into());
+        tokio::select! {
+            result = &mut operation => panic!("completed before Stop: {result:?}"),
+            result = received => result.unwrap(),
+        }
+        drop(operation);
+        assert_eq!(
+            admin.credential_status("profile".into()).await.unwrap(),
+            CredentialStatus::Configured
+        );
+    };
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .unwrap();
 }
 
 async fn acknowledge_cancel(peer: &mut tokio::net::UnixStream) {

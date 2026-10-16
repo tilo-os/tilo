@@ -160,6 +160,19 @@ pub enum Request {
         #[serde(default)]
         stream: bool,
     },
+    /// Resolve the deliberate enabled default once, when this inference starts.
+    CompleteDefault {
+        request: agent_provider_config::protocol::ModelRequest,
+        timeout_ms: u64,
+        #[serde(default)]
+        stream: bool,
+    },
+    /// Read non-secret provider descriptions with their CAS revision.
+    GetProviderConfig,
+    SetProviderConfig {
+        expected_revision: String,
+        config: agent_provider_config::ProviderConfig,
+    },
     Plan {
         profile_id: String,
         model_id: String,
@@ -762,14 +775,8 @@ pub fn cluster_faces(
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
-/// Non-secret diagnosis of provider credential custody.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialStatus {
-    Missing,
-    Configured,
-    MigrationRequired,
-}
+/// Compatibility alias for the shared administration contract.
+pub use agent_provider_config::management::CredentialStatus;
 
 /// Query detailed status without treating an unbound key as absent.
 ///

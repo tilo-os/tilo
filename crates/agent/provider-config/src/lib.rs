@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub mod local;
+pub mod management;
 pub mod protocol;
 /// Single-shot model calls in either provider dialect.
 pub mod transform;
@@ -526,6 +527,44 @@ impl ProviderConfig {
     /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
         settings_store::update_section(SETTINGS_SECTION, self.section()?)
+    }
+
+    /// Atomically save only if the currently stored descriptions still equal
+    /// `expected`. Unlike ordinary UI edits, conditional writes are durable on
+    /// return even when a deferred settings source is installed.
+    ///
+    /// # Errors
+    /// Returns persistence or unsupported-source errors; `false` is a conflict.
+    pub fn compare_save(&self, expected: &Self) -> std::io::Result<bool> {
+        let section = settings_store::load_section(SETTINGS_SECTION);
+        if Self::from_section(&section) != *expected {
+            return Ok(false);
+        }
+        let values = self.section()?;
+        if let Some(source) = settings_store::installed_source() {
+            let result = source.compare_update_section(SETTINGS_SECTION, &section, values)?;
+            return Ok(!matches!(
+                result,
+                settings_store::ConditionalUpdate::Superseded
+            ));
+        }
+        // The file CAS API requires an already-present section. The atomic
+        // read/merge API also handles the very first provider configuration.
+        let mut matched = false;
+        let mut values = Some(values);
+        settings_store::update_section_with_at(
+            &settings_store::file_write_path()?,
+            SETTINGS_SECTION,
+            &mut |current| {
+                matched = current == &section;
+                if matched {
+                    values.take().unwrap_or_default()
+                } else {
+                    Map::new()
+                }
+            },
+        )?;
+        Ok(matched)
     }
 
     /// Save this configuration to the shared settings document at `path`.

@@ -43,6 +43,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+thread_local! {
+    static LAUNCHER_PROVIDER_ADMIN: std::cell::RefCell<ui::models::ProviderAdministration> =
+        std::cell::RefCell::default();
+}
+
+/// Capture the launcher's explicit administration grant, independently of model selection.
+pub fn enable_provider_administration() {
+    LAUNCHER_PROVIDER_ADMIN.with(|slot| {
+        *slot.borrow_mut() =
+            ui::models::ProviderAdministration::from_launcher().unwrap_or_default();
+    });
+}
+
+pub(crate) fn take_launcher_provider_admin() -> ui::models::ProviderAdministration {
+    LAUNCHER_PROVIDER_ADMIN.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+}
+
 mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;

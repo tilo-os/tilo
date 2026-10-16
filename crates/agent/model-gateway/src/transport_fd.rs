@@ -15,9 +15,10 @@ use std::time::Duration;
 /// through its acknowledgement before handing the connection to the next call.
 /// Corruption, EOF or a missing cancellation barrier invalidate the capability.
 /// Tokio's I/O and timer drivers must be enabled on the polling runtime.
+#[derive(Clone)]
 pub struct FdTransport {
     stream: Arc<tokio::sync::Mutex<Option<UnixStream>>>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
 }
 
 impl FdTransport {
@@ -35,7 +36,7 @@ impl FdTransport {
             .map_err(|_| "model gateway descriptor is not connected")?;
         Ok(Self {
             stream: Arc::new(tokio::sync::Mutex::new(Some(stream))),
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
         })
     }
 
@@ -206,6 +207,7 @@ impl Transport for FdTransport {
                 .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
             let millis = match &request {
                 Request::Complete { timeout_ms, .. }
+                | Request::CompleteDefault { timeout_ms, .. }
                 | Request::Plan { timeout_ms, .. }
                 | Request::Transform { timeout_ms, .. } => (*timeout_ms).clamp(1, 120_000),
                 _ => 120_000,

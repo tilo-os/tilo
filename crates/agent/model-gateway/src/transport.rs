@@ -1,6 +1,8 @@
 //! Transport-neutral asynchronous RPC and the browser/native fetch adapter.
 //! Install this transport in the host's `ModelBackend`, not a process global.
 //! Authentication is a host session token, never a provider API key or app ID.
+#[path = "administration_client.rs"]
+mod administration;
 #[cfg(test)]
 #[path = "client_fixture_tests.rs"]
 mod fixtures;
@@ -8,6 +10,7 @@ mod fixtures;
 #[path = "transport_tests.rs"]
 mod tests;
 use crate::{Request, Response};
+pub use administration::AdministrationClient;
 use agent_provider_config::protocol::{ErrorKind, ModelError, ModelResponse, StreamEvent};
 use std::{future::Future, pin::Pin, time::Duration};
 
@@ -226,8 +229,56 @@ pub struct ModelClient<T> {
     profile_id: String,
     model_id: String,
     timeout_ms: u64,
+    use_default: bool,
 }
 impl<T: Transport> ModelClient<T> {
+    /// A Send-safe single completion over this client's selected route.
+    ///
+    /// # Errors
+    /// Returns transport, validation, provider or decoding errors.
+    pub async fn complete_once(
+        &self,
+        request: &agent_provider_config::protocol::ModelRequest,
+    ) -> Result<ModelResponse, ModelError> {
+        let response = self
+            .transport
+            .call(self.request(request, false), &mut |_| true)
+            .await?;
+        completion(&response)
+    }
+
+    /// Resolve the gateway's current deliberate default at each inference start.
+    pub fn default_model(transport: T, timeout: Duration) -> Self {
+        Self {
+            transport,
+            profile_id: String::new(),
+            model_id: String::new(),
+            timeout_ms: timeout.as_millis().min(120_000) as u64,
+            use_default: true,
+        }
+    }
+
+    fn request(
+        &self,
+        request: &agent_provider_config::protocol::ModelRequest,
+        stream: bool,
+    ) -> Request {
+        if self.use_default {
+            Request::CompleteDefault {
+                request: request.clone(),
+                timeout_ms: self.timeout_ms,
+                stream,
+            }
+        } else {
+            Request::Complete {
+                profile_id: self.profile_id.clone(),
+                model_id: self.model_id.clone(),
+                request: request.clone(),
+                timeout_ms: self.timeout_ms,
+                stream,
+            }
+        }
+    }
     /// Presentation deltas survive terminal failure in the caller's `StreamState`.
     /// Returning false cancels the request; partial tools never authorize actions.
     ///
@@ -244,35 +295,26 @@ impl<T: Transport> ModelClient<T> {
         let mut invalid = false;
         let response = self
             .transport
-            .call(
-                Request::Complete {
-                    profile_id: self.profile_id.clone(),
-                    model_id: self.model_id.clone(),
-                    request: request.clone(),
-                    timeout_ms: self.timeout_ms,
-                    stream: true,
-                },
-                &mut |item| {
-                    if invalid {
-                        return false;
-                    }
-                    if !item.ok {
+            .call(self.request(request, true), &mut |item| {
+                if invalid {
+                    return false;
+                }
+                if !item.ok {
+                    invalid = true;
+                    return false;
+                }
+                match decode_event(
+                    item.event.as_deref().unwrap_or_default(),
+                    item.output.as_deref().unwrap_or_default(),
+                ) {
+                    Ok(Some(parsed)) => event(&parsed),
+                    Ok(None) => true,
+                    Err(_) => {
                         invalid = true;
-                        return false;
+                        false
                     }
-                    match decode_event(
-                        item.event.as_deref().unwrap_or_default(),
-                        item.output.as_deref().unwrap_or_default(),
-                    ) {
-                        Ok(Some(parsed)) => event(&parsed),
-                        Ok(None) => true,
-                        Err(_) => {
-                            invalid = true;
-                            false
-                        }
-                    }
-                },
-            )
+                }
+            })
             .await;
         let result = match response {
             _ if invalid => Err(ModelError::invalid("invalid gateway stream event")),
@@ -290,6 +332,7 @@ impl<T: Transport> ModelClient<T> {
             profile_id,
             model_id,
             timeout_ms: timeout.as_millis().min(120_000) as u64,
+            use_default: false,
         }
     }
 }
@@ -351,21 +394,6 @@ impl<T: Transport> agent_provider_config::protocol::ModelBackend for ModelClient
         &'a self,
         request: &'a agent_provider_config::protocol::ModelRequest,
     ) -> agent_provider_config::protocol::CompletionFuture<'a> {
-        Box::pin(async move {
-            let response = self
-                .transport
-                .call(
-                    Request::Complete {
-                        profile_id: self.profile_id.clone(),
-                        model_id: self.model_id.clone(),
-                        request: request.clone(),
-                        timeout_ms: self.timeout_ms,
-                        stream: false,
-                    },
-                    &mut |_| true,
-                )
-                .await?;
-            completion(&response)
-        })
+        Box::pin(self.complete_once(request))
     }
 }

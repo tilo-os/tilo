@@ -9238,6 +9238,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-providers"
+version = "0.1.0"
+dependencies = [
+ "provider-settings-ui",
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "moderation-model"
 version = "0.1.0"
 dependencies = [
@@ -12090,6 +12100,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-settings-ui"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "hex",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-app",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "psl"
 version = "2.1.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14230,6 +14254,7 @@ dependencies = [
  "launcher",
  "os-actions",
  "package-store",
+ "provider-settings-ui",
  "quick-xml 0.41.0",
  "rcgen",
  "runtime-dylib",
@@ -14256,7 +14281,6 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-locale",
  "tilo-media",
- "tilo-model-gateway",
  "tilo-net",
  "tilo-oauth",
  "tilo-paths",
@@ -16185,6 +16209,7 @@ dependencies = [
  "libc",
  "maps",
  "messages",
+ "model-providers",
  "music",
  "neighbour-wire",
  "notes",
@@ -19402,6 +19427,7 @@ dependencies = [
  "hex-editor",
  "maps",
  "messages",
+ "model-providers",
  "music",
  "notes",
  "passwords",

@@ -30,7 +30,7 @@ class Node {
  replaceChildren(){this.children=[];}
 }
 const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-async function fixture({standalone=false,legacy=false,models}={}){
+async function fixture({standalone=false,legacy=false,models,providerManagement,app}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.fetch=async url=>{
@@ -52,7 +52,7 @@ async function fixture({standalone=false,legacy=false,models}={}){
   .replace("import {acquireStorage} from './storage.mjs';","const acquireStorage=async()=>globalThis.__hostFixture.storage;")
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
- const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:standalone?'writer':'desktop',models});await tick();
+ const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
  return {host,runtime,document,delivered,deliveredOwners,windowFocus,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
 test('model bootstrap stays mount scoped and forwards only its transport binding',async()=>{
@@ -66,6 +66,33 @@ test('model bootstrap stays mount scoped and forwards only its transport binding
  const unbound=await fixture();
  assert.equal(unbound.runtime.config.models,undefined);
  await unbound.host.cleanup();
+});
+
+test('administration bootstrap is explicit, mount-local and separate from inference',async()=>{
+ const models={endpoint:'https://models.example.test/model/rpc',sessionToken:'inference-only'};
+ const providerManagement={endpoint:models.endpoint,sessionToken:'settings-one',apiKey:'must-not-forward',profileId:'not-needed'};
+ const first=await fixture({app:'so.tilo.model-providers',models,providerManagement});
+ assert.deepEqual(first.runtime.config.models,models,'omitting both selection fields uses the user default');
+ assert.deepEqual(first.runtime.config.providerManagement,{endpoint:models.endpoint,sessionToken:'settings-one'});
+ const second=await fixture({providerManagement:{endpoint:models.endpoint,sessionToken:'settings-two'}});
+ assert.equal(second.runtime.config.app,'desktop','desktop control-panel tabs receive the same explicit grant');
+ assert.equal(second.runtime.config.providerManagement.sessionToken,'settings-two');
+ assert.equal(first.runtime.config.providerManagement.sessionToken,'settings-one','a second mount cannot replace the first session');
+ const inferenceOnly=await fixture({models});
+ assert.equal(inferenceOnly.runtime.config.providerManagement,undefined,'never reuse an inference token implicitly');
+ const missingToken=await fixture({providerManagement:{endpoint:models.endpoint},models});
+ assert.deepEqual(missingToken.runtime.config.providerManagement,{endpoint:models.endpoint},'a missing management token remains missing for Rust validation');
+ await first.host.cleanup();await second.host.cleanup();await inferenceOnly.host.cleanup();await missingToken.host.cleanup();
+});
+
+test('standalone control-panel bootstraps preserve both exact application IDs',async()=>{
+ for(const app of ['so.tilo.model-providers','so.tilo.settings']){
+  const mounted=await fixture({app,providerManagement:{endpoint:'https://models.example.test/model/rpc',sessionToken:'admin-'+app}});
+  assert.equal(mounted.runtime.config.app,app);
+  assert.equal(mounted.runtime.config.providerManagement.sessionToken,'admin-'+app);
+  assert.equal(mounted.runtime.config.models,undefined,'administration does not require an inference selection or token');
+  await mounted.host.cleanup();
+ }
 });
 
 test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{

@@ -180,8 +180,9 @@ impl HttpService {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             };
-            // Dropping a provider future aborts its HTTP body/request. A
-            // disconnected browser or revoked session never leaves work running.
+            // Dropping inference aborts its provider HTTP body/request. Durable
+            // management jobs already dispatched to the blocking pool still
+            // commit; disconnect/revocation is never a rollback acknowledgement.
             tokio::select! {
                 _ = tokio::time::timeout(MAX_CALL, forwarding) => {}
                 () = sender.closed() => {}

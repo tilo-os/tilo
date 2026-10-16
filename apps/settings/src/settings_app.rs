@@ -821,6 +821,7 @@ impl Widget for SettingsApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Background work an effect started finishes whether or not its pane
         // is open.
+        self.agent_models.poll_admin();
         self.updates.poll();
         self.storage.poll();
         self.disk_unlock.poll();
@@ -1056,9 +1057,11 @@ impl Widget for SettingsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.shell
-            .as_ref()
-            .is_some_and(ui::Widget::needs_animation_frame)
+        self.agent_models.admin_busy()
+            || self
+                .shell
+                .as_ref()
+                .is_some_and(ui::Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {

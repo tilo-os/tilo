@@ -101,6 +101,7 @@ members = [
     "apps/logs",
     "apps/mail",
     "apps/maps",
+    "apps/model-providers",
     "apps/monitor",
     "apps/music",
     "apps/notes",
@@ -138,6 +139,7 @@ members = [
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
+    "crates/agent/provider-settings-ui",
 
     # SDK
     "crates/sdk/font-catalog",

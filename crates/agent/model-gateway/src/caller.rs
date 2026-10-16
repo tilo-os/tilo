@@ -9,8 +9,15 @@ pub enum Caller {
     Settings,
 }
 
+/// The exact launcher identities admitted as provider control panels.
+/// This is a role mapping, not an administration grant: sessions must still
+/// hold the current credential-management permission.
+pub fn provider_admin_app(app_id: &str) -> bool {
+    matches!(app_id, "so.tilo.settings" | "so.tilo.model-providers")
+}
+
 /// A revocable authenticated caller. Settings identity alone grants no
-/// credential-management permission. Implementations must consult current
+/// provider-administration or credential-management permission. Implementations must consult current
 /// session state rather than just checking the original token expiry.
 pub trait Session: Send + Sync {
     fn caller(&self) -> Caller;
@@ -29,8 +36,12 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         return chat_completion(request);
     }
     match request {
-        crate::Request::Complete { .. } => matches!(session.caller(), Caller::Agent),
-        crate::Request::SecretStatus { .. }
+        crate::Request::Complete { .. } | crate::Request::CompleteDefault { .. } => {
+            matches!(session.caller(), Caller::Agent)
+        }
+        crate::Request::GetProviderConfig
+        | crate::Request::SetProviderConfig { .. }
+        | crate::Request::SecretStatus { .. }
         | crate::Request::CredentialStatus { .. }
         | crate::Request::MigrateApiKey { .. }
         | crate::Request::RemoveLegacyApiKey { .. }
@@ -47,7 +58,7 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
 #[cfg(any(all(unix, feature = "server"), test))]
 pub(crate) fn chat_completion(request: &crate::Request) -> bool {
     use agent_provider_config::protocol::{Content, Role, ToolChoice};
-    matches!(request, crate::Request::Complete { request, .. }
+    matches!(request, crate::Request::Complete { request, .. } | crate::Request::CompleteDefault { request, .. }
         if request.tools.is_empty()
             && request.tool_choice == ToolChoice::None
             && request.messages.iter().all(|message|
@@ -88,6 +99,9 @@ mod tests {
         let chat = Authenticated(Caller::Chat, true, true);
         let request = serde_json::from_value(completion()).unwrap();
         assert!(permitted(&chat, &request));
+        let mut default = completion();
+        default["verb"] = "complete_default".into();
+        assert!(permitted(&chat, &serde_json::from_value(default).unwrap()));
         assert!(!permitted(
             &Authenticated(Caller::Chat, true, false),
             &request
@@ -133,6 +147,18 @@ mod tests {
         value["caller"] = "agent".into();
         value["app_id"] = "so.tilo.agent".into();
         forbidden.push(value);
+        let default_forbidden: Vec<_> = forbidden
+            .iter()
+            .filter(|value| value["verb"] == "complete")
+            .map(|value| {
+                let mut value = value.clone();
+                value["verb"] = "complete_default".into();
+                value
+            })
+            .collect();
+        forbidden.extend(default_forbidden);
+        forbidden.push(serde_json::json!({"verb":"get_provider_config"}));
+        forbidden.push(serde_json::json!({"verb":"set_provider_config", "expected_revision":"stale", "config":{}}));
         let http = crate::service::provider_client().unwrap();
         let gateway = crate::service::Gateway::new().unwrap();
         for value in forbidden {
@@ -149,7 +175,9 @@ mod tests {
                 "transform" => "only tilo-agent may run transforms",
                 "cluster_faces" => "only Photos may request fixed local face clustering",
                 "analyze_image" => "only Photos may request fixed local image analysis",
-                "complete" => "Provider permission denied",
+                "complete" | "complete_default" | "get_provider_config" | "set_provider_config" => {
+                    "Provider permission denied"
+                }
                 _ => "not authorized",
             };
             assert!(response.error.unwrap().contains(expected), "{value}");
@@ -169,8 +197,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_control_panel_identity_is_exact() {
+        for app in ["so.tilo.settings", "so.tilo.model-providers"] {
+            assert!(provider_admin_app(app));
+        }
+        for app in [
+            "model-providers",
+            "Model Providers",
+            "so.tilo.model-providers.evil",
+            "so.tilo.settings.evil",
+            "so.tilo.chat",
+            "so.tilo.agent",
+            "*",
+        ] {
+            assert!(!provider_admin_app(app), "{app}");
+        }
+    }
+
+    #[test]
     fn legacy_management_requires_live_settings_custody_permission() {
         for request in [
+            crate::Request::GetProviderConfig,
+            crate::Request::SetProviderConfig {
+                expected_revision: "stale".into(),
+                config: agent_provider_config::ProviderConfig::default(),
+            },
             crate::Request::CredentialStatus {
                 profile_id: "profile".into(),
             },

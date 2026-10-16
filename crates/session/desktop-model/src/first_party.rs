@@ -33,6 +33,7 @@ pub const FIRST_PARTY_PACKAGES: &[&str] = &[
     "so.tilo.logs",
     "so.tilo.mail",
     "so.tilo.maps",
+    "so.tilo.model-providers",
     "so.tilo.monitor",
     "so.tilo.music",
     "so.tilo.notes",
