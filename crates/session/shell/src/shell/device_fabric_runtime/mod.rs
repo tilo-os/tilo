@@ -8627,6 +8627,7 @@ mod tests {
     /// a worker: a file whose bytes have not arrived (a FIFO, as a file on
     /// the workspace mount is while it hydrates) holds neither the drop nor
     /// the loop, and the bytes reach the offer queue once they arrive.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_small_nearby_drop_is_read_off_the_loop() {
         let directory = tempfile::tempdir().expect("source directory");
