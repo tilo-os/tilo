@@ -193,8 +193,10 @@ and the mount calls. In a nested user namespace the job holds `CAP_NET_ADMIN`
 over its own network namespace, so `socket(AF_NETLINK, …)` with
 `NETLINK_NETFILTER` or `NETLINK_XFRM` stays refused, checked by argument.
 `NETLINK_ROUTE` stays allowed, because bubblewrap brings up `lo` with it.
-`setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
-kexec and modules stay refused too. Such a job runs without Landlock, which
+`bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`, kexec and
+modules stay refused too. `setns` is allowed: the kernel lets a process join
+only namespaces it holds `CAP_SYS_ADMIN` over, which for a job are the ones it
+made itself (ush joins the user namespace that owns its sandbox's network). Such a job runs without Landlock, which
 refuses every mount to a process it confines. t selects the profile per check
 with `nested_sandboxes`. Where the node has subordinate ids, the command runs
 as root in a namespace of its own, as described next; elsewhere t runs it as
@@ -253,8 +255,8 @@ capabilities in the job's own:
   gets every capability in a user namespace it creates. The command's
   namespace adds only more ids. The argument-filtered seccomp profile still
   applies to it and to everything it starts: netfilter and XFRM netlink,
-  `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`, `setns`,
-  kexec and modules stay refused, which is what keeps the nf_tables class of
+  `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`, kexec and
+  modules stay refused, which is what keeps the nf_tables class of
   exploits closed once a process holds `CAP_NET_ADMIN` somewhere.
 - **The init stays out of reach.** It is non-dumpable and holds no capability
   once the command runs; ptracing or signalling it would take capabilities in

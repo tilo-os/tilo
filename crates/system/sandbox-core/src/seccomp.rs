@@ -473,7 +473,10 @@ pub enum CiProfile {
     /// own network namespace, so the netlink families of the kernel's
     /// largest network attack surface stay refused: netfilter (nftables)
     /// and XFRM ([`CI_NESTED_NETLINK_DENIES`]). `NETLINK_ROUTE` stays, as
-    /// bubblewrap brings up `lo` with it. `setns` stays refused.
+    /// bubblewrap brings up `lo` with it. `setns` is allowed: the kernel lets
+    /// a process join only namespaces it holds `CAP_SYS_ADMIN` over, which
+    /// for a job are those it created itself (ush joins the user namespace
+    /// that owns its sandbox's network).
     Nested,
 }
 
@@ -538,7 +541,8 @@ pub const CI_PRIVILEGED_ALLOWS: &[libc::c_long] = &[
 ];
 
 /// What [`CiProfile::Nested`] takes out of [`CI_DENIES`]: a nested sandbox
-/// builds its root with mounts, inside a mount namespace it owns.
+/// builds its root with mounts, inside a mount namespace it owns, and joins
+/// namespaces it made.
 #[cfg(target_os = "linux")]
 pub const CI_NESTED_ALLOWS: &[libc::c_long] = &[
     libc::SYS_mount,
@@ -551,6 +555,7 @@ pub const CI_NESTED_ALLOWS: &[libc::c_long] = &[
     libc::SYS_move_mount,
     libc::SYS_mount_setattr,
     libc::SYS_open_tree,
+    libc::SYS_setns,
 ];
 
 /// Netlink protocols a [`CiProfile::Nested`] job may not open a socket of:
@@ -1221,18 +1226,28 @@ mod tests {
                         return 31;
                     }
                 }
-                if errno_of(libc::syscall(libc::SYS_bpf, -1_i64, 0_i64, 0_i64)) != libc::EPERM
-                    || errno_of(libc::syscall(libc::SYS_setns, -1_i64, 0_i64)) != libc::EPERM
-                {
+                if errno_of(libc::syscall(libc::SYS_bpf, -1_i64, 0_i64, 0_i64)) != libc::EPERM {
                     return 33;
+                }
+                // Allowed: the kernel answers EBADF (an outer sandbox that
+                // refuses it answers EPERM, judged below).
+                match errno_of(libc::syscall(libc::SYS_setns, -1_i64, 0_i64)) {
+                    libc::EBADF => {}
+                    libc::EPERM => return 35,
+                    _ => return 34,
                 }
             }
             0
         });
+        let nested = if nested == 35 && !setns_reaches_kernel {
+            0
+        } else {
+            nested
+        };
         assert_eq!(
             nested, 0,
             "30 = NETLINK_ROUTE was refused, 31 = netfilter or XFRM netlink was allowed, \
-             33 = bpf or setns was allowed"
+             33 = bpf was allowed, 34/35 = setns was refused"
         );
     }
 
