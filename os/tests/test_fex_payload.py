@@ -5,13 +5,38 @@ import importlib.util
 import os
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 SPEC = importlib.util.spec_from_file_location(
     "fex_payload", Path(__file__).resolve().parents[1] / "dev/validate-fex-payload.py")
 PAYLOAD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PAYLOAD)
+
+
+class UpstreamTestObservation(unittest.TestCase):
+    def test_empty_ctest_selection_is_not_success(self):
+        spec = importlib.util.spec_from_file_location(
+            'upstream_fex_tests', Path(__file__).with_name('run-fex-tests.py'))
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary)
+            (build / 'CTestTestfile.cmake').write_text('')
+            result = runner.run_ctest(
+                ['ctest', '--test-dir', str(build), '--output-on-failure'],
+                dict(os.environ), Mock(poll=Mock(return_value=None)), build / 'server.log')
+            self.assertNotEqual(result, 0, 'CTest observed no upstream tests')
+            for status in (0, 23):
+                with self.subTest(status=status):
+                    (build / 'CTestTestfile.cmake').write_text(
+                        f'add_test(probe "{sys.executable}" "-c" "raise SystemExit({status})")\n')
+                    result = runner.run_ctest(
+                        ['ctest', '--test-dir', str(build), '--output-on-failure'],
+                        dict(os.environ), Mock(poll=Mock(return_value=None)), build / 'server.log')
+                    self.assertEqual(result == 0, status == 0)
 
 
 def elf(elf_class, machine, elf_type=3):
