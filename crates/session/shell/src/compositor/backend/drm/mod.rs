@@ -29,6 +29,7 @@ pub mod scanout;
 pub mod seat_diag;
 pub mod session;
 mod tablet;
+mod topology;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};

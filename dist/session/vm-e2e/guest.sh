@@ -178,6 +178,10 @@ step_status() {
     log=$home/.local/state/tilo/session-logs/latest.log
     echo "compositor_pid=$(compositor_pid)"
     echo "modeset=$(grep -c 'DRM scanout: modeset complete' "$log" 2>/dev/null || echo 0)"
+    local topology
+    topology=$(grep -o 'DRM topology .*' "$log" 2>/dev/null | tail -n 1 || true)
+    echo "topology=$topology"
+    echo "driven_cards=$(sed -n 's/.* driven_cards=\([0-9]*\) .*/\1/p' <<<"$topology")"
     echo "crash_logs=$(find "$home/.cache/tilo/crashes" -type f 2>/dev/null | wc -l)"
     echo "coredumps=$(coredumpctl --no-pager --no-legend list /usr/bin/tilo-shell 2>/dev/null | wc -l)"
     echo "unexpected_exit=$(journalctl -b --no-pager -o cat -t tilo-session 2>/dev/null \

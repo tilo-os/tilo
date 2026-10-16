@@ -48,6 +48,8 @@ IMAGE_SHA256 = "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f
 APPS = [("Settings", "so.tilo.settings"), ("Notes", "so.tilo.notes"),
         ("Files", "so.tilo.file-explorer"), ("Terminal", "so.tilo.terminal")]
 SSH_PORT = 2222
+# QEMU ids of the VM's two KMS cards; card0 is the boot display.
+GPUS = ("gpu0", "gpu1")
 GUEST_USER = "fedora"
 # The throwaway guest account's fixture password, also set by guest.sh.
 GUEST_PASSWORD = "tilo-e2e-password"
@@ -112,8 +114,10 @@ class Qmp:
         for keys in key_presses(text, layout):
             self.keys(*keys)
 
-    def screendump(self, path: Path) -> None:
-        self.call("screendump", filename=str(path), format="png")
+    def screendump(self, path: Path, device: str | None = None) -> None:
+        """The display of `device` (a QEMU device id), or the first one."""
+        extra = {"device": device} if device else {}
+        self.call("screendump", filename=str(path), format="png", **extra)
 
 
 def key_presses(text: str, layout: str = "us") -> list[tuple[str, ...]]:
@@ -178,7 +182,11 @@ class Vm:
             "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
             # No virgl: the runners have no GPU, so Tilo renders with lavapipe
             # onto virtio-gpu's KMS scanout, as in the Tilo OS acceptance VMs.
-            "-vga", "none", "-device", "virtio-vga",
+            # Two cards, each with its own connector: the session must light
+            # both, as on a laptop whose panel and HDMI port hang off
+            # different GPUs.
+            "-vga", "none", "-device", f"virtio-vga,id={GPUS[0]}",
+            "-device", f"virtio-gpu-pci,id={GPUS[1]}",
             "-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci",
             "-display", "none", "-serial", f"file:{self.serial}", "-monitor", "none",
             "-qmp", f"unix:{self.qmp_path},server=on,wait=off",
@@ -325,7 +333,7 @@ class Report:
                  f"| RPMs | {', '.join(src.get('rpms', []))} |",
                  f"| Built by | {src.get('workflow', 'run')} #{src.get('run')} at `{src.get('commit')}` |",
                  f"| Guest | {Path(IMAGE_URL).name}, {self.meta['memory_mb']} MiB, {self.meta['cpus']} vCPU, "
-                 "virtio-gpu without virgl |",
+                 "two virtio-gpu cards without virgl |",
                  "| Session | SDDM autologin into tilo.desktop, gnome-keyring Secret Service unlocked |",
                  f"| Dwell after each app | {self.meta['dwell']} s |", "",
                  "| Check | Result | Detail | Numbers |", "|---|---|---|---|"]
@@ -429,10 +437,18 @@ def run_test(args) -> int:
         # chrome are up; give a software renderer time for its first frames.
         time.sleep(args.settle)
         vm.qmp.screendump(shots / "00-desktop.png")
-        problems = compositor_health(vm.status([]), pid)
+        vm.qmp.screendump(shots / "00-desktop-second-gpu.png", GPUS[1])
+        st = vm.status([])
+        problems = compositor_health(st, pid)
         if not report.add("H04", f"The session survives {args.settle} s idle after login", not problems,
                           "; ".join(problems)):
             return 1
+        # The compositor journals what it drives whenever that changes; the
+        # last line is the topology now.
+        driven = int(st.get("driven_cards") or 0)
+        report.add("H06", "The compositor drives an output on each of the VM's two GPUs",
+                   driven == len(GPUS), st.get("topology") or "no DRM topology line in the session log",
+                   driven_cards=driven)
 
         # The import runs before the compositor starts; the keymap is built
         # from its result, so everything typed below goes through it.

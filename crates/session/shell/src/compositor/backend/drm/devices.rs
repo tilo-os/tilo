@@ -17,11 +17,11 @@ use std::path::{Path, PathBuf};
 
 /// Order KMS nodes by the connectors they can actually drive.
 ///
-/// `udev::all_gpus` is not a primary-display ordering. On hybrid systems it
-/// commonly returns a connectorless discrete GPU before the integrated GPU
-/// that owns the internal panel. Opening only that first node leaves the
-/// compositor running headless while the display manager's last framebuffer
-/// remains on screen.
+/// Every node is opened and driven; the order only decides whose outputs
+/// are adopted (and numbered) first and which card the backend reports as
+/// its primary. `udev::all_gpus` is not a primary-display ordering: on hybrid
+/// systems it commonly returns a connectorless discrete GPU before the
+/// integrated GPU that owns the internal panel.
 ///
 /// Prefer the node with the greatest number of connected connectors, using a
 /// connected internal panel (`eDP`, `LVDS`, or `DSI`) as the tie-breaker. That

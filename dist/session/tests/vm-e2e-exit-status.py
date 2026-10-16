@@ -25,7 +25,7 @@ class VmAcceptanceExitTests(unittest.TestCase):
         self.assertEqual(keys.count("minus"), 2)
         self.assertNotIn("-", keys)
 
-    def exercise(self, app_state, settings=None):
+    def exercise(self, app_state, settings=None, driven_cards=2):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             rpms = root / "rpms"
@@ -52,6 +52,8 @@ class VmAcceptanceExitTests(unittest.TestCase):
                 settings=lambda: json.dumps(imported),
                 guest=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="fixture OK"),
                 status=lambda apps: {"compositor_pid": "100", "modeset": 1,
+                                     "driven_cards": str(driven_cards),
+                                     "topology": f"DRM topology cards=2 driven_cards={driven_cards} outputs=2",
                                      **{f"app.{app}": int(app_state != "missing") for app in apps},
                                      **{f"app_stopped.{app}": int(app_state == "stopped") for app in apps}},
             )
@@ -82,7 +84,7 @@ class VmAcceptanceExitTests(unittest.TestCase):
     def test_healthy_session_and_all_apps_pass_process_and_report(self):
         status, report = self.exercise("healthy")
         self.assertEqual(report["overall"], "pass")
-        self.assertEqual(len(report["checks"]), 9)
+        self.assertEqual(len(report["checks"]), 10)
         self.assertEqual(status, 0)
         self.assertEqual(set(self.layouts), {"de"},
                          "everything is typed on the German layout the session imported")
@@ -95,6 +97,12 @@ class VmAcceptanceExitTests(unittest.TestCase):
         failed = [c["id"] for c in report["checks"] if c["status"] == "fail"]
         self.assertEqual(failed, ["H05"])
         self.assertEqual(set(self.layouts), {"us"})
+
+    def test_a_session_lighting_only_one_of_the_two_gpus_fails(self):
+        status, report = self.exercise("healthy", driven_cards=1)
+        self.assertEqual(status, 1)
+        failed = [c["id"] for c in report["checks"] if c["status"] == "fail"]
+        self.assertEqual(failed, ["H06"])
 
 
 if __name__ == "__main__":
