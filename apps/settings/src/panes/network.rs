@@ -655,8 +655,19 @@ impl Drop for NetworkChange {
 /// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the SIMs.
-    /// Connectivity is the last verdict; this never probes the internet.
+    /// Connectivity is the last verdict; this never probes the internet,
+    /// and the networks are those last seen: it never waits for a scan.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Scan for Wi-Fi networks and return once the scan has finished, so the
+    /// snapshot that follows lists what the radio sees now. Only the
+    /// explicit refresh does this: a scan takes as long as the hardware
+    /// needs, and no reading may wait for it.
+    ///
+    /// # Errors
+    /// Why the device could not scan.
+    fn scan(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
@@ -702,6 +713,10 @@ impl NetworkService for DeviceNetwork {
         // A refused or failed recheck still leaves the last verdict, which
         // the snapshot that follows reads and reports.
         let _ = os_actions::check_connectivity_now();
+    }
+
+    fn scan(&self) -> Result<(), String> {
+        os_actions::scan_wifi()
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -846,7 +861,10 @@ pub(crate) enum Joined {
 
 /// Work that finished on a worker, for the model to take in.
 pub(crate) enum Landed {
-    Refreshed(NetworkSnapshot),
+    Refreshed {
+        snapshot: NetworkSnapshot,
+        scan: Result<(), String>,
+    },
     Changed(NetworkChange, Result<(), String>),
     Connected {
         ssid: String,
@@ -1569,8 +1587,12 @@ impl NetworkModel {
             NetworkEffect::RefreshNetworks => {
                 self.refreshes_pending += 1;
                 Begun::work(move || {
+                    let scan = service.scan();
                     service.recheck_connectivity();
-                    Landed::Refreshed(service.snapshot(false))
+                    Landed::Refreshed {
+                        snapshot: service.snapshot(false),
+                        scan,
+                    }
                 })
             }
             NetworkEffect::SetWifi { on } => {
@@ -2034,9 +2056,18 @@ impl NetworkModel {
     fn land(&mut self, landed: Landed) -> EffectAnswer {
         self.changed = true;
         let reported = match landed {
-            Landed::Refreshed(snapshot) => {
+            Landed::Refreshed { snapshot, scan } => {
                 self.refreshes_pending = self.refreshes_pending.saturating_sub(1);
-                self.adopt_snapshot(snapshot)
+                let adopted = self.adopt_snapshot(snapshot);
+                match scan {
+                    // The list and status still read; only the fresh look
+                    // failed. A radio that is off cannot scan, and says so.
+                    Err(error) if adopted.is_ok() && self.wifi_enabled => {
+                        warn!(target: "tilo::settings", op = "scan_wifi", %error, "Wi-Fi scan failed");
+                        Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
+                    }
+                    _ => adopted,
+                }
             }
             Landed::Changed(change, result) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
@@ -3565,9 +3596,24 @@ mod tests {
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
         connectivity_rechecks: std::sync::atomic::AtomicUsize,
+        /// Scans, each recorded with the snapshot reads made before it.
+        scans: Mutex<Vec<usize>>,
+        scan_refusal: Mutex<Option<String>>,
     }
 
     impl NetworkService for FakeNetwork {
+        fn scan(&self) -> Result<(), String> {
+            let reads = self
+                .snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.scans.lock().unwrap().push(reads);
+            self.scan_refusal
+                .lock()
+                .unwrap()
+                .clone()
+                .map_or(Ok(()), Err)
+        }
+
         fn recheck_connectivity(&self) {
             self.connectivity_rechecks
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4038,6 +4084,50 @@ mod tests {
             1,
             "the explicit refresh asks for a fresh connectivity verdict"
         );
+    }
+
+    /// Opening Network shows the connected network from what
+    /// `NetworkManager` already knows; it never waits for a radio scan,
+    /// which takes over ten seconds on some adapters and once timed the
+    /// status out ("Can't read network status: nmcli timed out after
+    /// 12000 ms") while the internet worked. Only Refresh scans, before it
+    /// reads, and a failed scan leaves the status and list readable.
+    #[test]
+    fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut model = model(&fake);
+        assert!(
+            fake.scans.lock().unwrap().is_empty(),
+            "opening Network must not scan"
+        );
+        let connected = t_args("net-connected-to", &[("ssid", "Home_Network".into())]);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert_eq!(model.wifi_status_error(), None);
+
+        run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
+        assert_eq!(
+            *fake.scans.lock().unwrap(),
+            vec![1],
+            "Refresh scans once, before the snapshot it adopts"
+        );
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+
+        *fake.scan_refusal.lock().unwrap() = Some("Scanning not allowed".into());
+        let refused = run(&mut model, NetworkEffect::RefreshNetworks)
+            .expect_err("a failed scan is reported to whoever pressed Refresh");
+        assert!(refused.contains("Scanning not allowed"), "{refused}");
+        assert_eq!(model.read_errors, NetworkReadErrors::default());
+        assert_eq!(model.wifi_status_error(), None);
+        assert_eq!(model.networks().len(), 3);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert!(!text.contains("Can't read network status"), "{text}");
     }
 
     /// A secure network first asks the person's devices for its password,
