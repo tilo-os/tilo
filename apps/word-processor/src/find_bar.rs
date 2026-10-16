@@ -153,13 +153,11 @@ impl FindBar {
     }
 
     /// Re-run the current query after the document changed.
-    #[cfg(test)]
     pub(crate) fn refresh(&mut self, host: &mut dyn FindHost) -> FindEffect {
         if !self.open {
             return FindEffect::None;
         }
-        let query = self.bar.query().to_owned();
-        self.bar.set_query(&query);
+        self.bar.refresh();
         self.drive(host)
     }
 
@@ -177,9 +175,7 @@ impl FindBar {
             self.close();
             return FindEffect::None;
         }
-        if self.index >= self.matches.len() {
-            self.index = 0;
-        }
+        self.index = self.index.min(self.matches.len().saturating_sub(1));
         match revealed {
             Some(index) if index < self.matches.len() => {
                 self.index = index;
