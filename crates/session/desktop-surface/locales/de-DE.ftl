@@ -171,9 +171,9 @@ a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; {
        *[other] Prüfereignisse
     }
 a11y-shell-activity-task-latest = zuletzt: { $latest }
-activity-view-catch-up = Aufholen
+activity-view-catch-up = Neues
 activity-view-tasks = Aufgaben
-activity-view-explore = Erkunden
+activity-view-explore = Verlauf
 activity-view-replay = Wiedergabe
 activity-title-catch-up = Während du weg warst
 activity-title-tasks = Aufgabenzentrale
@@ -256,7 +256,7 @@ activity-brief-underlying = { $count } { $count ->
         [one] zugrunde liegende Aktion
        *[other] zugrunde liegende Aktionen
     }
-activity-brief-open-explorer = Diese Arbeitssitzung im Explorer öffnen →
+activity-brief-open-explorer = Diese Arbeitssitzung im Verlauf öffnen →
 activity-brief-show-affected = Betroffene Ressourcen und Aktionen anzeigen
 activity-browse-by = Durchsuchen nach
 activity-more-lenses = Weitere Ansichten…
@@ -339,17 +339,15 @@ activity-replay-no-workspace = Der Arbeitsbereich existierte zu diesem Prüfpunk
 activity-replay-empty-window = Leeres Fenster
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
 activity-presence-trail = Anwesenheitsverlauf
-activity-tasks-subtitle = { $workspace } · { $active } { $active ->
-        [one] aktive Aufgabe
-       *[other] aktive Aufgaben
-    } · { $agents } { $agents ->
-        [one] zugewiesener Agent
-       *[other] zugewiesene Agents
+activity-tasks-subtitle = { $workspace } · { $active ->
+        [0] nichts offen
+        [one] 1 offene Aufgabe
+       *[other] { $active } offene Aufgaben
     }
-activity-tasks-tagline = Native Arbeitsbereich-Aufgaben · Modell optional · jede Aktion prüfbar
+activity-tasks-tagline = Was Personen und Agenten in diesem Arbeitsbereich erledigen
 activity-tasks-pending = Aufgaben warten auf laufende Bearbeitungen
 activity-tasks-empty = Noch keine Aufgaben
-activity-tasks-empty-hint = Lege eine manuell an oder hänge die in „Erkunden“ ausgewählte Ressource an.
+activity-tasks-empty-hint = Lege hier eine an oder bitte in einer beliebigen App einen Agenten darum.
 activity-task-new = + Neue Aufgabe
 activity-task-queue = WARTESCHLANGE DES ARBEITSBEREICHS
 activity-task-composer-title = Arbeit anlegen, ohne den Schreibtisch zu verlassen

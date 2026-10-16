@@ -3292,9 +3292,15 @@ impl RoomActivityPane {
             self.scope_rects.clear();
             self.view_rects.clear();
         } else {
-            // Scope pills first: the title is elided to the room left of them,
-            // so at 200 % the two never paint over each other.
-            self.draw_scope_chips(scene, transform, tr, theme);
+            if self.view == ActivityView::Tasks {
+                // Tasks always belong to the active workspace, so a
+                // workspace-scope toggle there would change nothing.
+                self.scope_rects.clear();
+            } else {
+                // Scope pills first: the title is elided to the room left of
+                // them, so at 200 % the two never paint over each other.
+                self.draw_scope_chips(scene, transform, tr, theme);
+            }
             self.draw_view_tabs(scene, transform, tr, theme);
         }
         // Title elision must use this frame's scope geometry, not rectangles
@@ -5055,11 +5061,7 @@ impl RoomActivityPane {
                     .iter()
                     .filter(|task| !task.status.is_finished())
                     .count(),
-                self.tasks
-                    .iter()
-                    .filter_map(|task| task.assigned_agent.as_ref())
-                    .collect::<HashSet<_>>()
-                    .len(),
+                0,
             ),
             ActivityView::Explore | ActivityView::Replay => {
                 (self.total_entries, self.contributors.len())
@@ -5076,7 +5078,6 @@ impl RoomActivityPane {
                 &[
                     ("workspace", workspace.as_str().into()),
                     ("active", change_count.into()),
-                    ("agents", contributor_count.into()),
                 ],
             );
             // Both lines are elided to one line each: the header band holds
