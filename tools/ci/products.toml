@@ -206,7 +206,7 @@ children = true
 dev = ["dev-{commit}"]
 release = ["{commit}", "{rust}"]
 dev_signed = true
-gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64"]
+gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64"]
 publish = { inputs = ["rust-toolchain.toml"] }
 
 [product.build]
@@ -246,6 +246,21 @@ cargo_packages = ["tilo-advisory-lock"]
 cargo_dev_dependencies = false
 needs = ["canary-ci-builder-cache-cold-{arch}"]
 cost = "minutes"
+
+# The native Chromium and the browser regressions that once broke on a builder. Their tests run
+# `npm ci` in scripts/moq-browser, inside the source tree. Only x86_64's gates publication for
+# now: on aarch64 its build directory under $TMPDIR loses files mid-build (cargo can't run
+# sccache or read dep info it just wrote), which the job sandbox there has yet to fix.
+[[matrix.check]]
+name = "canary-ci-builder-browser-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh browser"
+inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**"]
+cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
+writable_sources = true
+cost = "heavy"
+cpus = 8
+memory = "16G"
 
 # ---------------------------------------------------------------------------
 # The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
