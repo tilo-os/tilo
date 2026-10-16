@@ -369,37 +369,69 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
     }
 }
 
-/// The real native library relocates its lookup beside the signed runtime.
-/// Exercise signature verification, loader preflight, bwrap, Landlock and
-/// seccomp through the production launch path, not just an argv assertion.
-#[test]
-fn relocated_gstreamer_discovers_playbin_in_the_confined_process() {
-    use std::collections::BTreeSet;
-    use std::path::Path;
-    use std::process::Command;
-
-    let mut env = ScopedEnv::new();
-    env.set("LC_ALL", "C");
-    env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
-    let executable = Path::new("/usr/bin/gst-inspect-1.0");
-    assert!(executable.is_file(), "native GStreamer probe is required");
-    let report = Command::new("ldd").arg(executable).output().unwrap();
-    assert!(report.status.success());
-    let report = String::from_utf8(report.stdout).unwrap();
-    assert!(!report.contains("not found"), "{report}");
-    let libraries: BTreeSet<PathBuf> = report
-        .split_whitespace()
-        .filter(|word| word.starts_with('/') && !word.ends_with(':'))
-        .map(PathBuf::from)
-        .collect();
+/// The shared objects `executables` load, which must include `libgstreamer`.
+fn native_closure(executables: &[&std::path::Path]) -> Vec<PathBuf> {
+    let mut libraries = std::collections::BTreeSet::new();
+    for executable in executables {
+        let report = std::process::Command::new("ldd")
+            .arg(executable)
+            .output()
+            .unwrap();
+        assert!(report.status.success());
+        let report = String::from_utf8(report.stdout).unwrap();
+        assert!(!report.contains("not found"), "{report}");
+        libraries.extend(
+            report
+                .split_whitespace()
+                .filter(|word| word.starts_with('/') && !word.ends_with(':'))
+                .map(PathBuf::from),
+        );
+    }
     assert!(
         libraries.iter().any(|path| path
             .file_name()
             .is_some_and(|name| name == "libgstreamer-1.0.so.0")),
-        "{report}"
+        "{libraries:?}"
     );
-    let libraries: Vec<_> = libraries.into_iter().collect();
+    libraries.into_iter().collect()
+}
+
+/// The real native library relocates its lookup beside the signed runtime.
+/// Exercise signature verification, loader preflight, bwrap, Landlock and
+/// seccomp through the production launch path, not just an argv assertion:
+/// the confined process must find `playbin` among the system plugins and
+/// autoplug a system decoder all the way to a decoded picture. Finding the
+/// element alone once passed while every real open still failed.
+#[test]
+fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
+    use std::path::Path;
+    use std::process::Command;
+
+    let inspect = Path::new("/usr/bin/gst-inspect-1.0");
+    let launch = Path::new("/usr/bin/gst-launch-1.0");
+    assert!(
+        inspect.is_file() && launch.is_file(),
+        "native GStreamer tools are required"
+    );
     let root = tempfile::tempdir().unwrap();
+    let payload = root.path().join("payload");
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    // Encoded here, outside the sandbox, with the host's own plugin search.
+    let encoded = Command::new(launch)
+        .arg("-q")
+        .args(
+            "videotestsrc num-buffers=10 ! video/x-raw,width=64,height=48 ! vp8enc ! webmmux ! filesink"
+                .split(' '),
+        )
+        .arg(format!("location={}", payload.join("clip.webm").display()))
+        .output()
+        .unwrap();
+    assert!(encoded.status.success(), "{encoded:?}");
+
+    let mut env = ScopedEnv::new();
+    env.set("LC_ALL", "C");
+    env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
+    let libraries = native_closure(&[inspect, launch]);
     let runtime = root.path().join("runtime");
     let identity = runtime_bundle::Identity::generate();
     let key = root.path().join("fixture-identity.json");
@@ -415,33 +447,53 @@ fn relocated_gstreamer_discovers_playbin_in_the_confined_process() {
     )
     .unwrap();
     assert!(!runtime.join("lib/gstreamer-1.0").exists());
-    let payload = root.path().join("payload");
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::copy(executable, payload.join("bin/gst-inspect")).unwrap();
-    let mut manifest = manifest();
-    manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
-    manifest.entrypoint.bin = "bin/gst-inspect".into();
-    let opts = RunOptions {
-        no_services: true,
-        bwrap_bin: Some(bwrap()),
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
-        runtime_root: Some(runtime),
-        require_runtime_publisher: Some(identity.public_key_hex()),
-        mode: launcher::run::LaunchMode::Cli {
-            command: "gst-inspect".into(),
-            passthrough_argv: vec!["playbin".into()],
-        },
-        ..isolated_options(&root.path().join("data"))
+    std::fs::copy(inspect, payload.join("bin/gst-inspect")).unwrap();
+    std::fs::copy(launch, payload.join("bin/gst-launch")).unwrap();
+    let confined = |bin: &str, argv: Vec<String>| {
+        let mut manifest = manifest();
+        manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
+        manifest.entrypoint.bin = format!("bin/{bin}");
+        let opts = RunOptions {
+            no_services: true,
+            bwrap_bin: Some(bwrap()),
+            sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+            runtime_root: Some(runtime.clone()),
+            require_runtime_publisher: Some(identity.public_key_hex()),
+            mode: launcher::run::LaunchMode::Cli {
+                command: bin.into(),
+                passthrough_argv: argv,
+            },
+            ..isolated_options(&root.path().join("data"))
+        };
+        assert!(opts.landlock_enforce);
+        assert!(!opts.allow_missing_runtime && !opts.allow_unsigned_runtime);
+        let (status, output) = run_with_captured(&manifest, &payload, &opts)
+            .expect("launch the native probe with the verified relocated runtime");
+        let output = String::from_utf8_lossy(&output).into_owned();
+        assert!(status.success(), "{bin} failed: {status:?} {output}");
+        output
     };
-    assert!(opts.landlock_enforce);
-    assert!(!opts.allow_missing_runtime && !opts.allow_unsigned_runtime);
-    let (status, output) = run_with_captured(&manifest, &payload, &opts)
-        .expect("launch the native probe with the verified relocated runtime");
-    let output = String::from_utf8_lossy(&output);
-    assert!(
-        status.success(),
-        "native plugin discovery failed: {status:?} {output}"
-    );
+
+    let output = confined("gst-inspect", vec!["playbin".into()]);
     assert!(output.contains("Player Bin 2"), "{output}");
     assert!(output.contains("libgstplayback.so"), "{output}");
+
+    let clip = launcher::sandbox::payload_mount_for(PACKAGE).join("clip.webm");
+    let output = confined(
+        "gst-launch",
+        vec![
+            "-v".into(),
+            "playbin".into(),
+            format!("uri=file://{}", clip.display()),
+            "video-sink=fakesink name=frames silent=false".into(),
+        ],
+    );
+    // Only decoded pictures reach playbin's video sink, so a buffer there
+    // proves a system decoder was plugged and ran.
+    assert!(
+        output
+            .lines()
+            .any(|line| line.contains("last-message = chain") && line.contains("(frames:sink)")),
+        "no decoded picture reached the sink: {output}"
+    );
 }
