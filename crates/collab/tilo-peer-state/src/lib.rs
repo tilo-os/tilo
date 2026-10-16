@@ -27,8 +27,8 @@ pub use state::{
     PeerMember, PeerOutbox, PeerOutboxMut, PeerPolicyBasis, PeerRead, PeerRevocations,
     PeerRoomAccess, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome,
     RecordReaders, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer,
-    TransportOrigin, VerifiedSecurityMetadataOnly, committed_document_revision,
-    decide_with_surfaces, default_surfaces, peer_handle, seed_room,
+    TransportOrigin, committed_document_revision, decide_with_surfaces, default_surfaces,
+    peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;

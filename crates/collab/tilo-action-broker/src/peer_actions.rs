@@ -950,9 +950,6 @@ mod tests {
     }
 }
 
-mod carrier;
-pub use carrier::{CarrierError, CarrierTransition, CarrierTransitions, PendingPeerAction};
-
 mod policy_basis;
 pub use policy_basis::PrivatePolicyBasis;
 
