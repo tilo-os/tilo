@@ -335,10 +335,22 @@ pub enum PeerEvent {
     },
     /// What the host said about this device's calls.
     Voice(crate::voice::VoiceEvent),
+    /// The host sent everything it holds of a record this device opened
+    /// ([`PeerHandle::open_record`]) as [`PeerEvent::Document`]s, before
+    /// this event; its changes keep arriving from now on.
+    RecordOpened {
+        /// The room's workspace.
+        workspace_id: u64,
+        /// The record.
+        route: DocumentRoute,
+        /// How many frames the host sent.
+        frames: u32,
+    },
 }
 
 enum Command {
     Join(u64),
+    OpenRecord(u64, DocumentRoute),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
@@ -565,6 +577,7 @@ impl PeerHandle {
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
+            opened_records: BTreeMap::new(),
             doc_seq: 0,
             barriers: Vec::new(),
             held_barriers: Vec::new(),
@@ -606,6 +619,19 @@ impl PeerHandle {
     /// Returns an error once the session is closed.
     pub fn join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::Join(workspace_id))
+    }
+
+    /// Open `route`, an on-demand record of the joined room `workspace_id`
+    /// (`neighbour_wire::record_sync`): one a join does not replay. Its
+    /// history arrives as [`PeerEvent::Document`]s, then
+    /// [`PeerEvent::RecordOpened`]; its changes keep arriving after, and
+    /// the record is opened again whenever the session reconnects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn open_record(&self, workspace_id: u64, route: DocumentRoute) -> Result<(), String> {
+        self.send(Command::OpenRecord(workspace_id, route))
     }
 
     /// Publish a document mutation on `route`: split into signed frames,
@@ -1127,6 +1153,9 @@ struct Task {
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
     positions: BTreeMap<u64, Vec<u8>>,
+    /// The on-demand records this page opened, by retained channel: opened
+    /// again after every resubscription.
+    opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// Barriers called while frames were held, with the routes those frames
@@ -1322,6 +1351,14 @@ impl Task {
             sent_ok &= client
                 .send(Envelope::Subscribe {
                     workspace_id: *workspace_id,
+                })
+                .is_ok();
+        }
+        for (channel, (workspace_id, _)) in &self.opened_records {
+            sent_ok &= client
+                .send(Envelope::OpenRecord {
+                    workspace_id: *workspace_id,
+                    channel: *channel,
                 })
                 .is_ok();
         }
@@ -1635,6 +1672,21 @@ impl Task {
         };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
+            Command::OpenRecord(workspace_id, route) => {
+                let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+                // Ask for the record's keys as its history is asked for.
+                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
+                self.absorb(changes);
+                self.opened_records.insert(channel, (workspace_id, route));
+                client.is_none_or(|client| {
+                    client
+                        .send(Envelope::OpenRecord {
+                            workspace_id,
+                            channel,
+                        })
+                        .is_ok()
+                })
+            }
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
                 client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
@@ -1796,6 +1848,14 @@ impl Task {
         }
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
+        }
+        for (channel, (workspace_id, _)) in &self.opened_records {
+            sent_ok &= client
+                .send(Envelope::OpenRecord {
+                    workspace_id: *workspace_id,
+                    channel: *channel,
+                })
+                .is_ok();
         }
         for workspace_id in &self.live {
             sent_ok &= client
@@ -2334,6 +2394,20 @@ impl Task {
                 position,
             } => {
                 self.positions.insert(workspace_id, position);
+            }
+            Envelope::RecordOpened {
+                workspace_id,
+                channel,
+                frames,
+            } => {
+                if let Some((_, route)) = self.opened_records.get(&channel) {
+                    let route = route.clone();
+                    self.emit(&PeerEvent::RecordOpened {
+                        workspace_id,
+                        route,
+                        frames,
+                    });
+                }
             }
             Envelope::CompactRequest {
                 workspace_id,

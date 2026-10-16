@@ -18924,6 +18924,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "neighbour-wire",
  "rand 0.10.1",
  "serde",
  "serde_json",

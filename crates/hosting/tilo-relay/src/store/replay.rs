@@ -65,6 +65,9 @@ pub(crate) struct CaptureLeases {
     steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
+    /// How each retained channel's record syncs
+    /// ([`super::record_sync`]).
+    pub(super) records: super::record_sync::RecordClasses,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -527,6 +530,9 @@ pub struct ReplayBuild {
     selected: Option<File>,
     shell_selected: bool,
     skip: Option<ResumeSkip>,
+    /// Replay every record, on-demand ones and earlier parts of chains
+    /// included: a peer relay holding the room keeps all of it.
+    every_record: bool,
     /// The frames listed to pin when the capture is prepared
     /// (`capture.manifest`): the retained frames, with the lease that keeps
     /// them in place until then ([`CaptureLeases`]), or a final cut's held
@@ -602,6 +608,11 @@ impl ReplayBuild {
     /// them). Its queue is replayed whole.
     pub(crate) fn skipping(mut self, skip: Option<ResumeSkip>) -> Self {
         self.skip = skip;
+        self
+    }
+    /// Replay on-demand records and earlier parts of chains too.
+    pub(crate) fn with_every_record(mut self, every_record: bool) -> Self {
+        self.every_record = every_record;
         self
     }
     #[cfg(test)]
@@ -942,6 +953,7 @@ impl WorkspaceStore {
             next_pin: 0,
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
+            every_record: false,
             listed: Some((
                 io::BufWriter::new(File::create(root.join("capture.manifest"))?),
                 (!pending_only).then(|| self.lease_capture()),
@@ -1188,7 +1200,9 @@ impl WorkspaceStore {
                 match build.phase {
                     2 if kind.is_dir() => {
                         let lineage = entry.path();
-                        if !self.leaves_out(&name, &lineage)? {
+                        if !self.leaves_out(&name, &lineage)?
+                            && (build.every_record || !self.leaves_out_on_demand(&name)?)
+                        {
                             // Counted: lineages listed from memory and
                             // from their generation.
                             build.child =

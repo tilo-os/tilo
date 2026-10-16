@@ -6,9 +6,9 @@ use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, enable_actions, enable_broker_client,
     handle_commit, handle_compaction, handle_delta, handle_live, handle_live_join,
-    handle_live_leave, handle_peer_relay_hello, handle_presence, handle_remote_action,
-    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, register_broker,
-    route_private, route_record_content, route_signed_directed,
+    handle_live_leave, handle_open_record, handle_peer_relay_hello, handle_presence,
+    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
+    register_broker, route_private, route_record_content, route_signed_directed,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write, mpsc};
@@ -140,6 +140,10 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceJoin { .. }
         | Envelope::VoiceLeave { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
+        Envelope::OpenRecord {
+            workspace_id,
+            channel,
+        } => handle_open_record(peer, session, subscribed, workspace_id, channel).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -155,7 +159,8 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceCallResult { .. }
         | Envelope::VoiceGranted { .. }
         | Envelope::VoiceRefused { .. }
-        | Envelope::VoiceCallList { .. } => Ok(None),
+        | Envelope::VoiceCallList { .. }
+        | Envelope::RecordOpened { .. } => Ok(None),
     }
 }
 

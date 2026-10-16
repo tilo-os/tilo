@@ -61,7 +61,7 @@ fn lineage_name(author: &[u8; 32], channel: &[u8; 32]) -> String {
 
 /// Record files of a generation in replay order: the checkpoint, then the
 /// tail by name.
-fn record_names(generation: &Path) -> Result<Vec<OsString>, StoreError> {
+pub(super) fn record_names(generation: &Path) -> Result<Vec<OsString>, StoreError> {
     let mut names = Vec::new();
     let mut checkpoint = false;
     for entry in fs::read_dir(generation)? {
@@ -98,7 +98,10 @@ fn has_sidecars(generation: &Path) -> Result<bool, StoreError> {
 }
 
 impl WorkspaceStore {
-    fn channel_lineages(&self, channel: &[u8; 32]) -> Result<Vec<(PathBuf, [u8; 32])>, StoreError> {
+    pub(super) fn channel_lineages(
+        &self,
+        channel: &[u8; 32],
+    ) -> Result<Vec<(PathBuf, [u8; 32])>, StoreError> {
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let suffix = format!("-{}", hex::encode(channel));
         let mut lineages = Vec::new();

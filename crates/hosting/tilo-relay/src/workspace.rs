@@ -152,6 +152,11 @@ pub struct WorkspaceRuntime {
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// The on-demand records each subscriber holds, by channel: those it
+    /// opened, and the chain parts it was replayed or followed live while
+    /// they were their chain's head. Live changes to an on-demand record
+    /// reach only these ([`crate::store::record_sync`]).
+    held_records: HashMap<[u8; 32], HashSet<[u8; 32]>>,
     /// The presence mailbox of each subscriber whose connection takes its
     /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
     /// right after the subscription it belongs to and dropped with it; a
@@ -437,6 +442,7 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
+            held_records: HashMap::new(),
             presence_mailboxes: HashMap::new(),
             recent_deltas: HashMap::new(),
             sync_refresh: None,
@@ -644,7 +650,27 @@ impl WorkspaceRuntime {
         }
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
+        // Its replay holds every chain's head.
+        self.held_records.insert(
+            sub.device_public_key,
+            self.store.chain_heads().into_iter().collect(),
+        );
         self.subscribers.insert(sub.device_public_key, sub);
+    }
+
+    /// Whether subscriber `device` holds the on-demand record on `channel`.
+    pub(crate) fn holds_record(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.held_records
+            .get(device)
+            .is_some_and(|held| held.contains(channel))
+    }
+
+    /// Subscriber `device` now holds the record on `channel`: it opened it,
+    /// or took a live change to it while it was its chain's head.
+    pub(crate) fn hold_record(&mut self, device: &[u8; 32], channel: [u8; 32]) {
+        if let Some(held) = self.held_records.get_mut(device) {
+            held.insert(channel);
+        }
     }
 
     /// Hand the presence fanned out to subscriber `device` to its
@@ -729,6 +755,7 @@ impl WorkspaceRuntime {
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
         self.checkpoint_served.remove(device);
+        self.held_records.remove(device);
         let workspace_id = self.store.workspace_id();
         self.live_leave(device, workspace_id);
     }

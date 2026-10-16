@@ -46,6 +46,9 @@ pub(crate) struct Authority {
     /// capacity timings ([`crate::timing`]).
     reserved: Option<std::time::Instant>,
     released: OnceLock<std::time::Instant>,
+    /// The replay includes on-demand records: the subscriber is a peer
+    /// relay, which keeps all of the room.
+    every_record: bool,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
 }
@@ -137,6 +140,13 @@ impl ReplayTicket {
             .map_err(|_| error("replay ticket backpressure"))?;
         Ok(Self::with_permit(device, connection, permit))
     }
+    /// Replay on-demand records too: the subscriber keeps all of the room.
+    pub(crate) fn with_every_record(mut self) -> Self {
+        if let Some(authority) = Arc::get_mut(&mut self.authority) {
+            authority.every_record = true;
+        }
+        self
+    }
     fn with_permit(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
@@ -152,6 +162,7 @@ impl ReplayTicket {
                 reclaim: OnceLock::new(),
                 reserved: crate::timing::start(),
                 released: OnceLock::new(),
+                every_record: false,
                 _permit: permit,
             }),
         }
@@ -413,10 +424,15 @@ impl State {
             let build = if let Some(held) = held {
                 self.store
                     .start_pending_replay_capture(authority.id, authority.device, held)
+                    .map(|build| build.with_every_record(authority.every_record))
             } else {
                 self.store
                     .start_replay_capture(authority.id, authority.device)
-                    .map(|build| build.skipping(skip))
+                    .map(|build| {
+                        build
+                            .skipping(skip)
+                            .with_every_record(authority.every_record)
+                    })
             };
             // Its ticket's drop wakes this owner to reclaim the entry. One
             // ticket names one workspace's replay, so it has one owner.

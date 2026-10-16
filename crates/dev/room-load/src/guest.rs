@@ -55,13 +55,38 @@ pub struct Shared {
     pub quiet: tokio::sync::watch::Receiver<bool>,
     /// The change hash (hex) of every chat message a guest posted.
     pub sent: std::sync::Mutex<Vec<String>>,
+    /// Chat posts so far, history included: which part of the chat each
+    /// next post goes to.
+    pub posts: std::sync::atomic::AtomicUsize,
 }
 
 /// Posts one historian has sent and not yet seen committed.
 const HISTORY_IN_FLIGHT: usize = 8;
 
-/// The chat record every guest writes, in the last room it joined.
+/// The chat record every guest writes, in the last room it joined: the
+/// parent of a chain of parts that hold its posts
+/// ([`neighbour_wire::record_part`]).
 pub const CHAT_RECORD: &str = "general";
+/// Posts in one part of the chat before the next part starts: well under
+/// what one record's snapshot may hold, so every part stays compactable.
+pub const PART_MESSAGES: usize = 2000;
+
+/// Part `index` of the chat in `room`.
+pub fn chat_part(room: &str, index: usize) -> DocumentRoute {
+    DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: room.into(),
+        record: neighbour_wire::record_part(CHAT_RECORD, index as u64),
+    }
+}
+
+/// The part of the chat in `room` the next post goes to: the posts so far
+/// fill each part in turn, as writers that count the head's posts start the
+/// next part once the head is full.
+fn next_post(shared: &Shared, room: &str) -> DocumentRoute {
+    let post = shared.posts.fetch_add(1, Ordering::Relaxed);
+    chat_part(room, post / PART_MESSAGES)
+}
 /// The field of the chat record a guest's message sets.
 const MESSAGE: &str = "message";
 
@@ -218,13 +243,9 @@ pub async fn historian(shared: Arc<Shared>, index: usize, count: usize) -> Resul
     for room in &rooms {
         peer.join(room.workspace_id)?;
     }
-    let route = rooms
+    let chat_room = rooms
         .last()
-        .map(|room| DocumentRoute {
-            app_id: "so.tilo.chat".into(),
-            cluster_id: room.room.clone(),
-            record: CHAT_RECORD.into(),
-        })
+        .map(|room| room.room.clone())
         .ok_or("no room")?;
     let deadline = Instant::now() + Duration::from_secs(3600);
     let (mut ready, mut committed, mut sent) = (0usize, 0usize, 0usize);
@@ -246,7 +267,10 @@ pub async fn historian(shared: Arc<Shared>, index: usize, count: usize) -> Resul
         // all again on every reconnect, and the host spends itself on copies.
         while ready >= rooms.len() && sent < count && sent < committed + HISTORY_IN_FLIGHT {
             let (message, hash) = chat_message(0, shared.args.chat_bytes).ok_or("a message")?;
-            peer.publish(route.clone(), &DocumentMutation::Incremental(message))?;
+            peer.publish(
+                next_post(&shared, &chat_room),
+                &DocumentMutation::Incremental(message),
+            )?;
             shared
                 .sent
                 .lock()
@@ -319,11 +343,19 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     let joined_at = now_ms(shared.started);
 
     let desktop = rooms.first().map(|room| room.workspace_id);
-    let chat = rooms.last().map(|room| DocumentRoute {
-        app_id: "so.tilo.chat".into(),
-        cluster_id: room.room.clone(),
-        record: CHAT_RECORD.into(),
-    });
+    let chat = rooms.last().map(|room| room.room.clone());
+    // One guest in ten scrolls back to the chat's first part, which a join
+    // does not replay once later parts exist, and opens it.
+    let mut opening = None;
+    if index % 10 == 1
+        && shared.posts.load(Ordering::Relaxed) >= 2 * PART_MESSAGES
+        && let (Some(room), Some(chat)) = (rooms.last(), chat.as_ref())
+    {
+        match peer.open_record(room.workspace_id, chat_part(chat, 0)) {
+            Ok(()) => opening = Some(Instant::now()),
+            Err(error) => stats.fail(format!("open the first part: {error}")),
+        }
+    }
 
     // The cursor: a fallback live session on the desktop room.
     let mut live = None;
@@ -376,14 +408,17 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
                 }
             }
         }
-        if let (Some(at), Some(route)) = (next_chat, chat.as_ref())
+        if let (Some(at), Some(room)) = (next_chat, chat.as_ref())
             && now >= at
             && !*shared.quiet.borrow()
             && let Some((message, hash)) =
                 chat_message(now_ms(shared.started), shared.args.chat_bytes)
         {
             if peer
-                .publish(route.clone(), &DocumentMutation::Incremental(message))
+                .publish(
+                    next_post(&shared, room),
+                    &DocumentMutation::Incremental(message),
+                )
                 .is_ok()
             {
                 stats.chat_tx.fetch_add(1, Ordering::Relaxed);
@@ -395,7 +430,13 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
             }
             next_chat = Some(now + exponential(shared.args.chat_every * 1000.0));
         }
-        seen_failures = take_events(&peer, &stats, shared.started, joined_at, seen_failures);
+        seen_failures = take_events(
+            &peer,
+            &stats,
+            (shared.started, joined_at),
+            seen_failures,
+            &mut opening,
+        );
     }
     peer.close();
 }
@@ -441,14 +482,14 @@ pub async fn open_live(
 
 /// Count what the session delivered since the last call: chat changes with
 /// their delivery time (or as history, when sent before `joined_at`),
-/// commits, rejections, and session failures beyond the `seen` first ones.
-/// Returns the failures seen so far.
+/// commits, rejections, the record opened since `opening`, and session
+/// failures beyond the `seen` first ones. Returns the failures seen so far.
 pub fn take_events(
     peer: &PeerHandle,
     stats: &Stats,
-    started: Instant,
-    joined_at: u64,
+    (started, joined_at): (Instant, u64),
     seen: usize,
+    opening: &mut Option<Instant>,
 ) -> usize {
     for event in peer.drain() {
         match event {
@@ -476,6 +517,11 @@ pub fn take_events(
             }
             PeerEvent::Committed { .. } => {
                 stats.committed.fetch_add(1, Ordering::Relaxed);
+            }
+            PeerEvent::RecordOpened { frames, .. } => {
+                if let Some(asked) = opening.take() {
+                    stats.scrollback(asked.elapsed().as_secs_f64() * 1000.0, frames);
+                }
             }
             _ => {}
         }

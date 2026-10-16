@@ -17,9 +17,11 @@ pub mod colorimetry;
 pub mod contribution;
 pub mod hdr_metadata;
 pub mod presence_slot;
+pub mod record_sync;
 pub mod retention;
 
 pub use presence_slot::PresenceSlot;
+pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
 pub use retention::{
     Retention, app_document_channel, audience, retention, standalone, steward_only,
 };
