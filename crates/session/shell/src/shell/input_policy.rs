@@ -716,7 +716,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
-    let maximized_chrome_captures = fb.host().maximized_chrome_captures_pointer();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
@@ -731,9 +730,16 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
         || peer_sync_visible
         || inner_surface_captures
-        || maximized_chrome_captures
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
+}
+
+/// Whether the shell takes the pointer: whenever it takes all input, and
+/// also while the pointer is on the bar a maximized window shows over its
+/// client. That bar takes only the pointer — the client keeps the keyboard,
+/// so typing never stops because the pointer rests near the window's top.
+pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
+    chrome_captures_input(fb) || fb.host().maximized_chrome_captures_pointer()
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
@@ -1950,18 +1956,38 @@ mod tests {
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
 
+            // At rest the bar hides: the top of the window is the client's.
             fb.host_mut()
                 .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
+            assert!(!chrome_captures_pointer(&fb));
+
+            // Reached for, its controls take the pointer, never the keyboard.
+            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("maximized group")
+                .set_maximized_chrome_shown_for_tests(true);
+            let _ = fb.paint_settled();
+            let restore = fb
+                .host()
+                .active_window_bounds()
+                .and_then(|bounds| bounds.restore)
+                .expect("Restore shows");
+            fb.host_mut().note_pointer(restore.center());
             assert!(
-                chrome_captures_input(&fb),
+                chrome_captures_pointer(&fb),
                 "the visible Restore/Close pills must receive their own click"
+            );
+            assert!(
+                !chrome_captures_input(&fb),
+                "the bar never takes the client's keyboard"
             );
 
             fb.host_mut()
-                .note_pointer(vello::kurbo::Point::new(640.0, 200.0));
+                .note_pointer(vello::kurbo::Point::new(640.0, 400.0));
             assert!(
-                !chrome_captures_input(&fb),
-                "below the reveal band the maximized client must remain interactive"
+                !chrome_captures_pointer(&fb),
+                "down in the app the maximized client must remain interactive"
             );
         }
 

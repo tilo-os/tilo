@@ -376,6 +376,17 @@ struct Inputs {
     has_controls: bool,
     /// The window's History control, where the host gave the shell one.
     history: Option<HistoryControl>,
+    /// Room for the window's controls at the trailing end of the row, while
+    /// the host merged the window's bar into it (a maximized window).
+    window_controls: Option<f64>,
+    /// The app put its header in the window's bar
+    /// ([`NavShell::with_header_in_window_bar`]).
+    header_in_bar: bool,
+    /// The person reached for the window's bar.
+    bar_revealed: bool,
+    /// How far down the window's top edge the bar stands: below the
+    /// desktop's top bar while that is shown over the window.
+    bar_top: f64,
     titled: [bool; 4],
     actions: [usize; 4],
     leading: [bool; 4],
@@ -409,6 +420,10 @@ impl Default for Inputs {
             has_filter: false,
             has_controls: false,
             history: None,
+            window_controls: None,
+            header_in_bar: false,
+            bar_revealed: false,
+            bar_top: 0.0,
             titled: [false; 4],
             actions: [0; 4],
             leading: [false; 4],
@@ -443,6 +458,12 @@ impl Inputs {
             || self.actions.get(i).copied().unwrap_or(0) > 0
             || self.leading.get(i).copied().unwrap_or(false)
     }
+
+    /// The header row lives in the window's bar now: it stands over the
+    /// content, and only while the person reaches for the bar.
+    fn header_in_window_bar(&self) -> bool {
+        self.header_in_bar && self.window_controls.is_some()
+    }
 }
 
 /// The shell's geometry for one size, in coordinates local to the shell.
@@ -475,6 +496,12 @@ pub struct NavGeometry {
     pub inspector_toggle: Rect,
     /// The window's History control, at the trailing edge of the row.
     pub history: Rect,
+    /// Where the window's controls stand at the trailing end of the row,
+    /// while the host merged the window's bar into it; else zero.
+    pub window_controls: Rect,
+    /// The window-wide row the window's bar covers (also while a header in
+    /// the bar hides), or zero.
+    pub window_row: Rect,
     /// The column whose header holds the sidebar toggle and the Back button.
     toggle_column: Option<Column>,
     back_column: Option<Column>,
@@ -527,6 +554,8 @@ impl NavGeometry {
             back: t(self.back),
             inspector_toggle: t(self.inspector_toggle),
             history: t(self.history),
+            window_controls: t(self.window_controls),
+            window_row: t(self.window_row),
             scrim: t(self.scrim),
             resize_handle: t(self.resize_handle),
             ..self.clone()
@@ -674,6 +703,9 @@ impl NavGeometry {
             return Rect::ZERO;
         }
         let mut x1 = header.x1;
+        if self.window_controls.width() > 0.0 && header.x1 >= self.window_controls.x1 {
+            x1 = x1.min(self.window_controls.x0);
+        }
         for (button, home) in [
             (self.inspector_toggle, self.inspector_toggle_column),
             (self.history, self.history_column),
@@ -801,17 +833,33 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
         || inputs.content_back
         || stack.len() > 1;
-    g.header_height = if needs_header { m.header.min(h) } else { 0.0 };
+    // A header in the window's bar stands over the content and only while
+    // the person reaches for the bar; the columns' bodies start at the top.
+    let in_bar = inputs.header_in_window_bar();
+    let row_h = if needs_header { m.header.min(h) } else { 0.0 };
+    g.header_height = if in_bar && !inputs.bar_revealed {
+        0.0
+    } else {
+        row_h
+    };
     let hh = g.header_height;
+    let bt = if in_bar { 0.0 } else { hh };
+    // A header in the window's bar stands below whatever overlays the
+    // window's top edge (the desktop's top bar while it shows).
+    let top = if in_bar {
+        inputs.bar_top.clamp(0.0, (h - row_h).max(0.0))
+    } else {
+        0.0
+    };
     let header_of = |col: Rect| {
         if hh > 0.0 && col.width() > 0.0 {
-            Rect::new(col.x0, col.y0, col.x1, col.y0 + hh)
+            Rect::new(col.x0, col.y0 + top, col.x1, col.y0 + top + hh)
         } else {
             Rect::ZERO
         }
     };
     // A floating drawer stands under the header row, `s2` in.
-    let drawer_top = if hh > 0.0 { hh + m.gap } else { m.gap };
+    let drawer_top = if hh > 0.0 { top + hh + m.gap } else { m.gap };
     let drawer_bottom = (h - m.gap).max(drawer_top);
 
     // 6. Columns.
@@ -831,7 +879,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.sidebar_column = Rect::new(0.0, 0.0, docked_now, h);
                 // The body keeps its width and slides under the edge, so its
                 // rows never reflow while it collapses.
-                sidebar_body = Rect::new(docked_now - sw, hh, docked_now, h);
+                sidebar_body = Rect::new(docked_now - sw, bt, docked_now, h);
                 sidebar_header = header_of(g.sidebar_column);
             }
         }
@@ -852,7 +900,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             let x = screen_x(NavPane::Sidebar);
             if x > -w && x < w {
                 g.sidebar_column = Rect::new(x, 0.0, x + w, h);
-                sidebar_body = Rect::new(x, hh, x + w, h);
+                sidebar_body = Rect::new(x, bt, x + w, h);
                 sidebar_header = header_of(g.sidebar_column);
             }
         }
@@ -889,7 +937,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         InspectorPlacement::Docked => {
             if inspector_now > 0.0 {
                 g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
-                inspector_body = Rect::new(w - inspector_now, hh, w - inspector_now + iw, h);
+                inspector_body = Rect::new(w - inspector_now, bt, w - inspector_now + iw, h);
                 inspector_header = header_of(g.inspector_column);
             }
         }
@@ -920,7 +968,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     ];
     let body_of = |col: Rect| {
         if col.width() > 0.0 {
-            Rect::new(col.x0, col.y0 + hh, col.x1, col.y1)
+            Rect::new(col.x0, col.y0 + bt, col.x1, col.y1)
         } else {
             Rect::ZERO
         }
@@ -932,7 +980,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         inspector_body,
     ];
     if g.rail.width() > 0.0 {
-        g.rail = Rect::new(g.rail.x0, hh, g.rail.x1, g.rail.y1);
+        g.rail = Rect::new(g.rail.x0, bt, g.rail.x1, g.rail.y1);
     }
 
     // 8. The filter field and the overview's controls sit under their
@@ -975,7 +1023,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         NavPane::Content => Column::Content,
     };
     let push_back = stack.len() > 1 && front > 0;
-    let window_row = Rect::new(0.0, 0.0, w, hh);
+    let window_row = Rect::new(0.0, top, w, top + hh);
     if hh > 0.0
         && !push_back
         && inputs.has_sidebar
@@ -1023,6 +1071,31 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         };
         g.back_column = Some(column);
     }
+    // The window's controls take the row's trailing end while the host
+    // merged the window's bar into it: one bar, the app's header and the
+    // window's controls side by side. The shell's own trailing buttons and
+    // the actions stand before them.
+    if let Some(width) = inputs.window_controls
+        && row_h > 0.0
+    {
+        g.window_row = Rect::new(0.0, top, w, top + row_h);
+        let x1 = (w - m.inset).max(0.0);
+        g.window_controls = Rect::new((x1 - width).max(0.0), top, x1, top + row_h);
+    }
+    // Where a column's trailing shell buttons count from: its header's end,
+    // or before the window's controls in the header that reaches them.
+    let trailing_row = |g: &NavGeometry, header: Rect| -> Rect {
+        if g.window_controls.width() > 0.0 && header.x1 >= g.window_controls.x1 {
+            Rect::new(
+                header.x0,
+                header.y0,
+                (g.window_controls.x0 - m.gap + m.inset).max(header.x0),
+                header.y1,
+            )
+        } else {
+            header
+        }
+    };
     // History stands in the window's top-trailing corner: the trailing edge
     // of the column that reaches the window's trailing edge (never a drawer).
     if inputs.history.is_some()
@@ -1042,7 +1115,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         })
     {
         g.history_column = Some(column);
-        g.history = m.row.trailing_chip(g.header(column), 0);
+        g.history = m.row.trailing_chip(trailing_row(&g, g.header(column)), 0);
     }
     if inputs.has_inspector && hh > 0.0 {
         // Docked and open, the toggle heads the inspector; otherwise it
@@ -1058,7 +1131,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         if row != Rect::ZERO && g.column(column).width() > 0.0 {
             g.inspector_toggle_column = Some(column);
             let slot = usize::from(g.history_column == Some(column));
-            g.inspector_toggle = m.row.trailing_chip(row, slot);
+            g.inspector_toggle = m.row.trailing_chip(trailing_row(&g, row), slot);
         }
     }
     // Content is fully hidden by a pushed screen: no buttons on it.
@@ -1074,7 +1147,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         && g.sidebar_column.width() > 0.0
     {
         let x = g.sidebar_column.x1;
-        g.resize_handle = Rect::new(x - m.resize_grip, hh, x + m.resize_grip, h);
+        g.resize_handle = Rect::new(x - m.resize_grip, bt, x + m.resize_grip, h);
     }
     g
 }
@@ -1536,6 +1609,17 @@ impl NavShell {
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Put the header row in the window's bar: while the window is
+    /// maximized, the row hides with the window's controls and appears
+    /// with them over the top of the content when the person reaches for
+    /// the bar (`widget::top_edge_reveal`), as one bar. In a tiled window
+    /// the row stands above the content as usual.
+    #[must_use]
+    pub fn with_header_in_window_bar(self) -> Self {
+        self.inputs.borrow_mut().header_in_bar = true;
         self
     }
 
@@ -2911,7 +2995,7 @@ impl NavShell {
             .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
             .filter_map(|part| self.exposed(part).map(|widget| widget.get_rect()))
             .collect();
-        trailing.extend([g.history, g.inspector_toggle]);
+        trailing.extend([g.history, g.inspector_toggle, g.window_controls]);
         let x1 = trailing
             .into_iter()
             .filter(|rect| in_row(*rect))
@@ -2978,26 +3062,62 @@ impl NavShell {
             f.transform,
             &clip,
         );
-        let mut parts = vec![
-            Part::Body(column),
-            Part::Title(column),
-            Part::Leading(column),
-        ];
-        let actions = at(&self.headers, column).actions.len();
-        parts.extend((0..actions).map(|i| Part::Action(column, i)));
-        parts.push(Part::More(column));
+        // The column's content first, then its header row: a row in the
+        // window's bar stands over the content with its own ground.
+        let mut under = vec![Part::Body(column)];
         if self.geometry.filter_column(&self.inputs.borrow()) == Some(column) {
-            parts.push(Part::Filter);
+            under.push(Part::Filter);
         }
         if column == Column::Overview {
-            parts.push(Part::Controls);
+            under.push(Part::Controls);
         }
-        for part in parts {
+        let mut over = vec![Part::Title(column), Part::Leading(column)];
+        let actions = at(&self.headers, column).actions.len();
+        over.extend((0..actions).map(|i| Part::Action(column, i)));
+        over.push(Part::More(column));
+        for part in under {
+            if self.built_has(part) && !self.part_hidden(part) {
+                f.draw(self.part_mut(part), &local);
+            }
+        }
+        self.paint_bar_ground(f, column, &local);
+        for part in over {
             if self.built_has(part) && !self.part_hidden(part) {
                 f.draw(self.part_mut(part), &local);
             }
         }
         f.scene.pop_layer();
+    }
+
+    /// A header row in the window's bar stands over the column's content:
+    /// it brings its own ground, rule and a soft shadow on the content.
+    fn paint_bar_ground(&self, f: &mut Frame<'_>, column: Column, local: &Theme) {
+        let header = self.geometry.header(column);
+        if !self.inputs.borrow().header_in_window_bar()
+            || header.width() <= 0.0
+            || header.height() <= 0.0
+            || self.geometry.floating(column)
+        {
+            return;
+        }
+        crate::surface::shadow(
+            f.scene,
+            f.transform,
+            header,
+            0.0,
+            &local.tokens.elevation.floating,
+        );
+        let region = match column {
+            Column::Sidebar => crate::surface::Region::Sidebar,
+            Column::Inspector => crate::surface::Region::Inspector,
+            Column::Overview | Column::Content => crate::surface::Region::Content,
+        };
+        crate::surface::region(f.scene, f.transform, header, region, local);
+        crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row).paint_rule(
+            f.scene,
+            f.transform,
+            local,
+        );
     }
 
     fn paint_part(&mut self, f: &mut Frame<'_>, part: Part) {
@@ -3021,7 +3141,11 @@ impl NavShell {
     fn paint_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme, g: &NavGeometry) {
         for column in [Column::Overview, Column::Content, Column::Inspector] {
             let header = g.header(column);
-            if header == Rect::ZERO || g.floating(column) {
+            // A row in the window's bar paints its rule with its ground.
+            if header == Rect::ZERO
+                || g.floating(column)
+                || self.inputs.borrow().header_in_window_bar()
+            {
                 continue;
             }
             let local = self.column_theme(theme, Some(column));
@@ -3836,6 +3960,37 @@ impl WindowHeader for NavShell {
         }
         true
     }
+
+    fn set_window_bar(&mut self, bar: Option<crate::widget::WindowBar>) -> bool {
+        let controls = bar.map(|bar| bar.controls_width);
+        let revealed = bar.is_some_and(|bar| bar.revealed);
+        let top = bar.map_or(0.0, |bar| bar.top_inset);
+        let relayout = {
+            let mut inputs = self.inputs.borrow_mut();
+            let relayout = inputs.window_controls != controls
+                || (inputs.header_in_bar
+                    && (inputs.bar_revealed != revealed
+                        || (inputs.bar_top - top).abs() > f64::EPSILON));
+            inputs.window_controls = controls;
+            inputs.bar_revealed = revealed;
+            inputs.bar_top = top;
+            relayout
+        };
+        if relayout {
+            self.structure_dirty = true;
+            self.invalidate();
+        }
+        true
+    }
+
+    fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
+        let g = &self.geometry;
+        (g.window_controls.width() > 0.0).then(|| crate::widget::WindowBarSlot {
+            row: g.window_row,
+            controls: g.window_controls,
+            hides_with_bar: self.inputs.borrow().header_in_bar,
+        })
+    }
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
@@ -4115,6 +4270,19 @@ impl NavShell {
             .collect();
         if pointer {
             let p = self.last_cursor;
+            // A header row in the window's bar stands over the content: over
+            // the row, the pointer is the header's, never the content's under it.
+            if self.inputs.borrow().header_in_window_bar()
+                && self.geometry.header_height > 0.0
+                && self.geometry.window_row.contains(p)
+            {
+                order.retain(|(part, _)| {
+                    !matches!(
+                        part,
+                        Part::Body(_) | Part::Rail | Part::Filter | Part::Controls
+                    )
+                });
+            }
             let rank = |part: &Part| -> u8 {
                 if self
                     .part(*part)

@@ -316,7 +316,7 @@ fn settling(samples: &[(Point, Instant)], control: Option<Rect>) -> bool {
 
 /// Whether `p` lies in the convex hull of `apex` and `target`: inside the
 /// target, or inside a triangle from the apex to one of its edges.
-fn in_aim_hull(p: Point, apex: Point, target: Rect) -> bool {
+pub(crate) fn in_aim_hull(p: Point, apex: Point, target: Rect) -> bool {
     if target.contains(p) {
         return true;
     }

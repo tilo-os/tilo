@@ -1302,7 +1302,7 @@ pub fn route_tablet_event(
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
     use crate::compositor::backend::TabletPhase;
-    let usable = !session_locked && !chrome_captures_input(fb);
+    let usable = !session_locked && !chrome_captures_pointer(fb);
     let under = usable
         .then(|| surface_at(state, fb, input.position))
         .flatten();
@@ -1571,7 +1571,7 @@ pub fn route_input(
             let _ = route_cursor_moved(
                 state,
                 fb,
-                chrome_captures_input(fb),
+                chrome_captures_pointer(fb),
                 winit::dpi::PhysicalPosition::new(x, y),
             );
         }
@@ -1585,14 +1585,19 @@ pub fn route_input(
             // leaves the widget hit-test one event behind.
             fb.host_mut()
                 .note_pointer(vello::kurbo::Point::new(position.x, position.y));
-            route_cursor_moved(state, fb, chrome_captures_input(fb), *position)
+            route_cursor_moved(state, fb, chrome_captures_pointer(fb), *position)
         }
         WindowEvent::CursorLeft { .. } => route_cursor_left(state),
         WindowEvent::MouseInput {
             state: element,
             button,
             ..
-        } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
+        } => {
+            if *element == ElementState::Pressed {
+                fb.host_mut().note_pointer_press();
+            }
+            route_mouse_input(state, fb, chrome_captures_pointer(fb), *element, *button)
+        }
         WindowEvent::MouseWheel { delta, phase, .. } => {
             route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
         }
@@ -2386,17 +2391,36 @@ mod tests {
                 display.handle(),
                 tree,
             );
+            // At rest the bar hides: the top of the window is the client's,
+            // and the keyboard never leaves it for the bar.
             let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
+            let _ = route_input(&mut state, &mut fb, &moved, &Modifiers::default());
+            assert!(!chrome_captures_pointer(&fb));
+            assert!(!chrome_captures_input(&fb));
 
+            // Reached for, its controls take the pointer (only the pointer).
+            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("maximized group")
+                .set_maximized_chrome_shown_for_tests(true);
+            let _ = fb.paint_settled();
+            let restore = fb
+                .host()
+                .active_window_bounds()
+                .and_then(|bounds| bounds.restore)
+                .expect("Restore shows");
+            let moved = ui::synthetic_input::cursor_moved(restore.center().x, restore.center().y);
             assert!(
                 !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
                 "captured motion must fall through to shell widget dispatch"
             );
-            assert_eq!(
-                fb.host().pointer_position(),
-                Some(vello::kurbo::Point::new(1210.0, 70.0)),
+            assert_eq!(fb.host().pointer_position(), Some(restore.center()));
+            assert!(chrome_captures_pointer(&fb));
+            assert!(
+                !chrome_captures_input(&fb),
+                "the bar takes the pointer, never the client's keyboard"
             );
-            assert!(chrome_captures_input(&fb));
         }
         // Phase `clicking_a_window_defers_focus_persistence_until_after_input_flush`.
         {

@@ -1177,6 +1177,16 @@ fn e2e_maximized_tile_floating_controls() {
         "maximized content must cover the complete output",
     );
 
+    assert_eq!(
+        group.active_host().map(ui::widget::Widget::get_rect),
+        Some(maximized_rect),
+        "the client fills the maximized window: its bar takes no room",
+    );
+    // At rest the bar hides; the golden is the bar the person reached for,
+    // floating over the client's top edge.
+    assert!(!group.maximized_chrome_shown());
+    group.set_maximized_chrome_shown_for_tests(true);
+
     // Defensive: settle any spawn-fade timers still pumping.
     std::thread::sleep(Duration::from_millis(50));
     {
