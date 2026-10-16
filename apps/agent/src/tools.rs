@@ -249,8 +249,12 @@ pub const LAUNCHER_OPEN_PREFIX: &str = "desktop:app:";
 /// parameters as an open object, so a model cannot see that a parameter
 /// (a selection's place, say) is an object, and some (Gemini) then pass it
 /// as its JSON encoding. Text that is not the declared kind of JSON stays
-/// as it is, to be refused with what the parameter takes.
+/// as it is, to be refused with what the parameter takes. A place
+/// parameter whose fields were written beside it instead of inside it
+/// (`"item"`, `"start"`, `"end"` next to the other arguments) is gathered
+/// back into the place.
 pub fn decode_structured_arguments(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    gather_flat_place(offer, arguments);
     for param in &offer.descriptor.params {
         let Some(Value::String(text)) = arguments.get(param.name.as_ref()) else {
             continue;
@@ -263,6 +267,40 @@ pub fn decode_structured_arguments(offer: &Offer, arguments: &mut serde_json::Ma
         };
         arguments.insert(param.name.to_string(), decoded);
     }
+}
+
+/// The place parameter of `offer` rebuilt from its fields written at the
+/// top level: `item` with `start` and `end`, or `item` with the place's own
+/// name holding an insertion offset. Only names the operation does not
+/// declare are taken, and only while the place itself is not an object.
+fn gather_flat_place(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    let params = &offer.descriptor.params;
+    let declared = |name: &str| params.iter().any(|param| param.name.as_ref() == name);
+    let Some(place) = params.iter().find(|param| param.is_place()) else {
+        return;
+    };
+    let name = place.name.as_ref();
+    if arguments.get(name).is_some_and(Value::is_object)
+        || declared("item")
+        || !arguments.get("item").is_some_and(Value::is_string)
+    {
+        return;
+    }
+    let mut gathered = serde_json::Map::new();
+    for field in ["item", "start", "end"] {
+        if !declared(field)
+            && let Some(value) = arguments.remove(field)
+        {
+            gathered.insert(field.to_owned(), value);
+        }
+    }
+    let offset = arguments.remove(name).filter(Value::is_u64);
+    if !gathered.contains_key("start")
+        && let Some(offset) = offset
+    {
+        gathered.insert("at".to_owned(), offset);
+    }
+    arguments.insert(name.to_owned(), Value::Object(gathered));
 }
 
 /// One operation's parameters as a compact signature and how to pass them,
@@ -1741,7 +1779,8 @@ mod tests {
             InputSpec::None,
         );
         replace.descriptor.params = vec![
-            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where"),
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
             tilo_actions::ActionParam::optional("marks", tilo_actions::ParamType::Array, "marks"),
             tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
         ];
@@ -1763,6 +1802,45 @@ mod tests {
         let mut wrong = json!({"at": "[1, 2]"}).as_object().cloned().unwrap();
         decode_structured_arguments(&replace, &mut wrong);
         assert_eq!(wrong["at"], json!("[1, 2]"));
+    }
+
+    /// A place whose fields a model wrote beside the other arguments is
+    /// gathered back into the place parameter, a range or an insertion.
+    #[test]
+    fn a_place_written_flat_is_gathered_into_its_parameter() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let flat = |value: Value| value.as_object().cloned().unwrap();
+        let mut range = flat(json!({"at": 1, "item": "b1", "start": 0, "end": 39, "text": "x"}));
+        decode_structured_arguments(&replace, &mut range);
+        assert_eq!(
+            Value::Object(range),
+            json!({"at": {"item": "b1", "start": 0, "end": 39}, "text": "x"})
+        );
+        let mut insert = flat(json!({"at": 4, "item": "b1", "text": "x"}));
+        decode_structured_arguments(&replace, &mut insert);
+        assert_eq!(
+            Value::Object(insert),
+            json!({"at": {"item": "b1", "at": 4}, "text": "x"})
+        );
+        let mut whole = flat(json!({"at": {"item": "b1", "at": 4}, "item": "b2", "text": "x"}));
+        decode_structured_arguments(&replace, &mut whole);
+        assert_eq!(
+            whole["at"],
+            json!({"item": "b1", "at": 4}),
+            "a given place stays"
+        );
     }
 
     /// An open next to an application that already publishes operations
