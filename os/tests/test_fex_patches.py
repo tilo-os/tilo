@@ -90,6 +90,28 @@ class PatchTests(unittest.TestCase):
                 PATCHES.apply(self.source, self.series)
             self.assertEqual((self.source / "untracked").read_text(), "keep")
 
+    def test_later_patch_failure_preserves_clean_checkout_and_index(self):
+        bad = (self.series / 'fix.patch').read_bytes().replace(b'-old\n', b'-absent\n')
+        (self.series / 'later.patch').write_bytes(bad)
+        self.manifest['patches'].append({
+            'file': 'later.patch', 'sha256': hashlib.sha256(bad).hexdigest()})
+        self.save()
+        with self.assertRaises(subprocess.CalledProcessError):
+            PATCHES.apply(self.source, self.series)
+        self.assertEqual((self.source / 'file.txt').read_text(), 'old\n')
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_dependent_patches_apply_in_order(self):
+        later = (self.series / 'fix.patch').read_bytes().replace(b'-old\n', b'-new\n').replace(b'+new\n', b'+last\n')
+        (self.series / 'later.patch').write_bytes(later)
+        self.manifest['patches'].append({
+            'file': 'later.patch', 'sha256': hashlib.sha256(later).hexdigest()})
+        self.save()
+        PATCHES.apply(self.source, self.series)
+        self.assertEqual((self.source / 'file.txt').read_text(), 'last\n')
+        self.assertEqual(self.git('diff', '--name-only'), '')
+        self.assertEqual(self.git('diff', '--cached', '--name-only'), 'file.txt')
+
     def test_patch_rejections(self):
         with self.subTest(phase="corrupt_patch_fails_before_source_mutation"):
             (self.series / "fix.patch").write_bytes(b"changed")
