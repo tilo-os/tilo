@@ -32,7 +32,7 @@ if ! command -v skopeo >/dev/null; then
 #!/bin/sh
 work=${TMPDIR:-/tmp}
 exec docker run --rm --network host -v "$PWD:$PWD" -v "$work:$work" -w "$PWD" \
-  quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f "$@"
+  registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0 "$@"
 SH
   chmod +x "$shim/skopeo"
   PATH=$shim:$PATH

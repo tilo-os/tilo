@@ -21,6 +21,7 @@ else
 fi
 [[ sha256:$(sha256sum < "$pulled" | cut -d' ' -f1) == "$digest" ]] \
   || die "anonymous pull of $repository@$digest returned other bytes"
-tar -xOf "$out/image.oci.tar" "blobs/sha256/${digest#sha256:}" | cmp -s - "$pulled" \
+# By hash, not cmp: the skopeo image has no diffutils.
+[[ $(tar -xOf "$out/image.oci.tar" "blobs/sha256/${digest#sha256:}" | sha256sum) == "$(sha256sum < "$pulled")" ]] \
   || die "the registry's $repository@$digest is not the archive's"
 printf 'anonymously pullable: %s@%s\n' "$repository" "$digest"
