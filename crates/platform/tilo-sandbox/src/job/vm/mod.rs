@@ -509,7 +509,15 @@ pub fn make_image(tree: &Path, image: &Path) -> Result<(), SpawnError> {
         .saturating_add(4096)
         .to_string();
     let mut cmd = Command::new("mkfs.ext4");
-    cmd.args(["-q", "-F", "-O", "^has_journal", "-E"])
+    // 4 KiB blocks and extents whatever the size: mke2fs.conf's types for small file systems
+    // pick 1 KiB blocks without them, which caps one file at 16 GiB ("Ext2 file too big" for a
+    // multi-GB image archive).
+    cmd.args(["-q", "-F", "-T", "default", "-b", "4096"])
+        .args([
+            "-O",
+            "^has_journal,extents,huge_file,large_file,64bit",
+            "-E",
+        ])
         .arg("root_owner=0:0,lazy_itable_init=1,nodiscard")
         .args(["-m", "0", "-N", &inode_count, "-d"])
         .arg(tree)
