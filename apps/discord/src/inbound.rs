@@ -375,13 +375,16 @@ pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> Inb
     plan
 }
 
-/// `member-changed`: a ban blocks the persona; a linked member's roles
-/// changed by hand are set back.
+/// `member-changed`: a ban blocks the persona and removes what was mirrored
+/// of them; a linked member's roles changed by hand are set back.
 #[must_use]
 pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Value) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if event.banned {
+        // The bridge's own `block-persona` fires nothing, so the ban
+        // removes what was mirrored of them here, as a Moderator's block does.
         if !guild.blocked_personas.contains(&event.user_id) {
+            plan = plan_block(guild, &event.user_id);
             plan.blocks.push(event.user_id.clone());
         }
         return plan;
