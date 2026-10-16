@@ -617,15 +617,12 @@ impl Widget for DistributionChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
             self.series.iter().map(|series| &series.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "DistributionChart"
