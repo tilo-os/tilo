@@ -11,6 +11,11 @@
 # quarantined tests, as .config/nextest-filters.toml says. With one (`t test
 # PKG --test NAME` asks for one test) the filter is left as given. Other cargo
 # commands (`t cargo build` runs under this wrapper too) pass through unchanged.
+#
+# t also runs the family from an archive of test binaries it built before, with
+# no -p: T_NEXTEST_PACKAGES then names the packages. When only some test
+# binaries can be affected by a change, T_NEXTEST_FILTER selects them, and every
+# filter is narrowed to it.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
@@ -32,6 +37,8 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
         -E|--filterset|--filter-expr) explicit=1 ;;
     esac
 done
+# t runs a family from an archive of its test binaries without -p, and names the packages here.
+[[ $tested == " " && -n ${T_NEXTEST_PACKAGES:-} ]] && tested=" $T_NEXTEST_PACKAGES "
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
 # Only the NTFS helper's own tests read the native images, which take minutes to build.
@@ -61,6 +68,13 @@ for name, value in nextest_filters.filters().items():
     print(f"{name}={shlex.quote(value)}")
 PY
 )
-    arguments+=(-E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)")
+    arguments+=(-E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
+elif (( nextest )) && [[ -n ${T_NEXTEST_FILTER:-} ]]; then
+    # t's selection of test binaries narrows the filters given.
+    for (( index = 0; index < ${#arguments[@]}; index++ )); do
+        case ${arguments[index]} in
+            -E|--filterset|--filter-expr) arguments[index + 1]="(${arguments[index + 1]}) and ($T_NEXTEST_FILTER)" ;;
+        esac
+    done
 fi
 exec bash "$root/tools/test-env.sh" "${arguments[@]}"

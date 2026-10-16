@@ -429,8 +429,6 @@ prepared cutover (with sign-off) can drop the build, test, package and sign step
 - **Inputs from a cargo package's dependencies.** A `[[check]]` lists its input globs by hand;
   the context builds use the workflows' path filters.
 - **Running a check in an image built in the same run** (the builder's canary jobs).
-- **Pull requests that pin a snapshot** (kernel, buildroots, legacy guest) need Git history and
-  a push credential in a check.
 - **Service containers and Docker daemons** are gone: images build with buildah inside the
   sandbox, and tests that start containers need `privileged = true`.
 - **A Mac for release jobs.** Checks on macOS run on the host, so Developer ID signing needs a
