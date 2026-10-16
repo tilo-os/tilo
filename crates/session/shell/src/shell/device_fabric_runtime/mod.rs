@@ -5750,65 +5750,49 @@ pub fn request_nearby_drop_secure(
     staging_owner: &str,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
+    request_prepared_nearby_drop(network, target, prepare_nearby_drop(source)?, staging_owner)
+}
+
+/// A Nearby Send source read as far as it must be before it is offered.
+pub enum PreparedNearbyDrop {
+    /// A directory, or a file too large to offer inline: a staging worker
+    /// reads it from the open source.
+    Staged(crate::shell::nearby_transfer::SecureNearbySource),
+    /// A small file, already read, offered inline.
+    Inline { file_name: String, bytes: Vec<u8> },
+}
+
+impl PreparedNearbyDrop {
+    /// The name the receiving device is offered.
+    pub fn file_name(&self) -> &str {
+        match self {
+            Self::Staged(source) => source.name(),
+            Self::Inline { file_name, .. } => file_name,
+        }
+    }
+}
+
+/// Inspect `source`, and read it whole when it is small enough to offer
+/// inline. Reads the disk: call it off the compositor loop, then hand the
+/// result to [`request_prepared_nearby_drop`] there.
+///
+/// # Errors
+///
+/// Returns a message when the source cannot be inspected or read, is empty,
+/// or changes while read.
+pub(crate) fn prepare_nearby_drop(
+    source: crate::shell::nearby_transfer::SecureNearbySource,
+) -> Result<PreparedNearbyDrop, String> {
     let metadata = source.metadata()?;
-    let file_name = source.name().to_string();
     if metadata.is_dir()
         || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
     {
-        let permit = NearbyStagingPermit::acquire(staging_owner)?;
-        let target = target.clone();
-        let worker_target = target.clone();
-        let name = file_name.clone();
-        let sender = nearby_staging_queue().0.clone();
-        let transfer_id = crate::random::nonzero::<16>();
-        std::thread::Builder::new()
-            .name("tilo-nearby-stage".into())
-            .spawn(move || {
-                let permit = permit;
-                let result = crate::shell::nearby_transfer::StageShape::of_secure(&source)
-                    .and_then(|shape| {
-                        let staging = crate::shell::nearby_transfer::Staging::for_secure(
-                            &source,
-                            worker_target.as_str().to_string(),
-                            unix_now_ms(),
-                            transfer_id,
-                        );
-                        stage_outside_store_lock(staging, shape, |reserved| {
-                            reserved.write_secure(source)
-                        })
-                    });
-                if !permit.valid() {
-                    if result.is_ok() {
-                        let _ =
-                            with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
-                    }
-                    return;
-                }
-                let _ = sender.send(NearbyStagingResult {
-                    transfer_id,
-                    target: worker_target,
-                    name,
-                    result,
-                    media_request: None,
-                });
-            })
-            .map_err(|error| {
-                crate::shell::i18n::t_args(
-                    "device-fabric-error-transfer-start",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
-        if let Ok(mut state) = nearby_drop_state().lock() {
-            state.events.push_back(NearbyDropEvent::Sending {
-                file_name,
-                peer: target,
-            });
-        }
-        return Ok(transfer_id);
+        return Ok(PreparedNearbyDrop::Staged(source));
     }
     if metadata.len() == 0 {
         return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
+    let file_name = source.name().to_string();
     let mut bytes = Vec::new();
     source
         .into_file()
@@ -5823,6 +5807,89 @@ pub fn request_nearby_drop_secure(
     if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
         return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
+    Ok(PreparedNearbyDrop::Inline { file_name, bytes })
+}
+
+/// Offer a [`prepare_nearby_drop`]ped source to `target`: an inline offer,
+/// or a staging worker for a large one. Reads no file.
+///
+/// # Errors
+///
+/// Returns a message when file transfer is not enabled, the owner has no
+/// free staging slot, the staging worker cannot start, or the offer cannot
+/// be sent to `target`.
+pub(crate) fn request_prepared_nearby_drop(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    prepared: PreparedNearbyDrop,
+    staging_owner: &str,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
+    let source = match prepared {
+        PreparedNearbyDrop::Staged(source) => source,
+        PreparedNearbyDrop::Inline { file_name, bytes } => {
+            return offer_nearby_drop_inline(network, target, file_name, bytes);
+        }
+    };
+    let file_name = source.name().to_string();
+    let permit = NearbyStagingPermit::acquire(staging_owner)?;
+    let target = target.clone();
+    let worker_target = target.clone();
+    let name = file_name.clone();
+    let sender = nearby_staging_queue().0.clone();
+    let transfer_id = crate::random::nonzero::<16>();
+    std::thread::Builder::new()
+        .name("tilo-nearby-stage".into())
+        .spawn(move || {
+            let permit = permit;
+            let result =
+                crate::shell::nearby_transfer::StageShape::of_secure(&source).and_then(|shape| {
+                    let staging = crate::shell::nearby_transfer::Staging::for_secure(
+                        &source,
+                        worker_target.as_str().to_string(),
+                        unix_now_ms(),
+                        transfer_id,
+                    );
+                    stage_outside_store_lock(staging, shape, |reserved| {
+                        reserved.write_secure(source)
+                    })
+                });
+            if !permit.valid() {
+                if result.is_ok() {
+                    let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                }
+                return;
+            }
+            let _ = sender.send(NearbyStagingResult {
+                transfer_id,
+                target: worker_target,
+                name,
+                result,
+                media_request: None,
+            });
+        })
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-transfer-start",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state.events.push_back(NearbyDropEvent::Sending {
+            file_name,
+            peer: target,
+        });
+    }
+    Ok(transfer_id)
+}
+
+/// Offer `bytes`, already read, inline to `target` as `file_name`.
+fn offer_nearby_drop_inline(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> Result<[u8; 16], String> {
     let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let request = network.send_personal_fabric_action(
         target,
@@ -8564,6 +8631,7 @@ mod tests {
     /// a worker: a file whose bytes have not arrived (a FIFO, as a file on
     /// the workspace mount is while it hydrates) holds neither the drop nor
     /// the loop, and the bytes reach the offer queue once they arrive.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_small_nearby_drop_is_read_off_the_loop() {
         let directory = tempfile::tempdir().expect("source directory");

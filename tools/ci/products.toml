@@ -3,8 +3,8 @@
 # how to add a product are in docs/publishing-on-t.md, "Products".
 
 [defaults]
-buildah = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
-skopeo = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+buildah = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+skopeo = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 # The release key in KMS and the role that may sign with it, for stable and v* tags only.
 signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 
@@ -608,3 +608,58 @@ requires = ["arch={arch}", "disk-100g"]
 privileged = true
 timeout_secs = 3600
 default = false
+
+# ---------------------------------------------------------------------------
+# Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
+# apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF).
+# Building them takes hours, so main publishes them only when asked (`dispatch = true`).
+
+[[product]]
+family = "windows-compat"
+name = "wine-tools"
+about = """
+The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
+scripts, natively on x86_64. The Wine steps below run in it as their micro-VM's userspace."""
+repository = "registry.tilo.so/tilo/wine-tools"
+dev = ["candidate-{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh wine-tools {out}"
+inputs = ["os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix]]
+family = "windows-compat"
+about = """
+The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
+(tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
+resolves its build dependencies with the network, then rebuilds Wine from that bundle alone,
+offline. Every image is an archive named by the digest it is published with, so the contracts
+the steps write name what is published."""
+each = [{ arch = "x86_64", target = "x86_64" }, { arch = "x86_64", target = "i686" }]
+fields = { image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }, isolation = "vm", requires = ["arch=x86_64"], default = false }
+
+[[matrix.check]]
+name = "wine-source"
+run = """
+bash tools/ci/publish/wine.sh source /target/windows-compat/wine-source
+for test in os/tests/test_fetch_wine_source.py os/tests/test_wine_rpm_contract.py os/tests/test_wine_rpm_merge.py os/tests/test_wine_mock_producer.py; do python3 "$test"; done
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
+outputs = ["/target/windows-compat/wine-source/**"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "wine-resolve-{target}"
+run = "bash tools/ci/publish/wine.sh resolve {target} /target/windows-compat/wine-resolve-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-source"]
+outputs = ["/target/windows-compat/wine-resolve-{target}/bundle.tar"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
