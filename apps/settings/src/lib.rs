@@ -47,6 +47,7 @@ mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;
 pub mod categories;
+pub(crate) mod channel;
 pub mod resource;
 pub mod row;
 pub mod scenarios;
