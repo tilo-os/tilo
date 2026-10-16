@@ -551,18 +551,6 @@ impl FakeDiscord {
         id
     }
 
-    /// Someone renames a channel in Discord.
-    pub fn rename_channel(&self, channel: &str, name: &str) {
-        let mut state = self.shared.lock();
-        let Some(stored) = state.channel_mut(channel) else {
-            return;
-        };
-        stored["name"] = json!(name);
-        let event = stored.clone();
-        state.dispatch("CHANNEL_UPDATE", event);
-        drop(state);
-    }
-
     /// Someone deletes a channel in Discord.
     pub fn delete_channel(&self, channel: &str) {
         let mut state = self.shared.lock();
@@ -580,16 +568,6 @@ impl FakeDiscord {
         let mut state = self.shared.lock();
         state.bans.push(user.id.clone());
         state.dispatch("GUILD_BAN_ADD", event);
-        drop(state);
-    }
-
-    /// Someone gives `user` these roles in Discord.
-    pub fn set_roles(&self, user: &User, roles: &[&str]) {
-        let roles: Vec<String> = roles.iter().map(|r| (*r).to_owned()).collect();
-        let event = json!({"guild_id": GUILD, "user": user.json(), "roles": roles});
-        let mut state = self.shared.lock();
-        state.member_roles.insert(user.id.clone(), roles);
-        state.dispatch("GUILD_MEMBER_UPDATE", event);
         drop(state);
     }
 

@@ -855,23 +855,6 @@ pub fn chrome_id(extension: &ExtensionInfo) -> Option<String> {
     Some(crate::crx::extension_id(&bytes))
 }
 
-/// Chromium derives an unpacked extension identity from its key, or its absolute path.
-pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&read_manifest(&extension.path.join("manifest.json")).ok()?).ok()?;
-    let popup = manifest.get("action")?.get("default_popup")?.as_str()?;
-    if popup.starts_with('/')
-        || popup.split('/').any(|part| part == "..")
-        || popup.contains(['\\', ':', '#', '?'])
-    {
-        return None;
-    }
-    Some(format!(
-        "chrome-extension://{}/{popup}",
-        chrome_id(extension)?
-    ))
-}
-
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;

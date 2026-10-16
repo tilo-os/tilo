@@ -68,7 +68,6 @@ const PRJQUOTA: u32 = 2;
 const fn xqm(n: u32) -> u32 {
     (0x58 << 8) | n
 }
-const Q_XGETQUOTA: u32 = xqm(3);
 const Q_XSETQLIM: u32 = xqm(4);
 const Q_XGETQSTAT: u32 = xqm(5);
 /// `QCMD(cmd, PRJQUOTA)`.
@@ -221,16 +220,6 @@ pub fn set_project_quota(
     };
     quotactl(dir, Q_XSETQLIM, project, (&raw mut q).cast())?;
     Ok(QuotaOutcome::Applied)
-}
-
-/// Bytes project `project` uses on the filesystem holding `dir`.
-///
-/// # Errors
-/// Returns why the quota could not be read.
-pub fn project_usage(dir: BorrowedFd<'_>, project: u32) -> io::Result<u64> {
-    let mut q = FsDiskQuota::default();
-    quotactl(dir, Q_XGETQUOTA, project, (&raw mut q).cast())?;
-    Ok(q.bcount.saturating_mul(BASIC_BLOCK))
 }
 
 /// Open a directory for [`set_project_quota`].

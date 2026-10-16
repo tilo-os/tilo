@@ -2074,12 +2074,6 @@ impl ChromeState {
         self.restore_closed_tab(entry?)
     }
 
-    /// Reopen one exact remembered close.
-    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
-        let entry = self.closed_tabs.take(serial)?;
-        self.restore_closed_tab(entry)
-    }
-
     fn restore_closed_tab(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,

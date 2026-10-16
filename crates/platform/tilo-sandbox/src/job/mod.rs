@@ -123,29 +123,11 @@ impl<'a> Launch<'a> {
         self
     }
 
-    /// Give the job `fd` as descriptor number `target` (3 or more).
-    #[must_use]
-    pub fn pass_fd(mut self, fd: OwnedFd, target: RawFd) -> Self {
-        self.extra.push((fd, target));
-        self
-    }
-
     /// Start the job inside this cgroup (its directory descriptor).
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn cgroup(mut self, cgroup: &'a cgroup::JobCgroup) -> Self {
         self.cgroup = Some(cgroup.dir());
-        self
-    }
-
-    /// Start the job inside the cgroup named by this directory descriptor,
-    /// for a caller that makes and limits its own cgroups and only wants the
-    /// atomic placement (`CLONE_INTO_CGROUP`). The descriptor must stay open
-    /// until [`Launch::spawn`] returns.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn cgroup_fd(mut self, dir: BorrowedFd<'a>) -> Self {
-        self.cgroup = Some(dir);
         self
     }
 
