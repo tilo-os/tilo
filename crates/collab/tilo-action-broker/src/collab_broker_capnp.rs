@@ -270,6 +270,33 @@ mod device_continuity_service_boundary_tests {
         }
 
         fn disconnect(&self, _peer_id: u64) {}
+
+        fn changed(
+            &self,
+            context: &NearbyTransferRequestContext,
+            after: u64,
+        ) -> Option<crate::services::NearbyTransferChange> {
+            self.calls.lock().expect("calls").push((
+                context.clone(),
+                runtime_collab::NearbyTransferCommand::Snapshot,
+            ));
+            Some(Box::pin(std::future::ready(after.wrapping_add(1))))
+        }
+    }
+
+    /// A host that answers commands but cannot say when its state changes.
+    struct UnannouncedNearby;
+
+    impl NearbyTransferServices for UnannouncedNearby {
+        fn command(
+            &self,
+            _context: &NearbyTransferRequestContext,
+            _command: runtime_collab::NearbyTransferCommand,
+        ) -> Result<runtime_collab::NearbyTransferReply, String> {
+            Ok(runtime_collab::NearbyTransferReply::Accepted)
+        }
+
+        fn disconnect(&self, _peer_id: u64) {}
     }
 
     fn lookup() -> Vec<u8> {
@@ -521,6 +548,62 @@ mod device_continuity_service_boundary_tests {
         )
         .expect_err("invalid reply never reaches the app");
         assert!(error.to_string().contains("invalid bounded reply"));
+    }
+
+    #[test]
+    fn only_the_certified_files_route_waits_for_nearby_changes() {
+        let service = Arc::new(RecordingNearby::answering(
+            runtime_collab::NearbyTransferReply::Accepted,
+        ));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let change = nearby_transfer_change(&services, &files_context(), 4)
+            .expect("Files waits on its own route");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        assert_eq!(runtime.block_on(change), 5, "the host's next change");
+        assert_eq!(
+            service.calls.lock().expect("calls")[0].0,
+            files_context(),
+            "the host learns which connection waits, for its handles"
+        );
+
+        for (app, workspace) in [
+            ("so.tilo.browser", "workspace-7"),
+            (NEARBY_TRANSFER_APP_ID, ""),
+        ] {
+            let context = NearbyTransferRequestContext::authenticated(
+                41,
+                app,
+                workspace,
+                CrdtRoute::app(app, workspace).channel_key(),
+                Some("local-person".into()),
+            );
+            let refused = nearby_transfer_change(&services, &context, 0)
+                .err()
+                .expect("only the certified Files route in a workspace waits");
+            assert!(refused.to_string().contains("certified Files"));
+        }
+        assert_eq!(
+            service.calls.lock().expect("calls").len(),
+            1,
+            "a refused route never reaches the host"
+        );
+        for services in [
+            HostServices::default(),
+            HostServices {
+                nearby_transfer: Some(Arc::new(UnannouncedNearby)),
+                ..Default::default()
+            },
+        ] {
+            let unannounced = nearby_transfer_change(&services, &files_context(), 0)
+                .err()
+                .expect("a host that cannot announce changes says so");
+            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        }
     }
 
     #[test]
@@ -7064,6 +7147,7 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::NearbyTransferChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -8395,6 +8479,28 @@ fn delegate_wifi_continuity_command(
     }
 }
 
+/// The wait for Nearby Send's next change past `after` for the connection
+/// `context`: only the certified Files route in a workspace may wait, as only
+/// it may command.
+fn nearby_transfer_change(
+    services: &HostServices,
+    context: &crate::services::NearbyTransferRequestContext,
+    after: u64,
+) -> Result<crate::services::NearbyTransferChange, capnp::Error> {
+    if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
+        return Err(capnp::Error::failed(
+            "Nearby Send requires the certified Files application route".into(),
+        ));
+    }
+    services
+        .nearby_transfer
+        .as_ref()
+        .and_then(|service| service.changed(context, after))
+        .ok_or_else(|| {
+            capnp::Error::unimplemented("this host does not say when Nearby Send changes".into())
+        })
+}
+
 fn delegate_nearby_transfer_command(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
@@ -8549,6 +8655,45 @@ impl channel_handle::Server for CapnpChannelHandle {
             results.get().set_change(change);
             Ok(())
         })
+    }
+
+    /// Resolves once what a Nearby Send snapshot would show may have changed
+    /// since `after`. Only the certified Files route may wait, the same route
+    /// every Nearby command is confined to, and it learns nothing but that
+    /// something changed: it asks for a snapshot, which is checked as always.
+    fn nearby_transfer_changed(
+        self: Rc<Self>,
+        params: channel_handle::NearbyTransferChangedParams,
+        mut results: channel_handle::NearbyTransferChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let context = crate::services::NearbyTransferRequestContext::authenticated(
+            self.peer_id,
+            route.app_id.clone(),
+            route.cluster_id.clone(),
+            route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
+        );
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        match nearby_transfer_change(&self.state.services, &context, after) {
+            Ok(change) => Promise::from_future(async move {
+                results.get().set_change(change.await);
+                Ok(())
+            }),
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn approved_check_reported_progress(
