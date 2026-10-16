@@ -218,6 +218,16 @@ git = true
 writable_sources = true
 inputs = ["**"]
 
+# The generated blocks of this file match what they are generated from (suites.toml,
+# products.toml, .config/, the workspace's manifests and the Rust files suites.toml lists
+# as reading outside their package). policy checks this too, but takes many minutes and
+# reruns for any change; this answers in seconds.
+[[check]]
+name = "t-toml"
+requires = ["arch=any"]
+run = "python3 tools/ci/t_toml.py check"
+inputs = ["t.toml", "tools/ci/**", ".config/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs"]
+
 
 # ---------------------------------------------------------------------------
 # Fast quality (.forgejo/workflows/lint.yml), in whole-tree form.
