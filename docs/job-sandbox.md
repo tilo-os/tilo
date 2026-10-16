@@ -196,8 +196,12 @@ over its own network namespace, so `socket(AF_NETLINK, …)` with
 `setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
 kexec and modules stay refused too. Such a job runs without Landlock, which
 refuses every mount to a process it confines. t selects the profile per check
-with `nested_sandboxes`, and runs those checks as uid 1000 inside the job, so
-bubblewrap creates its namespaces as for any unprivileged user.
+with `nested_sandboxes`. Such a job is uid 1000 (`NESTING_ID`) inside, not
+root: its root would hold no capability, and since Linux 5.12 mapping the
+parent namespace's uid 0 into a new user namespace (`unshare
+--map-root-user`, bubblewrap) takes `CAP_SETFCAP`, so writing `uid_map` fails
+with `EPERM`. As any other id, bubblewrap and `unshare` create their
+namespaces as for an unprivileged user.
 
 **The privileged profile** (`CiProfile::Privileged`) keeps everything above
 except the namespace and mount rules. Checks that genuinely need real root
