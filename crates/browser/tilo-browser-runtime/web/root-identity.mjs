@@ -428,12 +428,27 @@ async function keepInBrowser(env, storage, rootPublicKey, extractable, envelope)
 }
 
 /**
+ * Ask the browser to keep this site's storage (`navigator.storage.persist()`)
+ * through `storage`, without waiting for the answer. Firefox answers only
+ * once the person dismisses its permission prompt, so nothing may await it:
+ * it is asked once there is something worth keeping (a person kept with a
+ * passkey or a recovery key, or signed in with one), never while a page
+ * loads.
+ */
+export function askToKeepStorage(storage = globalThis.navigator?.storage) {
+  try {
+    void Promise.resolve(storage?.persist?.()).catch(() => {});
+  } catch { /* No storage manager: nothing to ask. */ }
+}
+
+/**
  * The person `record` keeps, unlocked: the identity (current from now on)
  * with what keeping it takes. `envelope` is what may travel (the passkey and
  * recovery wraps; empty until the person keeps it), `kept` whether it opens
- * anywhere but here.
+ * anywhere but here. Keeping it asks the browser to keep this site's
+ * storage through `persist` (`askToKeepStorage`).
  */
-async function openKept(env, storage, record) {
+async function openKept(env, storage, record, persist) {
   const {rootPublicKey} = record;
   const salt = await browserPrfSalt(env.subtle);
   const identity = await unlocked(env, record.held, rootPublicKey, {
@@ -444,6 +459,7 @@ async function openKept(env, storage, record) {
   const save = async envelope => {
     record.envelope = envelope;
     await storage.put(BROWSER_RECORD, record);
+    askToKeepStorage(persist);
     return envelope;
   };
   // Descriptors, not values: `envelope` and `kept` follow what is kept.
@@ -474,8 +490,10 @@ async function openKept(env, storage, record) {
  * IndexedDB (the CryptoKey itself, which never leaves the browser). It is a
  * real identity from the start: it joins and owns workspaces like any
  * other, and keeping it (`keepWithPasskey`, `createRecoveryKey`) only adds
- * ways to open the same root elsewhere. Asks the browser to keep this
- * site's storage (`navigator.storage.persist()`).
+ * ways to open the same root elsewhere. Creating one asks the browser
+ * for nothing: a page that loads never waits on a permission prompt; the
+ * site's storage is asked to be kept once the person keeps it
+ * (`askToKeepStorage`, through `persist`).
  *
  * Resolves to the identity with `{envelope, kept, keepWithPasskey,
  * createRecoveryKey}`, or `null` with `create: false` and none kept.
@@ -489,9 +507,8 @@ export async function browserIdentity({storage, crypto, credentials, create = tr
     const root = await env.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
     const rootPublicKey = new Uint8Array(await env.subtle.exportKey('raw', root.publicKey));
     record = await keepInBrowser(env, storage, rootPublicKey, root.privateKey, emptyEnvelope(rootPublicKey));
-    await persist?.persist?.().catch(() => false);
   }
-  return openKept(env, storage, record);
+  return openKept(env, storage, record, persist);
 }
 
 /**
@@ -516,7 +533,8 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  * same assertion gave opens it. The root is then kept here as
  * `browserIdentity` keeps it, replacing whoever this browser was.
  */
-export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, crypto, credentials} = {}) {
+export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, crypto, credentials,
+  persist = globalThis.navigator?.storage} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
   storage ??= (await import('./device-custody.mjs')).idbStorage();
   const env = environment({crypto, credentials});
@@ -542,7 +560,9 @@ export async function signInWithPasskey({rpId = globalThis.location?.hostname, f
     const root = await unseal(env, wrap, output, unbase64url(wrap.prf_salt), associatedData('passkey', rootPublicKey, credentialId), true);
     if (!await provesRoot(env.subtle, root, rootPublicKey)) throw new IdentityError('wrong-root', 'The envelope holds another key than its root');
     currentIdentity()?.lock();
-    return openKept(env, storage, await keepInBrowser(env, storage, rootPublicKey, root, envelope));
+    const signedIn = await openKept(env, storage, await keepInBrowser(env, storage, rootPublicKey, root, envelope), persist);
+    askToKeepStorage(persist);
+    return signedIn;
   } finally {
     output.fill(0);
   }

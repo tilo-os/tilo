@@ -13,7 +13,9 @@
 // the context, their tabs its pages):
 //   first-use      a fresh profile opens the bare entry: one POST /join at the
 //                  host's door, the desktop presents, and the browser keeps
-//                  the membership (host, room, person) and the room's link
+//                  the membership (host, room, person) and the room's link;
+//                  it never asks to keep the site's storage (Firefox's
+//                  prompt, stubbed as one nobody answers)
 //   reload         the same tab reloaded: the desktop presents again as the
 //                  same person in the same room, with no new join
 //   second-tab     a second tab of that profile while the first holds its
@@ -232,6 +234,12 @@ export async function startStack(options, ports, {fresh, env = {}}) {
 // (which outlives reloads), with the body of the door's answers. DevTools'
 // own network domain held up later pages of the run.
 const FETCHES = `(() => {
+  // Firefox answers navigator.storage.persist() only once the person
+  // dismisses its permission prompt; Chrome answers at once. Here it is a
+  // prompt nobody answers, counted: getting in must neither ask nor wait.
+  globalThis.__authE2ePersistAsked = 0;
+  const storage = globalThis.navigator?.storage;
+  if (storage) storage.persist = () => { globalThis.__authE2ePersistAsked += 1; return new Promise(() => {}); };
   const original = globalThis.fetch;
   const tell = entry => { try { globalThis.__authE2eFetch(JSON.stringify(entry)); } catch {} };
   globalThis.fetch = async function (input, init) {
@@ -286,6 +294,7 @@ async function settle(tab, {relay, timeout}) {
     status: document.getElementById('status')?.textContent ?? '',
     hash: location.hash,
     desktop: Boolean(globalThis.tiloMount),
+    persistAsked: globalThis.__authE2ePersistAsked ?? 0,
     membership: (${membershipFor})(localStorage.getItem(${JSON.stringify(MEMBERSHIPS)}), ${JSON.stringify(relay)}),
     // Where a page that never settled stood: still loading its modules, or past them.
     loading: document.documentElement.dataset.entry ? undefined : {readyState: document.readyState,
@@ -459,9 +468,10 @@ async function main() {
     const joins = joinsTo(first.requests, api);
     const me = opened.membership?.userPublicKey ?? null;
     check('first-use', opened.entry === 'open' && opened.arrival === 'done' && joins.length === 1 && joins[0].status === 200
-      && opened.membership?.room === firstRoom && /^[0-9a-f]{64}$/.test(me ?? '') && opened.hash.includes(`/w/${firstRoom}`),
+      && opened.membership?.room === firstRoom && /^[0-9a-f]{64}$/.test(me ?? '') && opened.hash.includes(`/w/${firstRoom}`)
+      && opened.persistAsked === 0,
     {entry: opened.entry, arrival: opened.arrival, joins: joins.map(j => j.status), membership: opened.membership, hash: opened.hash,
-      status: opened.status, loading: opened.loading});
+      status: opened.status, loading: opened.loading, persistAsked: opened.persistAsked});
     if (opened.entry !== 'open') await shoot('first-use', first);
     const offer = joins[0]?.status === 200 && joins[0].body ? JSON.parse(joins[0].body) : null;
 
