@@ -11193,9 +11193,13 @@ impl ShellOverlayHost {
                 let st = chrome.borrow();
                 (st.tree_handle(), st.records().clone())
             };
+            if self.room_activity.take_persisted_reads() {
+                // The glance derives from the same reads.
+                self.activity_refresh.invalidate();
+            }
             let local = self.room_records.borrow();
             self.room_activity
-                .refresh_observed(&tree, &records, &*local);
+                .refresh_observed_local(&tree, &records, &local, Instant::now());
         }
         self.refresh_history_narrative();
     }
@@ -11322,7 +11326,7 @@ impl ShellOverlayHost {
             };
             let local = self.room_records.borrow();
             self.room_activity
-                .refresh_observed(&tree, &records, &*local)
+                .refresh_observed_local(&tree, &records, &local, Instant::now())
         };
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
@@ -18264,6 +18268,12 @@ impl Widget for ShellOverlayHost {
         self.pump_shortcut_step_prompts();
         self.record_finished_shortcut_runs();
         steps.mark("shortcut-triggers");
+        // Records Activity reads from disk are read off the loop; one that
+        // came in refreshes the glance and the open window on this frame.
+        let activity_records_dirty = self.room_activity.take_persisted_reads();
+        if activity_records_dirty {
+            self.activity_refresh.invalidate();
+        }
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -18445,6 +18455,7 @@ impl Widget for ShellOverlayHost {
             || presence_dirty
             || follow_dirty
             || peer_sync_dirty
+            || activity_records_dirty
     }
 
     #[allow(
