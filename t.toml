@@ -2899,10 +2899,10 @@ requires = ["arch=x86_64"]
 on = ["stable"]
 
 # The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-# fragment, built natively FROM the pinned signed buildroot, then booted under KVM with its
-# module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-# node (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build compiles
-# the whole kernel. build-kernel.yml still signs, publishes and pins it.
+# fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
+# its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+# micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
+# compiles the whole kernel. build-kernel.yml still signs, publishes and pins it.
 [[check]]
 name = "image-kernel-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2929,26 +2929,30 @@ memory = "24G"
 timeout_secs = 14400
 default = false
 
-# The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under KVM with its
-# module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-# node.
+# The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
+# its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+# micro-VM step.
 [[check]]
 name = "kernel-acceptance-x86_64"
-run = "bash tools/ci/publish/kernel.sh accept x86_64 /target/publish/kernel/x86_64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+run = "bash tools/ci/publish/kernel-acceptance.sh x86_64 /target/publish/kernel/x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 needs = ["image-kernel-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "8G"
 timeout_secs = 3600
 default = false
 
 [[check]]
 name = "kernel-acceptance-aarch64"
-run = "bash tools/ci/publish/kernel.sh accept aarch64 /target/publish/kernel/aarch64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+run = "bash tools/ci/publish/kernel-acceptance.sh aarch64 /target/publish/kernel/aarch64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 needs = ["image-kernel-aarch64"]
 requires = ["arch=aarch64", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "8G"
 timeout_secs = 3600
 default = false
 # END generated
