@@ -25,6 +25,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let home = tilo_test_env::TestHome::new().unwrap();
+        crate::shell::device_fabric_runtime::start_session_for_test();
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
         let peer = iroh::SecretKey::from_bytes(&[0xB2; 32]);
         let local_device = iroh::SecretKey::from_bytes(&[0xB3; 32]);

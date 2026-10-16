@@ -22,6 +22,14 @@ fn declines() -> &'static Mutex<Declines> {
     STATE.get_or_init(|| Mutex::new(Declines::default()))
 }
 
+/// Forget the declines read for the previous session
+/// ([`super::start_session_for_test`]).
+#[cfg(test)]
+pub(super) fn forget_for_test() {
+    use tilo_lock::MutexRecover as _;
+    *declines().lock_recover() = Declines::default();
+}
+
 fn load_declines(network: &ShellNetwork, state: &mut Declines) {
     let user = network.personal_user_public_key();
     if state.user == user {
