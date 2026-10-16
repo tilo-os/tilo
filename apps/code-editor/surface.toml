@@ -75,6 +75,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "replace-range"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "object", additionalProperties = false, place = "files", properties = { at = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, item = { type = "string", minLength = 1 }, start = { type = "integer", minimum = 0 } }, required = ["item"] } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "delete"
 destructive = true
 kind = "undoable"

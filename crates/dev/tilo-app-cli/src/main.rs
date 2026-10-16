@@ -2590,14 +2590,15 @@ fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
 
 /// Whether `app_dir` holds a compute package: a windowless `service` whose
 /// `cli` entrypoint publishes `[cli]` commands for a compute worker to run.
-fn is_compute_package(app_dir: &Path) -> bool {
+/// A service with no window: its binary is never launched as a GUI, so it
+/// has no `--native-audit` mode and no UI to audit.
+fn is_windowless_service(app_dir: &Path) -> bool {
     std::fs::read_to_string(app_dir.join("tilo-app.toml"))
         .ok()
         .and_then(|text| tilo_app_package::view::ManifestView::from_toml_str(&text).ok())
         .is_some_and(|manifest| {
             manifest.kind == tilo_app_package::view::KIND_SERVICE
-                && manifest.entrypoint.cli_bin().is_some()
-                && !manifest.cli_commands.is_empty()
+                && manifest.entrypoint.gui_bin().is_none()
         })
 }
 
@@ -2642,9 +2643,11 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             dir.file_name()
                 .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
         })
-        // A compute package has no UI to audit: a worker runs its `[cli]`
-        // command for another app's action, which that app certifies.
-        .filter(|dir| !is_compute_package(dir))
+        // A windowless service has no UI to audit: a compute package's
+        // worker runs its `[cli]` command for another app's action, which
+        // that app certifies, and a service such as web search only
+        // publishes actions, which its own tests cover.
+        .filter(|dir| !is_windowless_service(dir))
         .collect::<Vec<_>>();
     app_dirs.sort();
     let mut packages = Vec::with_capacity(app_dirs.len());
@@ -3061,13 +3064,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_certification_skips_only_compute_packages() {
+    fn workspace_certification_skips_only_windowless_services() {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-        assert!(is_compute_package(&apps.join("thumbnails")));
-        // The agent is a cli service with no `[cli]` commands, skipped by
-        // name; a window is always certified.
-        assert!(!is_compute_package(&apps.join("agent")));
-        assert!(!is_compute_package(&apps.join("calculator")));
+        assert!(is_windowless_service(&apps.join("thumbnails")));
+        assert!(is_windowless_service(&apps.join("web-search")));
+        assert!(is_windowless_service(&apps.join("agent")));
+        // A window is always certified, a service's (the keyboard) too.
+        assert!(!is_windowless_service(&apps.join("osk")));
+        assert!(!is_windowless_service(&apps.join("calculator")));
     }
 
     #[test]
